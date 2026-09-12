@@ -1,7 +1,9 @@
 // Verifies the nightly DB backup's R2 off-box copy (Task C9): upload shape,
-// prefix-scoped pruning, the "not configured" skip, and the upload-failure
-// contract (local file kept, non-zero exit). Uses the team's temp-fixture +
-// injected-fake-client pattern (see scripts/verify-media-storage-r2.ts).
+// same-day-rerun content verification (size/sha256, not just key existence),
+// prefix-scoped pruning (incl. multi-page listings), the "not configured"
+// skip, and the upload-failure contract (local file kept, non-zero exit).
+// Uses the team's temp-fixture + injected-fake-client pattern (see
+// scripts/verify-media-storage-r2.ts).
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -114,13 +116,54 @@ async function main() {
   assert.equal(key, `${BACKUP_R2_PREFIX}dev-2026-09-13.db`);
 
   const client = new FakeBackupR2Client();
-  await uploadBackupSnapshot(client, { key, sourcePath: dbPath });
+  const firstOutcome = await uploadBackupSnapshot(client, { key, sourcePath: dbPath });
+  assert.equal(firstOutcome, "uploaded");
   const uploaded = client.records.get(key);
   assert(uploaded, "object must be uploaded under the db-backups/ key");
   assert.equal(uploaded.head.sizeBytes, Buffer.byteLength("fake-sqlite-snapshot-bytes"));
 
-  // Re-uploading the same key (same-day rerun) must not throw.
-  await uploadBackupSnapshot(client, { key, sourcePath: dbPath });
+  // Same-day re-run with an IDENTICAL existing object -> verified, no re-upload.
+  const rerunOutcome = await uploadBackupSnapshot(client, { key, sourcePath: dbPath });
+  assert.equal(rerunOutcome, "already-uploaded");
+  assert.equal(client.deleted.length, 0, "an identical existing object must not be deleted");
+  assert.equal(
+    Buffer.from(client.records.get(key)!.bytes).toString("utf8"),
+    "fake-sqlite-snapshot-bytes",
+    "identical re-run must not disturb the stored object",
+  );
+
+  // Same-day re-run where the existing object has NO sha256 metadata (older
+  // object) falls back to a size comparison.
+  const sizeFallbackKey = `${BACKUP_R2_PREFIX}dev-2026-09-14.db`;
+  const sizeFallbackClient = new FakeBackupR2Client();
+  sizeFallbackClient.records.set(sizeFallbackKey, {
+    bytes: new Uint8Array(Buffer.byteLength("fake-sqlite-snapshot-bytes")),
+    head: {
+      sizeBytes: Buffer.byteLength("fake-sqlite-snapshot-bytes"),
+      contentType: "application/vnd.sqlite3",
+      lastModified: new Date(),
+      sha256: null,
+      etag: '"legacy"',
+    },
+  });
+  const fallbackOutcome = await uploadBackupSnapshot(sizeFallbackClient, {
+    key: sizeFallbackKey,
+    sourcePath: dbPath,
+  });
+  assert.equal(fallbackOutcome, "already-uploaded", "no-sha256 object with matching size is verified");
+
+  // Same-day re-run where the existing object's content DIFFERS (size/sha
+  // mismatch) -> the stale object is deleted and the fresh file re-uploaded.
+  const mismatchPath = path.join(root, "dev-2026-09-13-changed.db");
+  writeFileSync(mismatchPath, "fake-sqlite-snapshot-bytes-but-longer-now");
+  const overwriteOutcome = await uploadBackupSnapshot(client, { key, sourcePath: mismatchPath });
+  assert.equal(overwriteOutcome, "overwritten");
+  assert.deepEqual(client.deleted, [key], "the mismatched object must be deleted before re-upload");
+  assert.equal(
+    Buffer.from(client.records.get(key)!.bytes).toString("utf8"),
+    "fake-sqlite-snapshot-bytes-but-longer-now",
+    "the overwritten object must hold the fresh file's bytes",
+  );
 
   // Bucket override via BACKUP_R2_BUCKET
   const overridden = backupR2ConfigFromEnv({ ...validEnv, BACKUP_R2_BUCKET: "heroai-backups" });
@@ -154,6 +197,26 @@ async function main() {
   leaky.seed("media/v1/renders/leak.mp4", 400);
   const leakyResult = await pruneBackupObjects(leaky, { retentionDays: 30 });
   assert.deepEqual(leakyResult.removed, [], "objects outside the backups prefix are never removed");
+
+  // Advisory: a multi-page listing (continuationToken) must be followed to
+  // completion rather than pruning only the first page.
+  class PagedListClient extends FakeBackupR2Client {
+    // Snapshot the listing once so a delete triggered by page 1 can't shrink
+    // page 2 out from under us — a real ListObjectsV2 continuation token
+    // refers to a fixed listing position, not a live view.
+    private snapshot: Awaited<ReturnType<FakeBackupR2Client["list"]>>["objects"] | null = null;
+    async list(prefix: string, token?: string): Promise<R2ObjectPage> {
+      if (!this.snapshot) this.snapshot = (await super.list(prefix)).objects;
+      return token
+        ? { objects: this.snapshot.slice(1), continuationToken: null }
+        : { objects: this.snapshot.slice(0, 1), continuationToken: "page2" };
+    }
+  }
+  const paged = new PagedListClient();
+  paged.seed(`${BACKUP_R2_PREFIX}dev-2026-07-01.db`, 90);
+  paged.seed(`${BACKUP_R2_PREFIX}dev-2026-08-05.db`, 40);
+  const pagedResult = await pruneBackupObjects(paged, { retentionDays: 30 });
+  assert.equal(pagedResult.removed.length, 2, "pagination must be followed across both pages");
 
   // (c) absent env -> skip (null config), no exception
   assert.equal(backupR2ConfigFromEnv({}), null);

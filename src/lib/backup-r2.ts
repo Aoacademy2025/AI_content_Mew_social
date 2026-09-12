@@ -57,29 +57,49 @@ export function backupObjectKey(filename: string): string {
   return `${BACKUP_R2_PREFIX}${filename}`;
 }
 
-// Uploads the snapshot at sourcePath to `key`. A same-day rerun that finds the
-// object already there (precondition_failed + a matching head) is treated as
-// success, not an error — the local file is never touched either way.
+export type BackupUploadOutcome = "uploaded" | "already-uploaded" | "overwritten";
+
+// Uploads the snapshot at sourcePath to `key`. A same-day rerun that finds an
+// object already there (precondition_failed) is only ever treated as success
+// if it actually matches the fresh file — verified by sha256 metadata
+// (AwsR2ObjectClient.put stores it, head() reads it back), falling back to a
+// size-only comparison for an older object with no sha256 metadata. A
+// mismatch means the existing object is stale or partial, so it is deleted
+// and the fresh file re-uploaded (overwrite) rather than silently reported
+// as success. The local file is never touched by any outcome here.
 export async function uploadBackupSnapshot(
   client: BackupR2Client,
   input: { key: string; sourcePath: string },
-): Promise<void> {
+): Promise<BackupUploadOutcome> {
   const stats = await stat(input.sourcePath);
   const { sha256, contentMd5Base64 } = await mediaFileDigests(input.sourcePath);
-  const result = await client.put({
+  const putInput = {
     key: input.key,
     sourcePath: input.sourcePath,
     sizeBytes: stats.size,
     contentType: "application/vnd.sqlite3",
     sha256,
     contentMd5Base64,
-  });
-  if (result === "precondition_failed") {
-    const existing = await client.head(input.key);
-    if (!existing) {
-      throw new Error(`R2 precondition failed and no object exists at ${input.key}`);
-    }
+  };
+  const result = await client.put(putInput);
+  if (result === "created") return "uploaded";
+
+  const existing = await client.head(input.key);
+  if (!existing) {
+    throw new Error(`R2 precondition failed and no object exists at ${input.key}`);
   }
+  const matches = existing.sha256 !== null
+    ? existing.sha256 === sha256
+    : existing.sizeBytes === stats.size;
+  if (matches) return "already-uploaded";
+
+  // Existing object is stale/partial/different — overwrite it.
+  await client.delete(input.key);
+  const overwriteResult = await client.put(putInput);
+  if (overwriteResult !== "created") {
+    throw new Error(`R2 overwrite failed for ${input.key} (still conflicting after delete)`);
+  }
+  return "overwritten";
 }
 
 // Deletes objects under BACKUP_R2_PREFIX older than retentionDays. Never

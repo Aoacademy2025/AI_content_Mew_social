@@ -194,8 +194,14 @@ async function offboxR2(dest: string): Promise<boolean> {
   const client = createBackupR2Client(config.storage);
   const key = backupObjectKey(path.basename(dest));
   try {
-    await uploadBackupSnapshot(client, { key, sourcePath: dest });
-    log(`R2 copy sent -> ${config.storage.bucket}/${key}`);
+    const outcome = await uploadBackupSnapshot(client, { key, sourcePath: dest });
+    if (outcome === "already-uploaded") {
+      log(`R2 copy already uploaded, verified -> ${config.storage.bucket}/${key}`);
+    } else if (outcome === "overwritten") {
+      log(`R2 copy overwritten (existing object did not match) -> ${config.storage.bucket}/${key}`);
+    } else {
+      log(`R2 copy sent -> ${config.storage.bucket}/${key}`);
+    }
   } catch (e) {
     warn(`off-box R2 upload FAILED (local snapshot is safe): ${(e as Error).message}`);
     return false;
