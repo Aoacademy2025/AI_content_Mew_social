@@ -216,10 +216,17 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         // scripts/backup-db.ts reads these from the environment / prod .env (via dotenv):
-        //   BACKUP_DIR            default /var/backups/heroai
-        //   BACKUP_RETENTION_DAYS default 14
-        //   BACKUP_RSYNC_TARGET   optional — set in .env to enable off-box copies
-        //                         (unset = local snapshot only, logged, not an error)
+        //   BACKUP_DIR              default /var/backups/heroai
+        //   BACKUP_RETENTION_DAYS   default 14
+        //   BACKUP_RSYNC_TARGET     optional — set in .env to enable off-box rsync copies
+        //                           (unset = local snapshot only, logged, not an error)
+        //   BACKUP_R2_BUCKET        optional — off-box R2 copies use R2_BUCKET below
+        //                           unless this overrides it (unset = same bucket as media)
+        //   BACKUP_R2_RETENTION_DAYS default 30 — prunes db-backups/ objects in R2 only
+        // R2 credentials themselves come from the same passthrough as `ai-content`
+        // (.env.r2.production, loaded once into r2MediaRuntimeEnv above) — missing/
+        // invalid R2 env is NOT an error, it just skips the R2 off-box copy (logged).
+        ...r2MediaRuntimeEnv,
       },
     },
     {
