@@ -219,6 +219,9 @@ jobs:
       - name: Verify the admin daily trends land on Asia/Bangkok days
         run: npm run verify:admin-trends
 
+      - name: Verify the admin overview page (North Star, trend cards, today strip, health pills)
+        run: npm run verify:admin-overview
+
       - name: Verify Revenue & Growth cash truth and meeting dashboard
         run: npm run verify:revenue-growth
 

@@ -21,6 +21,7 @@
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
     "verify:job-failure-class": "tsx scripts/verify-job-failure-class.ts",
     "verify:admin-trends": "tsx scripts/verify-admin-trends.ts",
+    "verify:admin-overview": "tsx scripts/verify-admin-overview.ts",
     "verify:revenue-growth": "tsx scripts/verify-revenue-growth.ts",
     "verify:money-only-on-revenue": "tsx scripts/verify-money-only-on-revenue.ts",
     "verify:media-stream": "tsx scripts/verify-media-stream.ts",
