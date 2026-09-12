@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resetStripeClient } from "@/lib/stripe";
-import { getConfigs } from "@/lib/site-config";
+import { getConfigs, resolveSettingValue } from "@/lib/site-config";
 
 const KEYS = [
   "support_email",
@@ -59,26 +59,6 @@ const SECRET_KEYS = new Set<SettingKey>([
 function maskSecret(value: string): { set: boolean; last4?: string } {
   if (!value) return { set: false };
   return { set: true, last4: value.slice(-4) };
-}
-
-// Pure — no DB access, no async. Given a key and whatever getConfigs() resolved
-// for it (`null` when the SiteConfig row doesn't exist), returns the same value
-// the old per-key getConfig(key) returned: the DB value when present, else the
-// key's env-var fallback (7 of the 32 keys have one), else "". Exported only for
-// scripts/verify-site-config-batch.ts (same pattern as classifyJobError exported
-// from admin/insights/route.ts for its own verify script).
-export function resolveSettingValue(key: SettingKey, dbValue: string | null): string {
-  if (dbValue != null) return dbValue;
-  const envMap: Partial<Record<SettingKey, string | undefined>> = {
-    support_email: process.env.SUPPORT_EMAIL,
-    stripe_publishable_key: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
-    stripe_secret_key: process.env.STRIPE_SECRET_KEY,
-    stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET,
-    stripe_price_pro: process.env.STRIPE_PRICE_PRO_MONTHLY,
-    stripe_price_business: process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
-    server_gemini_key: process.env.LOANWORD_MINER_GEMINI_KEY,
-  };
-  return envMap[key] ?? "";
 }
 
 async function setConfig(key: SettingKey, value: string) {

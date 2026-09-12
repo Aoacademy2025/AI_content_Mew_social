@@ -6,9 +6,10 @@
 //  (b) the admin/settings route's per-key env-var fallback behaviour is UNCHANGED
 //      after it switches from Promise.all(KEYS.map(getConfig)) to one
 //      getConfigs(KEYS) call — tested via the extracted pure resolver
-//      `resolveSettingValue` exported from src/app/api/admin/settings/route.ts
-//      (same pattern already used by scripts/verify-error-classify.ts importing
-//      classifyJobError from admin/insights/route.ts).
+//      `resolveSettingValue`, which lives in src/lib/site-config.ts (NOT in
+//      route.ts — a Next.js route file may export only route handlers/segment
+//      config; the build's `.next/types` route-shape check, stricter than
+//      plain `tsc`, rejects any other export).
 //
 // Self-contained: spins a throwaway SQLite DB, pushes the real schema.prisma.
 // Query counting: installs a PrismaClient with query-event logging as the
@@ -49,7 +50,7 @@ async function main() {
     queryCount++;
   });
 
-  const { getConfigs } = await import("../src/lib/site-config");
+  const { getConfigs, resolveSettingValue } = await import("../src/lib/site-config");
   const { prisma } = await import("../src/lib/prisma");
 
   // ── (a) exactly one SELECT for 32 keys, unknown -> null ─────────────────
@@ -80,8 +81,6 @@ async function main() {
   }
 
   // ── (b) admin/settings route fallback resolver is unchanged ─────────────
-  const { resolveSettingValue } = await import("../src/app/api/admin/settings/route");
-
   process.env.SUPPORT_EMAIL = "fallback@example.com";
   ok(
     resolveSettingValue("support_email", null) === "fallback@example.com",
