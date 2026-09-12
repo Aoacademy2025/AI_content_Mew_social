@@ -222,6 +222,9 @@ jobs:
       - name: Verify Revenue & Growth cash truth and meeting dashboard
         run: npm run verify:revenue-growth
 
+      - name: Verify money renders only on /admin/revenue
+        run: npm run verify:money-only-on-revenue
+
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 
