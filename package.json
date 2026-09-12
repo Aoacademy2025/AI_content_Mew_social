@@ -18,6 +18,8 @@
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
     "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
+    "verify:job-failure-class": "tsx scripts/verify-job-failure-class.ts",
+    "verify:admin-trends": "tsx scripts/verify-admin-trends.ts",
     "verify:revenue-growth": "tsx scripts/verify-revenue-growth.ts",
     "verify:media-stream": "tsx scripts/verify-media-stream.ts",
     "verify:media-storage": "tsx scripts/verify-media-stream.ts && tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts && tsx scripts/verify-media-local-missing-reconcile.ts && tsx scripts/verify-media-remote-gc.ts && tsx scripts/verify-media-r2-orphan-gc.ts",
