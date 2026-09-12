@@ -67,6 +67,12 @@ export async function GET() {
       lapsedPayers: cohorts.lapsedPayers,
       payingCanceling: cohorts.payingCanceling,
       mrrAtRisk: cohorts.mrrAtRisk,
+      // Task C8 — "รอเก็บเงินครั้งแรก": committed-trialing customers, additive, never
+      // folded into payingTotal/mrr above (src/lib/revenue-cohorts.ts).
+      committedTrialingUsers: cohorts.committedTrialing.users,
+      committedTrialingExpectedMonthlyThb: cohorts.committedTrialing.expectedMonthlyThb,
+      committedTrialingFirstChargeEarliest: cohorts.committedTrialing.firstChargeDates.earliest,
+      committedTrialingFirstChargeLatest: cohorts.committedTrialing.firstChargeDates.latest,
     });
   } catch (error) {
     return apiError({ route: "admin/stats", error });

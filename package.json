@@ -30,6 +30,7 @@
     "verify:admin-number-mrr-actual-cash": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-mrr-actual-cash.ts",
     "verify:admin-number-bangkok-day": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-bangkok-day.ts",
     "verify:admin-number-ledger-source": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-ledger-source.ts",
+    "verify:admin-number-committed-trialing": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-committed-trialing.ts",
     "verify:media-stream": "tsx scripts/verify-media-stream.ts",
     "verify:media-storage": "tsx scripts/verify-media-stream.ts && tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts && tsx scripts/verify-media-local-missing-reconcile.ts && tsx scripts/verify-media-remote-gc.ts && tsx scripts/verify-media-r2-orphan-gc.ts",
     "smoke:r2-staging": "tsx scripts/smoke-r2-staging.ts",

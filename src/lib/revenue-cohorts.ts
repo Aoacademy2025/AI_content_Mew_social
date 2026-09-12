@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { getPlanConfig } from "@/lib/plan-config";
+import { bangkokDate } from "@/lib/bangkok-day";
 
 /**
  * Revenue cohorts — the single honest answer to "who actually pays us cash, and how much".
@@ -45,6 +46,9 @@ export type CohortUser = {
   usageLimit?: number;
   usagePeriodStartedAt?: Date | null;
   email?: string;
+  /** Task C8: committed-trialing users exclude suspended accounts, same as the
+   *  internal-team exclusion already applied via `internalEmailPattern`. */
+  suspended?: boolean;
 };
 
 export type TierPrices = { pro: number; business: number };
@@ -147,10 +151,49 @@ export type RevenueCohorts = {
   free: number;
   /** Active paying customers — the honest break-even numerator (was: subStatus="active" only). */
   breakEvenSubs: number;
+  /**
+   * Task C8 — "รอเก็บเงินครั้งแรก": customers who have CONVERTED (a live Stripe
+   * subscription, card on file) but whose subscription is still `trialing`, so
+   * Stripe has not charged them yet (see `src/lib/preserve-trial.ts` — the ฿0
+   * `trial_preserved` Payment row is the ledger marker for exactly this state).
+   * They are committed, not paying: never added to `payingTotal`, `mrr`,
+   * `prepaidMrr`, `deferredRevenue`, cash, or any other figure above — this is
+   * purely an EXPECTATION for Mew to watch, kept in its own bucket.
+   */
+  committedTrialing: {
+    /** subStatus="trialing" AND a live stripeSubscriptionId AND plan PRO/BUSINESS,
+     *  excluding suspended/internal-team accounts and anyone who already has a
+     *  real (>฿0) plan payment — those are already counted in `payingTotal`. */
+    users: number;
+    /** Σ monthly-equivalent of each user's CURRENT plan-config list price — an
+     *  expectation, priced at what Stripe will charge at trial end, never at
+     *  what was actually paid (nothing has been paid yet). Annual uses the same
+     *  `× ANNUAL_PRICE_MONTHS / 12` convention as the rest of this file. */
+    expectedMonthlyThb: number;
+    /** Asia/Bangkok calendar dates (`YYYY-MM-DD`) of the earliest/latest
+     *  `planExpiresAt` among committed-trialing users — `planExpiresAt` is the
+     *  column the checkout writes with Stripe's `current_period_end`, which for
+     *  a trialing subscription IS the trial end / first-charge date (see
+     *  `src/lib/checkout-plan-activation.ts` and the webhook's `entitlementExpiresAt`
+     *  comment). `null` when there are no committed-trialing users. */
+    firstChargeDates: { earliest: string | null; latest: string | null };
+  };
 };
 
 function isAnnual(billingPeriod: string | null): boolean {
   return billingPeriod === "annual";
+}
+/**
+ * Task C8 ONLY: monthly-equivalent of a tier's list price, for pricing the
+ * "รอเก็บเงินครั้งแรก" EXPECTATION of committed-trialing users — nobody in that
+ * bucket has paid anything yet, so there is no actual amount to read the way
+ * `monthlyRevenueByUser` does for real MRR. Must never be called for anyone
+ * with cash evidence; MRR stays priced from `monthlyRevenueByUser` alone
+ * (fix 2, 2026-09-12 — a list-price fallback there invented ฿6,389.33/month).
+ */
+function expectedMonthlyListPrice(listPrices: TierPrices, plan: string, billingPeriod: string | null): number {
+  const listPrice = plan === "BUSINESS" ? listPrices.business : listPrices.pro;
+  return isAnnual(billingPeriod) ? (listPrice * ANNUAL_PRICE_MONTHS) / 12 : listPrice;
 }
 function bundleMonthlyEquiv(amountThb: number | null | undefined, billingPeriod: string | null | undefined): number {
   const amount = typeof amountThb === "number" && Number.isFinite(amountThb) ? amountThb : 0;
@@ -242,15 +285,17 @@ export function summarizePlanCash(rows: readonly PlanCashRow[]): PlanCashSummary
  * Pure cohort computation — no DB access, fully testable.
  * @param users        Every user row (minimal fields, incl. id).
  * @param paidUserIds  Set of user ids that have ≥1 PAID Payment above ฿0 (the cash ground truth).
- * @param _listPrices  Monthly tier LIST prices (฿). Deliberately unused: MRR is priced from
- *                     `monthlyRevenueByUser` alone. Kept in the signature so existing callers
- *                     compile unchanged; delete it only together with every call site.
+ * @param listPrices   Monthly tier LIST prices (฿). NEVER used to price MRR — that fallback
+ *                     invented ฿6,389.33/month of fiction (fix 2, 2026-09-12) and
+ *                     `monthlyRevenueByUser` is the only source of real revenue below. Its one
+ *                     legitimate use is Task C8's `committedTrialing.expectedMonthlyThb`, an
+ *                     EXPECTATION for customers who have not paid anything yet.
  * @param now          Reference time.
  */
 export function computeRevenueCohorts(
   users: CohortUser[],
   paidUserIds: Set<string>,
-  _listPrices: TierPrices,
+  listPrices: TierPrices,
   now: Date = new Date(),
   opts: {
     couponUserIds?: Set<string>;
@@ -308,12 +353,39 @@ export function computeRevenueCohorts(
   let directPayingTotal = 0;
   let bundleActive = 0;
   let payingTotal = 0;
+  let committedTrialingUsers = 0;
+  let committedTrialingExpectedMonthly = 0;
+  let committedTrialingEarliest: string | null = null;
+  let committedTrialingLatest: string | null = null;
 
   for (const u of users) {
     const cashPaid = paidUserIds.has(u.id);
     const bundleCashEvidence = typeof u.bundleAmountThb === "number" && u.bundleAmountThb > 0;
     const isTeam = !!u.email && u.email.toLowerCase().includes(internalPattern);
     if (isTeam) internalTeam++;
+
+    // Task C8 — "รอเก็บเงินครั้งแรก": raw field predicate, independent of the
+    // entitlement branches below (a committed-trialing account currently lands
+    // in `compedPaid` via `entitledPaid`, and this must not change that — see
+    // the module doc on `committedTrialing`). Same suspended/internal-team
+    // exclusion as the rest of this cohort; anyone with real cash evidence is
+    // already counted in `payingTotal` and must not double-count here.
+    if (
+      u.subStatus === "trialing"
+      && !!u.stripeSubscriptionId
+      && (u.plan === "PRO" || u.plan === "BUSINESS")
+      && !u.suspended
+      && !isTeam
+      && !cashPaid
+    ) {
+      committedTrialingUsers++;
+      committedTrialingExpectedMonthly += expectedMonthlyListPrice(listPrices, u.plan, u.billingPeriod);
+      if (u.planExpiresAt) {
+        const chargeDate = bangkokDate(u.planExpiresAt);
+        if (!committedTrialingEarliest || chargeDate < committedTrialingEarliest) committedTrialingEarliest = chargeDate;
+        if (!committedTrialingLatest || chargeDate > committedTrialingLatest) committedTrialingLatest = chargeDate;
+      }
+    }
     const source = classifyEntitlement(
       {
         id: u.id, email: u.email ?? "", role: u.role, plan: u.plan,
@@ -497,6 +569,11 @@ export function computeRevenueCohorts(
     expiredBundle,
     free,
     breakEvenSubs: payingTotal,
+    committedTrialing: {
+      users: committedTrialingUsers,
+      expectedMonthlyThb: committedTrialingExpectedMonthly,
+      firstChargeDates: { earliest: committedTrialingEarliest, latest: committedTrialingLatest },
+    },
   };
 }
 
@@ -508,7 +585,7 @@ export async function getRevenueCohorts(now: Date = new Date()): Promise<Revenue
         id: true, email: true, plan: true, role: true, subStatus: true, billingPeriod: true,
         planExpiresAt: true, trialStartedAt: true, trialEndsAt: true, stripeSubscriptionId: true,
         bundleAccessExpiresAt: true, bundleStatus: true, bundlePrimary: true,
-        bundleBillingPeriod: true, bundleAmountThb: true,
+        bundleBillingPeriod: true, bundleAmountThb: true, suspended: true,
       },
     }),
     // Every PAID payment — the cash ground truth (all-time). Not `distinct` any more: the
