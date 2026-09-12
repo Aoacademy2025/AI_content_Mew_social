@@ -276,7 +276,7 @@ module.exports = {
       name: "north-star-snapshot",
       cwd: "/var/www/ai-content",
       script: "scripts/north-star-snapshot.js",
-      cron_restart: "15 0 * * *", // daily 00:15 Asia/Bangkok — counts-only MAPC history
+      cron_restart: "15 17 * * *", // daily 00:15 Asia/Bangkok (= 17:15 UTC; the box runs UTC) — counts-only MAPC history
       autorestart: false,
       watch: false,
       env: {
