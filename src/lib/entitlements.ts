@@ -230,6 +230,16 @@ function entitlementUserFields(user: User): SyncedUser {
  * nothing else; it is forwarded to the two helpers below so they can skip their
  * own opening read too, and every remaining query and decision is unchanged.
  * A row belonging to another user is ignored and the read happens as before.
+ *
+ * Every return carries `rowRewritten`: true when THIS call wrote the `User` row,
+ * by any step — including a Bundle activation, which `changed` deliberately does
+ * NOT report (`changed` means "the plan was reverted to FREE", and
+ * `revertExpiredEntitlements` counts it). A caller holding its own copy of the
+ * row MUST re-read when `rowRewritten` is true or it serves a stale plan for the
+ * rest of the request; `getCurrentUserForClerkId` does exactly that.
+ *
+ * `user` on the returned object is the row as this function last saw it: on the
+ * paths that write nothing, the in-memory copy rather than a fresh `SELECT`.
  */
 export async function syncUserEntitlement(userId: string, now: Date = new Date(), preloaded?: User) {
   const reusable = preloaded && preloaded.id === userId ? preloaded : undefined;
@@ -326,6 +336,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         expiresAt: paidEquivalent.expiresAt,
       },
       changed,
+      rowRewritten: bundleSync.changed || changed,
     };
   }
 
@@ -349,6 +360,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         expiresAt: user.planExpiresAt,
       },
       changed: false,
+      rowRewritten: bundleSync.changed,
     };
   }
   const activeTrial = Boolean(user.trialEndsAt && user.trialEndsAt > now);
@@ -356,7 +368,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   // evidence is drift, not a permanent entitlement. Active Conversion Trial
   // remains the only label-backed exception.
   if (decision.action !== "DOWNGRADE" && (!isPaidPlan(user.plan) || activeTrial)) {
-    return { user, decision, changed: false };
+    return { user, decision, changed: false, rowRewritten: bundleSync.changed };
   }
 
   // Each branch carries its SQL filter and the same test against the row we
@@ -404,7 +416,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
     // written, no notification fires, `changed` is false. The only direction
     // this can err in is leaving a paid plan alone for one more request, which
     // the next request (and the revert cron) re-evaluates from fresh state.
-    return { user, decision, changed: false };
+    return { user, decision, changed: false, rowRewritten: bundleSync.changed };
   }
 
   // Read the trial meter BEFORE the downgrade: the FREE usage window below resets
@@ -463,7 +475,12 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
     where: { id: userId },
     select: ENTITLEMENT_USER_SELECT,
   });
-  return { user: updated ?? user, decision, changed: res.count === 1 };
+  return {
+    user: updated ?? user,
+    decision,
+    changed: res.count === 1,
+    rowRewritten: bundleSync.changed || res.count === 1,
+  };
 }
 
 export async function revertExpiredEntitlements(now: Date = new Date()) {
