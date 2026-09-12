@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resetStripeClient } from "@/lib/stripe";
+import { getConfigs, resolveSettingValue } from "@/lib/site-config";
 
 const KEYS = [
   "support_email",
@@ -60,22 +61,6 @@ function maskSecret(value: string): { set: boolean; last4?: string } {
   return { set: true, last4: value.slice(-4) };
 }
 
-async function getConfig(key: SettingKey): Promise<string> {
-  const row = await prisma.siteConfig.findUnique({ where: { key } });
-  if (row) return row.value;
-  // fallback to env
-  const envMap: Partial<Record<SettingKey, string | undefined>> = {
-    support_email: process.env.SUPPORT_EMAIL,
-    stripe_publishable_key: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
-    stripe_secret_key: process.env.STRIPE_SECRET_KEY,
-    stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET,
-    stripe_price_pro: process.env.STRIPE_PRICE_PRO_MONTHLY,
-    stripe_price_business: process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
-    server_gemini_key: process.env.LOANWORD_MINER_GEMINI_KEY,
-  };
-  return envMap[key] ?? "";
-}
-
 async function setConfig(key: SettingKey, value: string) {
   await prisma.siteConfig.upsert({
     where: { key },
@@ -106,9 +91,10 @@ export async function GET() {
     const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    const results = await Promise.all(KEYS.map(async k => [k, await getConfig(k)] as const));
+    const dbValues = await getConfigs(KEYS);
     const settings: Record<string, unknown> = {};
-    for (const [k, v] of results) {
+    for (const k of KEYS) {
+      const v = resolveSettingValue(k, dbValues[k]);
       settings[k] = SECRET_KEYS.has(k) ? maskSecret(v) : v;
     }
 

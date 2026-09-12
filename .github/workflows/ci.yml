@@ -123,6 +123,9 @@ jobs:
       - name: Verify /pricing default checkout selection (#300)
         run: npm run verify:pricing-defaults
 
+      - name: Verify SiteConfig batch read (admin settings, one query)
+        run: npm run verify:site-config-batch
+
       - name: Verify public pricing matches checkout and entitlements
         run: npm run verify:marketing-pricing
 
