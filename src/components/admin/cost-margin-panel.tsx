@@ -419,8 +419,14 @@ export default function CostMarginPanel({ days }: { days: number }) {
 
               {/* ── CASH collected in window, by type ─────────────────────────────── */}
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">รายการรับเงินใน Studio · ช่วง {windowLabel}</h3>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    รายการรับเงินใน Studio · บัญชีภายใน (ledger) · ช่วง {windowLabel}
+                    <MetricHelp label="บัญชีภายใน (ledger)">
+                      รวมจากตาราง Payment ในระบบเราเอง ไม่ใช่ยอดจาก Stripe — ยังไม่หักเงินคืน และนับแถวที่บันทึกไว้ ฿0 ด้วย
+                      ใช้ดูว่าระบบเราบันทึกอะไรไว้บ้างในช่วงนี้ ถ้าต้องการยอดเงินจริง ให้ดูที่หน้า /admin/revenue ซึ่งอ่านจาก Stripe โดยตรง
+                    </MetricHelp>
+                  </h3>
                   <span className="text-lg font-bold text-emerald-300">{fmtBaht(cash.total)}</span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -438,7 +444,9 @@ export default function CostMarginPanel({ days }: { days: number }) {
                   </div>
                 </div>
                 <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-                  ใช้ดูรายการตามช่วงเวลาที่เลือก ส่วน “รายได้รวมสะสม” ด้านบนดึงเงินรับจริงตลอดอายุธุรกิจจาก Stripe ทั้ง Studio และ Bundle รวมรายการนอก Stripe ที่บันทึกไว้ และหักเงินคืนแล้ว
+                  ตัวเลขกล่องนี้มาจาก <span className="text-slate-400">บัญชีภายใน (ledger)</span> ของเราเอง ใช้ดูรายการตามช่วงเวลาที่เลือกเท่านั้น —
+                  ไม่ใช่ยอดเงินจริง ยอดเงินจริงอ่านจาก Stripe อยู่ที่หน้า <span className="text-slate-400">/admin/revenue</span> และที่
+                  “รายได้รวมสะสม” ด้านบน ซึ่งรวม Studio และ Bundle รวมรายการนอก Stripe ที่บันทึกไว้ และหักเงินคืนแล้ว
                 </p>
               </div>
 
