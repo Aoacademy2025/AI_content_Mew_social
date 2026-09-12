@@ -156,10 +156,14 @@ export async function getAdminTrends(days: 14 | 30, now: Date = new Date()): Pro
         AND "parentJobId" IS NULL
         AND COALESCE("finishedAt", "createdAt") >= ${previousStart}
     `),
+    // จ่ายจริง = a PAID plan payment ABOVE ฿0, the definition Task C5a fixed on /admin/revenue. A
+    // trial conversion and a 100 % coupon both write a PAID row for `amount` 0 satang; counting
+    // those made 37 people look like payers in 30 days on prod. `amount` is in the WHERE clause
+    // only — this card counts payments and renders no money at all (ADR 0062).
     prisma.$queryRaw<DayCountRow[]>(Prisma.sql`
       SELECT date("paidAt" / 1000, 'unixepoch', '+7 hours') AS d, COUNT(*) AS c
       FROM "Payment"
-      WHERE "status" = 'PAID' AND "paidAt" >= ${previousStart}
+      WHERE "status" = 'PAID' AND "amount" > 0 AND "paidAt" >= ${previousStart}
       GROUP BY d
     `),
     prisma.notification.count({ where: { type: "ERROR_SYSTEM", createdAt: { gte: currentStart } } }),

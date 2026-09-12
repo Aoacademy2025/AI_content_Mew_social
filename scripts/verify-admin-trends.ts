@@ -6,7 +6,7 @@
 //   2026-09-10T16:59:00Z → Bangkok 2026-09-10 23:59 → day "2026-09-10"
 //   2026-09-10T17:00:00Z → Bangkok 2026-09-11 00:00 → day "2026-09-11"
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -61,9 +61,9 @@ async function main() {
     prisma.videoJob.create({
       data: { id, userId: OWNER, status, inputJson: "{}", finishedAt: at, errorMessage },
     });
-  const payment = (id: string, paidAt: Date) =>
+  const payment = (id: string, paidAt: Date, amount = 59_900) =>
     prisma.payment.create({
-      data: { id, userId: OWNER, stripeSessionId: id, plan: "PRO", amount: 1, status: "PAID", paidAt },
+      data: { id, userId: OWNER, stripeSessionId: id, plan: "PRO", amount, status: "PAID", paidAt },
     });
   const dayOf = (trends: Awaited<ReturnType<typeof getAdminTrends>>, date: string) =>
     trends.series.find((d) => d.date === date);
@@ -130,6 +130,38 @@ async function main() {
   const d = await getAdminTrends(30, NOW);
   check(d.totals.current.failedSystem === 1, "(d) a failed job with no finishedAt is still counted");
   check(dayOf(d, "2026-09-09")?.failedSystem === 1, "(d) it falls back to updatedAt for its Bangkok day");
+
+  // ---- (d2) จ่ายจริง means money actually changed hands (Task C7 fix 2) ------------------------
+  // C5a defined จ่ายจริง as a PAID plan payment ABOVE ฿0. The trend card counted every PAID row, so
+  // the ฿0 rows a trial conversion or a 100 % coupon writes were counted as people paying: 37 in
+  // 30 days on prod. The card is a COUNT of payments, never an amount (ADR 0062), so `amount` only
+  // ever appears in the WHERE clause.
+  await reset();
+  await Promise.all([
+    payment("cash-09", MID_DAY_09, 59_900),   // a real charge
+    payment("cash-10", LATE_DAY_10, 1),       // ฿0.01 — still money
+    payment("free-09", MID_DAY_09, 0),        // trial conversion / 100 % coupon
+    payment("free-10", LATE_DAY_10, 0),
+  ]);
+
+  const d2 = await getAdminTrends(30, NOW);
+  check(d2.totals.current.paidPayments === 2,
+    `(d2) จ่ายจริง counts only payments above ฿0 (${d2.totals.current.paidPayments} of 4 PAID rows)`);
+  check(dayOf(d2, "2026-09-09")?.paidPayments === 1 && dayOf(d2, "2026-09-10")?.paidPayments === 1,
+    "(d2) the ฿0 rows are dropped on their own Bangkok day, not shifted to another one");
+
+  await reset();
+  await payment("free-only", MID_DAY_09, 0);
+  const d2b = await getAdminTrends(30, NOW);
+  check(d2b.totals.current.paidPayments === 0,
+    "(d2) a day of nothing but ฿0 PAID rows reads zero, not one payer");
+
+  const trendsSource = readFileSync("src/lib/admin-trends.server.ts", "utf8");
+  check(/"amount"\s*>\s*0/.test(trendsSource),
+    "(d2) the paid-payments query filters on the amount column itself, in SQL");
+  const cardSource = readFileSync("src/app/(dashboard)/admin/_components/overview/TrendCards.tsx", "utf8");
+  check(/ยอดมากกว่า 0/.test(cardSource),
+    "(d2) the card's footnote says which payments it counts");
 
   // ---- (e) shape: zero-fill, order, previous period, coercion ---------------------------------
   await reset();
