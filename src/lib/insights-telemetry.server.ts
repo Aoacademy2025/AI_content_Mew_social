@@ -25,8 +25,22 @@
  *
  * Keep CONSUMED_TELEMETRY_FILTER in step with the summarizers in the insights route: a row that
  * matches none of these predicates is never inspected, and a new summarizer that reads a row this
- * filter drops would silently see zero. scripts/verify-admin-number-telemetry-window.ts pins the
- * families that exist today.
+ * filter drops would silently see zero. It is the DECLARED SPEC of that read; since C7 the statement
+ * that actually runs is CONSUMED_TELEMETRY_SQL, and assertion (j) of
+ * scripts/verify-admin-number-telemetry-window.ts runs BOTH over the same 100,002-row fixture and
+ * fails unless they return the same rows with the same values and the same types. Edit one and the
+ * other must move with it — the test says so out loud instead of a number moving on /admin/insights.
+ *
+ * Task C7 fix 1 — the COST of that read, not its meaning. Reading the whole window made `days=30`
+ * 2,738 ms warm on prod (826 ms with the old 20,000-row sample), and measured on a prod-shaped
+ * 100,000-row fixture the dominant term is not SQLite and not the summarizers: it is the Prisma
+ * query engine turning ~74,000 rows into ~74,000 JS objects, 6.3 µs a row. The same rows, same
+ * columns, same order, read with a parameterised `$queryRaw` and mapped by hand cost 3.0 µs a row —
+ * the window read drops from 398 ms to 235 ms and the route from 469 ms to ~300 ms, with NOT ONE
+ * summarizer, predicate or number touched. Server-side aggregation was measured too and is worse:
+ * four GROUP BY passes over the same window cost ~250 ms of SQLite time to replace ~165 ms of
+ * hydration, and they would put a second copy of the Job Failure Class taxonomy in SQL. See the
+ * C7 report for the numbers.
  */
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
@@ -38,6 +52,11 @@ import { prisma } from "./prisma";
  */
 export const TELEMETRY_ROW_CAP = 120_000;
 
+/**
+ * The columns the summarizers read — the declared spec for the raw read below, and the `select` the
+ * verify script's query-builder twin uses to prove the two agree field by field. "What
+ * /admin/insights reads from a telemetry row" stays stated in one place.
+ */
 export const INSIGHTS_TELEMETRY_SELECT = {
   name: true,
   category: true,
@@ -105,6 +124,75 @@ export const CONSUMED_TELEMETRY_FILTER: Prisma.TelemetryEventWhereInput = {
   ],
 };
 
+/**
+ * `CONSUMED_TELEMETRY_FILTER` as SQL, because the read above is a `$queryRaw` (see the C7 note at the
+ * top of this file). It is the filter, clause for clause, in the form Prisma itself generates:
+ * `contains` → `LIKE '%x%'`, `startsWith` → `LIKE 'x%'` with NO `ESCAPE`, so `_` stays the wildcard
+ * it has always been here and this read keeps matching exactly the rows the query builder matched.
+ * Change one and change the other: assertion (j) of
+ * scripts/verify-admin-number-telemetry-window.ts runs the query-builder filter and this statement
+ * over the same fixture — including rows built to catch the differences (`editorXopened`,
+ * `EDITOR_opened`, `WEB_VITAL`, a `status` of `ERROR`) — and fails on the first row, field or type
+ * where they disagree.
+ */
+const CONSUMED_TELEMETRY_SQL = Prisma.sql`(
+  "category" = 'error'
+  OR "status" = 'error'
+  OR "name" LIKE '%error%'
+  OR "name" LIKE '%fail%'
+  OR "name" LIKE 'editor_%'
+  OR "name" LIKE 'pipeline_%'
+  OR "name" LIKE 'fetch_stock_server_%'
+  OR "name" LIKE 'render_server_%'
+  OR "name" LIKE 'video_playback_%'
+  OR "name" LIKE 'managed_stock_%'
+  OR "name" = 'web_vital'
+  OR "path" = '/video-editor'
+  OR "step" IS NOT NULL
+)`;
+
+/**
+ * What SQLite hands back through `$queryRaw`: TEXT as string, INTEGER as number or bigint (the raw
+ * client widens large integers), REAL as number, and a Prisma `DateTime` as the epoch milliseconds
+ * it is stored as. `toInsightsTelemetryRow` restores exactly the shape `findMany` returned — a
+ * bigint reaching a summarizer would poison every percentile it touches.
+ */
+type RawTelemetryRow = {
+  name: string;
+  category: string;
+  source: string;
+  sessionId: string | null;
+  userId: string | null;
+  step: string | null;
+  status: string | null;
+  durationMs: number | bigint | null;
+  value: number | bigint | null;
+  path: string | null;
+  properties: string | null;
+  createdAt: number | bigint | string | Date;
+};
+
+function toInsightsTelemetryRow(row: RawTelemetryRow): InsightsTelemetryRow {
+  return {
+    name: row.name,
+    category: row.category,
+    source: row.source,
+    sessionId: row.sessionId,
+    userId: row.userId,
+    step: row.step,
+    status: row.status,
+    durationMs: row.durationMs === null ? null : Number(row.durationMs),
+    value: row.value === null ? null : Number(row.value),
+    path: row.path,
+    properties: row.properties,
+    // Epoch milliseconds today. A future driver returning an ISO string must not become
+    // `new Date(NaN)`, which would silently mis-bucket every Bangkok day and every "newest first".
+    createdAt: row.createdAt instanceof Date
+      ? row.createdAt
+      : new Date(typeof row.createdAt === "string" ? row.createdAt : Number(row.createdAt)),
+  };
+}
+
 export type TelemetryWindow = { gte: Date; lt?: Date };
 
 function windowWhere(range: TelemetryWindow): Prisma.TelemetryEventWhereInput {
@@ -119,12 +207,16 @@ export async function readInsightsTelemetryRows(
   range: TelemetryWindow,
   cap: number = TELEMETRY_ROW_CAP,
 ): Promise<{ rows: InsightsTelemetryRow[]; truncated: boolean }> {
-  const rows = await prisma.telemetryEvent.findMany({
-    where: { ...windowWhere(range), ...CONSUMED_TELEMETRY_FILTER },
-    select: INSIGHTS_TELEMETRY_SELECT,
-    orderBy: { createdAt: "desc" },
-    take: cap,
-  });
+  const upper = range.lt ? Prisma.sql`AND "createdAt" < ${range.lt}` : Prisma.empty;
+  const raw = await prisma.$queryRaw<RawTelemetryRow[]>(Prisma.sql`
+    SELECT "name", "category", "source", "sessionId", "userId", "step", "status",
+           "durationMs", "value", "path", "properties", "createdAt"
+    FROM "TelemetryEvent"
+    WHERE "createdAt" >= ${range.gte} ${upper} AND ${CONSUMED_TELEMETRY_SQL}
+    ORDER BY "createdAt" DESC
+    LIMIT ${cap}
+  `);
+  const rows = raw.map(toInsightsTelemetryRow);
   return { rows, truncated: rows.length >= cap };
 }
 

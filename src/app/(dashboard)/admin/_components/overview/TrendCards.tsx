@@ -126,7 +126,7 @@ export function TrendCards({ trends, days, onDaysChange }: TrendCardsProps) {
           total={totals.current.paidPayments}
           prevTotal={totals.previous.paidPayments}
           days={days}
-          footnote="นับจำนวนครั้งที่จ่าย ไม่ใช่ยอดเงิน — ยอดเงินดูที่ รายได้"
+          footnote="นับจำนวนครั้งที่จ่าย (เฉพาะยอดมากกว่า 0) ไม่ใช่ยอดเงิน — ยอดเงินดูที่ รายได้"
         >
           <TrendBarChart
             dates={dates}
