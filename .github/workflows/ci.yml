@@ -213,6 +213,12 @@ jobs:
       - name: Verify Admin Insights revenue clarity
         run: npm run verify:admin-insights-revenue
 
+      - name: Verify the Job Failure Class taxonomy
+        run: npm run verify:job-failure-class
+
+      - name: Verify the admin daily trends land on Asia/Bangkok days
+        run: npm run verify:admin-trends
+
       - name: Verify Revenue & Growth cash truth and meeting dashboard
         run: npm run verify:revenue-growth
 
