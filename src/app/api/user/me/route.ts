@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { syncUsageWindow } from "@/lib/usage-limits";
@@ -23,32 +22,31 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: authUser.id },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        plan: true,
-        usageCount: true,
-        usageLimit: true,
-        usagePeriodStartedAt: true,
-        avatar: true,
-        cancelAtPeriodEnd: true,
-        cancelAt: true,
-        trialStartedAt: true,
-        trialEndsAt: true,
-        subStatus: true,
-        stripeSubscriptionId: true,
-        billingPeriod: true,
-        planExpiresAt: true,
-      } as any,
-    });
-
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    // `authUser` is the row `getCurrentUser()` just read, and it carries every
+    // column. Projecting it here instead of re-`SELECT`ing the same row (A3
+    // §A3.2 step 2) must keep the response to EXACTLY the fields this route has
+    // always selected — the list below is that `select`, field for field.
+    // Nothing outside it may be added: the full row also holds the account's
+    // provider API keys, and `safeUser` below is spread straight into the body.
+    const user = {
+      id: authUser.id,
+      name: authUser.name,
+      email: authUser.email,
+      role: authUser.role,
+      plan: authUser.plan,
+      usageCount: authUser.usageCount,
+      usageLimit: authUser.usageLimit,
+      usagePeriodStartedAt: authUser.usagePeriodStartedAt,
+      avatar: authUser.avatar,
+      cancelAtPeriodEnd: authUser.cancelAtPeriodEnd,
+      cancelAt: authUser.cancelAt,
+      trialStartedAt: authUser.trialStartedAt,
+      trialEndsAt: authUser.trialEndsAt,
+      subStatus: authUser.subStatus,
+      stripeSubscriptionId: authUser.stripeSubscriptionId,
+      billingPeriod: authUser.billingPeriod,
+      planExpiresAt: authUser.planExpiresAt,
+    };
 
     const entitlement = classifyEntitlement(authUser);
     const limits = limitsForPlan((user as any).plan ?? "FREE");

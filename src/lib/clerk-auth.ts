@@ -102,8 +102,18 @@ async function getCurrentUserForClerkId(userId: string): Promise<User | null> {
     if (user.role !== "ADMIN" && emailQualifiesForAdmin(user.email)) {
       user = await prisma.user.update({ where: { id: user.id }, data: { role: "ADMIN" } });
     }
-    const synced = await syncUserEntitlement(user.id);
-    if (synced?.changed) {
+    // `user` is the row this request just read (and, directly above, just wrote):
+    // hand it down so the entitlement chain stops re-SELECTing the same row three
+    // more times — A3 §A3.2, auth prefix 8 statements → 5. Nothing else changes;
+    // every other query and every decision in that chain is untouched.
+    const synced = await syncUserEntitlement(user.id, undefined, user);
+    // Re-read on ANY write the sync made, not only on a plan revert (`changed`).
+    // A Bundle activation rewrites the row while reporting `changed: false`, and
+    // the row returned here is now what the WHOLE request sees — `/api/user/me`
+    // included, since it no longer re-selects the row for itself. `rowRewritten`
+    // is false on the steady-state path, so this costs no query when nothing was
+    // written.
+    if (synced?.changed || synced?.rowRewritten) {
       return prisma.user.findUnique({ where: { id: user.id } }) as Promise<User | null>;
     }
     return demoteLapsedPaidPlan(user); // STAB-4 backstop (no-op unless the sync above missed a lapse)
@@ -129,8 +139,9 @@ async function getCurrentUserForClerkId(userId: string): Promise<User | null> {
         ...(isAdminEmail && user.role !== "ADMIN" ? { role: "ADMIN" } : {}),
       },
     });
-    const synced = await syncUserEntitlement(linked.id);
-    if (synced?.changed) {
+    // Same reuse as the fast path: `linked` is the row the update above returned.
+    const synced = await syncUserEntitlement(linked.id, undefined, linked);
+    if (synced?.changed || synced?.rowRewritten) { // same reason as the fast path
       return prisma.user.findUnique({ where: { id: linked.id } }) as Promise<User | null>;
     }
     return demoteLapsedPaidPlan(linked); // STAB-4 backstop (no-op unless the sync above missed a lapse)

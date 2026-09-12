@@ -1,3 +1,4 @@
+import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resetMonthlyGranted } from "@/lib/credits";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
@@ -94,27 +95,56 @@ function independentlyPaid(user: {
   return user.plan !== "FREE" && !user.bundlePrimary && !user.trialEndsAt && !user.planExpiresAt;
 }
 
-/** Copy the latest email-backed Bundle state onto a Studio user exactly once per event. */
+/** Exactly the columns this function reads — shared by both read paths. */
+const BUNDLE_SYNC_USER_SELECT = {
+  id: true,
+  email: true,
+  plan: true,
+  subStatus: true,
+  trialEndsAt: true,
+  planExpiresAt: true,
+  bundlePrimary: true,
+  bundleLastEventId: true,
+  bundleQuotaGrantId: true,
+  bundleCreditsGrantId: true,
+} as const;
+
+type BundleSyncUser = { [K in keyof typeof BUNDLE_SYNC_USER_SELECT]: User[K] };
+
+/** Narrow a full row to exactly the projection above — same shape, no extra columns. */
+function bundleSyncUserFields(user: User): BundleSyncUser {
+  return {
+    id: user.id,
+    email: user.email,
+    plan: user.plan,
+    subStatus: user.subStatus,
+    trialEndsAt: user.trialEndsAt,
+    planExpiresAt: user.planExpiresAt,
+    bundlePrimary: user.bundlePrimary,
+    bundleLastEventId: user.bundleLastEventId,
+    bundleQuotaGrantId: user.bundleQuotaGrantId,
+    bundleCreditsGrantId: user.bundleCreditsGrantId,
+  };
+}
+
+/**
+ * Copy the latest email-backed Bundle state onto a Studio user exactly once per event.
+ *
+ * `preloaded` is the full `User` row the caller already read this request (task
+ * B3 / A3 §A3.2 #3). It replaces THIS function's own `SELECT User` and nothing
+ * else — in particular the `BundleEntitlement` lookup below is never skipped,
+ * because that lookup is how a first activation is discovered. A row belonging
+ * to another user is ignored and the read happens exactly as before.
+ */
 export async function syncStoredBundleEntitlementForUser(
   userId: string,
   now: Date = new Date(),
   options: { forcePrimary?: boolean } = {},
+  preloaded?: User,
 ) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      email: true,
-      plan: true,
-      subStatus: true,
-      trialEndsAt: true,
-      planExpiresAt: true,
-      bundlePrimary: true,
-      bundleLastEventId: true,
-      bundleQuotaGrantId: true,
-      bundleCreditsGrantId: true,
-    },
-  });
+  const user: BundleSyncUser | null = preloaded && preloaded.id === userId
+    ? bundleSyncUserFields(preloaded)
+    : await prisma.user.findUnique({ where: { id: userId }, select: BUNDLE_SYNC_USER_SELECT });
   if (!user) return { changed: false, activated: false };
 
   const entitlement = await prisma.bundleEntitlement.findUnique({

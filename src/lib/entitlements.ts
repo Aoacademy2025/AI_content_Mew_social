@@ -1,3 +1,4 @@
+import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
@@ -181,55 +182,85 @@ export function classifyEntitlement(user: EntitlementUser, now: Date = new Date(
   };
 }
 
-export async function syncUserEntitlement(userId: string, now: Date = new Date()) {
-  let user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      plan: true,
-      usageCount: true,
-      usageLimit: true,
-      usagePeriodStartedAt: true,
-      planExpiresAt: true,
-      trialStartedAt: true,
-      trialEndsAt: true,
-      subStatus: true,
-      stripeSubscriptionId: true,
-      bundleAccessExpiresAt: true,
-      bundleStatus: true,
-      bundlePrimary: true,
-    },
-  });
+/** Exactly the columns this function decides on — shared by every read below. */
+const ENTITLEMENT_USER_SELECT = {
+  id: true,
+  email: true,
+  role: true,
+  plan: true,
+  usageCount: true,
+  usageLimit: true,
+  usagePeriodStartedAt: true,
+  planExpiresAt: true,
+  trialStartedAt: true,
+  trialEndsAt: true,
+  subStatus: true,
+  stripeSubscriptionId: true,
+  bundleAccessExpiresAt: true,
+  bundleStatus: true,
+  bundlePrimary: true,
+} as const;
+
+type SyncedUser = { [K in keyof typeof ENTITLEMENT_USER_SELECT]: User[K] };
+
+/** Narrow a full row to exactly the projection above — same shape, no extra columns. */
+function entitlementUserFields(user: User): SyncedUser {
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    plan: user.plan,
+    usageCount: user.usageCount,
+    usageLimit: user.usageLimit,
+    usagePeriodStartedAt: user.usagePeriodStartedAt,
+    planExpiresAt: user.planExpiresAt,
+    trialStartedAt: user.trialStartedAt,
+    trialEndsAt: user.trialEndsAt,
+    subStatus: user.subStatus,
+    stripeSubscriptionId: user.stripeSubscriptionId,
+    bundleAccessExpiresAt: user.bundleAccessExpiresAt,
+    bundleStatus: user.bundleStatus,
+    bundlePrimary: user.bundlePrimary,
+  };
+}
+
+/**
+ * `preloaded` is the full `User` row the caller already read this request (task
+ * B3 / A3 §A3.2 #2). It replaces THIS function's own opening `SELECT User` and
+ * nothing else; it is forwarded to the two helpers below so they can skip their
+ * own opening read too, and every remaining query and decision is unchanged.
+ * A row belonging to another user is ignored and the read happens as before.
+ *
+ * Every return carries `rowRewritten`: true when THIS call wrote the `User` row,
+ * by any step — including a Bundle activation, which `changed` deliberately does
+ * NOT report (`changed` means "the plan was reverted to FREE", and
+ * `revertExpiredEntitlements` counts it). A caller holding its own copy of the
+ * row MUST re-read when `rowRewritten` is true or it serves a stale plan for the
+ * rest of the request; `getCurrentUserForClerkId` does exactly that.
+ *
+ * `user` on the returned object is the row as this function last saw it: on the
+ * paths that write nothing, the in-memory copy rather than a fresh `SELECT`.
+ */
+export async function syncUserEntitlement(userId: string, now: Date = new Date(), preloaded?: User) {
+  const reusable = preloaded && preloaded.id === userId ? preloaded : undefined;
+  let user: SyncedUser | null = reusable
+    ? entitlementUserFields(reusable)
+    : await prisma.user.findUnique({ where: { id: userId }, select: ENTITLEMENT_USER_SELECT });
   if (!user) return null;
 
-  const bundleSync = await syncStoredBundleEntitlementForUser(userId, now);
+  const bundleSync = await syncStoredBundleEntitlementForUser(userId, now, undefined, reusable);
   if (bundleSync.changed) {
     user = await prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        plan: true,
-        usageCount: true,
-        usageLimit: true,
-        usagePeriodStartedAt: true,
-        planExpiresAt: true,
-        trialStartedAt: true,
-        trialEndsAt: true,
-        subStatus: true,
-        stripeSubscriptionId: true,
-        bundleAccessExpiresAt: true,
-        bundleStatus: true,
-        bundlePrimary: true,
-      },
+      select: ENTITLEMENT_USER_SELECT,
     });
     if (!user) return null;
   }
 
-  const paidEquivalent = await resolvePaidEquivalentEntitlement(userId, now);
+  // The bundle sync above can have rewritten the row; once it has, `reusable` is
+  // stale and this call must read the database for itself, exactly as today.
+  const paidEquivalent = await resolvePaidEquivalentEntitlement(
+    userId, now, bundleSync.changed ? undefined : reusable);
   if (paidEquivalent.canUsePaidFeatures) {
     let materialized = user;
     let changed = false;
@@ -249,12 +280,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
             trialEndsAt: null,
             ...usageWindowForPlanValue(paidEquivalent.effectivePlan, now),
           },
-          select: {
-            id: true, email: true, role: true, plan: true, usageCount: true, usageLimit: true,
-            usagePeriodStartedAt: true, planExpiresAt: true, trialStartedAt: true, trialEndsAt: true,
-            subStatus: true, stripeSubscriptionId: true, bundleAccessExpiresAt: true,
-            bundleStatus: true, bundlePrimary: true,
-          },
+          select: ENTITLEMENT_USER_SELECT,
         });
         if (process.env.CREDITS_LIVE === "1") {
           const prior = await tx.creditBalance.upsert({
@@ -289,12 +315,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       materialized = await prisma.user.update({
         where: { id: userId },
         data: { plan: paidEquivalent.effectivePlan },
-        select: {
-          id: true, email: true, role: true, plan: true, usageCount: true, usageLimit: true,
-          usagePeriodStartedAt: true, planExpiresAt: true, trialStartedAt: true, trialEndsAt: true,
-          subStatus: true, stripeSubscriptionId: true, bundleAccessExpiresAt: true,
-          bundleStatus: true, bundlePrimary: true,
-        },
+        select: ENTITLEMENT_USER_SELECT,
       });
       changed = true;
     }
@@ -315,6 +336,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         expiresAt: paidEquivalent.expiresAt,
       },
       changed,
+      rowRewritten: bundleSync.changed || changed,
     };
   }
 
@@ -338,6 +360,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         expiresAt: user.planExpiresAt,
       },
       changed: false,
+      rowRewritten: bundleSync.changed,
     };
   }
   const activeTrial = Boolean(user.trialEndsAt && user.trialEndsAt > now);
@@ -345,16 +368,56 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   // evidence is drift, not a permanent entitlement. Active Conversion Trial
   // remains the only label-backed exception.
   if (decision.action !== "DOWNGRADE" && (!isPaidPlan(user.plan) || activeTrial)) {
-    return { user, decision, changed: false };
+    return { user, decision, changed: false, rowRewritten: bundleSync.changed };
   }
 
-  const expiryGuard = decision.action !== "DOWNGRADE"
-    ? {}
+  // Each branch carries its SQL filter and the same test against the row we
+  // already hold, on adjacent lines, so the two cannot drift apart.
+  const expiry = decision.action !== "DOWNGRADE"
+    ? {
+      where: {},
+      matchesLoadedRow: true,
+    }
     : decision.reason === "trial_expired"
-      ? { trialEndsAt: { not: null, lte: now } }
+      ? {
+        where: { trialEndsAt: { not: null, lte: now } },
+        matchesLoadedRow: user.trialEndsAt !== null && user.trialEndsAt <= now,
+      }
       : decision.source === "EXPIRED_BUNDLE"
-        ? { bundlePrimary: true, bundleAccessExpiresAt: { not: null, lte: now } }
-        : { planExpiresAt: { not: null, lte: now } };
+        ? {
+          where: { bundlePrimary: true, bundleAccessExpiresAt: { not: null, lte: now } },
+          matchesLoadedRow: user.bundlePrimary === true
+            && user.bundleAccessExpiresAt != null && user.bundleAccessExpiresAt <= now,
+        }
+        : {
+          where: { planExpiresAt: { not: null, lte: now } },
+          matchesLoadedRow: user.planExpiresAt !== null && user.planExpiresAt <= now,
+        };
+  const expiryGuard = expiry.where;
+
+  // B6 row 3 (Gate A addendum) — the `updateMany` below is a CONDITIONAL write:
+  // its `where` re-states, in SQL, the same facts `decision` was computed from.
+  // For the cohort A3 §A3.1 measured (a paid plan with a live subscription and
+  // no qualifying `Payment` row — 107 of 249 paid accounts on prod) it matches
+  // 0 rows on every authenticated request, yet `BEGIN IMMEDIATE` still takes
+  // SQLite's single write lock, twice per `/api/user/me`, even on 403s.
+  //
+  // The same conditions, evaluated against the row this function already holds,
+  // say up-front when the write can change nothing. Clause for clause, in the
+  // order of the `where` below (`id` is the row itself):
+  const updateWouldMatchLoadedRow =
+    isPaidPlan(user.plan)                                         // plan: { in: PAID_PLANS }
+    && user.subStatus !== "active"                                // OR: [{subStatus:null},{subStatus:{not:"active"}}]
+    && !(preserveTrial                                            // excludeLiveTrialingSubscriptionWhere(preserveTrial)
+      && user.subStatus === "trialing" && Boolean(user.stripeSubscriptionId))
+    && expiry.matchesLoadedRow;                                   // ...expiryGuard
+  if (!updateWouldMatchLoadedRow) {
+    // Identical to what the code below returns when `res.count === 0`: no row is
+    // written, no notification fires, `changed` is false. The only direction
+    // this can err in is leaving a paid plan alone for one more request, which
+    // the next request (and the revert cron) re-evaluates from fresh state.
+    return { user, decision, changed: false, rowRewritten: bundleSync.changed };
+  }
 
   // Read the trial meter BEFORE the downgrade: the FREE usage window below resets
   // minutesUsed to 0, so `trial_expired` would otherwise always report zero usage.
@@ -410,25 +473,14 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
 
   const updated = await prisma.user.findUnique({
     where: { id: userId },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      plan: true,
-      usageCount: true,
-      usageLimit: true,
-      usagePeriodStartedAt: true,
-      planExpiresAt: true,
-      trialStartedAt: true,
-      trialEndsAt: true,
-      subStatus: true,
-      stripeSubscriptionId: true,
-      bundleAccessExpiresAt: true,
-      bundleStatus: true,
-      bundlePrimary: true,
-    },
+    select: ENTITLEMENT_USER_SELECT,
   });
-  return { user: updated ?? user, decision, changed: res.count === 1 };
+  return {
+    user: updated ?? user,
+    decision,
+    changed: res.count === 1,
+    rowRewritten: bundleSync.changed || res.count === 1,
+  };
 }
 
 export async function revertExpiredEntitlements(now: Date = new Date()) {
