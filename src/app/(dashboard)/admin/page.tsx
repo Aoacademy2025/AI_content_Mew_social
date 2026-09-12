@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminTrends } from "@/lib/admin-trends.server";
 // Client-safe: no prisma/fs/child_process import chain (see admin-trends-shared.ts).
 import { defaultTrendDays } from "@/lib/admin-trends-shared";
@@ -23,23 +23,32 @@ function bangkokTodayLabel(): string {
 
 export default function AdminOverviewPage() {
   const [days, setDays] = useState<14 | 30>(30);
+  // Fetching waits for this: without it, mount would fire ?days=30 (the initial state) and then
+  // immediately ?days=14 on narrow viewports once the effect below applies — two requests, and
+  // whichever response lands second (not necessarily the 14-day one) wins.
+  const [ready, setReady] = useState(false);
   const [trends, setTrends] = useState<AdminTrends | null>(null);
   const [error, setError] = useState(false);
+  const requestId = useRef(0);
 
   // Narrow viewports cannot read 30 bars — viewport width is read only inside this mount effect.
   useEffect(() => {
     setDays(defaultTrendDays(window.innerWidth));
+    setReady(true);
   }, []);
 
   const load = useCallback((d: 14 | 30) => {
+    const id = ++requestId.current;
     setError(false);
     fetch(`/api/admin/trends?days=${d}`)
       .then((r) => { if (!r.ok) throw new Error("bad status"); return r.json() as Promise<AdminTrends>; })
-      .then(setTrends)
-      .catch(() => setError(true));
+      .then((data) => { if (id === requestId.current) setTrends(data); })
+      .catch(() => { if (id === requestId.current) setError(true); });
   }, []);
 
-  useEffect(() => { load(days); }, [days, load]);
+  // Gated on `ready` so the viewport decision above always lands before the first fetch; the
+  // request-id check in `load` still guards a stale response from an earlier toggle click.
+  useEffect(() => { if (ready) load(days); }, [ready, days, load]);
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">

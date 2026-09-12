@@ -47,13 +47,45 @@ assert.match(
 );
 assert.match(
   pageSource,
-  /useEffect\(\(\)\s*=>\s*\{\s*setDays\(defaultTrendDays\(window\.innerWidth\)\);?\s*\},\s*\[\]\);/,
+  /useEffect\(\(\)\s*=>\s*\{\s*setDays\(defaultTrendDays\(window\.innerWidth\)\);[\s\S]*?\},\s*\[\]\);/,
   `${pagePath} must call defaultTrendDays(window.innerWidth) inside a mount-only useEffect`,
 );
 const windowMentions = (pageSource.match(/\bwindow\b/g) ?? []).length;
 assert.equal(windowMentions, 1, `${pagePath} must read \`window\` exactly once — inside that effect, never during render`);
 
-// ── 3. render TrendCards with a fixture AdminTrends: four card titles + the — fallback ──
+// ── 3. the chart tooltip works on tap and keyboard, not just mouse-hover <title> ──
+// Fix round 1 (C2 review F1): a native SVG <title> never surfaces on tap on iOS Safari / Android
+// Chrome and has no keyboard path. The tooltip must be React state driven by pointer AND focus
+// events, with an aria-live region — not a <title> element.
+const chartFile = overviewFiles.find((f) => f === "TrendBarChart.tsx");
+assert.ok(chartFile, `${overviewDir} has TrendBarChart.tsx`);
+const chartSource = overviewSources[overviewFiles.indexOf(chartFile!)];
+assert.ok(!chartSource.includes("<title>"), "TrendBarChart.tsx must not rely on an SVG <title> for the tooltip (no tap, no keyboard path)");
+for (const handler of ["onPointerEnter", "onPointerDown", "onFocus", "onBlur"]) {
+  assert.ok(chartSource.includes(handler), `TrendBarChart.tsx's hit-rect needs a ${handler} handler so touch and keyboard both reach the tooltip`);
+}
+assert.match(chartSource, /tabIndex=\{0\}/, "TrendBarChart.tsx's hit-rects must be keyboard-focusable");
+assert.match(chartSource, /role="button"/, "TrendBarChart.tsx's hit-rects need role=\"button\" for the keyboard/AT path");
+assert.match(chartSource, /role="img"/, "TrendBarChart.tsx's <svg> keeps role=\"img\" (unaffected by the tooltip fix)");
+assert.match(chartSource, /aria-live="polite"/, "TrendBarChart.tsx's tooltip element needs aria-live=\"polite\"");
+assert.match(chartSource, /useState<number \| null>\(null\)/, "TrendBarChart.tsx tracks the active day in React state, not via <title>");
+
+// ── 4. the initial trends fetch waits for the viewport (days) decision — no double-fetch race ──
+// Fix round 1 (C2 review F2): two independent mount effects (one sets `days`, one fetches) could
+// fire an initial ?days=30 fetch and then an immediate ?days=14 fetch on narrow viewports, with no
+// guarantee the second response wins. Fetching must be gated on a `ready` flag set by the mount
+// effect, and a request-id must guard a stale response from an earlier toggle click.
+assert.match(pageSource, /const \[ready, setReady\] = useState\(false\);/, `${pagePath} needs a ready flag gating the first fetch`);
+assert.match(
+  pageSource,
+  /useEffect\(\(\)\s*=>\s*\{\s*setDays\(defaultTrendDays\(window\.innerWidth\)\);\s*setReady\(true\);\s*\},\s*\[\]\);/,
+  `${pagePath}'s mount effect must set ready=true after the viewport decision`,
+);
+assert.match(pageSource, /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(ready\)\s*load\(days\);\s*\},\s*\[ready,\s*days,\s*load\]\);/,
+  `${pagePath} must only fetch once \`ready\` is true`);
+assert.match(pageSource, /requestId\.current/, `${pagePath} must guard against a stale response overwriting a newer one`);
+
+// ── 5. render TrendCards with a fixture AdminTrends: four card titles + the — fallback ──
 async function checkTrendCardsFixture() {
   const { TrendCards } = await import(path.join(REPO_ROOT, overviewDir, "TrendCards.tsx"));
   const zeroDay = { signups: 0, rendersDone: 0, exportsDone: 0, failedSystem: 0, failedCustomer: 0, paidPayments: 0 };
@@ -89,7 +121,8 @@ checkTrendCardsFixture()
   .then(() => {
     console.log(
       "verify-admin-overview: PASS — /admin fetches only /api/admin/trends, defaultTrendDays runs only inside " +
-        "a mount effect, TrendCards renders its four titles and the — fallback",
+        "a mount effect, the chart tooltip is state-driven (tap + keyboard, not <title>), the first fetch " +
+        "waits for the viewport decision, TrendCards renders its four titles and the — fallback",
     );
   })
   .catch((error) => {
