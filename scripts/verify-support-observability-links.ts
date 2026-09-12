@@ -94,7 +94,9 @@ assert.match(route, /sentryIssueId:\s*observability\.data\.sentryIssueId/);
 assert.match(route, /linearIssueIdentifier:\s*observability\.data\.linearIssueIdentifier/);
 assert.match(route, /buildSupportObservabilityLinks\(ticket\)/);
 
-const adminPage = read("src/app/(dashboard)/admin/page.tsx");
+// Task C3 moved the support ticket UI (incl. the audit draft + Sentry/Linear
+// links) from admin/page.tsx to admin/support/page.tsx.
+const adminPage = read("src/app/(dashboard)/admin/support/page.tsx");
 assert.match(adminPage, /sentryIssueReference:\s*ticket\.sentryIssueId/);
 assert.match(adminPage, /linearIssueReference:\s*ticket\.linearIssueIdentifier/);
 assert.match(adminPage, /sentryIssueId:\s*draft\.sentryIssueReference/);

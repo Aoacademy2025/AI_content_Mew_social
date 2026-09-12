@@ -63,8 +63,27 @@ export default function AdminDashboardPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // ManualPaymentPanel's suggested amount must reflect the DB-configured
+  // PRO/BUSINESS list price, not the component's hardcoded 599/990 defaults —
+  // same values loadSettings() used to feed it before Task C3 moved the full
+  // settings loader to /admin/settings. This is a minimal fetch of just the
+  // two price fields; Task C4 carries it along when the panel moves to
+  // /admin/revenue.
+  const [planProPrice, setPlanProPrice] = useState("599");
+  const [planBusinessPrice, setPlanBusinessPrice] = useState("990");
+
   useEffect(() => {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/admin/settings")
+      .then(r => r.json())
+      .then(d => {
+        if (d.plan_pro_price) setPlanProPrice(d.plan_pro_price);
+        if (d.plan_business_price) setPlanBusinessPrice(d.plan_business_price);
+      })
+      .catch(() => {});
   }, []);
 
   // ผู้ใช้งาน group — the "Paid" card is replaced by the honest revenue group below.
@@ -132,10 +151,11 @@ export default function AdminDashboardPage() {
 
         {/* ── Manual / external (off-Stripe) payment log ──────────────────
             Temporary home — Task C4 moves this panel + the money cards above
-            to /admin/revenue (ADR 0062: money renders only there). Uses its
-            default PRO/BUSINESS list prices since the DB-configured plan
-            prices now live in /admin/settings state, not here. */}
-        <ManualPaymentPanel />
+            to /admin/revenue (ADR 0062: money renders only there). */}
+        <ManualPaymentPanel
+          proPrice={Number(planProPrice) || 599}
+          businessPrice={Number(planBusinessPrice) || 990}
+        />
       </div>
     </div>
   );

@@ -27,12 +27,33 @@ assert.deepEqual(
   `adminGroups labels must be exactly the five Thai group names in order, got: ${JSON.stringify(groupLabelMatches)}`,
 );
 
-// ── 3. Every item href in adminGroups has a page.tsx under the dashboard route group ──
-const hrefMatches = Array.from(groupsSource.matchAll(/href:\s*"([^"]+)"/g), (m) => m[1]);
-assert.ok(hrefMatches.length >= 10, `adminGroups has the expected number of nav items, found ${hrefMatches.length}`);
+// ── 3. Every item is exactly {title, href} from the brief, in order, and every
+//      href has a page.tsx under the dashboard route group ──────────────────
+const EXPECTED_ITEMS: Array<{ title: string; href: string }> = [
+  { title: "ภาพรวม", href: "/admin" },
+  { title: "รายได้", href: "/admin/revenue" },
+  { title: "จัดการผู้ใช้", href: "/admin/users" },
+  { title: "Ticket ช่วยเหลือ", href: "/admin/support" },
+  { title: "คูปอง", href: "/admin/coupons" },
+  { title: "ตัวชี้วัดการใช้งาน", href: "/admin/insights" },
+  { title: "คำตัดซับ", href: "/admin/loanwords" },
+  { title: "ตั้งค่าระบบ", href: "/admin/settings" },
+  { title: "พื้นที่ดิสก์", href: "/admin/storage" },
+  { title: "คลังเพลง", href: "/admin/music" },
+  { title: "ประกาศอัปเดต", href: "/admin/updates" },
+];
+const itemMatches = Array.from(
+  groupsSource.matchAll(/\{\s*title:\s*"([^"]+)",\s*href:\s*"([^"]+)"/g),
+  (m) => ({ title: m[1], href: m[2] }),
+);
+assert.deepEqual(
+  itemMatches,
+  EXPECTED_ITEMS,
+  `adminGroups items must be exactly the eleven {title, href} pairs from the brief, in order, got: ${JSON.stringify(itemMatches)}`,
+);
 
 const missingRoutes: string[] = [];
-for (const href of hrefMatches) {
+for (const { href } of itemMatches) {
   assert.ok(href.startsWith("/admin"), `admin nav href "${href}" stays under /admin`);
   const routeDir = href === "/admin" ? "admin" : `admin/${href.slice("/admin/".length)}`;
   const pagePath = path.join(REPO_ROOT, "src/app/(dashboard)", routeDir, "page.tsx");
