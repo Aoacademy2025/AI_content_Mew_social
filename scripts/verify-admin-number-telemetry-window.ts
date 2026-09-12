@@ -18,11 +18,16 @@
 // same numbers — the route's own payload proves it, byte for byte.
 //
 // The two assertions that hold C7 to its promise:
-//   (i) GOLDEN — the FULL route payload, for a fixed `now`, is byte-identical to the payload the
-//       code at GOLDEN_BASE_COMMIT produces from the same database. Both subjects are bundled from
-//       real source with Clerk stubbed, share one PrismaClient, and answer the same three ranges.
-//   (j) TIMING — `days=30` on a ~100,000-row fixture costs a fraction of what the base code costs
-//       on the same rows, measured in the same process, base and head alternating.
+//   (i) GOLDEN — the FULL route payload, for a fixed `now` on this fixed fixture, is byte-identical
+//       to the payload RECORDED FROM GOLDEN_BASE_COMMIT and checked in beside this script. The real
+//       handler is bundled from source with Clerk stubbed and answers the same three ranges. The
+//       default run needs no git history (CI checks out at depth 1); re-record with
+//       C7_REGENERATE_GOLDEN=1, which is the only path that reads the base commit.
+//   (j) TRANSPORT — the read is held to the query builder it replaced, on the same fixture, in the
+//       same process, alternating: the same rows with the same values and types, for a fraction of
+//       the time. `CONSUMED_TELEMETRY_FILTER` / `INSIGHTS_TELEMETRY_SELECT` are the declared spec
+//       and this is what proves the SQL still matches them — editing one without the other fails
+//       here rather than silently changing a number on /admin/insights.
 //
 // Day boundary reference (Asia/Bangkok = UTC+7, no DST):
 //   2026-09-10T16:59:00Z → Bangkok 2026-09-10 23:59 → day "2026-09-10"
@@ -33,10 +38,16 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { build } from "esbuild";
+import { Prisma } from "@prisma/client";
 
 const dir = mkdtempSync(join(tmpdir(), "admin-number-telemetry-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
 process.env.NODE_ENV = "test";
+// The payload is compared byte for byte, so every flag that can move a number in it is pinned to
+// its default here rather than inherited from whatever shell or runner is executing the script.
+delete process.env.MANAGED_GEMINI;
+delete process.env.MANAGED_STOCK;
+delete process.env.MANAGED_STOCK_PEXELS_PER_MONTH;
 execSync("npx prisma db push --skip-generate", { stdio: "inherit", env: process.env });
 
 let passed = 0;
@@ -53,26 +64,32 @@ const PREV_SINCE = new Date(NOW.getTime() - 14 * DAY_MS); // previous window ope
 const LATE_DAY_10 = new Date("2026-09-10T16:59:00Z");    // Bangkok 2026-09-10 23:59
 const EARLY_DAY_11 = new Date("2026-09-10T17:00:00Z");   // Bangkok 2026-09-11 00:00
 
-/** The commit whose /api/admin/insights payload the golden assertion (i) compares against. */
+/** The commit the checked-in golden payloads were recorded from. */
 const GOLDEN_BASE_COMMIT = "4f4a2576";
-/** The files C7 changes; the base subject is bundled from these files as of that commit. */
+/** The files C7 changes; only the re-record path bundles them as of that commit. */
 const GOLDEN_BASE_FILES = [
   "src/lib/insights-telemetry.server.ts",
   "src/app/api/admin/insights/route.ts",
 ] as const;
+/** The recorded payloads. Checked in, because CI clones at depth 1 and has no base commit to read. */
+const GOLDEN_FILE = "scripts/verify-admin-number-telemetry-window.golden.json";
+/**
+ * `C7_REGENERATE_GOLDEN=1` re-records from GOLDEN_BASE_COMMIT (needs full git history);
+ * `C7_REGENERATE_GOLDEN=head` re-records from the working tree — only for the day the fixture
+ * legitimately changes AND the base commit is unreachable (this repo squashed `main` once already),
+ * and only with the payload diff read by a human before it is committed.
+ */
+const REGENERATE = process.env.C7_REGENERATE_GOLDEN ?? "";
 
 /**
- * (j) — head must cost at most this share of base on the same rows. The current code scores 1.00
- * (head IS base before the change), so this assertion is RED until the faster read lands. A ratio,
+ * (j) — the read must cost at most this share of the query-builder read it replaced, on the same
+ * rows. Before the change the two ARE the same call, so the ratio is 1.00 and this is RED. A ratio,
  * not a wall-clock literal: CI hardware is slower than a laptop and a millisecond threshold tuned on
- * one would be flaky on the other. The two subjects are measured ALTERNATELY so a machine that
- * speeds up or slows down mid-run moves both of them, not one. Absolute numbers are printed either
- * way. Measured on this fixture (Apple silicon, 100,002 rows): base 446 ms → head 336 ms, 0.75;
- * days=7 217 → 161; days=1 51 → 37. The threshold leaves room for a noisier runner.
+ * one would be flaky on the other; the two reads are measured ALTERNATELY so a machine that speeds
+ * up or slows down mid-run moves both of them. Absolute numbers are printed either way. Measured on
+ * this fixture (Apple silicon, 100,002 rows): builder 398 ms → raw 235 ms, 0.59.
  */
-const TIMING_BUDGET_RATIO = 0.85;
-/** A catastrophe guard, deliberately loose enough for the slowest CI runner. */
-const TIMING_ABSOLUTE_CEILING_MS = 2_500;
+const TIMING_BUDGET_RATIO = 0.8;
 
 // Names the /admin/insights summarizers actually inspect, one per predicate family — weighted the
 // way prod is, so the boundary half of the fixture does not turn a 2 %-error product into a
@@ -370,6 +387,8 @@ async function main() {
   const {
     readInsightsTelemetryRows,
     countInsightsTelemetry,
+    CONSUMED_TELEMETRY_FILTER,
+    INSIGHTS_TELEMETRY_SELECT,
     TELEMETRY_ROW_CAP,
   } = await import("../src/lib/insights-telemetry.server");
 
@@ -487,6 +506,12 @@ async function main() {
       paidAt: new Date(NOW.getTime() - (i % 59) * DAY_MS),
     })),
   });
+
+  // `@updatedAt` is stamped by Prisma from the real clock at insert time, and the reconcile plan
+  // puts `Video.updatedAt` in the payload — so without this the payload could never be recorded
+  // once and compared later. Pinned with raw UPDATEs, the same way verify-admin-trends.ts does it.
+  await prisma.$executeRaw(Prisma.sql`UPDATE "Video" SET "updatedAt" = ${new Date(NOW.getTime() - DAY_MS)}`);
+  await prisma.$executeRaw(Prisma.sql`UPDATE "VideoJob" SET "updatedAt" = ${new Date(NOW.getTime() - DAY_MS)}`);
 
   // ---- independent truth: the definitions as they were written in JS, over EVERY row ----------
   const internalIds = [TEAM];
@@ -616,52 +641,132 @@ async function main() {
   check(/telemetry\.truncated/.test(page),
     "(h) the page renders a visible note when the read was truncated");
 
-  // ---- (i) GOLDEN: the whole payload is byte-identical to the base commit's --------------------
+  // ---- (i) GOLDEN: the whole payload is byte-identical to the recorded base payload ------------
+  // Recorded ONCE from GOLDEN_BASE_COMMIT and checked in, because CI clones at depth 1: a script
+  // that reads `git show <sha>` on every run fails with `fatal: invalid object name` there, which is
+  // how this assertion first shipped. Only the re-record path touches git.
   (globalThis as { __insightsVerifyClerkId?: string }).__insightsVerifyClerkId = "clerk-team";
-  const baseRoot = materializeBaseFiles();
-  const base = await loadSubject("base", baseRoot);
   const head = await loadSubject("head");
+  const ranges = [1, 7, 30];
 
-  for (const days of [1, 7, 30]) {
-    const baseBody = await payload(base, days);
-    const headBody = await payload(head, days);
-    check(headBody === baseBody,
-      `(i) days=${days}: the payload is byte-identical to ${GOLDEN_BASE_COMMIT} (${headBody.length} bytes)`);
-    if (headBody !== baseBody) {
-      const at = [...baseBody].findIndex((ch, idx) => ch !== headBody[idx]);
-      console.error(`     first difference at byte ${at}:\n     base: ${baseBody.slice(Math.max(0, at - 160), at + 160)}\n     head: ${headBody.slice(Math.max(0, at - 160), at + 160)}`);
-    }
+  if (REGENERATE) {
+    const from = REGENERATE === "head" ? "head" : "base";
+    const subject = from === "head" ? head : await loadSubject("base", materializeBaseFiles());
+    const payloads: Record<string, string> = {};
+    for (const days of ranges) payloads[String(days)] = await payload(subject, days);
+    writeFileSync(GOLDEN_FILE, `${JSON.stringify({
+      README: "Golden /api/admin/insights payloads for scripts/verify-admin-number-telemetry-window.ts."
+        + " Recorded from the code at baseCommit against the fixture that script builds, with `now` frozen."
+        + " Re-record with C7_REGENERATE_GOLDEN=1 (from baseCommit, needs full git history) or"
+        + " C7_REGENERATE_GOLDEN=head (from the working tree — only when the fixture legitimately"
+        + " changed and baseCommit is unreachable; read the payload diff before committing it).",
+      baseCommit: GOLDEN_BASE_COMMIT,
+      recordedFrom: from,
+      fixtureRows: rows.length,
+      frozenNow: NOW.toISOString(),
+      payloads,
+    }, null, 2)}\n`);
+    console.log(`\n*** re-recorded ${GOLDEN_FILE} from ${from} (${ranges.map((d) => `days=${d}: ${payloads[String(d)].length} bytes`).join(", ")}) ***\n`);
   }
-  // The golden is only worth something if the payload really carries the numbers in question.
-  const sample = JSON.parse(await payload(head, 30)) as {
-    current: { totals: Record<string, unknown>; steps: unknown[]; vitals: unknown[]; playback: Record<string, unknown> };
-  };
-  check(Number(sample.current.totals.editorOpens) > 0 && sample.current.steps.length > 0
-    && sample.current.vitals.length === 3 && Number(sample.current.playback.sessions) > 0,
-    "(i) the compared payload actually contains editor, step, vitals and playback numbers");
 
-  // ---- (j) TIMING: days=30 costs a fraction of what the base costs on the same rows ------------
-  const baseRuns: number[] = [];
-  const headRuns: number[] = [];
-  await payload(base, 30);                                        // warm both
-  await payload(head, 30);
+  if (!existsSync(GOLDEN_FILE)) {
+    check(false, `(i) ${GOLDEN_FILE} is missing — re-record it with C7_REGENERATE_GOLDEN=1`);
+  } else {
+    const golden = JSON.parse(readFileSync(GOLDEN_FILE, "utf8")) as {
+      baseCommit: string; recordedFrom: string; fixtureRows: number; frozenNow: string;
+      payloads: Record<string, string>;
+    };
+    check(golden.fixtureRows === rows.length && golden.frozenNow === NOW.toISOString(),
+      `(i) the golden was recorded against THIS fixture (${golden.fixtureRows} rows at ${golden.frozenNow})`);
+    for (const days of ranges) {
+      const expected = golden.payloads[String(days)] ?? "";
+      const actual = await payload(head, days);
+      check(actual === expected,
+        `(i) days=${days}: the payload is byte-identical to ${golden.baseCommit} (${actual.length} bytes)`);
+      if (actual !== expected) {
+        const at = [...expected].findIndex((ch, idx) => ch !== actual[idx]);
+        console.error(`     first difference at byte ${at}:\n     golden: ${expected.slice(Math.max(0, at - 160), at + 160)}\n     head:   ${actual.slice(Math.max(0, at - 160), at + 160)}`);
+      }
+    }
+    // The golden is only worth something if the payload really carries the numbers in question.
+    const sample = JSON.parse(await payload(head, 30)) as {
+      current: { totals: Record<string, unknown>; steps: unknown[]; vitals: unknown[]; playback: Record<string, unknown> };
+    };
+    check(Number(sample.current.totals.editorOpens) > 0 && sample.current.steps.length > 0
+      && sample.current.vitals.length === 3 && Number(sample.current.playback.sessions) > 0,
+      "(i) the compared payload actually contains editor, step, vitals and playback numbers");
+  }
+
+  // ---- (j) TRANSPORT: the raw read is the query builder's read, for less ----------------------
+  // `CONSUMED_TELEMETRY_FILTER` and `INSIGHTS_TELEMETRY_SELECT` are the declared spec of what
+  // /admin/insights reads from a telemetry row. Since C7 the read is raw SQL, so this is what keeps
+  // the two in step: the same window, through the query builder and through the shipped reader, must
+  // return the same rows with the same values and the same types — and the shipped one must be
+  // materially cheaper. Edit one without the other and this fails instead of a number moving.
+  const builderRead = (range: { gte: Date; lt?: Date }) =>
+    prisma.telemetryEvent.findMany({
+      where: {
+        createdAt: range.lt ? { gte: range.gte, lt: range.lt } : { gte: range.gte },
+        ...CONSUMED_TELEMETRY_FILTER,
+      },
+      select: INSIGHTS_TELEMETRY_SELECT,
+      orderBy: { createdAt: "desc" },
+      take: TELEMETRY_ROW_CAP,
+    });
+
+  for (const [label, range] of [
+    ["current", { gte: SINCE }],
+    ["previous", { gte: PREV_SINCE, lt: SINCE }],
+  ] as const) {
+    const builderRows = await builderRead(range);
+    const rawRows = (await readInsightsTelemetryRows(range)).rows;
+    check(builderRows.length === rawRows.length,
+      `(j) ${label}: the raw read returns the query builder's row count (${rawRows.length} vs ${builderRows.length})`);
+    const fields = Object.keys(INSIGHTS_TELEMETRY_SELECT) as Array<keyof typeof INSIGHTS_TELEMETRY_SELECT>;
+    let firstDiff = -1;
+    for (let i = 0; i < Math.min(builderRows.length, rawRows.length) && firstDiff < 0; i += 1) {
+      for (const field of fields) {
+        const a = builderRows[i][field];
+        const b = rawRows[i][field];
+        const same = a instanceof Date && b instanceof Date ? a.getTime() === b.getTime() : a === b;
+        if (!same) { firstDiff = i; console.error(`     row ${i} field ${String(field)}: builder ${String(a)} vs raw ${String(b)}`); break; }
+      }
+    }
+    check(firstDiff === -1,
+      `(j) ${label}: every field of every row is identical, in order and in type`);
+  }
+
+  const builderRuns: number[] = [];
+  const rawRuns: number[] = [];
+  const bothWindows = async (read: (range: { gte: Date; lt?: Date }) => Promise<unknown>) => {
+    await read({ gte: SINCE });
+    await read({ gte: PREV_SINCE, lt: SINCE });
+  };
+  await bothWindows(builderRead);                                   // warm both paths
+  await bothWindows(readInsightsTelemetryRows);
   for (let i = 0; i < 5; i++) {
     let started = Date.now();
-    await payload(base, 30);
-    baseRuns.push(Date.now() - started);
+    await bothWindows(builderRead);
+    builderRuns.push(Date.now() - started);
     started = Date.now();
-    await payload(head, 30);
-    headRuns.push(Date.now() - started);
+    await bothWindows(readInsightsTelemetryRows);
+    rawRuns.push(Date.now() - started);
   }
   const median = (runs: number[]) => [...runs].sort((a, b) => a - b)[Math.floor(runs.length / 2)];
-  const baseMs = median(baseRuns);
-  const headMs = median(headRuns);
-  const ratio = headMs / baseMs;
-  console.log(`\n(j) days=30 over ${rows.length} rows: base ${baseMs} ms [${baseRuns.join(",")}] → head ${headMs} ms [${headRuns.join(",")}] (ratio ${ratio.toFixed(2)})`);
+  const builderMs = median(builderRuns);
+  const rawMs = median(rawRuns);
+  const ratio = rawMs / builderMs;
+  console.log(`\n(j) both windows of ${rows.length} rows: query builder ${builderMs} ms [${builderRuns.join(",")}] → raw read ${rawMs} ms [${rawRuns.join(",")}] (ratio ${ratio.toFixed(2)})`);
   check(ratio <= TIMING_BUDGET_RATIO,
-    `(j) days=30 costs at most ${TIMING_BUDGET_RATIO} of the base read (ratio ${ratio.toFixed(2)}: ${headMs} ms vs ${baseMs} ms)`);
-  check(headMs < TIMING_ABSOLUTE_CEILING_MS,
-    `(j) days=30 stays under the ${TIMING_ABSOLUTE_CEILING_MS} ms catastrophe ceiling (${headMs} ms)`);
+    `(j) the read costs at most ${TIMING_BUDGET_RATIO} of the query-builder read it replaced (ratio ${ratio.toFixed(2)}: ${rawMs} ms vs ${builderMs} ms)`);
+
+  // Whole-route wall time, for the record only — a millisecond assertion on a shared CI runner
+  // would be a flake, and what this change actually moves is measured above.
+  for (const days of ranges) {
+    const started = Date.now();
+    await payload(head, days);
+    console.log(`    route days=${days}: ${Date.now() - started} ms`);
+  }
 
   await prisma.$disconnect();
 
