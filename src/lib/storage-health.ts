@@ -68,7 +68,7 @@ function parseDuMb(stdout: string): number | null {
   return Number.isFinite(kb) ? Math.round(kb / 1024) : null;
 }
 
-async function readDisk(mount: string) {
+export async function readDisk(mount: string) {
   const { stdout } = await execFileAsync("df", ["-kP", mount], { timeout: 5000 });
   const lines = stdout.trim().split("\n");
   const row = lines[lines.length - 1]?.trim().split(/\s+/);
@@ -124,7 +124,11 @@ export async function readDirectorySizeMb(
   }
 }
 
-export async function getStorageHealth(cwd = process.cwd()): Promise<StorageHealth> {
+export type StorageHealthWithCache = StorageHealth & { cachedAt: string | null };
+
+const cache = new Map<string, { value: StorageHealth; at: number }>();
+
+async function computeStorageHealth(cwd: string, runDu?: DuRunner): Promise<StorageHealth> {
   const mount = process.env.STORAGE_HEALTH_MOUNT || "/";
   const disk = await readDisk(mount);
   const directoriesToCheck = [
@@ -137,7 +141,11 @@ export async function getStorageHealth(cwd = process.cwd()): Promise<StorageHeal
   const directories = await Promise.all(
     directoriesToCheck.map(async (dir) => {
       const exists = fs.existsSync(dir.path);
-      const sizeMb = exists ? await readDirectorySizeMb(dir.path) : 0;
+      const sizeMb = exists
+        ? runDu
+          ? await readDirectorySizeMb(dir.path, runDu)
+          : await readDirectorySizeMb(dir.path)
+        : 0;
       return {
         ...dir,
         exists,
@@ -154,4 +162,21 @@ export async function getStorageHealth(cwd = process.cwd()): Promise<StorageHeal
     disk,
     directories,
   };
+}
+
+export async function getStorageHealth(
+  cwd = process.cwd(),
+  opts?: { force?: boolean; now?: number; ttlMs?: number; runDu?: DuRunner },
+): Promise<StorageHealthWithCache> {
+  const now = opts?.now ?? Date.now();
+  const ttl = opts?.ttlMs ?? Number(process.env.STORAGE_HEALTH_CACHE_MS ?? 600_000);
+  const slot = cache.get(cwd);
+
+  if (!opts?.force && slot && now - slot.at < ttl) {
+    return { ...slot.value, cachedAt: new Date(slot.at).toISOString() };
+  }
+
+  const value = await computeStorageHealth(cwd, opts?.runDu);
+  cache.set(cwd, { value, at: now });
+  return { ...value, cachedAt: null };
 }

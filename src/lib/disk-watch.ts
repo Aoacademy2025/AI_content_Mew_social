@@ -141,7 +141,9 @@ export async function runDiskWatch(opts?: {
   };
 
   // Re-read only if the sweep actually freed something (du is the expensive part).
-  const health = swept.freedMb > 0 ? await getStorageHealth(cwd) : pre;
+  // force: true — getStorageHealth now caches for 10 min (Task B1); without force this
+  // would return the stale pre-sweep value instead of reflecting what was just freed.
+  const health = swept.freedMb > 0 ? await getStorageHealth(cwd, { force: true }) : pre;
 
   return {
     health,
