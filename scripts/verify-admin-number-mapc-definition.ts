@@ -14,11 +14,12 @@
 //
 //   A3 — Video. The window test was `updatedAt >= since`, so ANY later touch of an old row (a
 //        thumbnail edit, `video-reconcile`) dragged a months-old video into the trailing 30 days.
-//        `Video` carries no completion timestamp (`createdAt`/`updatedAt`/`expiresAt` only), and
-//        the live delivery path — `POST /api/videos` → `persistExportGalleryVideo` — INSERTs the
-//        row already COMPLETED and already carrying its output URL, so `createdAt` IS the delivery
-//        instant (A4 §7: all 1,585 prod rows are COMPLETED with an output URL). The window test is
-//        therefore `createdAt >= since`.
+//        `Video` carries no completion timestamp (`createdAt`/`updatedAt`/`expiresAt` only): the
+//        export/gallery path (`POST /api/videos` → `persistExportGalleryVideo`) INSERTs an
+//        already-terminal row, but the live MCP path (`src/lib/mcp/orchestrator.ts`) INSERTs
+//        `PROCESSING` and PATCHes it to `COMPLETED` after the burn, so `createdAt` dates an MCP
+//        clip at render start — a bounded, few-minute skew — rather than at delivery. The window
+//        test is therefore `createdAt >= since`.
 //
 // The denominator does NOT move. That is the point of the golden phase below.
 //

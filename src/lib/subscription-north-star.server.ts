@@ -220,12 +220,16 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
 
   const [videoRows, scriptRows, imageRows] = await Promise.all([
     prisma.video.findMany({
-      // A video outcome is dated by when it was DELIVERED, not by the last time the row was
-      // touched. `Video` carries no completion column, but the delivery path (`POST /api/videos`
-      // → `persistExportGalleryVideo`) INSERTs the row already COMPLETED and already carrying its
-      // output URL, so `createdAt` is the delivery instant. Reading `updatedAt` instead let any
-      // later touch of an old row — a thumbnail edit, `video-reconcile` — drag a months-old video
-      // into the trailing 30 days.
+      // A video outcome is dated as close to DELIVERY as this model allows, not by the last time
+      // the row was touched. `Video` carries no completion column, so `createdAt` stands in: the
+      // export/gallery path (`POST /api/videos` → `persistExportGalleryVideo`) INSERTs an
+      // already-terminal row, while the live MCP path (`src/lib/mcp/orchestrator.ts`) INSERTs
+      // `PROCESSING` carrying the pre-burn URL and PATCHes `COMPLETED` after the burn — so an MCP
+      // clip is dated at render start, a bounded few-minute skew (up to ~25 min for avatar work).
+      // A stale row that `video-reconcile` flips to `COMPLETED` hours or days later keeps its
+      // original `createdAt` and can fall outside the window. Both are accepted deliberately over
+      // `updatedAt`, whose skew is unbounded: any later touch — a thumbnail edit, a reconcile —
+      // dragged a months-old video into the trailing 30 days.
       where: {
         userId: { in: payerIds }, status: "COMPLETED", createdAt: { gte: since },
         OR: [{ videoUrl: { not: null } }, { avatarVideoUrl: { not: null } }],
@@ -234,9 +238,10 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
       distinct: ["userId"],
     }),
     prisma.script.findMany({
-      // A Hero Script outcome is a SAVED or EDITOR-BOUND script, per the Core Creation Outcome
-      // definition — a draft is work in progress, not delivered value. Only the send-to-editor
-      // path writes `{ status: "sent", editorProjectId }` (hero-script.server.ts); the OR arm
+      // A Hero Script outcome is a SENT or EDITOR-BOUND script — a draft is work in progress, not
+      // delivered value. This narrows the Core Creation Outcome wording that said "saved"; CONTEXT.md
+      // was updated to match.
+      // Only the send-to-editor path writes `{ status: "sent", editorProjectId }` (hero-script.server.ts); the OR arm
       // keeps any legacy row that reached the editor before the pair was written together.
       where: {
         userId: { in: payerIds }, createdAt: { gte: since },
