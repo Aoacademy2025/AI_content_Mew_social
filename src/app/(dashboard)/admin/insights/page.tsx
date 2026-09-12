@@ -17,7 +17,6 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import CostMarginPanel from "@/components/admin/cost-margin-panel";
 
 type FunnelRow = { key: string; label: string; count: number; conversionPct: number; dropOffPct: number; previousCount: number };
 type StepRow = { step: string; label: string; started: number; done: number; error: number; skipped: number; notFinished: number; p50Ms: number | null; p95Ms: number | null; successPct: number };
@@ -411,9 +410,6 @@ export default function AdminInsightsPage() {
           </section>
         )}
 
-        {/* ── 1. Revenue & Customers (driven by the same global `days`) ────────── */}
-        <CostMarginPanel days={days} />
-
         {loading && (
           <div className="flex h-72 items-center justify-center rounded-lg border border-white/10 bg-white/[0.025]"><Loader2 className="h-6 w-6 animate-spin text-sky-300" /></div>
         )}
@@ -432,7 +428,7 @@ export default function AdminInsightsPage() {
               <section className="rounded-lg border border-sky-400/25 bg-gradient-to-r from-sky-500/12 via-sky-500/5 to-transparent p-4 sm:p-5">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
-                    <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-200">North Star · Activation <InfoTip label="Activation" /></div>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-200">Activation (คลิปแรกออก) <InfoTip label="Activation" /></div>
                     <div className="mt-2 text-2xl font-semibold text-white sm:text-3xl">
                       {formatNumber(activation.signups)} สมัคร <span className="text-slate-500">→</span> {formatNumber(activation.completedFirstVideo)} ได้วิดีโอแรก{" "}
                       <span className={cn("ml-1 text-xl font-bold sm:text-2xl", pctOf(activation.completedFirstVideo, activation.signups) < 20 ? "text-rose-300" : "text-emerald-300")}>({pctOf(activation.completedFirstVideo, activation.signups)}%)</span>
@@ -444,24 +440,10 @@ export default function AdminInsightsPage() {
                       )}
                     </p>
                   </div>
-                  {/* Customer reality at a glance — real payers vs trial vs comped */}
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-3 py-2"><div className="text-lg font-bold text-emerald-200">{formatNumber(activation.paidTotal)}</div><div className="text-[11px] text-emerald-300/80">จ่ายจริง</div></div>
-                    <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2"><div className="text-lg font-bold text-amber-200">{formatNumber(activation.trialActive)}</div><div className="text-[11px] text-amber-300/80">Trial</div></div>
-                    <div className="rounded-md border border-white/10 bg-black/20 px-3 py-2"><div className="text-lg font-bold text-white">{formatNumber(activation.compedPaid)}</div><div className="text-[11px] text-slate-500">แจกฟรี</div></div>
-                  </div>
                 </div>
-                {!!activation.payingCanceling && activation.payingCanceling > 0 && (
-                  <p className="mt-3 rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-200">
-                    ⚠️ จ่ายอยู่ {formatNumber(activation.paidTotal)} · ในนั้น {formatNumber(activation.payingCanceling)} ยกเลิกแล้ว รอหมดรอบ (MRR เสี่ยง ฿{formatNumber(activation.mrrAtRisk)})
-                  </p>
-                )}
                 <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-relaxed text-sky-100/70">
                   💡 <span className="font-semibold">สำหรับ CEO:</span> ตัวเลขสุขภาพธุรกิจตัวแรกที่ต้องดู — ถ้า &ldquo;ได้วิดีโอแรก %&rdquo; ตก = ปัญหาใหญ่กว่า metric ระบบทุกตัวรวมกัน → ทุ่มแก้ activation ก่อน
                   {activation.internalTeam > 0 && <span className="text-sky-100/50"> · หมายเหตุ: ตัดบัญชีทีมงาน (@aoacademy) {formatNumber(activation.internalTeam)} บัญชีออกแล้ว · นับรวมนักเรียน workshop (ลูกค้าจริง)</span>}
-                </p>
-                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                  หมายเหตุ: &ldquo;จ่ายจริง&rdquo; = ลูกค้าที่จ่ายเงินสดจริง · MRR (ดูแผงรายได้ด้านบน) อิงราคา list — สมาชิก founding/คูปองนับเต็มราคา จึง<span className="font-semibold text-slate-400">ไม่ใช่เงินสดที่เก็บได้จริง</span> · ดูเงินสดจริงที่ &ldquo;เงินสดเข้าจริง&rdquo; (Cash-in)
                 </p>
               </section>
             )}
