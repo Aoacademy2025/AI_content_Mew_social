@@ -53,6 +53,7 @@ type InsightSummary = {
     firstFrames: number; waitingEvents: number; stalledEvents: number; bufferingSessionPct: number; pages: CountRow[]; routes: CountRow[];
   };
   staleProcessing: { total: number; completeCandidates: number; failCandidates: number; existingOutput: number; oldestAgeMinutes: number | null };
+  telemetry: { truncated: boolean; readRows: number; cap: number };
   recommendations: string[];
 };
 
@@ -421,6 +422,16 @@ export default function AdminInsightsPage() {
           <>
             {!hasData && (
               <div className="rounded-lg border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-100">ยังไม่มีข้อมูลสะสม ลองใช้งาน Video Editor 1-2 รอบ แล้วกลับมาดูหน้านี้อีกครั้ง</div>
+            )}
+
+            {/* A sampled panel must never look complete: the row read has a safety cap, and if it
+                ever bites we say so instead of printing a partial number as if it were the window. */}
+            {(current.telemetry.truncated || previous?.telemetry.truncated) && (
+              <div className="rounded-lg border border-amber-400/25 bg-amber-500/10 p-4 text-sm leading-relaxed text-amber-100">
+                ⚠️ ช่วงนี้มี telemetry มากเกินเพดานความปลอดภัย {formatNumber(current.telemetry.cap)} แถว (อ่านมา {formatNumber(current.telemetry.readRows)} แถว)
+                — ตัวเลข &ldquo;ทั้งหมดในช่วงนี้&rdquo; (sessions / users / events) ยังนับจากทั้งช่วงจริง แต่แผงที่คิดจากรายแถว
+                (ขั้นตอน pipeline · Error telemetry · Web Vitals · Playback · B-roll · Render) เป็น &ldquo;ตัวอย่างล่าสุด&rdquo; ของช่วงนี้ ไม่ใช่ทั้งช่วง
+              </div>
             )}
 
             {/* ── 2. North Star: Activation ─────────────────────────────────────── */}

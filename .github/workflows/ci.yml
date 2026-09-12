@@ -221,6 +221,8 @@ jobs:
 
       - name: Verify the admin overview page (North Star, trend cards, today strip, health pills)
         run: npm run verify:admin-overview
+      - name: Verify the insights telemetry numbers mean the whole window
+        run: npm run verify:admin-number-telemetry-window
 
       - name: Verify Revenue & Growth cash truth and meeting dashboard
         run: npm run verify:revenue-growth
