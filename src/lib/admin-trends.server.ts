@@ -70,10 +70,10 @@ export function coerceTrendDays(raw: string | null | undefined): 14 | 30 {
   return raw === "14" ? 14 : 30;
 }
 
-/** Narrow viewports cannot read 30 bars, so they open on 14. Pure — the client picks the default. */
-export function defaultTrendDays(viewportWidth: number): 14 | 30 {
-  return viewportWidth < 640 ? 14 : 30;
-}
+// defaultTrendDays lives in admin-trends-shared.ts (no server-only imports) so the "use client"
+// /admin page can import it directly without pulling prisma/fs/child_process into the browser
+// bundle; re-exported here so server-side callers (e.g. verify-admin-trends.ts) keep one path.
+export { defaultTrendDays } from "./admin-trends-shared";
 
 function emptyTotals(): TrendTotals {
   return { signups: 0, rendersDone: 0, exportsDone: 0, failedSystem: 0, failedCustomer: 0, paidPayments: 0 };
