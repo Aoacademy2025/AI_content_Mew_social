@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { resolveBrandLibraryAccess } from "@/lib/brand-visual-rollout.server";
 import { BrandVisualLockedPreview } from "./_components/BrandVisualLockedPreview";
+import { SubtitleFonts } from "@/components/subtitle-fonts";
 
 export default async function BrandsLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser();
@@ -12,5 +13,13 @@ export default async function BrandsLayout({ children }: { children: React.React
   if (!library.canUse) {
     return <BrandVisualLockedPreview reason={library.reason === "suspended" ? "suspended" : "feature_off"} />;
   }
-  return <>{children}</>;
+  // Style-pack sample cards (StylePackPicker.tsx, via style-pack-catalog.ts)
+  // render subtitle preview text in Kanit/Sarabun/Prompt — see
+  // docs/plans/reports/2026-09-12-A3-code-audit.md §A3.4.
+  return (
+    <>
+      <SubtitleFonts />
+      {children}
+    </>
+  );
 }
