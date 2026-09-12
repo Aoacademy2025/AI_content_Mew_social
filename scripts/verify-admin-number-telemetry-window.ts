@@ -45,6 +45,10 @@ process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
 process.env.NODE_ENV = "test";
 // The payload is compared byte for byte, so every flag that can move a number in it is pinned to
 // its default here rather than inherited from whatever shell or runner is executing the script.
+// This pin does NOT survive constructing the first PrismaClient (see the matching re-pin in main(),
+// right after `await import("../src/lib/prisma")`) — it stays here too because it is what protects
+// `npx prisma db push` below, which is a separate process that inherits `process.env` as it is at
+// this line.
 delete process.env.MANAGED_GEMINI;
 delete process.env.MANAGED_STOCK;
 delete process.env.MANAGED_STOCK_PEXELS_PER_MONTH;
@@ -384,6 +388,17 @@ async function payload(subject: Subject, days: number) {
 
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
+  // Constructing the first PrismaClient (inside the import above) makes Prisma reload `.env` for any
+  // key not currently in `process.env` — so the pin at the top of this file gets silently undone the
+  // moment this import runs, and every flag that can move a number in the payload comes back from
+  // whatever `.env` the machine running this script happens to have (this is exactly how the checked-in
+  // golden was recorded with `MANAGED_GEMINI=1` baked in, and how a bare CI runner then read it back as
+  // `false` and failed). Re-pin here, after the only PrismaClient construction in this process — every
+  // later `@/lib/prisma` import (including inside the bundled subjects) reuses the cached client on
+  // `globalThis` and does not reload `.env` again.
+  delete process.env.MANAGED_GEMINI;
+  delete process.env.MANAGED_STOCK;
+  delete process.env.MANAGED_STOCK_PEXELS_PER_MONTH;
   const {
     readInsightsTelemetryRows,
     countInsightsTelemetry,
