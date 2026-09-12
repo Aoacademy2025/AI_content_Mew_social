@@ -7,6 +7,13 @@ import { computeRevenueCohorts, summarizePlanCash } from "@/lib/revenue-cohorts"
 import { getPlanConfig } from "@/lib/plan-config";
 import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 import { byokReasonFromText, classifyJobError, quotaReasonFromText } from "@/lib/job-failure-class";
+import { summarizeCreationJobs, type CreationJobRow } from "@/lib/insights-creation-jobs";
+import {
+  countInsightsTelemetry,
+  readInsightsTelemetryRows,
+  TELEMETRY_ROW_CAP,
+  type InsightsTelemetryRow,
+} from "@/lib/insights-telemetry.server";
 import {
   managedStockPeriodResetAt,
   summarizeManagedStockTelemetry,
@@ -89,19 +96,17 @@ const STEP_LABELS: Record<string, string> = {
   burnSubtitles: "ฝังซับลงวิดีโอ",
 };
 
-type TelemetryRow = {
-  name: string;
-  category: string;
-  source: string;
-  sessionId: string | null;
-  userId: string | null;
-  step: string | null;
-  status: string | null;
-  durationMs: number | null;
-  value: number | null;
-  path: string | null;
-  properties: string | null;
-  createdAt: Date;
+type TelemetryRow = InsightsTelemetryRow;
+
+// `events` / `sessions` / `users` mean "all telemetry in this window", so they are counted in SQL
+// over the whole window (insights-telemetry.server.ts) instead of over the rows we happened to ship.
+// `truncated` says the row read hit its safety cap, so the row-derived panels are a sample.
+type TelemetryWindowTotals = {
+  events: number;
+  sessions: number;
+  users: number;
+  truncated: boolean;
+  readRows: number;
 };
 
 type VideoRow = {
@@ -212,33 +217,6 @@ const EMPTY_PROCESSING_SUMMARY: ProcessingReconcileSummary = {
   missingOutput: 0,
   oldestAgeMinutes: null,
 };
-
-function hasVideoOutput(video: VideoRow) {
-  return Boolean(video.videoUrl?.trim() || video.avatarVideoUrl?.trim());
-}
-
-function summarizeVideoJobs(videos: VideoRow[]) {
-  const completed = videos.filter((video) => video.status === "COMPLETED").length;
-  const processing = videos.filter((video) => video.status === "PROCESSING").length;
-  const failed = videos.filter((video) => video.status === "FAILED").length;
-  const pending = videos.filter((video) => video.status === "PENDING").length;
-  const outputReady = videos.filter(hasVideoOutput).length;
-  const statusStuckWithOutput = videos.filter((video) => video.status === "PROCESSING" && hasVideoOutput(video)).length;
-  const processingWithoutOutput = videos.filter((video) => video.status === "PROCESSING" && !hasVideoOutput(video)).length;
-
-  return {
-    total: videos.length,
-    completed,
-    processing,
-    failed,
-    pending,
-    outputReady,
-    statusStuckWithOutput,
-    processingWithoutOutput,
-    completionPct: pct(completed, videos.length),
-    outputReadyPct: pct(outputReady, videos.length),
-  };
-}
 
 function playbackGroupKey(row: TelemetryRow) {
   return [
@@ -570,13 +548,19 @@ function parseRangeDays(value: string | null) {
 
 function summarize(
   rows: TelemetryRow[],
-  videos: VideoRow[],
+  creationJobs: CreationJobRow[],
   processingSummary: ProcessingReconcileSummary = EMPTY_PROCESSING_SUMMARY,
   jobFunnel?: ReturnType<typeof summarizeJobFunnel>,
+  windowTotals?: TelemetryWindowTotals,
 ) {
-  const videoJobs = summarizeVideoJobs(videos);
-  const sessions = uniqueNonNullCount(rows.map((row) => row.sessionId));
-  const users = new Set(rows.map((row) => row.userId).filter(Boolean)).size;
+  // "Video completed" counts creation jobs (VideoJob type=create, status=done), not the `Video`
+  // table — every Video row on prod is COMPLETED, so that tile was the constant 100 % and the
+  // Health Score's two video penalty terms could never fire. See insights-creation-jobs.ts.
+  const videoJobs = summarizeCreationJobs(creationJobs);
+  // Prefer the full-window SQL counts; fall back to the rows only when no window totals are supplied
+  // (keeps summarize() callable from a test with a plain row array).
+  const sessions = windowTotals?.sessions ?? uniqueNonNullCount(rows.map((row) => row.sessionId));
+  const users = windowTotals?.users ?? new Set(rows.map((row) => row.userId).filter(Boolean)).size;
   const editorSessions = uniqueCount(rows, (row) => row.path === "/video-editor" || row.name.startsWith("editor_") || row.name.startsWith("pipeline_"), sessionKey);
   const editorOpens = eventCount(rows, (row) => row.name === "editor_opened");
   const pipelineStarts = eventCount(rows, (row) => row.name === "editor_script_ready");
@@ -669,7 +653,9 @@ function summarize(
   const renderStartedJobs = eventCount(rows, (row) => row.step === "render" && row.name === "pipeline_step_started");
   const renderDoneJobs = eventCount(rows, (row) => row.step === "render" && row.name === "pipeline_step_done");
   const renderTaskSuccessPct = pct(serverRenderRows.length, serverStartRows.length);
-  const videoCompletionPenalty = videoJobs.total > 0
+  // Gate on SETTLED work, not on every job in the window: a window holding only running jobs has no
+  // completion rate yet, and treating that as 0 % docked up to 20 points for normal work in flight.
+  const videoCompletionPenalty = videoJobs.settled > 0
     ? Math.max(0, 100 - videoJobs.completionPct) / 3
     : 0;
   const healthScore = Math.max(
@@ -705,7 +691,7 @@ function summarize(
       ? `พบ error จากคีย์ลูกค้า (BYOK) ${byokErrorRows.length} ครั้ง เช่น "${byokErrors[0]?.label ?? ""}" — ไม่ใช่บั๊กระบบ ควรแจ้ง/ช่วยลูกค้าตั้งค่า ไม่ใช่งาน dev`
       : null,
     videoJobs.statusStuckWithOutput > 0
-      ? `มีวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มี output แล้วแต่ status ยังเป็น PROCESSING ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
+      ? `มีงานสร้างวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มีไฟล์ output แล้วแต่สถานะยังค้างอยู่ (queued/processing) ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
       : null,
     processingSummary.total > 0
       ? `ตรวจพบ status PROCESSING ค้าง ${processingSummary.total} งาน: complete ได้ ${processingSummary.completeCandidates}, fail ได้ ${processingSummary.failCandidates}`
@@ -735,7 +721,7 @@ function summarize(
       editorOpens,
       pipelineJobs,
       pipelineStarts,
-      events: rows.length,
+      events: windowTotals?.events ?? rows.length,
       errors: errorRows.length,
       byokErrorCount: byokErrorRows.length,
       quotaErrorCount: quotaErrorRows.length,
@@ -777,6 +763,13 @@ function summarize(
     broll,
     playback,
     staleProcessing: processingSummary,
+    // Honesty flag for the row-derived panels (pipeline steps, Web Vitals, playback, B-roll,
+    // render resource): if the safety cap ever bites, the page says so instead of looking complete.
+    telemetry: {
+      truncated: windowTotals?.truncated ?? false,
+      readRows: windowTotals?.readRows ?? rows.length,
+      cap: TELEMETRY_ROW_CAP,
+    },
     recommendations,
   };
 }
@@ -804,28 +797,17 @@ export async function GET(req: Request) {
     } as const;
 
     const [
-      currentRows, previousRows, currentVideos, previousVideos, processingPlan,
+      currentRead, previousRead, currentVideos, previousVideos, processingPlan,
       allUsers, openedUserRows, completedByUser, currentJobs,
       planConfig, renderJobRows, paidRows, previousJobs, jobUserRows,
       northStar, northStarHistory, managedStockMonthly,
     ] = await Promise.all([
-      prisma.telemetryEvent.findMany({
-        where: { createdAt: { gte: since } },
-        select: {
-          name: true, category: true, source: true, sessionId: true, userId: true, step: true, status: true,
-          durationMs: true, value: true, path: true, properties: true, createdAt: true,
-        },
-        orderBy: { createdAt: "desc" },
-        take: 20_000,
-      }),
-      prisma.telemetryEvent.findMany({
-        where: { createdAt: { gte: previousSince, lt: since } },
-        select: {
-          name: true, category: true, source: true, sessionId: true, userId: true, step: true, status: true,
-          durationMs: true, value: true, path: true, properties: true, createdAt: true,
-        },
-        take: 20_000,
-      }),
+      // Both windows read the same way: the rows a summarizer inspects, newest-first, capped only by
+      // a safety valve that reports itself. The previous window used to have NO orderBy at all, so
+      // SQLite returned its OLDEST rows while the current window returned its newest — see
+      // insights-telemetry.server.ts.
+      readInsightsTelemetryRows({ gte: since }),
+      readInsightsTelemetryRows({ gte: previousSince, lt: since }),
       prisma.video.findMany({
         where: { createdAt: { gte: since } },
         select: videoSelect,
@@ -856,7 +838,7 @@ export async function GET(req: Request) {
       // Also drives the creation funnel (progress/status) — see summarizeJobFunnel.
       prisma.videoJob.findMany({
         where: { createdAt: { gte: since } },
-        select: { userId: true, status: true, currentStep: true, errorMessage: true, progress: true, startedAt: true, finishedAt: true },
+        select: { userId: true, status: true, type: true, outputJson: true, currentStep: true, errorMessage: true, progress: true, startedAt: true, finishedAt: true },
       }),
       getPlanConfig(),
       // Render throughput (window) from RenderJob — the source of truth for editor-v2/worker renders.
@@ -876,7 +858,7 @@ export async function GET(req: Request) {
       // Previous-window VideoJobs — so previous.funnel is also job-derived (apples-to-apples).
       prisma.videoJob.findMany({
         where: { createdAt: { gte: previousSince, lt: since } },
-        select: { userId: true, status: true, progress: true },
+        select: { userId: true, status: true, type: true, outputJson: true, progress: true },
       }),
       // Server-truth "started pipeline": distinct users who ever created a VideoJob (any time).
       // Replaces the v1-only editor_script_ready telemetry, which editor v2 never emits.
@@ -921,11 +903,32 @@ export async function GET(req: Request) {
     const internalUserIds = new Set(
       allUsers.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
     );
+    const currentRows = currentRead.rows;
+    const previousRows = previousRead.rows;
     const customerCurrentRows = currentRows.filter((row) => !row.userId || !internalUserIds.has(row.userId));
     const customerPreviousRows = previousRows.filter((row) => !row.userId || !internalUserIds.has(row.userId));
+
+    // "ทั้งหมดในช่วงนี้" counts (events / sessions / users) are counted in SQL over the WHOLE window,
+    // so no row cap can shrink them. They need the internal-team ids, hence a second round trip —
+    // three cheap indexed aggregates per window, not another row scan.
+    const [currentTelemetryCounts, previousTelemetryCounts] = await Promise.all([
+      countInsightsTelemetry({ gte: since }, Array.from(internalUserIds)),
+      countInsightsTelemetry({ gte: previousSince, lt: since }, Array.from(internalUserIds)),
+    ]);
+    const currentTelemetryTotals: TelemetryWindowTotals = {
+      ...currentTelemetryCounts,
+      truncated: currentRead.truncated,
+      readRows: customerCurrentRows.length,
+    };
+    const previousTelemetryTotals: TelemetryWindowTotals = {
+      ...previousTelemetryCounts,
+      truncated: previousRead.truncated,
+      readRows: customerPreviousRows.length,
+    };
     const customerCurrentVideos = currentVideos.filter((video) => !internalUserIds.has(video.userId));
     const customerPreviousVideos = previousVideos.filter((video) => !internalUserIds.has(video.userId));
     const customerCurrentJobs = currentJobs.filter((job) => !internalUserIds.has(job.userId));
+    const customerPreviousJobs = previousJobs.filter((job) => !internalUserIds.has(job.userId));
 
     // Creation funnel input — VideoJob rows (server truth), internal team excluded.
     const currentJobsForFunnel = currentJobs
@@ -1001,6 +1004,9 @@ export async function GET(req: Request) {
       processing: customerCurrentJobs.filter((j) => j.status === "processing" || j.status === "waiting_provider").length,
       waitingProvider: customerCurrentJobs.filter((j) => j.status === "waiting_provider").length,
       queued: customerCurrentJobs.filter((j) => j.status === "queued").length,
+      // Without this the tiles were short by every canceled job (55 in a 30-day window on prod)
+      // and a reader adding them up found jobs that were rendered nowhere.
+      canceled: customerCurrentJobs.filter((j) => j.status === "canceled").length,
       systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "system").length,
       byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "byok").length,
       quotaFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "quota").length,
@@ -1048,8 +1054,8 @@ export async function GET(req: Request) {
       renderStats,
       jobOutcomes,
       managedStock,
-      current: summarize(customerCurrentRows, customerCurrentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel)),
-      previous: summarize(customerPreviousRows, customerPreviousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel)),
+      current: summarize(customerCurrentRows, customerCurrentJobs, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel), currentTelemetryTotals),
+      previous: summarize(customerPreviousRows, customerPreviousJobs, undefined, summarizeJobFunnel(previousJobsForFunnel), previousTelemetryTotals),
       processingReconcile: { dryRun: true, ...processingPlan },
     });
   } catch (error) {
