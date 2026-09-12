@@ -10,12 +10,13 @@ const GOOGLE_FONTS_URL =
  * The 24-family subtitle/style-pack Google Fonts stylesheet (107 KB CSS),
  * moved out of the root layout (perf audit Task B4 — see
  * docs/plans/reports/2026-09-12-A3-code-audit.md §A3.4). Render this only
- * from the layout/page of a route that actually draws one of these families
- * (the editor's subtitle picker + preview, the story-film workbench, the
- * brand-library style-pack sample cards, or the first-clip dashboard hero).
- * Every other route keeps just Inter (src/app/layout.tsx, self-hosted) or,
- * where only Bai Jamjuree/IBM Plex Sans Thai is needed, its own minimal
- * single-purpose link (src/app/page.tsx, src/components/marketing/auth-shell.tsx).
+ * from the layout/page of a route that actually draws one of the
+ * subtitle-only families (the editor's subtitle picker + preview, the
+ * story-film workbench, or the brand-library style-pack sample cards —
+ * Sarabun/Prompt/Mitr/Noto Sans Thai/K2D/Krub/Pridi/Chonburi/Itim and the
+ * burn-only decorative set). Every other route gets its app-shell families
+ * (Bai Jamjuree/Kanit/IBM Plex Sans Thai) from the root layout's
+ * AppShellFonts instead — see below.
  *
  * src/remotion/** loads these same font URLs itself for the actual
  * render/burn output — this component only ever affects browser preview.
@@ -26,6 +27,42 @@ export function SubtitleFonts() {
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link href={GOOGLE_FONTS_URL} rel="stylesheet" />
+    </>
+  );
+}
+
+// App-shell families only, at only the weights actually referenced outside
+// subtitle previews (checked against source, perf audit Task B4 fix round 1):
+//   - Bai Jamjuree 600/700 — globals.css:974 (.sale-v2-eyebrow, 600),
+//     first-clip-hero.tsx (600), sale page + auth-shell headings (600/700),
+//     docs h1 (700), pricing-toggle.tsx/youtube-lite.tsx (600).
+//   - Kanit 600/700 — top-nav.tsx logo badge (600), pricing-client.tsx labels
+//     (600), dashboard/videos/settings/pricing/admin/admin-users/admin-coupons
+//     headings (700). No non-editor consumer uses 900 — that stays in the
+//     subtitle-only sheet above for the editor's own default.
+//   - IBM Plex Sans Thai 400/500/600/700 — sale page + auth-shell body text
+//     (400 default; 500/600 on nested elements; 700 on Clerk's headerTitle,
+//     which inherits the shell's body font rather than the Bai Jamjuree HEAD).
+const APP_SHELL_FONTS_URL =
+  "https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@600;700&family=Kanit:wght@600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap";
+
+/**
+ * Global app-shell fonts (Bai Jamjuree, Kanit, IBM Plex Sans Thai) — every
+ * route needs at least one of these (globals.css applies Bai Jamjuree to
+ * `.sale-v2-eyebrow`; Kanit is used for headline numbers/headings across the
+ * dashboard group; IBM Plex Sans Thai is the sale/auth body font), so this
+ * renders from the root layout rather than being scoped per route. Kept
+ * separate from the 24-family SubtitleFonts sheet above to avoid shipping
+ * the ~15 subtitle-only families (Sarabun, Prompt, Mitr, Noto Sans Thai,
+ * K2D, Krub, Pridi, Chonburi, Itim, and the burn-only decorative set) on
+ * every route.
+ */
+export function AppShellFonts() {
+  return (
+    <>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      <link href={APP_SHELL_FONTS_URL} rel="stylesheet" />
     </>
   );
 }

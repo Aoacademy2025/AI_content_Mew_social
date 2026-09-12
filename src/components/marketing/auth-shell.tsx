@@ -9,12 +9,6 @@ type FoundingStatus = { active: boolean; remaining: number; total: number } | nu
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 const GLOW = "0 0 34px rgba(139,92,246,.5)";
 
-// /login and /register only need two families (headings=Bai Jamjuree,
-// body=IBM Plex Sans Thai) — a minimal link instead of the 24-family
-// subtitle sheet. See docs/plans/reports/2026-09-12-A3-code-audit.md §A3.4.
-const AUTH_FONTS_URL =
-  "https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap";
-
 const BULLETS = [
   { icon: Captions, text: "ซับไทยตรงเสียงเป๊ะ — ไม่ใช่ AI เดา" },
   { icon: Upload, text: "อัปโหลดคลิปที่ถ่ายเอง → ใส่ซับ + B-roll อัตโนมัติ" },
@@ -75,10 +69,6 @@ export function AuthShell({
 }) {
   const isRegister = mode === "register";
   return (
-    <>
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-      <link href={AUTH_FONTS_URL} rel="stylesheet" />
     <div className="flex min-h-screen bg-[#06060b] text-white" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif" }}>
       {/* LEFT — branding (lg+) */}
       <div className="relative hidden w-[52%] flex-col justify-between overflow-hidden px-12 pb-12 pt-9 lg:flex">
@@ -185,6 +175,5 @@ export function AuthShell({
         </div>
       </div>
     </div>
-    </>
   );
 }

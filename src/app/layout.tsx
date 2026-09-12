@@ -8,6 +8,7 @@ import { RouteProgress } from "@/components/layout/route-progress";
 import { TelemetryProvider } from "@/components/telemetry/telemetry-provider";
 import { MetaPixel } from "@/components/telemetry/meta-pixel";
 import { StaleBundleGuard } from "@/components/stale-bundle-guard";
+import { AppShellFonts } from "@/components/subtitle-fonts";
 
 const inter = Inter({ subsets: ["latin"] });
 const ICON_VERSION = "20260706-h";
@@ -38,6 +39,9 @@ export default function RootLayout({
   return (
     <ClerkProvider>
     <html lang="th" suppressHydrationWarning>
+      <head>
+        <AppShellFonts />
+      </head>
       <body className={inter.className}>
         <Providers>
           <MetaPixel />

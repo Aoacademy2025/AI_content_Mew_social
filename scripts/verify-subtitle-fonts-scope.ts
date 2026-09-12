@@ -1,67 +1,120 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 
-// Task B4: the 24-family subtitle/style-pack Google Fonts stylesheet must load
-// only on routes that actually draw one of those families — everything else
-// keeps Inter (self-hosted) or, for Bai Jamjuree/IBM Plex Sans Thai-only
-// routes, a minimal single-purpose link. Contract: docs/plans/reports/
-// 2026-09-12-A3-code-audit.md §A3.4. Render output (src/remotion/**) is
-// excluded — it loads its own font URLs and must stay untouched.
+// Task B4 (fix round 1): the app shell needs three families everywhere
+// (Bai Jamjuree, Kanit, IBM Plex Sans Thai — globals.css + dashboard-group
+// headings + sale/auth body text), so those live in one minimal root-layout
+// link (AppShellFonts). The other ~15 subtitle-only families (Sarabun,
+// Prompt, Mitr, Noto Sans Thai, K2D, Krub, Pridi, Chonburi, Itim, and the
+// burn-only decorative set) load only on routes that actually draw them
+// (SubtitleFonts). Contract: docs/plans/reports/2026-09-12-A3-code-audit.md
+// §A3.4. Render output (src/remotion/**) is excluded — it loads its own font
+// URLs and must stay untouched.
 
 function read(path: string): string {
   assert.ok(existsSync(path), `expected file to exist: ${path}`);
   return readFileSync(path, "utf8");
 }
 
-// ── 1. Root layout no longer ships the 24-family sheet ─────────────────────
+const SUBTITLE_ONLY_FAMILIES = [
+  "Mitr",
+  "Sarabun",
+  "Prompt",
+  "Noto\\+Sans\\+Thai",
+  "Chakra\\+Petch",
+  "Chonburi",
+  "Fahkwang",
+  "K2D",
+  "Charm",
+  "Krub",
+  "Pridi",
+  "Itim",
+  "Sriracha",
+  "Bangers",
+  "Bebas\\+Neue",
+  "Oswald",
+  "Anton",
+  "Righteous",
+  "Playfair\\+Display",
+  "Pacifico",
+  "Lobster",
+];
+const APP_SHELL_FAMILIES = ["Bai\\+Jamjuree", "Kanit", "IBM\\+Plex\\+Sans\\+Thai"];
+
+// ── 1. Root layout carries AppShellFonts, not the 24-family sheet ─────────
 const rootLayout = read("src/app/layout.tsx");
+assert.match(
+  rootLayout,
+  /<AppShellFonts\s*\/?>/,
+  "src/app/layout.tsx must render <AppShellFonts /> for the app-shell families",
+);
 assert.doesNotMatch(
   rootLayout,
-  /fonts\.googleapis\.com/,
-  "src/app/layout.tsx must not reference fonts.googleapis.com — the subtitle font sheet moved to SubtitleFonts",
+  /<SubtitleFonts\s*\/?>/,
+  "src/app/layout.tsx must not render the full subtitle sheet — only AppShellFonts",
 );
-assert.match(
-  rootLayout,
-  /Inter/,
-  "src/app/layout.tsx must still self-host Inter via next/font",
-);
+assert.match(rootLayout, /Inter/, "src/app/layout.tsx must still self-host Inter via next/font");
 
-// ── 2. SubtitleFonts exists and carries the byte-identical 24-family URL ───
+// ── 2. subtitle-fonts.tsx exports both, each with the right family set ────
 const subtitleFontsPath = "src/components/subtitle-fonts.tsx";
 const subtitleFontsSource = read(subtitleFontsPath);
-assert.match(
-  subtitleFontsSource,
-  /https:\/\/fonts\.googleapis\.com\/css2\?family=Mitr/,
-  "SubtitleFonts must carry the moved GOOGLE_FONTS_URL constant",
-);
-for (const family of [
-  "Bangers",
-  "Lobster",
-  "Pacifico",
-  "Playfair+Display",
-  "Righteous",
-]) {
+
+assert.match(subtitleFontsSource, /export function SubtitleFonts/, "SubtitleFonts must still be exported");
+assert.match(subtitleFontsSource, /export function AppShellFonts/, "AppShellFonts must be exported");
+
+// Split the module so a family-name check against one component's URL
+// doesn't accidentally match the other's. The split point is the second
+// URL constant's declaration (not the function), since the constant is
+// declared above its component function.
+const appShellUrlStart = subtitleFontsSource.indexOf("const APP_SHELL_FONTS_URL");
+assert.ok(appShellUrlStart > 0, "expected an APP_SHELL_FONTS_URL constant in subtitle-fonts.tsx");
+const subtitleFontsUrlAndBody = subtitleFontsSource.slice(0, appShellUrlStart);
+const appShellFontsBody = subtitleFontsSource.slice(appShellUrlStart);
+
+for (const family of SUBTITLE_ONLY_FAMILIES) {
   assert.match(
-    subtitleFontsSource,
-    new RegExp(`family=${family.replace(/\+/g, "\\+")}`),
-    `SubtitleFonts must keep the moved constant byte-identical (missing ${family})`,
+    subtitleFontsUrlAndBody,
+    new RegExp(`family=${family}`),
+    `SubtitleFonts' GOOGLE_FONTS_URL must keep the byte-identical family list (missing ${family})`,
+  );
+}
+for (const family of APP_SHELL_FAMILIES) {
+  assert.match(
+    subtitleFontsUrlAndBody,
+    new RegExp(`family=${family}`),
+    `GOOGLE_FONTS_URL is a byte-identical historical constant and must still include ${family} too`,
   );
 }
 assert.match(
-  subtitleFontsSource,
+  subtitleFontsUrlAndBody,
   /rel="preconnect"[\s\S]*fonts\.googleapis\.com/,
   "SubtitleFonts must render the fonts.googleapis.com preconnect",
 );
 assert.match(
-  subtitleFontsSource,
+  subtitleFontsUrlAndBody,
   /rel="preconnect"[\s\S]*fonts\.gstatic\.com/,
   "SubtitleFonts must render the fonts.gstatic.com preconnect",
 );
 
-// ── 3. Every A3 §A3.4-proven family consumer sits under route coverage ─────
-// [consumer file (renders text in a non-self-hosted family), covering
-//  layout/page file that must render <SubtitleFonts /> or its own link]
-const CONSUMER_COVERAGE: Array<[string, string]> = [
+// AppShellFonts: exactly the 3 app-shell families, none of the subtitle-only ones
+for (const family of APP_SHELL_FAMILIES) {
+  assert.match(appShellFontsBody, new RegExp(`family=${family}`), `AppShellFonts must include ${family}`);
+}
+for (const family of SUBTITLE_ONLY_FAMILIES) {
+  assert.doesNotMatch(
+    appShellFontsBody,
+    new RegExp(`family=${family}(?![a-zA-Z])`),
+    `AppShellFonts must not pull in the subtitle-only family ${family} — that belongs in SubtitleFonts only`,
+  );
+}
+assert.match(appShellFontsBody, /rel="preconnect"[\s\S]*fonts\.googleapis\.com/, "AppShellFonts must render the fonts.googleapis.com preconnect");
+assert.match(appShellFontsBody, /rel="preconnect"[\s\S]*fonts\.gstatic\.com/, "AppShellFonts must render the fonts.gstatic.com preconnect");
+
+// ── 3. Every A3 §A3.4 file that renders a SUBTITLE-ONLY family sits under
+//       route coverage (Bai Jamjuree/Kanit/IBM Plex Sans Thai consumers are
+//       covered globally by the root's AppShellFonts and need no per-route
+//       layout) ────────────────────────────────────────────────────────────
+const SUBTITLE_ONLY_CONSUMER_COVERAGE: Array<[string, string]> = [
   ["src/app/(dashboard)/video-editor/page.tsx", "src/app/(dashboard)/video-editor/layout.tsx"],
   ["src/app/(dashboard)/video-editor/_v2/subtitle-style.ts", "src/app/(dashboard)/video-editor/layout.tsx"],
   ["src/app/(dashboard)/video-creator/page.tsx", "src/app/(dashboard)/video-creator/layout.tsx"],
@@ -69,14 +122,12 @@ const CONSUMER_COVERAGE: Array<[string, string]> = [
   ["src/app/(dashboard)/ai-studio/story-film/StoryFilmWorkbench.tsx", "src/app/(dashboard)/ai-studio/story-film/layout.tsx"],
   ["src/lib/style-pack-catalog.ts", "src/app/(dashboard)/brands/layout.tsx"],
   ["src/app/(dashboard)/brands/_components/StylePackPicker.tsx", "src/app/(dashboard)/brands/layout.tsx"],
-  ["src/components/dashboard/first-clip-hero.tsx", "src/app/(dashboard)/dashboard/layout.tsx"],
-  ["src/app/(dashboard)/dashboard/page.tsx", "src/app/(dashboard)/dashboard/layout.tsx"],
 ];
 
 const coversSubtitleFontsOrOwnLink = (source: string): boolean =>
   /<SubtitleFonts\s*\/?>/.test(source) || /fonts\.googleapis\.com\/css2/.test(source);
 
-for (const [consumer, coverage] of CONSUMER_COVERAGE) {
+for (const [consumer, coverage] of SUBTITLE_ONLY_CONSUMER_COVERAGE) {
   read(consumer); // consumer file must still exist (A3.4 evidence didn't move)
   const coverageSource = read(coverage);
   assert.ok(
@@ -85,23 +136,14 @@ for (const [consumer, coverage] of CONSUMER_COVERAGE) {
   );
 }
 
-// ── 4. Bai Jamjuree/IBM Plex Sans Thai-only routes keep a minimal link ─────
-const MINIMAL_LINK_FILES = ["src/app/page.tsx", "src/components/marketing/auth-shell.tsx"];
-for (const file of MINIMAL_LINK_FILES) {
-  const source = read(file);
-  assert.match(
-    source,
-    /fonts\.googleapis\.com\/css2\?family=Bai\+Jamjuree/,
-    `${file} must keep its own minimal Bai Jamjuree link`,
-  );
-  assert.doesNotMatch(
-    source,
-    /family=Mitr/,
-    `${file} must not pull in the full 24-family sheet — it only needs Bai Jamjuree (+IBM Plex Sans Thai)`,
-  );
-}
+// dashboard/page.tsx and first-clip-hero.tsx only use Kanit/Bai Jamjuree
+// (app-shell families) — no per-route layout should exist for them anymore.
+assert.ok(
+  !existsSync("src/app/(dashboard)/dashboard/layout.tsx"),
+  "dashboard/layout.tsx should not exist — /dashboard only needs the app-shell families the root layout now provides",
+);
 
-// ── 5. Render output is untouched and still self-loads its fonts ──────────
+// ── 4. Render output is untouched and still self-loads its fonts ──────────
 const REMOTION_SELF_LOADING_FILES = [
   "src/remotion/captionStyles.ts",
   "src/remotion/SubtitleOverlayComposition.tsx",
@@ -122,5 +164,5 @@ for (const file of REMOTION_SELF_LOADING_FILES) {
 }
 
 console.log(
-  "verify-subtitle-fonts-scope: PASS root layout scoped, SubtitleFonts covers every A3 §A3.4 consumer route, minimal links kept, src/remotion/** untouched",
+  "verify-subtitle-fonts-scope: PASS root layout carries only the 3 app-shell families, SubtitleFonts covers every subtitle-only-family consumer route, src/remotion/** untouched",
 );
