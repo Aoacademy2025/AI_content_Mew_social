@@ -56,6 +56,7 @@
     "verify:support-ticket-ui-regressions": "tsx scripts/verify-support-ticket-ui-regressions.ts",
     "verify:support-ticket-remediation": "tsx scripts/verify-support-ticket-remediation.ts",
     "verify:support-observability-links": "tsx scripts/verify-support-observability-links.ts",
+    "verify:sidebar-updates-summary-once": "tsx scripts/verify-sidebar-updates-summary-once.ts",
     "verify:brand-visual-count-refresh": "tsx scripts/verify-brand-visual-count-refresh.ts",
     "verify:style-pack-catalog": "tsx scripts/verify-style-pack-catalog.ts",
     "verify:style-pack-apply": "tsx scripts/verify-style-pack-apply.ts",

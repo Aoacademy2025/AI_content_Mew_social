@@ -247,5 +247,8 @@ jobs:
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 
+      - name: Verify the sidebar updates summary fetches once per session, not per navigation
+        run: npm run verify:sidebar-updates-summary-once
+
       - name: Build
         run: npm run build
