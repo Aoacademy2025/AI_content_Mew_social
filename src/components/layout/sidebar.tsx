@@ -209,7 +209,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       cancelled = true;
       window.removeEventListener("product-updates-read", loadUpdatesSummary);
     };
-  }, [sessionLoaded, pathname]);
+  }, [sessionLoaded]);
 
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
