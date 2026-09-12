@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Plan } from "@prisma/client";
+import type { Plan, User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type PaidEquivalentPlan = "PRO" | "BUSINESS";
@@ -242,10 +242,56 @@ export function decidePaidEquivalentEntitlement(
   };
 }
 
+/** The three evidence relations, selected exactly as the nested read below does. */
+const PAYMENT_EVIDENCE_SELECT = {
+  plan: true, status: true, periodDays: true, paidAt: true, createdAt: true,
+} as const;
+const COUPON_EVIDENCE_SELECT = {
+  redeemedAt: true,
+  outcome: true,
+  entitlementPlan: true,
+  entitlementStartsAt: true,
+  entitlementExpiresAt: true,
+  coupon: { select: { type: true, plan: true, durationDays: true } },
+} as const;
+const GRANT_EVIDENCE_SELECT = {
+  plan: true, reason: true, startsAt: true, expiresAt: true, permanent: true, revokedAt: true,
+} as const;
+
+/**
+ * `preloaded` is the full `User` row the caller already read this request (task
+ * B3 / A3 §A3.2 #5). It replaces THIS function's own `SELECT User` and nothing
+ * else: the three evidence relations are still read from the database, with the
+ * same filters, ordering and columns, and `decidePaidEquivalentEntitlement`
+ * still makes the whole decision. A row for a different user is ignored rather
+ * than trusted — correctness outranks the saved statement.
+ */
 export async function resolvePaidEquivalentEntitlement(
   userId: string,
   now: Date = new Date(),
+  preloaded?: User,
 ): Promise<PaidEquivalentDecision> {
+  if (preloaded && preloaded.id === userId) {
+    const [payments, couponRedemptions, administratorGrants] = await Promise.all([
+      prisma.payment.findMany({
+        where: { userId, status: "PAID", periodDays: { gt: 0 } },
+        orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+        select: PAYMENT_EVIDENCE_SELECT,
+      }),
+      prisma.couponRedemption.findMany({
+        where: { userId, coupon: { type: "GRANT" } },
+        select: COUPON_EVIDENCE_SELECT,
+      }),
+      prisma.administratorGrant.findMany({ where: { userId }, select: GRANT_EVIDENCE_SELECT }),
+    ]);
+    return decidePaidEquivalentEntitlement({
+      user: preloaded,
+      payments,
+      couponRedemptions,
+      administratorGrants,
+    }, now);
+  }
+
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -262,28 +308,14 @@ export async function resolvePaidEquivalentEntitlement(
       payments: {
         where: { status: "PAID", periodDays: { gt: 0 } },
         orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
-        select: { plan: true, status: true, periodDays: true, paidAt: true, createdAt: true },
+        select: PAYMENT_EVIDENCE_SELECT,
       },
       couponRedemptions: {
         where: { coupon: { type: "GRANT" } },
-        select: {
-          redeemedAt: true,
-          outcome: true,
-          entitlementPlan: true,
-          entitlementStartsAt: true,
-          entitlementExpiresAt: true,
-          coupon: { select: { type: true, plan: true, durationDays: true } },
-        },
+        select: COUPON_EVIDENCE_SELECT,
       },
       administratorGrants: {
-        select: {
-          plan: true,
-          reason: true,
-          startsAt: true,
-          expiresAt: true,
-          permanent: true,
-          revokedAt: true,
-        },
+        select: GRANT_EVIDENCE_SELECT,
       },
     },
   });

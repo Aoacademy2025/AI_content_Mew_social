@@ -93,6 +93,9 @@ jobs:
       - name: Verify editor playback guard
         run: npm run verify:editor-playback-guard
 
+      - name: Verify authenticated request query budget
+        run: npm run verify:auth-query-budget
+
       - name: Verify mid-trial conversion keeps the remaining trial days
         run: npm run verify:preserve-trial-on-convert
 
