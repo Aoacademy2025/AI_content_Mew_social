@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Crown, Clock, Tag, BarChart3 } from "lucide-react";
+import { Crown, Clock, Tag, BarChart3, Hourglass } from "lucide-react";
 import CostMarginPanel from "@/components/admin/cost-margin-panel";
 import RevenueGrowthDashboard from "@/components/admin/revenue-growth-dashboard";
 import ManualPaymentPanel from "@/components/admin/manual-payment-panel";
@@ -23,12 +23,15 @@ interface AdminStats {
   payingTotal: number; directPayingTotal: number; bundleActive: number;
   trialActive: number; compedPaid: number; mrr: number; directMrr: number; bundleMrr: number; lapsedPayers: number;
   payingCanceling?: number; mrrAtRisk?: number;
+  // Task C8 — "รอเก็บเงินครั้งแรก" (committed-trialing, not yet paying).
+  committedTrialingUsers?: number; committedTrialingExpectedMonthlyThb?: number;
+  committedTrialingFirstChargeEarliest?: string | null; committedTrialingFirstChargeLatest?: string | null;
 }
 
 // Single stat card — matches the original grid card (byte-identical for non-hero);
 // `hero` variant fills violet for the headline "จ่ายจริง" cash metric.
 function StatCard({
-  title, value, sub, icon: Icon, loading, hero = false,
+  title, value, sub, icon: Icon, loading, hero = false, footnote,
 }: {
   title: string;
   value: number | string;
@@ -36,6 +39,7 @@ function StatCard({
   icon: React.ElementType;
   loading: boolean;
   hero?: boolean;
+  footnote?: string;
 }) {
   return (
     <Card className="shadow-none" style={hero ? { background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` } : cardStyle}>
@@ -51,6 +55,9 @@ function StatCard({
           <div className="text-3xl font-bold" style={{ color: hero ? "#fff" : "var(--ui-text-primary)", fontFamily: "var(--font-kanit), Kanit, sans-serif" }}>{value}</div>
         )}
         <p className="mt-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>{sub}</p>
+        {footnote && (
+          <p className="mt-1 text-[11px]" style={{ color: "var(--ui-text-muted)", opacity: 0.75 }}>{footnote}</p>
+        )}
       </CardContent>
     </Card>
   );
@@ -107,6 +114,18 @@ export default function AdminRevenuePage() {
             <StatCard title="Trial (ทดลอง)" value={stats?.trialActive ?? 0} sub="ทดลอง PRO ฟรี ยังไม่จ่ายเงิน" icon={Clock} loading={loading} />
             <StatCard title="Comped (แจกสิทธิ์)" value={stats?.compedPaid ?? 0} sub="admin/coupon — เป็นต้นทุน ไม่ใช่รายได้" icon={Tag} loading={loading} />
             <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub={`Studio ฿${Math.round(stats?.directMrr ?? 0).toLocaleString()} · Bundle ฿${Math.round(stats?.bundleMrr ?? 0).toLocaleString()}`} icon={BarChart3} loading={loading} />
+            <StatCard
+              title="รอเก็บเงินครั้งแรก (trial ผูกบัตรแล้ว)"
+              value={stats?.committedTrialingUsers ?? 0}
+              sub={
+                !stats?.committedTrialingUsers
+                  ? "—"
+                  : `คาด ≈ ฿${Math.round(stats.committedTrialingExpectedMonthlyThb ?? 0).toLocaleString()}/เดือน · เก็บครั้งแรก ${stats.committedTrialingFirstChargeEarliest ?? "—"}–${stats.committedTrialingFirstChargeLatest ?? "—"}`
+              }
+              footnote="ยังไม่นับเป็นจ่ายจริงจนกว่า Stripe ตัดเงินสำเร็จ"
+              icon={Hourglass}
+              loading={loading}
+            />
           </div>
           <p className="mt-3 text-xs" style={{ color: "var(--ui-text-muted)" }}>
             หมายเหตุ: ยอด &quot;บนแผน PRO/BUSINESS&quot; ทั้งหมด {stats?.paidUsers ?? 0} ราย ≈ จ่ายจริง {stats?.payingTotal ?? 0} + Trial {stats?.trialActive ?? 0} + Comped {stats?.compedPaid ?? 0} (ที่เหลือ = รอ cron ปรับสถานะ)

@@ -11,6 +11,13 @@
 //   3. Prunes backups older than $BACKUP_RETENTION_DAYS (default 14).
 //   4. If $BACKUP_RSYNC_TARGET is set, rsyncs the fresh snapshot off-box; if unset it
 //      logs that off-box is NOT configured and skips (local backup still succeeds).
+//   5. Uploads the fresh snapshot to Cloudflare R2 at `db-backups/dev-<date>.db`
+//      (same bucket as media, or $BACKUP_R2_BUCKET) via the shared R2 client/config
+//      helper (src/lib/backup-r2.ts, built on src/lib/media-storage-r2.ts), then
+//      prunes R2 objects under `db-backups/` older than $BACKUP_R2_RETENTION_DAYS
+//      (default 30). If R2 env is absent it logs that off-box-to-R2 is NOT configured
+//      and skips — same semantics as step 4. The local file is NEVER deleted or
+//      modified because of an R2 result, success or failure.
 //
 // RUN (local):  npx tsx scripts/backup-db.ts
 //   Override for a safe local test:
@@ -28,12 +35,20 @@
 //    -wal/-shm from the OLD db before swapping avoids a mismatched sidecar.)
 //
 // Exit codes: 0 = ok · 1 = backup failed (no valid snapshot written) · 2 = snapshot
-// written OK but a CONFIGURED off-box rsync failed (surfaced loud for the logs/watchdog).
+// written OK but a CONFIGURED off-box copy (rsync and/or R2) failed (surfaced loud
+// for the logs/watchdog).
 import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
+import {
+  backupObjectKey,
+  backupR2ConfigFromEnv,
+  createBackupR2Client,
+  pruneBackupObjects,
+  uploadBackupSnapshot,
+} from "../src/lib/backup-r2";
 
 const BACKUP_DIR = (process.env.BACKUP_DIR || "/var/backups/heroai").trim();
 const RSYNC_TARGET = (process.env.BACKUP_RSYNC_TARGET || "").trim();
@@ -167,7 +182,42 @@ function offbox(dest: string): boolean {
   }
 }
 
-function main(): void {
+// Copy the fresh snapshot to R2 (db-backups/<filename>) and prune old R2 backups.
+// Same true/false contract as offbox(): true if not-configured (skip) or success;
+// false only if a CONFIGURED upload failed. Never deletes or alters the local file.
+async function offboxR2(dest: string): Promise<boolean> {
+  const config = backupR2ConfigFromEnv();
+  if (!config) {
+    log("BACKUP_R2 not configured — off-box copy NOT configured (local backup only)");
+    return true;
+  }
+  const client = createBackupR2Client(config.storage);
+  const key = backupObjectKey(path.basename(dest));
+  try {
+    const outcome = await uploadBackupSnapshot(client, { key, sourcePath: dest });
+    if (outcome === "already-uploaded") {
+      log(`R2 copy already uploaded, verified -> ${config.storage.bucket}/${key}`);
+    } else if (outcome === "overwritten") {
+      log(`R2 copy overwritten (existing object did not match) -> ${config.storage.bucket}/${key}`);
+    } else {
+      log(`R2 copy sent -> ${config.storage.bucket}/${key}`);
+    }
+  } catch (e) {
+    warn(`off-box R2 upload FAILED (local snapshot is safe): ${(e as Error).message}`);
+    return false;
+  }
+  try {
+    const { removed } = await pruneBackupObjects(client, { retentionDays: config.retentionDays });
+    log(`R2 prune done (removed=${removed.length}, retention=${config.retentionDays}d)`);
+  } catch (e) {
+    // Pruning is best-effort, same spirit as the local prune() catch-per-file above —
+    // a failed prune never invalidates a successful upload or fails the run.
+    warn(`R2 prune failed (local + uploaded backups unaffected): ${(e as Error).message}`);
+  }
+  return true;
+}
+
+async function main(): Promise<void> {
   if (!Number.isFinite(RETENTION_DAYS) || RETENTION_DAYS < 1) {
     fail(`BACKUP_RETENTION_DAYS must be a positive number (got "${process.env.BACKUP_RETENTION_DAYS}")`);
   }
@@ -188,17 +238,16 @@ function main(): void {
   const removed = prune();
   log(`prune done (removed=${removed}, retention=${RETENTION_DAYS}d)`);
 
-  const offboxOk = offbox(dest);
-  if (!offboxOk) {
-    console.error(`[backup-db] ${stamp()} ERROR configured off-box copy failed — FIX rsync/target`);
+  const rsyncOk = offbox(dest);
+  const r2Ok = await offboxR2(dest);
+  if (!rsyncOk || !r2Ok) {
+    console.error(`[backup-db] ${stamp()} ERROR configured off-box copy failed — FIX rsync/R2 target`);
     process.exit(2);
   }
   log("done");
   process.exit(0);
 }
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   fail(`unexpected: ${(e as Error).stack || (e as Error).message}`);
-}
+});

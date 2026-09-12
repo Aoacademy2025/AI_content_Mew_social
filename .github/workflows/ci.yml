@@ -246,6 +246,8 @@ jobs:
 
       - name: Verify the MAPC numerator matches the Core Creation Outcome definition
         run: npm run verify:admin-number-mapc-definition && npm run verify:north-star
+      - name: Verify committed-trialing customers show separately from จ่ายจริง
+        run: npm run verify:admin-number-committed-trialing
 
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
@@ -297,6 +299,8 @@ jobs:
         run: npm run verify:subtitle-fonts-scope
       - name: Verify admin nav is five Thai groups with a route per href
         run: npm run verify:admin-navigation
+      - name: Verify the nightly DB backup copies to R2 with 30-day retention
+        run: npm run verify:db-backup-r2
 
       - name: Build
         run: npm run build
