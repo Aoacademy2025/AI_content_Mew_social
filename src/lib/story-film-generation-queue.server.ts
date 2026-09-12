@@ -194,9 +194,40 @@ export type LeasedStoryFilmJob = ReturnType<typeof publicJob> & {
   resumeProviderJobId: string | null;
 };
 
+/**
+ * Project statuses that make a queued job unleasable. Lease-time only — the
+ * enqueue gate in `enqueueStoryFilmGeneration` is a separate rule about the
+ * project's own lifecycle and is deliberately not coupled to this one.
+ */
+const LEASE_BLOCKED_PROJECT_STATUSES = ["paused", "rendering", "completed", "archived"];
+
+/**
+ * The two predicates that decide whether a poll has anything to do. Shared by
+ * the read-first pre-check and by the write transaction it guards, so the two
+ * cannot drift: a `where` the pre-check did not know about would make the poll
+ * skip work the transaction was going to do.
+ */
+function expiredLeaseWhere(now: Date): Prisma.StoryFilmGenerationJobWhereInput {
+  // Deliberately NOT scoped to the caller's backends — a poll rescues every
+  // expired lease, including backends this worker never processes itself.
+  return { status: { in: LIVE_STATUSES }, leaseExpiresAt: { lte: now } };
+}
+
+function leasableJobWhere(
+  providerBackends: StoryFilmProviderBackend[],
+  now: Date,
+): Prisma.StoryFilmGenerationJobWhereInput {
+  return {
+    status: "queued",
+    providerBackend: { in: providerBackends },
+    availableAt: { lte: now },
+    project: { status: { notIn: LEASE_BLOCKED_PROJECT_STATUSES } },
+  };
+}
+
 async function requeueExpiredLeases(tx: Prisma.TransactionClient, now: Date) {
   await tx.storyFilmGenerationJob.updateMany({
-    where: { status: { in: LIVE_STATUSES }, leaseExpiresAt: { lte: now } },
+    where: expiredLeaseWhere(now),
     data: {
       status: "queued",
       leaseOwner: null,
@@ -221,6 +252,26 @@ export async function leaseStoryFilmGenerationJobs(input: {
   const now = input.now ?? new Date();
   const leaseExpiresAt = new Date(now.getTime() + STORY_FILM_LEASE_MS);
 
+  // Read first. The system worker calls this every POLL_MS (4 s) and is idle
+  // for almost all of them, but `prisma.$transaction` takes SQLite's write lock
+  // at `BEGIN IMMEDIATE` before the body decides there is nothing to do:
+  // production measured ~21,600 such write-first transactions a day against a
+  // 114-row table, queueing ahead of real customer writes, with 25 P1008 lease
+  // failures a day (perf audit A1 §A1.8 cause #2). One LIMIT-1 read answers
+  // "is there anything to do?" without taking the lock, using the same two
+  // predicates the transaction uses. When it finds nothing, the transaction
+  // below would have requeued nothing, found no candidate and returned the very
+  // same empty array.
+  //
+  // Race window, by design: a job enqueued between this read and the
+  // transaction is leased on the next poll instead, i.e. at most POLL_MS later
+  // — the same wait a job enqueued one millisecond after any poll already has.
+  const pendingWork = await prisma.storyFilmGenerationJob.findFirst({
+    where: { OR: [expiredLeaseWhere(now), leasableJobWhere(providerBackends, now)] },
+    select: { id: true },
+  });
+  if (!pendingWork) return [];
+
   return prisma.$transaction(async (tx) => {
     await requeueExpiredLeases(tx, now);
     const active = await tx.storyFilmGenerationJob.count({
@@ -233,12 +284,7 @@ export async function leaseStoryFilmGenerationJobs(input: {
     const capacity = Math.max(0, Math.min(requested, STORY_FILM_WORKER_CONCURRENCY - active));
     if (capacity === 0) return [];
     const candidates = await tx.storyFilmGenerationJob.findMany({
-      where: {
-        status: "queued",
-        providerBackend: { in: providerBackends },
-        availableAt: { lte: now },
-        project: { status: { notIn: ["paused", "rendering", "completed", "archived"] } },
-      },
+      where: leasableJobWhere(providerBackends, now),
       orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
       take: capacity,
     });

@@ -182,6 +182,7 @@
     "verify:ai-studio": "tsx scripts/verify-ai-studio.ts",
     "verify:story-film-control": "tsx scripts/verify-story-film-control.ts",
     "verify:story-film-generation-queue": "node --conditions=react-server --import tsx scripts/verify-story-film-generation-queue.ts",
+    "verify:story-film-lease-poll": "node --conditions=react-server --import tsx scripts/verify-story-film-lease-poll.ts",
     "verify:story-film-media": "tsx scripts/verify-story-film-media.ts",
     "verify:story-film-presenter-upload": "node --conditions=react-server --import tsx scripts/verify-story-film-presenter-upload.ts",
     "verify:story-film-mcp-isolation": "tsx scripts/verify-story-film-mcp-isolation.ts",

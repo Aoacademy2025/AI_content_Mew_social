@@ -243,6 +243,8 @@ jobs:
 
       - name: Verify Notification index (SEARCH not SCAN)
         run: npm run verify:notification-index
+      - name: Verify the story-film worker poll opens no transaction when idle
+        run: npm run verify:story-film-lease-poll
 
       - name: Verify media streams survive client cancellation
         run: npm run verify:media-stream
