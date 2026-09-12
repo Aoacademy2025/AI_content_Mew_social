@@ -750,9 +750,9 @@ export default function AdminDashboardPage() {
     setCleanupInfo(request.value.data);
   }, []);
 
-  function loadStorageHealth() {
+  function loadStorageHealth(force = false) {
     setStorageLoading(true);
-    fetch("/api/admin/storage?refresh=1", { cache: "no-store" })
+    fetch(`/api/admin/storage${force ? "?refresh=1" : ""}`, { cache: "no-store" })
       .then(r => r.json())
       .then(d => {
         if (!d.error) setStorageHealth(d);
@@ -762,7 +762,7 @@ export default function AdminDashboardPage() {
   }
 
   function refreshStorageInfo() {
-    loadStorageHealth();
+    loadStorageHealth(true);
     loadCleanupInfo();
   }
 

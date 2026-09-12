@@ -111,6 +111,44 @@ async function main() {
     fs.rmSync(cacheRoot, { recursive: true, force: true });
     fs.rmSync(cacheRootB, { recursive: true, force: true });
   }
+
+  // Source-level check: the admin page's mount effect must hit the cache
+  // (no refresh=1); only the refresh button's onClick handler (refreshStorageInfo)
+  // may bypass it. Guards against the mount call quietly regaining `?refresh=1`,
+  // which would defeat the point of caching on every /admin open.
+  const adminPagePath = path.join(
+    __dirname,
+    "..",
+    "src",
+    "app",
+    "(dashboard)",
+    "admin",
+    "page.tsx",
+  );
+  const adminPageSource = fs.readFileSync(adminPagePath, "utf8");
+
+  assert.match(
+    adminPageSource,
+    /function loadStorageHealth\(force = false\)/,
+    "loadStorageHealth must take a force parameter defaulting to false",
+  );
+  assert.match(
+    adminPageSource,
+    /fetch\(`\/api\/admin\/storage\$\{force \? "\?refresh=1" : ""\}`, \{ cache: "no-store" \}\)/,
+    "loadStorageHealth must build the URL conditionally on force and always send cache: no-store",
+  );
+  assert.match(
+    adminPageSource,
+    /function refreshStorageInfo\(\) \{\s*\n\s*loadStorageHealth\(true\);/,
+    "the refresh button's handler (refreshStorageInfo) must call loadStorageHealth(true) — bypass the cache",
+  );
+  assert.match(
+    adminPageSource,
+    /useEffect\(\(\) => \{[\s\S]*?\n\s*loadStorageHealth\(\);/,
+    "the mount effect must call loadStorageHealth() with no argument — hit the cache",
+  );
+
+  console.log("verify-storage-health: mount-vs-refresh source check passed");
 }
 
 main().catch((error) => {
