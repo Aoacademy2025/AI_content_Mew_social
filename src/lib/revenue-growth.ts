@@ -1,3 +1,6 @@
+// One definition of the Asia/Bangkok day boundary, shared with the admin stats and cost routes.
+import { bangkokDate } from "@/lib/bangkok-day";
+
 export const REVENUE_RANGE_DAYS = [7, 30, 90] as const;
 export type RevenueRangeDays = (typeof REVENUE_RANGE_DAYS)[number];
 
@@ -77,15 +80,6 @@ function sumCash(events: readonly RevenueCashEvent[], from: Date, until: Date) {
     total: stripeGross - refunds + manual,
     transactions,
   };
-}
-
-function bangkokDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
 }
 
 function shortBangkokDate(date: Date): string {

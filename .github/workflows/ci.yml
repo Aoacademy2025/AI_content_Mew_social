@@ -233,6 +233,9 @@ jobs:
       - name: Verify MRR is priced from real cash, never the tier list price
         run: npm run verify:admin-number-mrr-actual-cash
 
+      - name: Verify admin "today" and daily labels use Asia/Bangkok days
+        run: npm run verify:admin-number-bangkok-day
+
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 

@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
+import { bangkokWindowStart, startOfBangkokDay } from "@/lib/bangkok-day";
 
 export async function GET() {
   try {
@@ -12,12 +13,13 @@ export async function GET() {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
-    weekStart.setHours(0, 0, 0, 0);
+    // Business days are Asia/Bangkok days, not the server's. `TZ` is unset on the VPS, so
+    // a server-clock midnight started "today" at 07:00 Bangkok — between Bangkok midnight and 07:00
+    // this card reported yesterday's signups (audit A4 rows #8/#9). `bangkokWindowStart(now, 7)`
+    // is also a TRUE seven days: the old `now − 7d` then floor spanned eight calendar days.
+    const now = new Date();
+    const todayStart = startOfBangkokDay(now);
+    const weekStart = bangkokWindowStart(now, 7);
 
     const [
       totalUsers,
