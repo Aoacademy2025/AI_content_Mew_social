@@ -15,6 +15,7 @@
     "verify:deploy-maintenance": "tsx scripts/verify-deploy-maintenance-window.ts",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
+    "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
     "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
