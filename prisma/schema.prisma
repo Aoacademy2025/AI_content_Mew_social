@@ -1133,6 +1133,13 @@ model Notification {
   link      String?
   read      Boolean          @default(false)
   createdAt DateTime         @default(now())
+
+  // B6 row 1 (perf audit 2026-09-12): /api/notifications GET filters on
+  // userId and orders by createdAt desc (A3 §A3.7 item 9) — this table had
+  // no index beyond its PK and A1b measured a full SCAN over 16,537 rows.
+  // userId leads so the same index also serves the PATCH/DELETE handlers,
+  // which filter on userId alone; no second index is needed.
+  @@index([userId, createdAt])
 }
 
 enum NotificationType {

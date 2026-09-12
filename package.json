@@ -167,6 +167,7 @@
     "verify:video-failure-credit-settlement": "tsx scripts/verify-video-failure-credit-settlement.ts",
     "verify:prisma-options": "tsx scripts/verify-prisma-options.ts",
     "verify:prisma-slow-tx": "rm -rf /tmp/heroai-slow-tx.db && DATABASE_URL=file:/tmp/heroai-slow-tx.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-slow-tx.db PRISMA_SLOW_TX_MS=50 tsx scripts/verify-prisma-slow-tx.ts",
+    "verify:notification-index": "rm -rf /tmp/heroai-notification-index.db && DATABASE_URL=file:/tmp/heroai-notification-index.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-notification-index.db tsx scripts/verify-notification-index.ts",
     "verify:prisma-transient-retry": "tsx scripts/verify-prisma-transient-retry.ts",
     "verify:hero-image-scene-retry": "tsx scripts/verify-hero-image-scene-retry.ts",
     "verify:hero-image-scene-coverage": "tsx scripts/verify-hero-image-scene-coverage.ts",

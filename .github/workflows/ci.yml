@@ -241,6 +241,9 @@ jobs:
       - name: Verify the SQLite slow-transaction timer fires
         run: npm run verify:prisma-options && npm run verify:prisma-slow-tx
 
+      - name: Verify Notification index (SEARCH not SCAN)
+        run: npm run verify:notification-index
+
       - name: Verify media streams survive client cancellation
         run: npm run verify:media-stream
 
