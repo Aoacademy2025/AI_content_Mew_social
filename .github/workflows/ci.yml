@@ -270,6 +270,8 @@ jobs:
         run: npm run verify:storage-health
       - name: Verify the subtitle font sheet loads only where subtitles render
         run: npm run verify:subtitle-fonts-scope
+      - name: Verify admin nav is five Thai groups with a route per href
+        run: npm run verify:admin-navigation
 
       - name: Build
         run: npm run build

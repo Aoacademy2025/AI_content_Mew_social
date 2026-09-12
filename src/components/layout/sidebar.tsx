@@ -9,8 +9,9 @@ import { fetchMe } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
 import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 import {
-  Settings, Users, Shield, Lock,
+  Settings, Users, Lock,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, TrendingUp, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
+  BarChart3, Tag, Languages, HardDrive, Music,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -78,13 +79,20 @@ const adminStudioItems: SidebarNavItem[] = [
   { title: "Gallery",      href: "/videos",        icon: Video },
   { title: "Settings",     href: "/settings",      icon: Settings },
 ];
-const adminAdminItems: SidebarNavItem[] = [
-  { title: "Admin",        href: "/admin",          icon: Shield, exact: true },
-  { title: "รายได้",        href: "/admin/revenue",  icon: TrendingUp },
-  { title: "Insights",     href: "/admin/insights", icon: Activity },
-  { title: "จัดการผู้ใช้",  href: "/admin/users",    icon: Users },
-  { title: "คูปอง",         href: "/admin/coupons",  icon: Ticket },
-  { title: "Updates",      href: "/admin/updates",  icon: Megaphone },
+// Admin nav — five Thai groups (ADR 0062: each admin surface answers one
+// question; /admin is "how is today going", money lives only on /admin/revenue).
+const adminGroups: Array<{ label: string; items: SidebarNavItem[] }> = [
+  { label: "ภาพรวม",         items: [{ title: "ภาพรวม",            href: "/admin",           icon: BarChart3, exact: true }] },
+  { label: "รายได้",          items: [{ title: "รายได้",             href: "/admin/revenue",   icon: TrendingUp }] },
+  { label: "ลูกค้า",          items: [{ title: "จัดการผู้ใช้",       href: "/admin/users",     icon: Users },
+                                      { title: "Ticket ช่วยเหลือ",   href: "/admin/support",   icon: Ticket },
+                                      { title: "คูปอง",              href: "/admin/coupons",   icon: Tag }] },
+  { label: "คุณภาพระบบ",      items: [{ title: "ตัวชี้วัดการใช้งาน", href: "/admin/insights",  icon: Activity },
+                                      { title: "คำตัดซับ",           href: "/admin/loanwords", icon: Languages }] },
+  { label: "ตั้งค่า & ระบบ",   items: [{ title: "ตั้งค่าระบบ",        href: "/admin/settings",  icon: Settings },
+                                      { title: "พื้นที่ดิสก์",        href: "/admin/storage",   icon: HardDrive },
+                                      { title: "คลังเพลง",           href: "/admin/music",     icon: Music },
+                                      { title: "ประกาศอัปเดต",       href: "/admin/updates",   icon: Megaphone }] },
 ];
 
 /** Small uppercase group label (admin sections). Collapses to a subtle divider. */
@@ -453,8 +461,28 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
           <>
             <SectionLabel collapsed={collapsed}>Studio</SectionLabel>
             {adminItems.map(renderNavItem)}
-            <SectionLabel collapsed={collapsed} withDivider>Admin</SectionLabel>
-            {adminAdminItems.map(renderNavItem)}
+            {touchTargets ? (
+              // Phone: each Thai group is its own collapsible <details>, open
+              // by default so the full nav is still reachable without a tap.
+              adminGroups.map((group) => (
+                <details key={group.label} open className="mt-1">
+                  <summary
+                    className="cursor-pointer list-none px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--ui-text-muted)" }}
+                  >
+                    {group.label}
+                  </summary>
+                  {group.items.map(renderNavItem)}
+                </details>
+              ))
+            ) : (
+              adminGroups.map((group) => (
+                <div key={group.label}>
+                  <SectionLabel collapsed={collapsed} withDivider>{group.label}</SectionLabel>
+                  {group.items.map(renderNavItem)}
+                </div>
+              ))
+            )}
           </>
         ) : (
           userItems.map(renderNavItem)

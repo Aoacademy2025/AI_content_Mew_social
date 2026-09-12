@@ -112,10 +112,11 @@ async function main() {
     fs.rmSync(cacheRootB, { recursive: true, force: true });
   }
 
-  // Source-level check: the admin page's mount effect must hit the cache
+  // Source-level check: the storage page's mount effect must hit the cache
   // (no refresh=1); only the refresh button's onClick handler (refreshStorageInfo)
   // may bypass it. Guards against the mount call quietly regaining `?refresh=1`,
-  // which would defeat the point of caching on every /admin open.
+  // which would defeat the point of caching on every /admin/storage open.
+  // (Task C3 moved this code from admin/page.tsx to admin/storage/page.tsx.)
   const adminPagePath = path.join(
     __dirname,
     "..",
@@ -123,6 +124,7 @@ async function main() {
     "app",
     "(dashboard)",
     "admin",
+    "storage",
     "page.tsx",
   );
   const adminPageSource = fs.readFileSync(adminPagePath, "utf8");
