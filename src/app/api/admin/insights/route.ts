@@ -653,7 +653,9 @@ function summarize(
   const renderStartedJobs = eventCount(rows, (row) => row.step === "render" && row.name === "pipeline_step_started");
   const renderDoneJobs = eventCount(rows, (row) => row.step === "render" && row.name === "pipeline_step_done");
   const renderTaskSuccessPct = pct(serverRenderRows.length, serverStartRows.length);
-  const videoCompletionPenalty = videoJobs.total > 0
+  // Gate on SETTLED work, not on every job in the window: a window holding only running jobs has no
+  // completion rate yet, and treating that as 0 % docked up to 20 points for normal work in flight.
+  const videoCompletionPenalty = videoJobs.settled > 0
     ? Math.max(0, 100 - videoJobs.completionPct) / 3
     : 0;
   const healthScore = Math.max(

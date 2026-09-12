@@ -71,7 +71,11 @@ async function main() {
   // ---- (a) the tile counts creation jobs, not the all-COMPLETED Video table ------------------
   check(summary.total === 7, `(a) total = the 7 creation jobs, the export job excluded (${summary.total})`);
   check(summary.completed === 3, `(a) completed = VideoJob type=create, status=done (${summary.completed})`);
-  check(summary.completionPct === 43, `(a) completionPct = 3/7 = 43 %, not the constant 100 % (${summary.completionPct})`);
+  check(summary.settled === 5, `(a) settled = done + failed + canceled, the rate's denominator (${summary.settled})`);
+  check(summary.inFlight === 2, `(a) the queued and processing jobs are still in flight (${summary.inFlight})`);
+  check(summary.settled + summary.inFlight === summary.total,
+    "(a) settled + inFlight = total — an unfinished job is never lost, only excluded from the rate");
+  check(summary.completionPct === 60, `(a) completionPct = 3 done / 5 settled = 60 %, not 3/7 (${summary.completionPct})`);
 
   const videoRows = await prisma.video.findMany({ select: { status: true } });
   check(
@@ -81,11 +85,36 @@ async function main() {
   check(summary.completionPct !== 100,
     "(a) with an all-COMPLETED Video table the tile is no longer a constant 100 %");
 
+  // ---- (a2) work still running must not drag the rate down -----------------------------------
+  // The default view is 24 hours, so renders are normally in flight when the page is opened. Under
+  // the old denominator (every job in the window) that read as failure and docked the Health Score.
+  await job("c-running-1", "create", "processing", EARLY_DAY_11);
+  await job("c-running-2", "create", "waiting_provider", EARLY_DAY_11);
+  await job("c-running-3", "create", "queued", EARLY_DAY_11);
+  await job("c-running-4", "create", "processing", LATE_DAY_10);
+  const withRunning = summarizeCreationJobs(
+    await prisma.videoJob.findMany({ select: { status: true, type: true, outputJson: true } }),
+  );
+  check(withRunning.completionPct === summary.completionPct,
+    `(a2) four more running jobs do not move the completion rate (${withRunning.completionPct} vs ${summary.completionPct})`);
+  check(withRunning.settled === summary.settled,
+    `(a2) running jobs are excluded from the denominator (${withRunning.settled})`);
+  check(withRunning.completed === summary.completed,
+    `(a2) running jobs are excluded from the numerator (${withRunning.completed})`);
+  check(withRunning.inFlight === 6 && withRunning.total === 11,
+    `(a2) they are still reported as in flight (${withRunning.inFlight} of ${withRunning.total})`);
+  check(summarizeCreationJobs([{ status: "processing", type: "create", outputJson: null }]).completionPct === 0,
+    "(a2) a window of nothing but running jobs has no rate to report (0, and the Health Score gate skips it)");
+
   // ---- (b) canceled jobs are accounted for ---------------------------------------------------
   check(summary.canceled === 1, `(b) canceled creation jobs are counted (${summary.canceled})`);
   check(
     summary.completed + summary.failed + summary.canceled + summary.pending + summary.processing === summary.total,
     "(b) the status buckets add up to the total — no job goes missing",
+  );
+  check(
+    withRunning.completed + withRunning.failed + withRunning.canceled + withRunning.pending + withRunning.processing === withRunning.total,
+    "(b) they still add up once work is in flight",
   );
 
   // ---- (c) the Health Score's stuck term can actually fire ------------------------------------
@@ -103,6 +132,8 @@ async function main() {
 
   // ---- (d) the surfaces actually use it -------------------------------------------------------
   const route = readFileSync("src/app/api/admin/insights/route.ts", "utf8");
+  check(/videoJobs\.settled > 0/.test(route),
+    "(d) the Health Score's video penalty is gated on settled work, not on every job in the window");
   check(/summarizeCreationJobs\(/.test(route),
     "(d) the route derives the video tile from creation jobs");
   check(!/summarizeVideoJobs\(/.test(route),
@@ -119,6 +150,8 @@ async function main() {
     "(d) the server job panel renders the canceled count");
   check(/canceled: number/.test(page),
     "(d) the payload type carries canceled");
+  check(/งานที่จบแล้ว/.test(page),
+    "(d) the tile's sub-label states the denominator it divides by");
 
   await prisma.$disconnect();
 
