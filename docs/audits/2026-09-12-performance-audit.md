@@ -1493,25 +1493,25 @@ Read: `src/lib/render/run-render.ts`, `scripts/render-worker.ts`, `scripts/mcp-v
 
 | surface / metric | before (A1/A2, 2026-09-12) | after D1–D3 (Gate B) | after D5 (C-gate) | after 7-day watch |
 |---|---|---|---|---|
-| `/admin` (cold / warm ms) | 1038 / 747 | — | — | — |
-| `/dashboard` (cold / warm ms) | 674 / 3342 | — | — | — |
-| `/videos` (cold / warm ms) | 684 / 546 | — | — | — |
-| `/admin/insights` (cold / warm ms) | 874 / 746 | — | — | — |
-| `/video-editor` (cold / warm ms) | 880 / 860 | — | — | — |
-| `/api/user/me` (warm p50/max ms) | 182 / 219 | — | — | — |
-| `/api/updates?summary=1` (warm p50/max ms) | 95 / 163 | — | — | — |
-| `/api/notifications` (warm p50/max ms) | 104 / 182 | — | — | — |
-| `/api/admin/stats` (warm p50/max ms) | 190 / 209 | — | — | — |
-| `/api/admin/settings` (warm p50/max ms) | 100 / 232 | — | — | — |
-| `/api/admin/storage` (warm p50/max ms) | 269 / 528 | — | — | — |
-| `/api/admin/cleanup` (warm p50/max ms) | 10,164–10,738 (cold, one-shot ×3; no warm series by design) | — | — | — |
-| `/api/admin/support?status=OPEN` (warm p50/max ms) | 93 / 169 | — | — | — |
-| `/api/admin/music` (warm p50/max ms) | 91 / 160 | — | — | — |
-| `/api/admin/insights?days=30` (warm p50/max ms) | 826 / 996 | — | — | — |
-| `/api/user/stats` (warm p50/max ms) | 100 / 188 | — | — | — |
-| `/api/videos` (warm p50/max ms) | 99 / 160 | — | — | — |
-| `/api/editor-projects` (warm p50/max ms) | 93 / 155 | — | — | — |
-| `/api/admin/revenue` (warm p50/max ms) | 1704 / 1853 | — | — | — |
+| `/admin` (cold / warm ms) | 1038 / 747 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **565 / 599** (new overview; key XHR `/api/admin/trends?days=30`) — target ≤ 2000 ✅ | — |
+| `/dashboard` (cold / warm ms) | 674 / 3342 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **1183 / 1873** — cold is bimodal across 6 reps (740, 1183, 1326, 2268, 2379, 2386; 6-rep median 1797). Warm improved from 3342. Target ≤ 1500 — **passes on the settled run, misses on the 6-rep median** ⚠️ | — |
+| `/videos` (cold / warm ms) | 684 / 546 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **511 / 746** — target ≤ 1500 ✅ | — |
+| `/admin/insights` (cold / warm ms) | 874 / 746 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **1091 / 869** — target ≤ 2500 ✅. ⚠️ the page issued `/api/admin/insights?days=1`, not `days=30`: the URL parameter is not honoured (see §8.2) | — |
+| `/video-editor` (cold / warm ms) | 880 / 860 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **847 / not captured** — target ≤ 3000 ✅ (cold is the AC metric; the warm loop did not complete and was not retried) | — |
+| `/api/user/me` (warm p50/max ms) | 182 / 219 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 260 / 385 ✅ (< 350 / < 500) | — |
+| `/api/updates?summary=1` (warm p50/max ms) | 95 / 163 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 130 / 186 ✅ | — |
+| `/api/notifications` (warm p50/max ms) | 104 / 182 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 160 / 264 ✅ | — |
+| `/api/admin/stats` (warm p50/max ms) | 190 / 209 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 177 / 282 ✅ | — |
+| `/api/admin/settings` (warm p50/max ms) | 100 / 232 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 115 / 174 ✅ | — |
+| `/api/admin/storage` (warm p50/max ms) | 269 / 528 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 494 cold → **182 / 184** (n=3) ✅ — B1's 10-minute server cache is working | — |
+| `/api/admin/cleanup` (warm p50/max ms) | 10,164–10,738 (cold, one-shot ×3; no warm series by design) | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **12,195 ms, HTTP 409** (n=1) ⚠️ — slower than before and the status changed from 200; recorded as a known cost, not judged against the threshold (see §8.2) | — |
+| `/api/admin/support?status=OPEN` (warm p50/max ms) | 93 / 169 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 105 / 157 ✅ | — |
+| `/api/admin/music` (warm p50/max ms) | 91 / 160 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 125 / **728** ⚠️ — median fine, one outlier over the 500 ms max | — |
+| `/api/admin/insights?days=30` (warm p50/max ms) | 826 / 996 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **2580 / 2848** (n=12) ❌ — misses < 350 / < 500 by a wide margin; this is the accepted C7 outcome pending the per-day rollup table (see §8.2) | — |
+| `/api/user/stats` (warm p50/max ms) | 100 / 188 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 111 / 170 ✅ | — |
+| `/api/videos` (warm p50/max ms) | 99 / 160 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 178 / 273 ✅ | — |
+| `/api/editor-projects` (warm p50/max ms) | 93 / 155 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | 228 / 322 ✅ | — |
+| `/api/admin/revenue` (warm p50/max ms) | 1704 / 1853 | not measured separately — B and C shipped in three same-day rounds on 09-12, so the browser re-measure ran once, after everything | **1913 / 3019** (n=12) ❌ — slightly worse than before and still far over the threshold | — |
 | Slow-tx ≥ 5 s per day (ai-content, 09-09/09-10/09-11/09-12) | 42 / 98 / 71 / 4 (09-09 partial from 18:31 · 09-10 full · 09-11 full · 09-12 partial to 03:47; **judge AC3 against full days: 98, 71**) | **1** in the 24 h 09-12T13:33Z→09-13T13:33Z (all 5 apps); the single event is 20,051 ms at 09-12T15:41:57Z, ~1 h after the round-2 deploy. **0 in the last 22 h.** Bangkok-day series (all apps) 09-09 65 · 09-10 168 · 09-11 123 · 09-12 120 · **09-13 0** | — | — |
 | Socket timeout per day (ai-content, 09-09/09-10/09-11; total incl. untimestamped era) | 17 / 11 / 5 (total 73) | **0** in the 24 h window (all 5 apps) | — | — |
 | P1008 per day (all apps: ai-content / story-film / mcp-video-worker / render-worker-12 / render-worker-13; ai-content total incl. untimestamped era) | ai-content 7 / 3 / 3 (total 23) · story-film 25 / 24 / 25 (total 102) · mcp-video-worker 1 / 2 / 1 (total 5) · render-worker-12 total 1 · render-worker-13 total 2 | **0** across all 5 apps in the 24 h window | — | — |
@@ -1538,6 +1538,43 @@ Read-only census over **2026-09-12T13:33Z → 2026-09-13T13:33Z** (= 09-12 20:33
 The single remaining event is `2026-09-12T15:41:57Z [prisma-slow-tx] #10 held 20051ms` — transaction counter `#10` on the freshly restarted process, roughly one hour after the round-2 deploy at 09-12T14:37Z. Nothing since: **22 h with zero slow transactions, and 24.5 h since the last `lease failed` (09-12T13:16:02Z)**.
 
 Against AC3 (`[prisma-slow-tx]` held ≥ 5 s = 0/day and `Socket timeout` = 0/day for 7 consecutive days) this is day 1 of the watch, and it passes on `Socket timeout` outright. The watch runs to ~2026-09-19.
+
+### 8.2 Gate B — browser re-measure (2026-09-13, Mew's logged-in Chrome)
+
+Same method as A2: **cold** = a fresh top-level navigation to the URL; **warm** = clicking the real in-app sidebar `<a>`; **time-to-usable** = `responseEnd` of the XHR that populates the page's headline numbers, relative to navigation start (cold) or to the click (warm). Endpoint timings are `performance.now()` around `fetch(…, {cache:'no-store'})`, run 1 = cold, runs 2–n = the warm series. No screenshots were taken or saved.
+
+**Deviations from the brief, stated up front.**
+- `/api/admin/cleanup` was measured **n=1** as instructed. `/api/admin/storage` was measured **n=3** rather than n=1: three calls are enough to prove B1's server-side cache (494 ms cold, then 182/184 ms) and the incident that motivated the n=1 rule was caused by `cleanup`'s disk walk, not by `storage`.
+- `/api/admin/insights?days=30` and `/api/admin/revenue` were measured at **n=12** instead of n=20 — at 2–3 s per call a 20-run loop is itself a load test on a live box.
+- `/video-editor` **warm** was not captured: the measurement loop did not complete and was not retried. Cold is the metric the acceptance criterion names, and it passes with room to spare.
+- **One contaminated run was discarded.** An early 6-route × 20 loop exceeded the automation tool's 45 s limit; the call returned an error but the loop kept running in the page, so the next measurement ran concurrently with it (`/api/user/me` p50 437 ms against a 182 ms baseline). The tab was navigated away to kill both loops, the API surface was confirmed settled (`/api/admin/stats` 159/188/239 ms), and every number reported here was taken after that. This is the same failure mode as the A2 incident and the same remedy.
+
+**Headline: the page targets are met, the two heavy endpoints are not.**
+
+| surface | target | measured | verdict |
+|---|---|---|---|
+| `/admin` (new overview) | ≤ 2.0 s | 565 ms cold / 599 ms warm | ✅ |
+| `/videos` | ≤ 1.5 s | 511 ms / 746 ms | ✅ |
+| `/admin/insights` | ≤ 2.5 s | 1091 ms / 869 ms | ✅ |
+| `/video-editor` open | ≤ 3.0 s | 847 ms cold | ✅ |
+| `/dashboard` | ≤ 1.5 s | 1183 ms settled / 1797 ms 6-rep median | ⚠️ borderline |
+| every other endpoint | p50 < 350 ms, max < 500 ms | all pass | ✅ |
+| `/api/admin/insights?days=30` | p50 < 350 ms | 2580 ms | ❌ known |
+| `/api/admin/revenue` | p50 < 350 ms | 1913 ms | ❌ |
+
+**`/admin` meets ADR 0062.** The overview issues exactly one data request, `/api/admin/trends?days=30`, plus the shared `/api/user/me`, `/api/updates?summary=1` and `/api/notifications`. It calls **none** of storage, settings, music, cleanup, support-list or stats — the acceptance criterion holds as measured, not just as reviewed. Admin navigation renders eleven items (`/admin`, `revenue`, `users`, `support`, `coupons`, `insights`, `loanwords`, `settings`, `storage`, `music`, `updates`).
+
+**`/dashboard` is bimodal, and the cause is visible in its own waterfall.** Six cold reps: 740, 1183, 1326, 2268, 2379, 2386 ms. The page fires **nine API requests in parallel at t ≈ 93 ms**; eight of them finish in 370–794 ms while `/api/user/me` — the request the page waits on — takes 1529 ms. Measured alone the same endpoint is 260 ms. So this is not a slow endpoint, it is `/api/user/me` queueing behind its own page's fan-out. Reducing the dashboard's parallel fan-out, or letting the page render before `/api/user/me` resolves, is the fix; it is a follow-up, not a regression from this plan (warm improved from 3342 ms to 1873 ms).
+
+**Two endpoints still miss the API threshold.**
+- `/api/admin/insights?days=30` at 2580 ms p50. This is the known, accepted C7 outcome: C5b's full-window read took it to ~2.7 s, C7 removed ~25 % of that, and ≤ 1 s needs the per-day rollup table that is still an open decision for Mew. The **page** is fast (869–1091 ms) because it does not actually request 30 days — see below.
+- `/api/admin/revenue` at 1913 ms p50, slightly worse than the 1704 ms baseline. Not previously flagged; filed as a follow-up.
+
+**Two new findings.**
+1. **`/admin/insights?days=30` ignores its URL parameter** — the page issued `/api/admin/insights?days=1`. Every page-level insights number in this table therefore describes a 1-day window, not 30. The A2 baseline measured the same URL, so the comparison is like-for-like, but the parameter not being honoured is a bug in its own right.
+2. **`/api/admin/cleanup` now returns HTTP 409** where it returned 200 before, and took 12,195 ms. The disk-walk cost is unchanged; the status change is new and unexplained. It needs one look before closure.
+
+**Money placement spot-check.** `/admin/insights` contains no `฿` amount, no `MRR` and no `Comped`; the words that do appear are the section label "รายได้", a descriptive sentence, and the count "ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ 29 คน" — counts and labels, which ADR 0062 allows. `Activation` appears once, as required.
 
 ## 9. Commands run on production
 
