@@ -1512,12 +1512,32 @@ Read: `src/lib/render/run-render.ts`, `scripts/render-worker.ts`, `scripts/mcp-v
 | `/api/videos` (warm p50/max ms) | 99 / 160 | — | — | — |
 | `/api/editor-projects` (warm p50/max ms) | 93 / 155 | — | — | — |
 | `/api/admin/revenue` (warm p50/max ms) | 1704 / 1853 | — | — | — |
-| Slow-tx ≥ 5 s per day (ai-content, 09-09/09-10/09-11/09-12) | 42 / 98 / 71 / 4 (09-09 partial from 18:31 · 09-10 full · 09-11 full · 09-12 partial to 03:47; **judge AC3 against full days: 98, 71**) | — | — | — |
-| Socket timeout per day (ai-content, 09-09/09-10/09-11; total incl. untimestamped era) | 17 / 11 / 5 (total 73) | — | — | — |
-| P1008 per day (all apps: ai-content / story-film / mcp-video-worker / render-worker-12 / render-worker-13; ai-content total incl. untimestamped era) | ai-content 7 / 3 / 3 (total 23) · story-film 25 / 24 / 25 (total 102) · mcp-video-worker 1 / 2 / 1 (total 5) · render-worker-12 total 1 · render-worker-13 total 2 | — | — | — |
-| WAL high-water | 35,201,312 B (8.54×) | — | — | — |
-| DB file size | 555,753,472 B (555.75 MB) | — | — | — |
+| Slow-tx ≥ 5 s per day (ai-content, 09-09/09-10/09-11/09-12) | 42 / 98 / 71 / 4 (09-09 partial from 18:31 · 09-10 full · 09-11 full · 09-12 partial to 03:47; **judge AC3 against full days: 98, 71**) | **1** in the 24 h 09-12T13:33Z→09-13T13:33Z (all 5 apps); the single event is 20,051 ms at 09-12T15:41:57Z, ~1 h after the round-2 deploy. **0 in the last 22 h.** Bangkok-day series (all apps) 09-09 65 · 09-10 168 · 09-11 123 · 09-12 120 · **09-13 0** | — | — |
+| Socket timeout per day (ai-content, 09-09/09-10/09-11; total incl. untimestamped era) | 17 / 11 / 5 (total 73) | **0** in the 24 h window (all 5 apps) | — | — |
+| P1008 per day (all apps: ai-content / story-film / mcp-video-worker / render-worker-12 / render-worker-13; ai-content total incl. untimestamped era) | ai-content 7 / 3 / 3 (total 23) · story-film 25 / 24 / 25 (total 102) · mcp-video-worker 1 / 2 / 1 (total 5) · render-worker-12 total 1 · render-worker-13 total 2 | **0** across all 5 apps in the 24 h window | — | — |
+| WAL high-water | 35,201,312 B (8.54×) | 35,201,312 B (8.54×) — **unchanged**; `wal_autocheckpoint` still 1000 pages ≈ 4 MB, so the checkpoint-starvation finding stands | — | — |
+| DB file size | 555,753,472 B (555.75 MB) | 576,262,144 B (576.26 MB; `page_count` 140,689 × 4,096, `freelist_count` 551) | — | — |
 | TelemetryEvent MB | 149.41 MB (28.3 % of DB) | — | — | — |
+
+### 8.1 The 24-hour production count after round 2 (2026-09-13)
+
+Read-only census over **2026-09-12T13:33Z → 2026-09-13T13:33Z** (= 09-12 20:33 → 09-13 20:33 Bangkok), covering the five online PM2 apps (`ai-content`, `mcp-video-worker`, two `render-worker`, `story-film-system-worker`). Every count is anchored on a leading `^2026-09-1[23]T` timestamp and filtered by the line's own ISO time — never by file name. Untimestamped `prisma-slow-tx` lines in the rotated set: **0**, so the census is complete.
+
+| class | baseline (per day, pre-fix) | 24 h after round 2 |
+|---|---|---|
+| `[prisma-slow-tx]` held ≥ 5000 ms | 42 / 98 / 71 (09-09 / 09-10 / 09-11) | **1** |
+| `[prisma-slow-tx]` any hold | 76 / 191 / 138 | **1** |
+| `Socket timeout` | 17 / 11 / 5 (ai-content) | **0** |
+| `Transaction already closed` | present | **0** |
+| `P1008` | 23 ai-content / 102 story-film / 5 mcp-video-worker | **0** |
+| `uncaughtException` | occasional | **0** |
+| `SQLITE_BUSY` / `database is locked` | occasional | **0** |
+| `[story-film-system] lease failed` | ~25/day | **0** |
+| PM2 crash restarts | — | **0** (uptime 23.1 h on all five = one restart in the window, the round-2 deploy itself) |
+
+The single remaining event is `2026-09-12T15:41:57Z [prisma-slow-tx] #10 held 20051ms` — transaction counter `#10` on the freshly restarted process, roughly one hour after the round-2 deploy at 09-12T14:37Z. Nothing since: **22 h with zero slow transactions, and 24.5 h since the last `lease failed` (09-12T13:16:02Z)**.
+
+Against AC3 (`[prisma-slow-tx]` held ≥ 5 s = 0/day and `Socket timeout` = 0/day for 7 consecutive days) this is day 1 of the watch, and it passes on `Socket timeout` outright. The watch runs to ~2026-09-19.
 
 ## 9. Commands run on production
 
@@ -2703,4 +2723,52 @@ GET /api/0/organizations/mew-social-k0/issues/?query=is:resolved environment:pro
 GET /api/0/organizations/mew-social-k0/issues/?query=is:ignored environment:production&statsPeriod=14d&project=4512028555804672&limit=100&sort=freq
 GET /api/0/organizations/mew-social-k0/issues/?query=environment:production&statsPeriod=14d|3d|24h&project=4512028555804672&limit=100&sort=freq
 GET /api/0/organizations/mew-social-k0/issues/<issueId>/     # 10 กลุ่ม เพื่อดู firstRelease/lastRelease
+```
+
+#### §8.1 — the 24-hour count (2026-09-13, read-only)
+
+All over `ssh -i ~/.ssh/hostinger_heroai_codex root@72.62.196.230`.
+
+**1 — health / status**
+```bash
+pm2 status; uptime; df -h / | tail -1; cd /var/www/ai-content && git rev-parse --short HEAD
+```
+
+**2 — per-app 24-hour census** (loop over `ai-content mcp-video-worker render-worker story-film-system-worker`)
+```bash
+FROM="2026-09-12T13:33:00"; TO="2026-09-13T13:33:00"; cd /root/.pm2/logs
+files=$(ls ${app}-error__*.log* ${app}-out__*.log* 2>/dev/null)
+zcat -f $files | grep -E '^2026-09-1[23]T' \
+  | awk -v f="$FROM" -v t="$TO" '{ts=substr($0,1,19); if (ts>=f && ts<t) print}' > /tmp/win_$app.txt
+grep -c 'prisma-slow-tx' /tmp/win_$app.txt
+grep -oE 'prisma-slow-tx.*held ([0-9]+)ms' /tmp/win_$app.txt | sed -nE 's/.*held ([0-9]+)ms.*/\1/p' | awk '$1>=5000' | wc -l
+grep -c 'Socket timeout' /tmp/win_$app.txt
+grep -c 'Transaction already closed' /tmp/win_$app.txt
+grep -c 'P1008' /tmp/win_$app.txt
+grep -c 'uncaughtException' /tmp/win_$app.txt
+grep -cE 'SQLITE_BUSY|database is locked' /tmp/win_$app.txt
+grep -c 'lease failed' /tmp/win_$app.txt
+# completeness check: untimestamped slow-tx lines
+zcat -f $files | grep -c 'prisma-slow-tx'; zcat -f $files | grep -E '^2026-' | grep -c 'prisma-slow-tx'
+```
+
+**3 — Bangkok-day series and last occurrences**
+```bash
+zcat -f *__*.log* | grep -E '^2026-09-[0-9]{2}T.*prisma-slow-tx.*held [0-9]+ms' \
+  | sed -nE 's/^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}):.*held ([0-9]+)ms.*/\1 \2 \3/p' \
+  | awk '{h=$2+7; d=$1; if(h>=24){h-=24; "date -u -d \""d" +1 day\" +%Y-%m-%d" | getline d2; d=d2}
+          n[d]++; if($3>=5000) big[d]++} END {for(k in n) printf "%s total=%d ge5s=%d\n", k, n[k], big[k]+0}' | sort
+zcat -f *__*.log* | grep -E '^2026-' | grep -F 'lease failed' | cut -c1-10 | sort | uniq -c
+zcat -f *__*.log* | grep -E '^2026-.*prisma-slow-tx' | sort | tail -2
+```
+
+**4 — DB / WAL / queue state (read-only)**
+```bash
+ls -l /var/www/ai-content/prisma/dev.db*
+sqlite3 -readonly /var/www/ai-content/prisma/dev.db \
+  'PRAGMA journal_mode; PRAGMA wal_autocheckpoint; PRAGMA page_size; PRAGMA page_count; PRAGMA freelist_count;'
+sqlite3 -readonly /var/www/ai-content/prisma/dev.db \
+  "SELECT 'RenderJob', status, count(*) FROM RenderJob WHERE status IN ('QUEUED','RUNNING') GROUP BY status;
+   SELECT 'VideoJob', status, count(*) FROM VideoJob WHERE status IN ('queued','processing','waiting_provider') GROUP BY status;"
+pm2 jlist   # restart counters
 ```
