@@ -41,25 +41,29 @@ R3 PR chain: #499 C7 (`af2ec1b3`) → #498 C8 (`f3f7bcd3`) → #501 C9 (`3e2a2e9
       by design). **Note:** the docs PR #503 moved `main` past `fad27f60`, so prod runs `91ababe6` —
       same R3 code plus that docs commit.
 - [ ] **B2.** Eyeball the new `/admin/revenue` "รอเก็บเงินครั้งแรก (trial ผูกบัตรแล้ว)" card — needs Mew logged in.
-- [!] **B3. C9's off-box copy is INERT on prod — found in the post-deploy check.** The cron ran at
-      14:24 UTC and the snapshot itself is healthy (`/var/backups/heroai/dev-2026-09-13.db`,
-      532.2 MB, `integrity=ok`), but the log says both
-      `BACKUP_RSYNC_TARGET not set` and `BACKUP_R2 not configured — off-box copy NOT configured
-      (local backup only)`. Cause: prod `.env` has **no** `R2_*` or `BACKUP_*` keys at all
-      (checked by key name only: `cut -d= -f1 .env | grep -iE "r2|backup|cloudflare|s3"` → empty,
-      120 keys total). `backupR2ConfigFromEnv` returns `null` on missing/invalid env and the caller
-      treats that as "not configured", never as an error — so the run reports success while the
-      backup never leaves the box it is backing up.
-      To activate C9, prod `.env` needs: `R2_ACCOUNT_ID` (32 hex), `R2_BUCKET` (or
-      `BACKUP_R2_BUCKET`), `R2_WRITE_ACCESS_KEY_ID`, `R2_WRITE_SECRET_ACCESS_KEY` (≥ 16 chars),
-      optionally `R2_ENDPOINT` and `BACKUP_R2_RETENTION_DAYS` (default 30).
-      Also note the local prune runs at `BACKUP_RETENTION_DAYS` **default 14**, not 30 — 30 days is
-      the R2 retention only. **Mew's call: supply the R2 credentials, or accept local-only backups.**
-- [ ] **C. Gate B browser re-measure** — needs Mew logged in. A2 method; `/api/admin/cleanup`
-      and `/api/admin/storage` stay at n=1 (a 20× loop degraded the prod admin API for 2–3 min).
-- [ ] **D. 7-day watch to ~2026-09-19** — slow-tx ≥ 5 s = 0/day. Day 1 = today, passes.
-- [ ] **E. C6 docs** (CLAUDE.md admin dirs + Next 16 + `src/proxy.ts` + ADR 0062 pointer;
-      `docs/ops/linear-sentry-observability.md`; audit §8 final) → Tier-2 gate → deliver.
+- [x] **B3. C9's R2 off-box copy is LIVE — verified end to end.** First reported here as "inert";
+      that was **my operational error, not a product defect**. Sequence:
+      1. After the deploy I started the cron with `pm2 restart db-backup --update-env`, copied from
+         the handoff. `pm2 restart` replays the app definition PM2 already had **saved**, which was
+         written before C9 shipped, so the new `env` block never reached the process. The 14:24 run
+         logged `BACKUP_R2 not configured`.
+      2. `.env` genuinely has no `R2_*` keys — **by design**. R2 credentials live in the root-only
+         file `/var/www/ai-content/.env.r2.production`; `ecosystem.config.js` loads it once into
+         `r2MediaRuntimeEnv` (lines 21–37) and spreads it into the apps that need it. C9 already
+         wired `...r2MediaRuntimeEnv` into the `db-backup` block (line 229) — the code was correct
+         the whole time.
+      3. Fix = start it the way `CLAUDE.md` documents, from the ecosystem file, not by name:
+         `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then
+         `pm2 delete db-backup && pm2 start ecosystem.config.js --only db-backup --update-env && pm2 save`.
+      4. The run that followed: `snapshot OK (532.3 MB, integrity=ok)` →
+         `R2 copy sent -> heroai-media-production/db-backups/dev-2026-09-13.db` →
+         `R2 prune done (removed=0, retention=30d)`.
+      **Lesson:** `pm2 restart <name> --update-env` refreshes the *shell* environment only. Any change
+      to an app's `env` block in `ecosystem.config.js` needs `pm2 start ecosystem.config.js --only <name>`
+      (delete first if the app already exists), then `pm2 save`. Judging a newly shipped cron by a
+      `pm2 restart` is how a working feature looks broken.
+      Still genuinely open: `BACKUP_RSYNC_TARGET` is unset, so the rsync path stays off — that is the
+      pre-existing item below, and it is now the *second* off-box path, not the only one.
 
 ## Open decisions for Mew (none blocking)
 
@@ -67,9 +71,9 @@ R3 PR chain: #499 C7 (`af2ec1b3`) → #498 C8 (`f3f7bcd3`) → #501 C9 (`3e2a2e9
 2. The `/admin` delta chip and `/admin/revenue` history compare C10's new definition against snapshots written under the old one → a false ▼ for ~30 days. On-screen note, or leave it?
 3. `expectedMonthlyThb` on the new C8 card ignores coupons.
 4. Linear drafts: apply? (A5 umbrella items.)
-5. `BACKUP_RSYNC_TARGET` still needs an off-box destination — and see B3 above: C9's R2 path is
-   equally unconfigured, so **right now nothing leaves the box**. The nightly snapshot sits on the
-   same disk as `prisma/dev.db`, which is no protection against disk loss.
+5. `BACKUP_RSYNC_TARGET` still needs an off-box destination if a second copy is wanted. It is no
+   longer urgent: C9's R2 copy is live (verified 2026-09-13), so the nightly snapshot does leave the
+   box. Decide whether rsync is still worth configuring alongside R2.
 
 ## Lessons (do not relearn)
 
