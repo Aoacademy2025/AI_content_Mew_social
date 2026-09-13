@@ -64,6 +64,23 @@ R3 PR chain: #499 C7 (`af2ec1b3`) → #498 C8 (`f3f7bcd3`) → #501 C9 (`3e2a2e9
       `pm2 restart` is how a working feature looks broken.
       Still genuinely open: `BACKUP_RSYNC_TARGET` is unset, so the rsync path stays off — that is the
       pre-existing item below, and it is now the *second* off-box path, not the only one.
+- [x] **C. Gate B browser re-measure — DONE 2026-09-13** in Mew's logged-in Chrome (ADMIN, BUSINESS),
+      A2 method, written to audit §8 table + new §8.2. Page targets all met: `/admin` 565/599 ms,
+      `/videos` 511/746, `/admin/insights` 1091/869, `/video-editor` 847 cold; `/dashboard` borderline
+      (bimodal 740–2386, settled median 1183 — nine parallel calls at t≈93 ms starve `/api/user/me`).
+      `/admin` issues only `/api/admin/trends` → ADR 0062 verified as measured. Twelve endpoints pass
+      p50 < 350 / max < 500. **Three items for the Tier-2 gate:** (a) `/api/admin/insights?days=30`
+      2580 ms p50 — the known, accepted C7 outcome pending Mew's rollup-table decision;
+      (b) `/api/admin/revenue` 1913 ms p50, slightly worse than its 1704 ms baseline, not previously
+      flagged; (c) two new findings — `/admin/insights?days=30` ignores its URL parameter (the page
+      requests `days=1`), and `/api/admin/cleanup` now returns HTTP 409 where it returned 200.
+      Deviations disclosed in §8.2: storage n=3 (not 1), insights/revenue n=12 (not 20), editor warm
+      not captured, and one contaminated run discarded after an overrunning fetch loop.
+- [ ] **D. 7-day watch to ~2026-09-19** — slow-tx ≥ 5 s = 0/day, `Socket timeout` = 0/day,
+      `P1008` = 0/day in every PM2 app. Day 1 (09-13) passes. Re-count each day with the §9 commands.
+- [ ] **E. C6 docs** — `CLAUDE.md` admin dirs + Next 16 + `src/proxy.ts` + an ADR 0062 pointer;
+      a paragraph in `docs/ops/linear-sentry-observability.md`; audit §8 final → **Tier-2 gate** → deliver.
+
 
 ## Open decisions for Mew (none blocking)
 
