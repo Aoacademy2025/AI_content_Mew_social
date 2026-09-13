@@ -58,6 +58,10 @@ The filter must never drop an event whose stack touches this application. `npm r
 
 The SDK explicitly disables collection of cookies, HTTP headers and bodies, URL query parameters, GraphQL documents and variables, generative-AI inputs and outputs, database query data, user information, and stack-frame local variables. The `beforeSend` guard removes user data and redacts secret-like keys as a second boundary.
 
+## In-app error visibility
+
+The daily error card on `/admin` displays secondary counts from `ERROR_SYSTEM` notifications and `frontend_error` telemetry to give operators a quick at-a-glance signal that something is wrong and roughly how much volume. Sentry remains the evidence source — the card tells you there is a signal, Sentry tells you what actually broke and on which users and browsers.
+
 ## Production environment
 
 Store values only in the protected production environment. Never commit the token or paste it into chat.
