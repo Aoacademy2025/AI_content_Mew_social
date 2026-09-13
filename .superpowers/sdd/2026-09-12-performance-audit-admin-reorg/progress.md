@@ -78,8 +78,35 @@ R3 PR chain: #499 C7 (`af2ec1b3`) → #498 C8 (`f3f7bcd3`) → #501 C9 (`3e2a2e9
       not captured, and one contaminated run discarded after an overrunning fetch loop.
 - [ ] **D. 7-day watch to ~2026-09-19** — slow-tx ≥ 5 s = 0/day, `Socket timeout` = 0/day,
       `P1008` = 0/day in every PM2 app. Day 1 (09-13) passes. Re-count each day with the §9 commands.
-- [ ] **E. C6 docs** — `CLAUDE.md` admin dirs + Next 16 + `src/proxy.ts` + an ADR 0062 pointer;
-      a paragraph in `docs/ops/linear-sentry-observability.md`; audit §8 final → **Tier-2 gate** → deliver.
+- [x] **E. C6 docs — DONE, PR #505 merged** (`CLAUDE.md`: Next 15→16, admin route split + ADR 0062
+      pointer, `src/components/remotion/` removed as non-existent, middleware path → `src/proxy.ts`;
+      `docs/ops/linear-sentry-observability.md` gained the in-app error-card paragraph; the audit's
+      Thai summary was rewritten by the session to match §8/§8.1/§8.2). `verify:sentry-config` 38/38.
+
+## Tier-2 gate — 2026-09-13
+
+| # | Acceptance criterion | Verdict |
+|---|---|---|
+| 1 | Audit report with Thai summary, §1–§9, §8 filled, every prod command listed, no customer identity, no screenshots | ✅ verified (only `x@example.invalid` placeholders; zero image files in the 107-file diff) |
+| 2 | Page targets after D5 | ✅ `/admin` 565 ms, `/videos` 511, `/admin/insights` 1091, `/video-editor` 847 · ⚠️ `/dashboard` bimodal 740–2386, **Mew accepted** ("หน้า dashboard โอเค") |
+| 2b | API warm p50 < 350 ms, max < 500 ms | ⚠️ 12 of 14 pass; `/api/admin/insights?days=30` 2580 ms (known, accepted, rollup table is Mew's call) and `/api/admin/revenue` 1913 ms (new follow-up) |
+| 3 | 7 consecutive days with slow-tx ≥ 5 s = 0/day, Socket timeout = 0/day, P1008 = 0/day | ⏳ day 1 passes; window runs to ~2026-09-19 |
+| 4 | No PR touches render files | ✅ verified across the whole 107-file diff `bd84ba40..main`; `ecosystem.config.js` changed only in the `db-backup` block, no `RENDER_*`/`STOCK_*` line |
+| 5 | 14-day error summary + Linear drafts, nothing applied | ✅ A5; drafts under `docs/plans/reports/linear-drafts/`, no `--apply` |
+| 6 | Number-accuracy table covers every surface; each mismatch fixed or deferred with a reason | ✅ A4 + C2/C5 rows |
+| 7 | Five Thai groups and eleven admin items; `verify-admin-navigation` green | ✅ groups verified in `src/components/layout/sidebar.tsx:85–92`; eleven items verified rendering live |
+| 8 | `/admin` issues no storage/settings/music/cleanup/support-list/stats request | ✅ **measured**, not just reviewed — the overview issues only `/api/admin/trends` |
+| 9 | `verify-admin-trends` proves the bucket/zero-fill/failure-class contract | ✅ CI |
+| 10 | Money labels and `CostMarginPanel` only on `/admin/revenue`; insights has no money chips | ✅ `verify-money-only-on-revenue` green; live spot-check found no `฿`/MRR/Comped on insights |
+| 11 | CI green on every PR; B3/B6/C5 reviewed on opus; security review for B3 | ✅ |
+| 12 | Mew's sign-off on prod after D5 | ✅ `/dashboard` accepted ("หน้า dashboard โอเค") and the phone check of `/admin` passed ("ใช้งานได้มือถือ", 2026-09-13) — the mobile item had been outstanding since the interview |
+
+**Verdict: the plan is delivered, with Mew's sign-off complete.** Every code task shipped, every hard constraint held, and the
+headline outcome is measured rather than asserted: transactions held ≥ 5 s fell from 42/98/71 per day
+to 1 in 24 hours, with `Socket timeout`, `P1008` and story-film `lease failed` all at zero. Two
+things are carried forward and neither blocks closure: the 7-day watch (time, not work) and two
+endpoints over the API threshold (one known and accepted, one newly filed). Mew's own manual items
+— deleting the 64 stale snapshots and moving the North Star cron to 00:15 Bangkok — remain unstarted.
 
 
 ## Open decisions for Mew (none blocking)
@@ -101,3 +128,10 @@ R3 PR chain: #499 C7 (`af2ec1b3`) → #498 C8 (`f3f7bcd3`) → #501 C9 (`3e2a2e9
 - `ci.yml`/`package.json` adjacent-insert conflicts between stacked PRs resolve as a UNION — then assert no duplicate step names and that the YAML still parses.
 - Deploy pre-flight: `pgrep -x -f "bash deploy/deploy.sh"` (plain `pgrep` self-matches and aborted a deploy once).
 - Keep the ledger **committed**, not just in the worktree working directory.
+- **Injected measurement JS lands in Sentry as a production error.** The Gate B run defined
+  `window.__warm` in the page, then a top-level navigation wiped `window`; the still-running async
+  loop called it and threw `TypeError: window.__warm is not a function`, which Sentry captured as an
+  unhandled rejection on release `91ababe6b22e` at `/video-editor` and paged Mew over LINE. Stack was
+  `<anonymous>:5:18`, so it was obvious once opened — but it cost an alert and an audit. Wrap every
+  injected helper call in try/catch, and treat "my own tooling" as the first hypothesis for any error
+  whose stack frames are `<anonymous>`.

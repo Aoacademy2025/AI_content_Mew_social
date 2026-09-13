@@ -447,4 +447,4 @@ Deploy sequencing (Mew deploys, one message per deploy): **D1** = B1+B2+B4+B5 (o
 - Deleting stale `prisma/dev.db.*` backups on prod — Mew's hand, listed in the report.
 
 ## Status
-interviewed 2026-09-12 | approved: 2026-09-12 (Mew: "execute", overnight run) | executed: 2026-09-12 (Phase A complete; 🛑 Gate A presented 2026-09-12, awaiting Mew on B6 rows 2–3 + C5 fixes) | delivered: -
+interviewed 2026-09-12 | approved: 2026-09-12 (Mew: "execute", overnight run) | executed: 2026-09-12 → 2026-09-13 (Phases A, B and C all built, merged and deployed; prod `91ababe6`) | delivered: 2026-09-13 — Tier-2 gate passed with three items carried forward: the 7-day watch runs to ~2026-09-19 (day 1 passes), `/api/admin/insights?days=30` and `/api/admin/revenue` remain over the API threshold as recorded follow-ups, and Mew's manual items (delete 64 stale snapshots, North Star cron → 00:15 Bangkok) are unstarted
