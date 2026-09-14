@@ -2,11 +2,43 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { fetchWithAuthRecovery } from "../src/lib/authenticated-fetch";
+import {
+  authRecoveryTelemetrySpec,
+  fetchWithAuthRecovery,
+} from "../src/lib/authenticated-fetch";
+import {
+  clearAuthSessionEnded,
+  isAuthSessionEnded,
+} from "../src/lib/auth-session-ended";
 
 type FetchCall = { input: string | URL; init?: RequestInit };
 
 async function main() {
+  clearAuthSessionEnded();
+  assert.equal(
+    authRecoveryTelemetrySpec({ status: "refreshing", path: "/api/notifications", initialStatus: 401 }),
+    null,
+    "an in-flight refresh is not stored as an error row",
+  );
+  assert.deepEqual(
+    authRecoveryTelemetrySpec({
+      status: "recovered",
+      path: "/api/notifications",
+      initialStatus: 401,
+      retryStatus: 200,
+    }),
+    {
+      category: "product",
+      status: "done",
+      properties: { initialStatus: 401, retryStatus: 200 },
+    },
+    "a recovered 401 is not an error",
+  );
+  assert.equal(
+    authRecoveryTelemetrySpec({ status: "signed_out", path: "/api/notifications", initialStatus: 401 })?.category,
+    "error",
+  );
+
   const calls: FetchCall[] = [];
   let tokenReads = 0;
   const body = JSON.stringify({ topic: "ทดสอบ", durationSec: 60 });
@@ -58,6 +90,23 @@ async function main() {
   });
   assert.equal(stillUnauthorized.status, 401);
   assert.equal(missingTokenCalls, 1, "a signed-out session is not put into a retry loop");
+  assert.equal(isAuthSessionEnded(), true, "Clerk reporting no token is a terminal signed-out outcome");
+  let tokenReadsAfterSignOut = 0;
+  let fetchesAfterSignOut = 0;
+  const stillEnded = await fetchWithAuthRecovery("/api/notifications", undefined, {
+    fetcher: async () => {
+      fetchesAfterSignOut += 1;
+      return new Response(null, { status: 401 });
+    },
+    getFreshToken: async () => {
+      tokenReadsAfterSignOut += 1;
+      return "must-not-refresh-after-sign-out";
+    },
+  });
+  assert.equal(stillEnded.status, 401);
+  assert.equal(fetchesAfterSignOut, 1, "a later poll does not retry after signed-out");
+  assert.equal(tokenReadsAfterSignOut, 0, "a later poll does not ask Clerk for a token after signed-out");
+  clearAuthSessionEnded();
 
   let failedRefreshCalls = 0;
   const refreshFailure = await fetchWithAuthRecovery("/api/scripts/generate", undefined, {
