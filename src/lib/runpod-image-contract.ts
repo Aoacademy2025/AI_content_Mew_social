@@ -4,6 +4,15 @@ export type RunpodImageOutput = {
   data: string;
 };
 
+export class RunpodImageOutputError extends Error {
+  readonly code = "RUNPOD_OUTPUT_INVALID" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RunpodImageOutputError";
+  }
+}
+
 export type RunpodJobResponse = {
   id?: string;
   status?: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
@@ -79,6 +88,10 @@ export function publicZImageProviderInput(input: RunpodImageInput): Record<strin
 }
 
 export function firstRunpodImage(result: RunpodJobResponse): RunpodImageOutput {
+  if (result.output && result.output.ok === false) {
+    const providerError = result.output?.errors?.join("; ") || result.error;
+    throw new RunpodImageOutputError(providerError || "RUNPOD_OUTPUT_INVALID");
+  }
   const image = result.output?.images?.[0];
   if (image?.data && (image.type === "base64" || image.type === "s3_url")) return image;
   // Runpod's Z-Image public endpoint currently returns `output.result` in live
@@ -93,5 +106,5 @@ export function firstRunpodImage(result: RunpodJobResponse): RunpodImageOutput {
     return { filename, type: "temporary_url", data: temporaryUrl };
   }
   const providerError = result.output?.errors?.join("; ") || result.error;
-  throw new Error(providerError || "Runpod job completed without an image");
+  throw new RunpodImageOutputError(providerError || "Runpod job completed without an image");
 }

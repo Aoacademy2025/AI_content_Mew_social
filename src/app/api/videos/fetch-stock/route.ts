@@ -140,6 +140,7 @@ import {
   assessRunpodImageAdmission,
   forEachInFailFastBatches,
   heroRunpodCircuitState,
+  isSqliteWriteContentionError,
 } from "@/lib/hero-image-resilience";
 import {
   DEFAULT_HERO_IMAGE_SCENE_RETRY_MAX,
@@ -2568,7 +2569,11 @@ export async function POST(req: Request) {
       } catch (error) {
         stockTelemetry.downloadFailCount++;
         aiTelemetry.aiGenFailedCount++;
-        const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
+        const code = error instanceof HeroImageGenerationError
+          ? error.code
+          : isSqliteWriteContentionError(error)
+            ? "PROVIDER_POLL_FAILED"
+            : "OUTPUT_INVALID";
         const message = error instanceof Error ? error.message : "Hero AI Image failed";
         const providerFailure = error instanceof HeroImageGenerationError
           ? error.providerFailure

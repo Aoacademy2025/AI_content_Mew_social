@@ -7,6 +7,7 @@ import {
   assessRunpodImageAdmission,
   forEachInFailFastBatches,
   heroRunpodCircuitState,
+  isSqliteWriteContentionError,
   openHeroRunpodCircuit,
   recordHeroRunpodFailure,
   recordHeroRunpodSuccess,
@@ -38,6 +39,21 @@ async function main() {
     retryable: true,
     stopBatch: true,
   });
+  assert.deepEqual(classifyRunpodTerminalFailure("Runpod job completed without an image"), {
+    code: "RUNPOD_OUTPUT_INVALID",
+    systemic: false,
+    retryable: true,
+  });
+  assert.deepEqual(classifyRunpodTerminalFailure("RUNPOD_OUTPUT_INVALID"), {
+    code: "RUNPOD_OUTPUT_INVALID",
+    systemic: false,
+    retryable: true,
+  });
+
+  assert.equal(isSqliteWriteContentionError(new Error("Socket timeout (the database failed to respond to a query within the configured timeout).")), true);
+  assert.equal(isSqliteWriteContentionError(new Error("Transaction already closed")), true);
+  assert.equal(isSqliteWriteContentionError({ code: "P1008" }), true);
+  assert.equal(isSqliteWriteContentionError(new Error("Runpod job completed without an image")), false);
 
   const attempted: number[] = [];
   const batch = await forEachInFailFastBatches(
@@ -91,6 +107,22 @@ async function main() {
     true,
     "only one request may claim the half-open probe",
   );
+  recordHeroRunpodSuccess();
+  assert.equal(heroRunpodCircuitState().open, false);
+  closeHeroRunpodCircuit();
+  assert.deepEqual(recordHeroRunpodFailure("RUNPOD_OUTPUT_INVALID", "img-a", 4_000), {
+    circuitOpened: false,
+    independentSignals: 1,
+  }, "one invalid image must not open the provider circuit");
+  assert.deepEqual(recordHeroRunpodFailure("RUNPOD_OUTPUT_INVALID", "img-b", 4_001), {
+    circuitOpened: true,
+    independentSignals: 2,
+  }, "a second independent invalid image in the window opens the circuit");
+  assert.deepEqual(heroRunpodCircuitState(4_002), {
+    open: true,
+    code: "RUNPOD_OUTPUT_INVALID",
+    retryAfterMs: 10 * 60_000 - 1,
+  });
   recordHeroRunpodSuccess();
   assert.equal(heroRunpodCircuitState().open, false);
   assert.equal(shouldRetryQueuedRunpodJob({
@@ -251,6 +283,21 @@ async function main() {
     "the video pipeline must keep provider retries bounded by the shared decision contract",
   );
   assert.match(heroImage, /classifyRunpodTerminalFailure/, "provider terminal errors must retain systemic classification");
+  assert.match(
+    heroImage,
+    /RUNPOD_OUTPUT_INVALID/,
+    "a completed job with no image must classify as invalid output, not a poll outage",
+  );
+  assert.match(
+    heroImage,
+    /failAndRefundAiJob\([\s\S]*OUTPUT_INVALID/,
+    "invalid provider output must refund the reserved image job",
+  );
+  assert.match(
+    fetchStock,
+    /isSqliteWriteContentionError/,
+    "SQLite lock timeouts must not be laundered into OUTPUT_INVALID",
+  );
   assert.match(heroImage, /!isHeroRunpodRoute\(prepared\.providerRoute\)/, "Hero video must admit only approved routes inside the RunPod engine");
   assert.match(heroImage, /usesCustomRunpodEndpoint\(attempt\.providerRoute\)/, "custom orphan recovery must not call the unsupported public health route");
   assert.match(heroImage, /cancelRunpodImageJob/, "a bounded custom-worker timeout must cancel the exact durable provider job");

@@ -18,6 +18,7 @@ import {
   firstRunpodImage,
   getRunpodJob,
   prepareRunpodImageJob,
+  RunpodImageOutputError,
   runpodImageModelConfig,
   submitRunpodImageJob,
   type PreparedRunpodImageJob,
@@ -246,13 +247,27 @@ export async function pollImageGenerationAttempt(attempt: ImageGenerationAttempt
       const reportedCost = typeof result.output?.cost === "number" && Number.isFinite(result.output.cost)
         ? Math.max(0, Math.round(result.output.cost * 1_000_000))
         : undefined;
-      return {
-        status: "COMPLETED",
-        image: firstRunpodImage(result),
+      const timing = {
         delayTimeMs: typeof result.delayTime === "number" ? Math.round(result.delayTime) : undefined,
         executionTimeMs: typeof result.executionTime === "number" ? Math.round(result.executionTime) : undefined,
         providerReportedCostUsdMicros: reportedCost,
       };
+      try {
+        return {
+          status: "COMPLETED",
+          image: firstRunpodImage(result),
+          ...timing,
+        };
+      } catch (error) {
+        if (error instanceof RunpodImageOutputError) {
+          return {
+            status: "COMPLETED",
+            error: error.message,
+            ...timing,
+          };
+        }
+        throw error;
+      }
     }
     return {
       status: result.status ?? "IN_QUEUE",
