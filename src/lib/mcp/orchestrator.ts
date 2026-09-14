@@ -141,6 +141,7 @@ import {
   contentPreflightFailureDetails,
   narrativeVisualWindowsForPreflight,
 } from "@/lib/content-preflight.server";
+import { contentPreflightStockDegradeReason } from "@/lib/content-preflight-degrade";
 import { ensureVideoJobContentPreflight } from "@/lib/video-job-content-preflight.server";
 import {
   recordFirstPassVisualExport,
@@ -1836,6 +1837,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // base reel (เสียงคลิป + เพลงที่เลือก) → composite mode:"cutaway" → จบที่ preview.
     if (input.mode === "upload") {
       if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
+      let forceStockBroll = false;
 
       await step("captions", 20);
       const tx = await caller.post<{
@@ -1925,6 +1927,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upBrollUnits = brollWindowCaptions(upVisibleWindows);
 
       if (upVisibleWindows.length > 0) {
+        try {
         const uploadPreflight = await ensureUploadContentPreflight({
           actor: {
             id: user.id,
@@ -1966,6 +1969,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             },
           });
         }
+        } catch (error) {
+          const degrade = contentPreflightStockDegradeReason({ analyzerError: error });
+          if (!degrade) throw error;
+          forceStockBroll = true;
+          emitTelemetry({
+            name: "brand_visual_preflight_degraded",
+            category: "pipeline",
+            source: "server",
+            step: "editor.step2",
+            status: "degraded",
+            properties: {
+              projectId: job.projectId,
+              reason: degrade,
+              via: "upload-worker",
+            },
+          });
+        }
       }
 
       await step("keywords", 40);
@@ -1992,7 +2012,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
 
       await step("stock", 55);
-      const upAiGen = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+      const upAiGen = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
+      const upStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
       const upAligned = alignBrollWindowsToKeywords(upVisibleWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
       const upTotalDur = upAligned.windows.length > 0
         ? Math.round(upDurMs / 1000)
@@ -2000,23 +2021,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upStock = upAligned.windows.length > 0
         ? await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
             {
-              ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
+              ...buildStockPayload(upAligned.keywords, upTotalDur, upStockSource, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
                 stockMood: await resolveStockMood(),
               }, true, upAligned.windows, {
                 fullScript: upCaps.map((caption) => caption.text).join("\n"),
               }),
-              ...(input.kieModel ? { kieModel: input.kieModel } : {}),
-              ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
-              ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+              ...(!forceStockBroll && input.kieModel ? { kieModel: input.kieModel } : {}),
+              ...(!forceStockBroll && input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+              ...(!forceStockBroll && input.imageModel ? { imageModel: input.imageModel } : {}),
               videoJobId: jobId,
-              ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
-              ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
-              ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
+              ...(!forceStockBroll && input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+              ...(!forceStockBroll && input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+              ...(typeof input.maxAiImages === "number" && !forceStockBroll ? { maxAiImages: input.maxAiImages } : {}),
               ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
             },
-            input.stockSource === "kie-image" && input.imageEngine === "runpod",
+            !forceStockBroll && input.stockSource === "kie-image" && input.imageEngine === "runpod",
             upAiGen,
           )
         : {
@@ -2424,6 +2445,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // sceneClipCounts); subtitle timing is untouched.
     let effectiveContentPreflightId = job.contentPreflightId;
     const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    let forceStockBroll = false;
     let awaitingContentPreflight = false;
     if (job.projectVisualContextJson) {
       try {
@@ -2478,18 +2500,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           });
         }
       } catch (error) {
-        if (needsAiVisualPlan) throw error;
-        emitTelemetry({
-          name: "first_clip_preflight_fail_open",
-          category: "pipeline",
-          source: "server",
-          step: "editor.step2",
-          status: "fail_open",
-          properties: {
-            projectId: job.projectId,
-            message: error instanceof Error ? error.message : "content_preflight_failed",
-          },
-        });
+        const degrade = contentPreflightStockDegradeReason({ analyzerError: error });
+        if (degrade) {
+          forceStockBroll = true;
+          emitTelemetry({
+            name: "brand_visual_preflight_degraded",
+            category: "pipeline",
+            source: "server",
+            step: "editor.step2",
+            status: "degraded",
+            properties: {
+              projectId: job.projectId,
+              reason: degrade,
+              via: "script-worker",
+            },
+          });
+        } else if (needsAiVisualPlan) {
+          throw error;
+        } else {
+          emitTelemetry({
+            name: "first_clip_preflight_fail_open",
+            category: "pipeline",
+            source: "server",
+            step: "editor.step2",
+            status: "fail_open",
+            properties: {
+              projectId: job.projectId,
+              message: error instanceof Error ? error.message : "content_preflight_failed",
+            },
+          });
+        }
       }
     }
     const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
@@ -2519,11 +2559,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioEndMs: durMs,
         })
       : null;
-    if (pinnedBrandVisualWindowCount > 0 && !narrativeAlignedWindows) {
-      throw new ContentPreflightError(
-        "NARRATIVE_MISMATCH",
-        "ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่",
-      );
+    if (contentPreflightStockDegradeReason({
+      pinnedWindowCount: pinnedBrandVisualWindowCount,
+      narrativeAligned: Boolean(narrativeAlignedWindows),
+    })) {
+      forceStockBroll = true;
+      emitTelemetry({
+        name: "brand_visual_preflight_degraded",
+        category: "pipeline",
+        source: "server",
+        step: "editor.step2",
+        status: "degraded",
+        properties: {
+          projectId: job.projectId,
+          reason: "narrative_mismatch",
+          via: "script-worker",
+        },
+      });
     }
     // Task 5: the pinned Style Pack's Pacing scales the window cadence
     // (PACING_CADENCE_MULTIPLIER — slow=1.6, normal=1, fast=0.7). Safe to
@@ -2574,10 +2626,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
-    const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    const aiGenSource = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
+    const effectiveStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
     const stock = await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
       {
-        ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
+        ...buildStockPayload(aligned.keywords, totalDur, effectiveStockSource, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
           stockMood: await resolveStockMood(),
@@ -2585,16 +2638,16 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           fullScript: input.script,
         }),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
-        ...(input.kieModel ? { kieModel: input.kieModel } : {}),
-        ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
-        ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+        ...(!forceStockBroll && input.kieModel ? { kieModel: input.kieModel } : {}),
+        ...(!forceStockBroll && input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+        ...(!forceStockBroll && input.imageModel ? { imageModel: input.imageModel } : {}),
         videoJobId: jobId,
-        ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
-        ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
-        ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
+        ...(!forceStockBroll && input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+        ...(!forceStockBroll && input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+        ...(typeof input.maxAiImages === "number" && !forceStockBroll ? { maxAiImages: input.maxAiImages } : {}),
         ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
       },
-      input.stockSource === "kie-image" && input.imageEngine === "runpod",
+      !forceStockBroll && input.stockSource === "kie-image" && input.imageEngine === "runpod",
       aiGenSource,
     );
     emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
