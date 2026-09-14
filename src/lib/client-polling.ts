@@ -1,5 +1,7 @@
 "use client";
 
+import { isAuthSessionEnded } from "@/lib/auth-session-ended";
+
 export type ClientPollContext = {
   isVisible: boolean;
   failures: number;
@@ -51,8 +53,20 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
     }, Math.max(0, delayMs));
   };
 
+  const stopForSignedOut = () => {
+    stopped = true;
+    wakeAfterRun = false;
+    clearScheduled();
+    controller?.abort();
+    controller = null;
+  };
+
   const run = async () => {
     if (stopped || controller !== null) return;
+    if (isAuthSessionEnded()) {
+      stopForSignedOut();
+      return;
+    }
     if (!options.isActive()) return;
 
     const currentController = new AbortController();
@@ -71,6 +85,10 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
         return;
       }
       if (!options.isActive()) return;
+      if (isAuthSessionEnded()) {
+        stopForSignedOut();
+        return;
+      }
       const delayMs = options.nextDelayMs({
         isVisible: options.isVisible(),
         failures,
@@ -82,6 +100,7 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
   return {
     start() {
       if (!stopped) return;
+      if (isAuthSessionEnded()) return;
       stopped = false;
       failures = 0;
       wakeAfterRun = false;
@@ -96,6 +115,10 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
     },
     wake() {
       if (stopped) return;
+      if (isAuthSessionEnded()) {
+        stopForSignedOut();
+        return;
+      }
       if (controller !== null) {
         wakeAfterRun = true;
         return;
