@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
+import { getEditorProject } from "@/lib/editor-projects";
 import {
   assembleScript,
   deleteScript,
@@ -28,7 +29,13 @@ export async function GET(
     const script = await getScript(authUser.id, id);
     if (!script) return NextResponse.json({ error: "ไม่พบสคริปต์" }, { status: 404 });
 
-    return NextResponse.json(script);
+    const editorProjectAvailable = !!script.editorProjectId
+      && !!(await getEditorProject(authUser.id, script.editorProjectId));
+    return NextResponse.json({
+      ...script,
+      editorProjectId: editorProjectAvailable ? script.editorProjectId : null,
+      editorProjectAvailable,
+    });
   } catch (error) {
     return apiError({ route: "GET /api/scripts/[id]", error });
   }

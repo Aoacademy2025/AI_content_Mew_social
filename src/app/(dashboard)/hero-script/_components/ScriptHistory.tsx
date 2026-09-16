@@ -1,16 +1,12 @@
 "use client";
 
-// ScriptHistory — the Hero Script "สคริปต์ของฉัน" list: topic, วันที่, and a
-// status chip (ร่าง / ส่งแล้ว). Clicking a row restores that script into step 4;
-// the trash button deletes it behind a confirm dialog.
-//
-// Reads GET /api/scripts (own scripts, newest first, take 50) and re-fetches
-// whenever `refreshKey` changes — the editor bumps it after every autosave.
+// ScriptLibrary — owner-scoped server search and pagination. Rows contain only
+// summary data; choosing one asks the page owner to fetch its full detail.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight, ExternalLink, Loader2, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Loader2, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -32,6 +28,8 @@ export interface SavedScript {
   brandProfileId: string | null;
   createdAt: string;
   updatedAt: string;
+  editorProjectId: string | null;
+  editorProjectAvailable: boolean;
 }
 
 function formatDate(iso: string): string {
@@ -130,15 +128,20 @@ export async function loadLatestScriptLibraryPage(
 }
 
 interface ScriptLibraryProps {
-  onOpenScript: (id: string) => void;
+  onOpenScript: (item: ScriptLibraryItem) => void;
+  onCreateEditorProject?: (item: ScriptLibraryItem) => Promise<void>;
+  beforeDelete?: (item: ScriptLibraryItem) => Promise<boolean>;
+  onDeleted?: (id: string) => void;
+  onStartWriting?: () => void;
   activeScriptId: string | null;
   refreshKey: number;
+  active?: boolean;
 }
 
 const LIBRARY_PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 300;
 
-export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: ScriptLibraryProps) {
+export function ScriptLibrary({ onOpenScript, onCreateEditorProject, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status, setStatus] = useState<ScriptLibraryQuery["status"]>("all");
@@ -150,6 +153,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
   const [retryKey, setRetryKey] = useState(0);
   const [deleteItem, setDeleteItem] = useState<ScriptLibraryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [creatingId, setCreatingId] = useState<string | null>(null);
   const latestRequest = useRef(0);
 
   useEffect(() => {
@@ -161,6 +165,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
   }, [search]);
 
   useEffect(() => {
+    if (!active) return;
     void loadLatestScriptLibraryPage({
       q: debouncedSearch,
       status,
@@ -181,7 +186,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
         setPage(Math.ceil(outcome.data.total / LIBRARY_PAGE_SIZE));
       }
     });
-  }, [brandProfileId, debouncedSearch, page, refreshKey, retryKey, status]);
+  }, [active, brandProfileId, debouncedSearch, page, refreshKey, retryKey, status]);
 
   const brandOptions = data?.brandOptions ?? [];
 
@@ -199,6 +204,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
     if (!deleteItem) return;
     setDeleting(true);
     try {
+      if (beforeDelete && !(await beforeDelete(deleteItem))) return;
       const response = await authenticatedFetch(`/api/scripts/${encodeURIComponent(deleteItem.id)}`, { method: "DELETE" });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
@@ -211,6 +217,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
         total: Math.max(0, current.total - 1),
         items: current.items.filter((item) => item.id !== deleteItem.id),
       } : current);
+      onDeleted?.(deleteItem.id);
       toast.success("ลบสคริปต์แล้ว");
       setRetryKey((key) => key + 1);
     } catch {
@@ -218,6 +225,16 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
     } finally {
       setDeleting(false);
       setDeleteItem(null);
+    }
+  }
+
+  async function createEditorProject(item: ScriptLibraryItem) {
+    if (creatingId || !onCreateEditorProject) return;
+    setCreatingId(item.id);
+    try {
+      await onCreateEditorProject(item);
+    } finally {
+      setCreatingId(null);
     }
   }
 
@@ -296,9 +313,9 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
               ล้างตัวกรอง
             </button>
           ) : (
-            <a href="/hero-script" className="flex min-h-11 items-center rounded-lg px-4 text-sm font-medium" style={{ color: VIOLET }}>
+            <button type="button" onClick={onStartWriting} className="flex min-h-11 items-center rounded-lg px-4 text-sm font-medium" style={{ color: VIOLET }}>
               เริ่มเขียนสคริปต์
-            </a>
+            </button>
           )}
         </div>
       ) : data ? (
@@ -315,7 +332,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
                 <article key={item.id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
                   <button
                     type="button"
-                    onClick={() => onOpenScript(item.id)}
+                    onClick={() => onOpenScript(item)}
                     className="min-h-11 min-w-0 rounded-lg px-2 text-left outline-none focus:ring-2"
                     style={{ background: active ? "rgba(139,92,246,.08)" : "transparent", "--tw-ring-color": VIOLET } as React.CSSProperties}
                   >
@@ -339,15 +356,19 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
                     ) : sent ? (
                       <span className="px-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() => setDeleteItem(item)}
-                      className="flex h-11 w-11 items-center justify-center rounded-lg hover:bg-black/5 focus:ring-2 dark:hover:bg-white/5"
-                      aria-label={`ลบ ${item.topic}`}
-                      style={{ "--tw-ring-color": VIOLET } as React.CSSProperties}
-                    >
-                      <Trash2 className="h-4 w-4" style={{ color: "var(--ui-text-muted)" }} aria-hidden="true" />
-                    </button>
+                    <details className="relative">
+                      <summary className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-lg hover:bg-black/5 focus:ring-2 dark:hover:bg-white/5" aria-label={`ตัวเลือก ${item.topic}`} style={{ "--tw-ring-color": VIOLET } as React.CSSProperties}>
+                        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                      </summary>
+                      <div className="absolute right-0 z-20 mt-1 min-w-48 rounded-lg border p-1 shadow-lg" style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}>
+                        <button type="button" disabled={creatingId !== null || !onCreateEditorProject} onClick={() => { void createEditorProject(item); }} className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm disabled:opacity-50">
+                          {creatingId === item.id ? "กำลังสร้าง…" : "สร้างงานตัดต่อใหม่"}
+                        </button>
+                        <button type="button" onClick={() => setDeleteItem(item)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm">
+                          <Trash2 className="h-4 w-4" aria-hidden="true" /> ลบสคริปต์
+                        </button>
+                      </div>
+                    </details>
                   </div>
                 </article>
               );
@@ -378,132 +399,5 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
         </AlertDialogContent>
       </AlertDialog>
     </section>
-  );
-}
-
-interface ScriptHistoryProps {
-  /** Bump to re-fetch the list (after a save). */
-  refreshKey: number;
-  activeScriptId: string | null;
-  onRestore: (script: SavedScript) => void;
-  onDeleted?: (id: string) => void;
-}
-
-export function ScriptHistory({ refreshKey, activeScriptId, onRestore, onDeleted }: ScriptHistoryProps) {
-  const [scripts, setScripts] = useState<SavedScript[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
-  const fetchScripts = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/scripts");
-      if (res.ok) {
-        const data = await res.json();
-        setScripts(Array.isArray(data) ? data : []);
-      }
-    } catch {
-      toast.error("โหลดสคริปต์ไม่สำเร็จ");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // This temporary legacy export stays byte-for-byte operational until Task 3
-  // switches the page to ScriptLibrary and removes it.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { fetchScripts(); }, [fetchScripts, refreshKey]);
-
-  async function confirmDelete() {
-    if (!deleteId) return;
-    setDeleting(true);
-    try {
-      const res = await fetch(`/api/scripts/${deleteId}`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        toast.error(data?.error || "ลบสคริปต์ไม่สำเร็จ");
-        return;
-      }
-      toast.success("ลบสคริปต์แล้ว");
-      onDeleted?.(deleteId);
-      await fetchScripts();
-    } catch {
-      toast.error("ลบสคริปต์ไม่สำเร็จ");
-    } finally {
-      setDeleting(false);
-      setDeleteId(null);
-    }
-  }
-
-  return (
-    <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
-      <h2 className="mb-4 text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>สคริปต์ของฉัน</h2>
-
-      {loading ? (
-        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังโหลด...
-        </div>
-      ) : scripts.length === 0 ? (
-        <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>ยังไม่มีสคริปต์</p>
-      ) : (
-        <div className="space-y-2">
-          {scripts.map((s) => {
-            const isActive = activeScriptId === s.id;
-            const sent = s.status === "sent";
-            return (
-              <div
-                key={s.id}
-                // items-start (not center): the topic can now wrap to 2 lines
-                // (line-clamp-2 below), so the chip/delete button must anchor to
-                // the top of the row instead of the vertical middle of two lines.
-                className="flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
-                style={{
-                  borderColor: isActive ? VIOLET : "var(--ui-card-border)",
-                  background: isActive ? "rgba(139,92,246,.08)" : "transparent",
-                }}
-              >
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onRestore(s)}>
-                  {/* line-clamp-2 (was truncate/1-line) — a long topic no longer
-                      collapses to a few unreadable characters + ellipsis. */}
-                  <p className="line-clamp-2 font-medium" style={{ color: "var(--ui-text-primary)" }}>{s.topic}</p>
-                  <p className="mt-0.5" style={{ color: "var(--ui-text-muted)" }}>{formatDate(s.createdAt)}</p>
-                </button>
-                <span
-                  className="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px]"
-                  style={{
-                    background: sent ? "rgba(139,92,246,.15)" : "var(--ui-btn-bg)",
-                    color: sent ? VIOLET : "var(--ui-text-muted)",
-                  }}
-                >
-                  {sent ? "ส่งแล้ว" : "ร่าง"}
-                </span>
-                {/* 44x44 hit area (was p-1.5 ≈ 26px) */}
-                <button
-                  onClick={() => setDeleteId(s.id)}
-                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5"
-                  aria-label="ลบ"
-                >
-                  <Trash2 className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>ลบสคริปต์นี้?</AlertDialogTitle>
-            <AlertDialogDescription>การลบไม่สามารถย้อนกลับได้</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="min-h-11">ยกเลิก</AlertDialogCancel>
-            <AlertDialogAction className="min-h-11" onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
   );
 }

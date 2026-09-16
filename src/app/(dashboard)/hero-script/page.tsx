@@ -1,33 +1,42 @@
 "use client";
 
-// /hero-script — "เขียนสคริปต์ AI" page shell.
-//
-// Task 1 shipped the Setup rail (BrandProfilePanel: profile picker + duration
-// + create/edit dialog + Niche Drill-down). Task 2 added steps 2-3 (หัวข้อ →
-// เลือก Hook). Task 3 adds step 4 (สคริปต์เต็ม, with the still-disabled step-5
-// "ส่งไปตัดต่อ" CTA) and the "สคริปต์ของฉัน" history list. All cross-step state
-// is lifted here: profile/duration/topic/hook feed generation, and `draft` is
-// the working Script that step 4 autosaves and the history list restores into.
-
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { fetchMe } from "@/lib/use-me";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
-  BrandProfilePanel,
-  type DurationSec,
-} from "./_components/BrandProfilePanel";
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { BrandProfilePanel, type DurationSec } from "./_components/BrandProfilePanel";
 import { TopicStep } from "./_components/TopicStep";
 import { HookStep, hookContextKey, type HookChoice } from "./_components/HookStep";
-import { ScriptEditorStep, type ScriptDraft } from "./_components/ScriptEditorStep";
-import { ScriptHistory, type SavedScript } from "./_components/ScriptHistory";
+import {
+  ScriptEditorStep,
+  type ScriptDraft,
+  type ScriptEditorStepHandle,
+} from "./_components/ScriptEditorStep";
+import {
+  ScriptLibrary,
+  type SavedScript,
+  type ScriptLibraryItem,
+  type ScriptLibraryPage,
+} from "./_components/ScriptHistory";
 import { HeroScriptQuickStart } from "./_components/HeroScriptQuickStart";
 import {
   readHeroScriptWritingPreferences,
+  loadLatestHeroScriptDetail,
   writeHeroScriptWritingPreferences,
+  type HeroScriptWritingPreferences,
 } from "./_components/hero-script-workspace-state";
 
 const VIOLET_LIGHT = "#B9A6FF";
 
+type Replacement = { kind: "new" } | { kind: "open"; item: ScriptLibraryItem };
+
 export default function HeroScriptPage() {
+  const router = useRouter();
   const [plan, setPlan] = useState("FREE");
   const [accountId, setAccountId] = useState<string | null>(null);
   const [availableProfiles, setAvailableProfiles] = useState<Array<{ id: string }> | null>(null);
@@ -37,9 +46,22 @@ export default function HeroScriptPage() {
   const [topic, setTopic] = useState("");
   const [selectedHook, setSelectedHook] = useState<HookChoice | null>(null);
   const [draft, setDraft] = useState<ScriptDraft | null>(null);
+  const [recentDraft, setRecentDraft] = useState<ScriptLibraryItem | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
+  const [openingScriptId, setOpeningScriptId] = useState<string | null>(null);
+  const [pendingReplacement, setPendingReplacement] = useState<Replacement | null>(null);
+  const [replacementAfterSaveFailure, setReplacementAfterSaveFailure] = useState(false);
   const hydratedAccountRef = useRef<string | null>(null);
   const workspaceChangedRef = useRef(false);
+  const newWritingPreferencesRef = useRef<HeroScriptWritingPreferences>({ profileId: null, durationSec: 60 });
+  const draftRef = useRef<ScriptDraft | null>(null);
+  const editorRef = useRef<ScriptEditorStepHandle>(null);
+  const detailRequestRef = useRef(0);
+  const openingScriptIdRef = useRef<string | null>(null);
+  const handoffScriptIdRef = useRef<string | null>(null);
+  const libraryDirtyRef = useRef(false);
+
+  useEffect(() => { draftRef.current = draft; }, [draft]);
 
   useEffect(() => {
     fetchMe().then((me) => {
@@ -51,6 +73,7 @@ export default function HeroScriptPage() {
   useEffect(() => {
     workspaceChangedRef.current = false;
     hydratedAccountRef.current = null;
+    newWritingPreferencesRef.current = { profileId: null, durationSec: 60 };
   }, [accountId]);
 
   useEffect(() => {
@@ -59,38 +82,54 @@ export default function HeroScriptPage() {
     hydratedAccountRef.current = accountId;
     if (workspaceChangedRef.current) return;
     const preferences = readHeroScriptWritingPreferences(window.localStorage, accountId, availableProfiles);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from validated browser-only preferences.
+    newWritingPreferencesRef.current = preferences;
     setSelectedProfileId(preferences.profileId);
     setDurationSec(preferences.durationSec);
   }, [accountId, availableProfiles]);
 
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    void authenticatedFetch("/api/scripts/library?status=draft&page=1&pageSize=1")
+      .then(async (response) => response.ok ? response.json() as Promise<ScriptLibraryPage> : null)
+      .then((page) => {
+        if (!cancelled) setRecentDraft(page?.items?.[0] ?? null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [accountId]);
+
   const rememberWritingPreferences = useCallback((profileId: string | null, nextDurationSec: DurationSec) => {
+    newWritingPreferencesRef.current = { profileId, durationSec: nextDurationSec };
     if (!accountId) return;
     writeHeroScriptWritingPreferences(window.localStorage, accountId, { profileId, durationSec: nextDurationSec });
   }, [accountId]);
 
   const changeProfile = useCallback((profileId: string | null) => {
     workspaceChangedRef.current = true;
+    if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, profileId)) setSelectedHook(null);
     setSelectedProfileId(profileId);
     rememberWritingPreferences(profileId, durationSec);
-  }, [durationSec, rememberWritingPreferences]);
+  }, [durationSec, rememberWritingPreferences, selectedHook, topic]);
 
   const changeDuration = useCallback((nextDurationSec: DurationSec) => {
     workspaceChangedRef.current = true;
+    if (selectedHook?.contextKey !== hookContextKey(topic, nextDurationSec, selectedProfileId)) setSelectedHook(null);
     setDurationSec(nextDurationSec);
     rememberWritingPreferences(selectedProfileId, nextDurationSec);
-  }, [rememberWritingPreferences, selectedProfileId]);
+  }, [rememberWritingPreferences, selectedHook, selectedProfileId, topic]);
 
-  // Restore a saved script into step 4 — and back-fill the earlier steps it
-  // was written with, so a regenerate uses the same profile/duration/topic.
-  function restoreScript(script: SavedScript) {
+  const restoreScript = useCallback((script: SavedScript) => {
     workspaceChangedRef.current = true;
     setSelectedProfileId(script.brandProfileId);
     setDurationSec(script.durationSec as DurationSec);
     setTopic(script.topic);
-    const contextKey = hookContextKey(script.topic, script.durationSec, script.brandProfileId);
-    setSelectedHook({ formula: script.hookFormula ?? "", text: script.hookText, contextKey });
-    setDraft({
+    setSelectedHook({
+      formula: script.hookFormula ?? "",
+      text: script.hookText,
+      contextKey: hookContextKey(script.topic, script.durationSec, script.brandProfileId),
+    });
+    const next: ScriptDraft = {
       id: script.id,
       brandProfileId: script.brandProfileId,
       topic: script.topic,
@@ -101,8 +140,13 @@ export default function HeroScriptPage() {
       bodyText: script.bodyText,
       ctaText: script.ctaText,
       status: script.status,
-    });
-  }
+      editorProjectId: script.editorProjectId,
+      editorProjectAvailable: script.editorProjectAvailable,
+    };
+    draftRef.current = next;
+    setDraft(next);
+    setActiveTab("write");
+  }, []);
 
   const changeTopic = useCallback((nextTopic: string) => {
     workspaceChangedRef.current = true;
@@ -117,8 +161,120 @@ export default function HeroScriptPage() {
 
   const changeDraft = useCallback((nextDraft: ScriptDraft | null) => {
     if (nextDraft) workspaceChangedRef.current = true;
+    draftRef.current = nextDraft;
     setDraft(nextDraft);
   }, []);
+
+  const resetWorkspace = useCallback(() => {
+    detailRequestRef.current += 1;
+    openingScriptIdRef.current = null;
+    setOpeningScriptId(null);
+    const defaults = newWritingPreferencesRef.current;
+    setSelectedProfileId(defaults.profileId);
+    setDurationSec(defaults.durationSec as DurationSec);
+    setTopic("");
+    setSelectedHook(null);
+    draftRef.current = null;
+    setDraft(null);
+    setActiveTab("write");
+  }, []);
+
+  const openScript = useCallback(async (item: ScriptLibraryItem) => {
+    openingScriptIdRef.current = item.id;
+    setOpeningScriptId(item.id);
+    const outcome = await loadLatestHeroScriptDetail<SavedScript>(item.id, detailRequestRef, authenticatedFetch);
+    if (outcome.status === "applied") restoreScript(outcome.data);
+    else if (outcome.status === "error") toast.error(outcome.message);
+    if (openingScriptIdRef.current === item.id && outcome.status !== "stale") {
+      openingScriptIdRef.current = null;
+      setOpeningScriptId(null);
+    }
+  }, [restoreScript]);
+
+  const executeReplacement = useCallback(async (replacement: Replacement) => {
+    if (replacement.kind === "new") resetWorkspace();
+    else await openScript(replacement.item);
+  }, [openScript, resetWorkspace]);
+
+  const requestReplacement = useCallback(async (replacement: Replacement) => {
+    if (!draftRef.current && (topic.trim() || selectedHook)) {
+      setReplacementAfterSaveFailure(false);
+      setPendingReplacement(replacement);
+      return;
+    }
+    if (draftRef.current && !(await editorRef.current?.saveLatest())) {
+      setReplacementAfterSaveFailure(true);
+      setPendingReplacement(replacement);
+      return;
+    }
+    await executeReplacement(replacement);
+  }, [executeReplacement, selectedHook, topic]);
+
+  const handleSaved = useCallback((savedDraft: ScriptDraft) => {
+    libraryDirtyRef.current = true;
+    if (savedDraft.status === "draft" && savedDraft.id) {
+      setRecentDraft((current) => ({
+        id: savedDraft.id!,
+        topic: savedDraft.topic,
+        brandProfileId: savedDraft.brandProfileId,
+        brandName: current?.id === savedDraft.id ? current.brandName : null,
+        durationSec: savedDraft.durationSec,
+        status: savedDraft.status,
+        editorProjectId: savedDraft.editorProjectId,
+        editorProjectAvailable: savedDraft.editorProjectAvailable,
+        createdAt: current?.id === savedDraft.id ? current.createdAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+    } else if (savedDraft.id) {
+      setRecentDraft((current) => current?.id === savedDraft.id ? null : current);
+    }
+  }, []);
+
+  const showLibrary = useCallback(() => {
+    if (libraryDirtyRef.current) {
+      libraryDirtyRef.current = false;
+      setHistoryKey((key) => key + 1);
+    }
+    setActiveTab("library");
+  }, []);
+
+  const createEditorProject = useCallback(async (item: ScriptLibraryItem) => {
+    if (handoffScriptIdRef.current) return;
+    if (draftRef.current?.id === item.id) {
+      await editorRef.current?.createEditorProject();
+      return;
+    }
+    handoffScriptIdRef.current = item.id;
+    try {
+      const response = await authenticatedFetch(`/api/scripts/${encodeURIComponent(item.id)}/send-to-editor`, { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || typeof payload?.projectId !== "string") {
+        toast.error(payload?.error || "ส่งไปตัดต่อไม่สำเร็จ");
+        return;
+      }
+      router.push(`/video-editor?projectId=${encodeURIComponent(payload.projectId)}`);
+    } catch {
+      toast.error("ส่งไปตัดต่อไม่สำเร็จ");
+    } finally {
+      handoffScriptIdRef.current = null;
+    }
+  }, [router]);
+
+  const beforeDelete = useCallback(async (item: ScriptLibraryItem) => {
+    if (draftRef.current?.id !== item.id) return true;
+    return (await editorRef.current?.saveLatest()) ?? true;
+  }, []);
+
+  const handleDeleted = useCallback((id: string) => {
+    if (openingScriptIdRef.current === id) {
+      detailRequestRef.current += 1;
+      openingScriptIdRef.current = null;
+      setOpeningScriptId(null);
+    }
+    setRecentDraft((current) => current?.id === id ? null : current);
+    if (draftRef.current?.id !== id) return;
+    resetWorkspace();
+  }, [resetWorkspace]);
 
   return (
     <div className="relative flex-1 overflow-y-auto">
@@ -126,48 +282,78 @@ export default function HeroScriptPage() {
         <div className="space-y-6">
           <header className="flex flex-wrap items-end justify-between gap-4 border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
             <div>
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
-                Hero Script
-              </p>
-              <h1 className="text-2xl font-bold tracking-tight md:text-3xl" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
-                เขียนสคริปต์ AI
-              </h1>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>Hero Script</p>
+              <h1 className="text-2xl font-bold tracking-tight md:text-3xl" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>เขียนสคริปต์ AI</h1>
             </div>
-            <div role="tablist" aria-label="พื้นที่สคริปต์" className="flex min-h-11 items-center gap-1 rounded-lg p-1" style={{ background: "var(--ui-btn-bg)" }}>
-              <button type="button" role="tab" aria-selected={activeTab === "write"} onClick={() => setActiveTab("write")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "write" ? VIOLET_LIGHT : "transparent", color: activeTab === "write" ? "#241a3c" : "var(--ui-text-secondary)" }}>
-                เขียนสคริปต์
-              </button>
-              <button type="button" role="tab" aria-selected={activeTab === "library"} onClick={() => setActiveTab("library")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "library" ? VIOLET_LIGHT : "transparent", color: activeTab === "library" ? "#241a3c" : "var(--ui-text-secondary)" }}>
-                คลังสคริปต์
-              </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => { void requestReplacement({ kind: "new" }); }} className="min-h-11 rounded-lg px-3 text-sm font-semibold" style={{ color: VIOLET_LIGHT }}>สคริปต์ใหม่</button>
+              <div role="tablist" aria-label="พื้นที่สคริปต์" className="flex min-h-11 items-center gap-1 rounded-lg p-1" style={{ background: "var(--ui-btn-bg)" }}>
+                <button type="button" role="tab" aria-selected={activeTab === "write"} onClick={() => setActiveTab("write")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "write" ? VIOLET_LIGHT : "transparent", color: activeTab === "write" ? "#241a3c" : "var(--ui-text-secondary)" }}>เขียนสคริปต์</button>
+                <button type="button" role="tab" aria-selected={activeTab === "library"} onClick={showLibrary} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "library" ? VIOLET_LIGHT : "transparent", color: activeTab === "library" ? "#241a3c" : "var(--ui-text-secondary)" }}>คลังสคริปต์</button>
+              </div>
             </div>
           </header>
 
-          {/* Keep this pane mounted while the library is open: the editor owns
-              debounced saves and its in-flight work must survive tab changes. */}
           <div role="tabpanel" hidden={activeTab !== "write"} className="space-y-6">
             <HeroScriptQuickStart accountId={accountId} />
-            <BrandProfilePanel
-              plan={plan}
-              selectedProfileId={selectedProfileId}
-              onSelectedProfileIdChange={changeProfile}
-              durationSec={durationSec}
-              onDurationSecChange={changeDuration}
-              onProfilesChange={setAvailableProfiles}
-            />
+            {recentDraft && (
+              <button type="button" disabled={openingScriptId === recentDraft.id} onClick={() => { void requestReplacement({ kind: "open", item: recentDraft }); }} className="min-h-11 rounded-lg px-3 text-left text-sm font-medium" style={{ color: VIOLET_LIGHT }}>
+                {openingScriptId === recentDraft.id ? "กำลังเปิดร่างล่าสุด…" : `ทำร่างล่าสุดต่อ · ${recentDraft.topic}`}
+              </button>
+            )}
+            <BrandProfilePanel plan={plan} selectedProfileId={selectedProfileId} onSelectedProfileIdChange={changeProfile} durationSec={durationSec} onDurationSecChange={changeDuration} onProfilesChange={setAvailableProfiles} />
             <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={changeTopic} />
             {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
-            {(selectedHook || draft) && <>
-              {!selectedHook && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
-              <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={() => setHistoryKey((k) => k + 1)} />
-            </>}
+            {!selectedHook && draft && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
+            <div hidden={!selectedHook && !draft}>
+              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} />
+            </div>
           </div>
 
           <div role="tabpanel" hidden={activeTab !== "library"}>
-            <ScriptHistory refreshKey={historyKey} activeScriptId={draft?.id ?? null} onRestore={restoreScript} onDeleted={(id) => setDraft((d) => (d?.id === id ? null : d))} />
+            <ScriptLibrary
+              active={activeTab === "library"}
+              refreshKey={historyKey}
+              activeScriptId={draft?.id ?? null}
+              onOpenScript={(item) => { void requestReplacement({ kind: "open", item }); }}
+              onCreateEditorProject={createEditorProject}
+              beforeDelete={beforeDelete}
+              onDeleted={handleDeleted}
+              onStartWriting={() => setActiveTab("write")}
+            />
           </div>
         </div>
       </div>
+
+      <AlertDialog open={!!pendingReplacement} onOpenChange={(open) => { if (!open) setPendingReplacement(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{replacementAfterSaveFailure ? "บันทึกไม่สำเร็จ" : "ทิ้งสิ่งที่กำลังเขียน?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {replacementAfterSaveFailure
+                ? "ข้อความล่าสุดยังอยู่ในหน้านี้ ลองบันทึกอีกครั้ง หรือทิ้งการแก้ไขเพื่อไปต่อ"
+                : "หัวข้อและ Hook นี้ยังไม่ได้สร้างเป็นสคริปต์ คุณต้องการทิ้งแล้วไปต่อหรือไม่"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="min-h-11">ยกเลิก</AlertDialogCancel>
+            {replacementAfterSaveFailure && (
+              <button type="button" className="min-h-11 rounded-md border px-4 text-sm font-medium" onClick={() => {
+                const replacement = pendingReplacement;
+                setPendingReplacement(null);
+                if (replacement) void requestReplacement(replacement);
+              }}>
+                ลองบันทึกอีกครั้ง
+              </button>
+            )}
+            <AlertDialogAction className="min-h-11" onClick={() => {
+              const replacement = pendingReplacement;
+              setPendingReplacement(null);
+              if (replacement) void executeReplacement(replacement);
+            }}>ทิ้งแล้วไปต่อ</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

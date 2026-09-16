@@ -9,11 +9,11 @@
 // returns a hook — line 1 of the saved script is always the exact text the user
 // picked/edited in step 3.
 //
-// Step 5 ("ส่งไปตัดต่อ") is the money path and lives here too: paid plans POST
-// /api/scripts/[id]/send-to-editor and land in the editor on the new project;
-// FREE sees the locked CTA + the /pricing upsell.
+// Step 5 commits the latest snapshot before creating one Editor project. A sent
+// script opens its available linked project by navigation only, or explicitly
+// creates another; FREE sees the locked CTA + the /pricing upsell.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -58,6 +58,13 @@ export interface ScriptDraft {
   bodyText: string;
   ctaText: string;
   status: string;
+  editorProjectId: string | null;
+  editorProjectAvailable: boolean;
+}
+
+export interface ScriptEditorStepHandle {
+  saveLatest: () => Promise<boolean>;
+  createEditorProject: () => Promise<boolean>;
 }
 
 type RegenTarget = "hook" | "body" | "cta";
@@ -112,20 +119,21 @@ interface ScriptEditorStepProps {
   onSelectedHookChange: (hook: HookChoice | null) => void;
   draft: ScriptDraft | null;
   onDraftChange: (draft: ScriptDraft | null) => void;
-  /** Fired after a successful save so the history list can refresh. */
-  onSaved?: () => void;
+  /** Fired after a successful save so the recent shortcut/library can invalidate. */
+  onSaved?: (draft: ScriptDraft) => void;
 }
 
-export function ScriptEditorStep({
+export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorStepProps>(function ScriptEditorStep({
   topic, durationSec, plan, selectedProfileId, selectedHook, onSelectedHookChange,
   draft, onDraftChange, onSaved,
-}: ScriptEditorStepProps) {
+}, ref) {
   const router = useRouter();
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const goToPricing = useCallback(() => {
     trackEvent("hero_script_upgrade_clicked", { properties: { surface: "limit_error" } });
     router.push("/pricing?source=hero_script_limit");
@@ -154,6 +162,7 @@ export function ScriptEditorStep({
   const rowIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const snapshotOf = useCallback((d: ScriptDraft) => JSON.stringify({
     id: d.id,
@@ -167,12 +176,12 @@ export function ScriptEditorStep({
     brandProfileId: d.brandProfileId,
   }), []);
 
-  const persist = useCallback(async () => {
+  const persist = useCallback(async (): Promise<boolean> => {
     const d = draftRef.current;
-    if (!d) return;
+    if (!d) return true;
     const generation = generationRef.current;
     const snapshot = snapshotOf(d);
-    if (snapshot === lastSavedRef.current) return;
+    if (snapshot === lastSavedRef.current) return true;
 
     const rowId = d.id ?? rowIdRef.current;
     const saveMode = rowId ? "update" : "create";
@@ -202,39 +211,53 @@ export function ScriptEditorStep({
           });
       // The draft was replaced while this save was in flight (new generation or
       // a restore) — its result must not touch what's on screen now.
-      if (generationRef.current !== generation) return;
+      if (generationRef.current !== generation) return false;
       if (!res.ok) {
-        setSaveState("idle");
+        setSaveState("failed");
         trackEvent("hero_script_save_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { httpStatus: res.status, saveMode },
         });
         // 403 SCRIPT_LIMIT lands here — the FREE 3-scripts/30-days cap.
         await toastErrorResponse(res, "บันทึกสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
-        return;
+        return false;
       }
       const saved = await res.json();
       rowIdRef.current = saved.id;
       lastSavedRef.current = JSON.stringify({ ...JSON.parse(snapshot), id: saved.id });
       const latest = draftRef.current;
-      if (latest && latest.id !== saved.id) onDraftChangeRef.current({ ...latest, id: saved.id });
-      setSaveState("saved");
+      const latestWithId = latest ? { ...latest, id: saved.id } : null;
+      if (latestWithId) draftRef.current = latestWithId;
+      if (latestWithId && latest?.id !== saved.id) onDraftChangeRef.current(latestWithId);
+      setSaveState(latestWithId && snapshotOf(latestWithId) === lastSavedRef.current ? "saved" : "saving");
       trackEvent("hero_script_saved", {
         status: "done", durationMs: performance.now() - startedAt,
         properties: { saveMode, profileUsed: Boolean(d.brandProfileId) },
       });
-      onSavedRef.current?.();
+      if (latestWithId) onSavedRef.current?.(latestWithId);
+      return true;
     } catch {
       if (generationRef.current === generation) {
-        setSaveState("idle");
+        setSaveState("failed");
         trackEvent("hero_script_save_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { failure: "network", saveMode },
         });
         toast.error("บันทึกสคริปต์ไม่สำเร็จ");
       }
+      return false;
     }
   }, [snapshotOf, goToPricing]);
+
+  const saveLatest = useCallback((): Promise<boolean> => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const result = chainRef.current.then(persist);
+    chainRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, [persist]);
 
   // Debounced autosave.
   useEffect(() => {
@@ -252,10 +275,15 @@ export function ScriptEditorStep({
       return;
     }
     const timer = setTimeout(() => {
-      chainRef.current = chainRef.current.then(persist).catch(() => {});
+      autosaveTimerRef.current = null;
+      void saveLatest();
     }, AUTOSAVE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [draft, snapshotOf, persist]);
+    autosaveTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (autosaveTimerRef.current === timer) autosaveTimerRef.current = null;
+    };
+  }, [draft, snapshotOf, saveLatest]);
 
   async function handleGenerate() {
     const currentContext = hookContextKey(topic, durationSec, selectedProfileId);
@@ -268,6 +296,7 @@ export function ScriptEditorStep({
     setGenerating(true);
     setGenerationError(null);
     try {
+      if (draftRef.current && !(await saveLatest())) return;
       const res = await authenticatedFetch("/api/scripts/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -309,6 +338,8 @@ export function ScriptEditorStep({
         bodyText: data.bodyText ?? "",
         ctaText: data.ctaText ?? "",
         status: "draft",
+        editorProjectId: null,
+        editorProjectAvailable: false,
       });
       trackEvent("hero_script_generated", {
         status: "done", durationMs: performance.now() - startedAt,
@@ -366,16 +397,16 @@ export function ScriptEditorStep({
       if (!current) return;
       if (target === "hook") {
         const formula = typeof data.formula === "string" ? data.formula : current.hookFormula;
-        onDraftChange({ ...current, hookText: text, hookFormula: formula });
+        editSection({ hookText: text, hookFormula: formula });
         onSelectedHookChange({
           formula: formula ?? "",
           text,
           contextKey: hookContextKey(d.topic, d.durationSec, d.brandProfileId),
         });
       } else if (target === "body") {
-        onDraftChange({ ...current, bodyText: text });
+        editSection({ bodyText: text });
       } else {
-        onDraftChange({ ...current, ctaText: text });
+        editSection({ ctaText: text });
       }
       trackEvent("hero_script_regenerated", {
         status: "done", durationMs: performance.now() - startedAt, properties: { target },
@@ -391,17 +422,18 @@ export function ScriptEditorStep({
     }
   }
 
-  // Step 5 — hand the saved script to the video editor and go there.
-  // The row must exist first (the autosave creates it), so the CTA stays
-  // disabled until this draft has an id.
-  async function handleSendToEditor() {
-    const d = draftRef.current;
-    const scriptId = d?.id ?? rowIdRef.current;
-    if (!d || !scriptId || sending) return;
-    const startedAt = performance.now();
-    trackEvent("hero_script_handoff_requested", { status: "started" });
+  // Step 5 — commit the newest serialized snapshot, then create one project.
+  const createEditorProject = useCallback(async (): Promise<boolean> => {
+    if (sendingRef.current) return false;
+    sendingRef.current = true;
     setSending(true);
+    const startedAt = performance.now();
     try {
+      if (!(await saveLatest())) return false;
+      const d = draftRef.current;
+      const scriptId = d?.id ?? rowIdRef.current;
+      if (!d || !scriptId) return false;
+      trackEvent("hero_script_handoff_requested", { status: "started" });
       const res = await authenticatedFetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
       if (!res.ok) {
         trackEvent("hero_script_handoff_failed", {
@@ -409,7 +441,7 @@ export function ScriptEditorStep({
           properties: { httpStatus: res.status },
         });
         await toastErrorResponse(res, "ส่งไปตัดต่อไม่สำเร็จ", { onUpgrade: goToPricing });
-        return;
+        return false;
       }
       const data = await res.json();
       const projectId = typeof data?.projectId === "string" ? data.projectId : "";
@@ -419,32 +451,44 @@ export function ScriptEditorStep({
           properties: { failure: "missing_project_id" },
         });
         toast.error("ส่งไปตัดต่อไม่สำเร็จ");
-        return;
+        return false;
       }
       // Flip the local status so the history chip reads "ส่งแล้ว" even if the
       // navigation takes a moment.
       const latest = draftRef.current;
-      if (latest) onDraftChangeRef.current({ ...latest, status: "sent" });
-      onSavedRef.current?.();
+      if (latest) {
+        const sentDraft = { ...latest, status: "sent", editorProjectId: projectId, editorProjectAvailable: true };
+        draftRef.current = sentDraft;
+        onDraftChangeRef.current(sentDraft);
+        onSavedRef.current?.(sentDraft);
+      }
       trackEvent("hero_script_handoff_completed", {
         status: "done", durationMs: performance.now() - startedAt,
       });
       router.push(`/video-editor?projectId=${encodeURIComponent(projectId)}`);
+      return true;
     } catch {
       trackEvent("hero_script_handoff_failed", {
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { failure: "network" },
       });
       toast.error("ส่งไปตัดต่อไม่สำเร็จ");
+      return false;
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
-  }
+  }, [goToPricing, router, saveLatest]);
+
+  useImperativeHandle(ref, () => ({ saveLatest, createEditorProject }), [createEditorProject, saveLatest]);
 
   function editSection(patch: Partial<ScriptDraft>) {
     const current = draftRef.current;
     if (!current) return;
-    onDraftChange({ ...current, ...patch });
+    const next = { ...current, ...patch };
+    draftRef.current = next;
+    setSaveState("saving");
+    onDraftChange(next);
   }
 
   // Plan gate for step 5 — the same `allowVideoEditor` limit the API enforces
@@ -524,7 +568,8 @@ export function ScriptEditorStep({
                 value={section.value}
                 onChange={(e) => section.onChange(e.target.value)}
                 rows={section.rows}
-                className="text-xs"
+                className="text-base"
+                style={{ fontSize: "1rem" }}
               />
             </div>
           ))}
@@ -536,18 +581,30 @@ export function ScriptEditorStep({
             <span className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--ui-text-muted)" }}>
               {saveState === "saving" && <><Loader2 className="h-3 w-3 animate-spin" /> กำลังบันทึก…</>}
               {saveState === "saved" && <><Check className="h-3 w-3" /> บันทึกแล้ว</>}
+              {saveState === "failed" && <>บันทึกไม่สำเร็จ ลองอีกครั้ง</>}
             </span>
             {/* ── Step 5: ส่งไปตัดต่อ ── */}
             {canSendToEditor ? (
-              <Button
-                onClick={handleSendToEditor}
-                disabled={!draft.id || sending}
-                className="min-h-11 gap-1.5 text-white sm:w-auto"
-                style={{ background: VIOLET }}
-              >
-                {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                ส่งไปตัดต่อ
-              </Button>
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                {draft.status === "sent" && <p className="max-w-md text-xs" style={{ color: "var(--ui-text-muted)" }}>การแก้สคริปต์นี้ยังไม่เปลี่ยนงานตัดต่อเดิม</p>}
+                <div className="flex flex-wrap justify-end gap-2">
+                  {draft.status === "sent" && draft.editorProjectAvailable && draft.editorProjectId && (
+                    <Button type="button" variant="outline" className="min-h-11" onClick={() => router.push(`/video-editor?projectId=${encodeURIComponent(draft.editorProjectId!)}`)}>
+                      เปิดงานตัดต่อเดิม
+                    </Button>
+                  )}
+                  {draft.status === "sent" && !draft.editorProjectAvailable && <span className="self-center text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>}
+                  <Button
+                    onClick={() => { void createEditorProject(); }}
+                    disabled={sending}
+                    className="min-h-11 gap-1.5 text-white sm:w-auto"
+                    style={{ background: VIOLET }}
+                  >
+                    {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    {draft.status === "sent" ? "สร้างงานตัดต่อใหม่" : "ส่งไปตัดต่อ"}
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div
                 className="rounded-lg border px-3 py-2.5 text-xs"
@@ -572,4 +629,4 @@ export function ScriptEditorStep({
       )}
     </div>
   );
-}
+});

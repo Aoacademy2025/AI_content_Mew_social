@@ -20,6 +20,13 @@ interface StorageWriter extends StorageReader {
   setItem(key: string, value: string): void;
 }
 
+type DetailRequestCounter = { current: number };
+type DetailFetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
+export type HeroScriptDetailOutcome<T> =
+  | { status: "applied"; data: T }
+  | { status: "stale" }
+  | { status: "error"; message: string };
+
 const DEFAULT_PREFERENCES: HeroScriptWritingPreferences = { profileId: null, durationSec: 60 };
 
 export function switchHeroScriptWorkspaceTab<T extends HeroScriptWorkspaceState>(
@@ -63,5 +70,31 @@ export function writeHeroScriptWritingPreferences(
     storage.setItem(preferencesKey(accountId), JSON.stringify(preferences));
   } catch {
     // Browser storage can be unavailable in private browsing; the live workspace still works.
+  }
+}
+
+/** Only the newest explicit restore may become the workspace. Incrementing the
+ * same counter also invalidates a pending restore after deletion/new-script. */
+export async function loadLatestHeroScriptDetail<T>(
+  id: string,
+  latestRequest: DetailRequestCounter,
+  fetcher: DetailFetcher = fetch,
+): Promise<HeroScriptDetailOutcome<T>> {
+  const requestId = ++latestRequest.current;
+  try {
+    const response = await fetcher(`/api/scripts/${encodeURIComponent(id)}`);
+    const payload = await response.json().catch(() => null);
+    if (requestId !== latestRequest.current) return { status: "stale" };
+    if (!response.ok || !payload || typeof payload !== "object") {
+      return {
+        status: "error",
+        message: typeof payload?.error === "string" ? payload.error : "โหลดสคริปต์ไม่สำเร็จ",
+      };
+    }
+    return { status: "applied", data: payload as T };
+  } catch {
+    return requestId === latestRequest.current
+      ? { status: "error", message: "โหลดสคริปต์ไม่สำเร็จ" }
+      : { status: "stale" };
   }
 }
