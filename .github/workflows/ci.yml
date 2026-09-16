@@ -288,6 +288,9 @@ jobs:
       - name: Verify signed Sentry alerts are safely formatted for LINE
         run: npm run verify:sentry-line-alert
 
+      - name: Verify cron Prisma timeouts return 503 instead of unhandled errors
+        run: npm run verify:cron-route
+
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 
