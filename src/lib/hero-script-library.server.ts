@@ -25,8 +25,14 @@ export interface HeroScriptLibraryItem {
   updatedAt: Date;
 }
 
+export interface HeroScriptLibraryBrandOption {
+  id: string;
+  name: string;
+}
+
 export interface HeroScriptLibraryPage {
   items: HeroScriptLibraryItem[];
+  brandOptions: HeroScriptLibraryBrandOption[];
   total: number;
   page: number;
   pageSize: number;
@@ -98,7 +104,7 @@ export async function listHeroScriptLibrary(
           }),
   };
   const skip = (query.page - 1) * query.pageSize;
-  const [total, rows] = await prisma.$transaction([
+  const [total, rows, brandOptions] = await prisma.$transaction([
     prisma.script.count({ where }),
     prisma.script.findMany({
       where,
@@ -116,6 +122,14 @@ export async function listHeroScriptLibrary(
         createdAt: true,
         updatedAt: true,
       },
+    }),
+    prisma.brandProfile.findMany({
+      where: {
+        userId,
+        scripts: { some: { userId } },
+      },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      select: { id: true, name: true },
     }),
   ]);
   const projectIds = [...new Set(rows.flatMap((row) => row.editorProjectId ? [row.editorProjectId] : []))];
@@ -143,6 +157,7 @@ export async function listHeroScriptLibrary(
         updatedAt: row.updatedAt,
       };
     }),
+    brandOptions,
     total,
     page: query.page,
     pageSize: query.pageSize,

@@ -7,7 +7,7 @@
 // Reads GET /api/scripts (own scripts, newest first, take 50) and re-fetches
 // whenever `refreshKey` changes — the editor bumps it after every autosave.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ChevronLeft, ChevronRight, ExternalLink, Loader2, Search, Trash2 } from "lucide-react";
@@ -55,6 +55,7 @@ export interface ScriptLibraryItem {
 
 export interface ScriptLibraryPage {
   items: ScriptLibraryItem[];
+  brandOptions: Array<{ id: string; name: string }>;
   total: number;
   page: number;
   pageSize: number;
@@ -80,6 +81,13 @@ function isLibraryPage(value: unknown): value is ScriptLibraryPage {
   if (!value || typeof value !== "object") return false;
   const page = value as Partial<ScriptLibraryPage>;
   return Array.isArray(page.items)
+    && Array.isArray(page.brandOptions)
+    && page.brandOptions.every((option) => (
+      !!option
+      && typeof option === "object"
+      && typeof option.id === "string"
+      && typeof option.name === "string"
+    ))
     && Number.isSafeInteger(page.total)
     && Number.isSafeInteger(page.page)
     && Number.isSafeInteger(page.pageSize)
@@ -140,7 +148,6 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([]);
   const [deleteItem, setDeleteItem] = useState<ScriptLibraryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const latestRequest = useRef(0);
@@ -152,24 +159,6 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
     }, SEARCH_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [search]);
-
-  useEffect(() => {
-    let current = true;
-    void authenticatedFetch("/api/brand-profiles")
-      .then((response) => response.ok ? response.json() : [])
-      .then((value: unknown) => {
-        if (!current || !Array.isArray(value)) return;
-        setProfiles(value.flatMap((profile) => {
-          if (!profile || typeof profile !== "object") return [];
-          const row = profile as { id?: unknown; name?: unknown };
-          return typeof row.id === "string" && typeof row.name === "string"
-            ? [{ id: row.id, name: row.name }]
-            : [];
-        }));
-      })
-      .catch(() => {});
-    return () => { current = false; };
-  }, []);
 
   useEffect(() => {
     void loadLatestScriptLibraryPage({
@@ -185,6 +174,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
         setError(outcome.message);
         return;
       }
+      setError(null);
       setData(outcome.data);
       if (outcome.data.items.length === 0 && outcome.data.total > 0 && page > 1) {
         setLoading(true);
@@ -193,13 +183,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
     });
   }, [brandProfileId, debouncedSearch, page, refreshKey, retryKey, status]);
 
-  const brandOptions = useMemo(() => {
-    const names = new Map(profiles.map((profile) => [profile.id, profile.name]));
-    for (const item of data?.items ?? []) {
-      if (item.brandProfileId && item.brandName) names.set(item.brandProfileId, item.brandName);
-    }
-    return [...names].sort((a, b) => a[1].localeCompare(b[1], "th"));
-  }, [data?.items, profiles]);
+  const brandOptions = data?.brandOptions ?? [];
 
   function clearFilters() {
     setLoading(true);
@@ -270,7 +254,7 @@ export function ScriptLibrary({ onOpenScript, activeScriptId, refreshKey }: Scri
             >
               <option value="">ทุกแบรนด์</option>
               <option value="none">ไม่ใช้โปรไฟล์</option>
-              {brandOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              {brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </label>
           <label className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
