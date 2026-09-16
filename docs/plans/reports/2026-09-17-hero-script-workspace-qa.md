@@ -12,6 +12,8 @@ PASS. The mounted fixture uses the actual Hero Script page, locked-preview compo
 
 - 20 fictional profiles and exactly 500 fictional scripts loaded. At 1366×768 the topic input was asserted within the initial viewport, including the dashboard allocation; desktop and 320px document widths did not overflow.
 - At 390×844, the workflow exercised Thai search beyond the old 50-row boundary, 20-row pagination, combined brand/status request, row opening, save-before-handoff, explicit recent recovery, sent-project navigation, explicit create-new, profile legacy/published behavior, empty/no-match/error/retry states, and locked preview.
+- Delayed-response coverage edits the Script again after an awaited save begins and proves New, record open and create-new drain through that latest snapshot. A failed follow-up save preserves the latest text and blocks replacement/handoff without showing it as saved.
+- Both existing-project entry points use the same save/discard guard and still send zero handoff POSTs. Held generation, section regeneration and handoff responses cannot mutate or navigate away from a replacement workspace; stale failures stay silent.
 - Keyboard used Tab/Enter/typeahead for tabs, brand filter, Thai search, row opening and the main send action. Chromium headless focused the native status select but did not apply Arrow/Alt+Arrow/Space selection; the combined status request was therefore exercised with Puppeteer's native select API and is recorded as a harness limitation, not keyboard proof.
 - Fictional captures: `hero-script-workspace-desktop.png`, `hero-script-workspace-mobile.png`, and `hero-script-locked-preview-mobile.png` in `docs/plans/reports/hero-script-workspace-ux/fixtures/`.
 
@@ -19,7 +21,11 @@ PASS. The mounted fixture uses the actual Hero Script page, locked-preview compo
 
 RED: after a genuine empty library response, a later failed refresh displayed both “โหลดคลังสคริปต์ไม่สำเร็จ” and the false-empty “ยังไม่มีสคริปต์.” The new browser assertion failed. `ScriptHistory` now suppresses list/empty content while an error is present; the mounted browser check is green.
 
-## Commands run once after the QA fix
+## Final race correction
+
+RED: the mounted verifier reproduced three release blockers: New discarded an edit typed after its first save request began, existing-project navigation bypassed a held save, and a held handoff navigated away from a replacement workspace. GREEN: serialized saves drain through the current visible snapshot, project navigation uses the page guard, and generation/regeneration/handoff responses validate the initiating workspace before finalization.
+
+## Commands rerun after the final correction
 
 | Command | Status |
 | --- | --- |
@@ -30,7 +36,7 @@ RED: after a genuine empty library response, a later failed refresh displayed bo
 | `npm run verify:brand-library-ui` | PASS |
 | `node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-brand-profile-library.ts` | PASS |
 | `npm run verify:admin-number-mapc-definition` | PASS (23 checks) |
-| `npx eslint scripts/verify-hero-script-workspace-browser.mts src/app/(dashboard)/hero-script/_components/ScriptHistory.tsx` | PASS |
+| `npx eslint scripts/verify-hero-script-workspace-browser.mts src/app/(dashboard)/hero-script/_components/ScriptEditorStep.tsx src/app/(dashboard)/hero-script/_components/ScriptHistory.tsx src/app/(dashboard)/hero-script/page.tsx` | PASS |
 | `npx tsc --noEmit --pretty false` | PASS |
 | `npm run build` | PASS; optimized build completed and emitted `.next/BUILD_ID` |
 

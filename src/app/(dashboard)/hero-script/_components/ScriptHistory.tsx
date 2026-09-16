@@ -4,7 +4,6 @@
 // summary data; choosing one asks the page owner to fetch its full detail.
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { toast } from "sonner";
 import { ChevronLeft, ChevronRight, ExternalLink, Loader2, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
@@ -129,6 +128,7 @@ export async function loadLatestScriptLibraryPage(
 
 interface ScriptLibraryProps {
   onOpenScript: (item: ScriptLibraryItem) => void;
+  onOpenEditorProject?: (item: ScriptLibraryItem) => void;
   onCreateEditorProject?: (item: ScriptLibraryItem) => Promise<void>;
   beforeDelete?: (item: ScriptLibraryItem) => Promise<boolean>;
   onDeleted?: (id: string) => void;
@@ -141,7 +141,7 @@ interface ScriptLibraryProps {
 const LIBRARY_PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 300;
 
-export function ScriptLibrary({ onOpenScript, onCreateEditorProject, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
+export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEditorProject, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status, setStatus] = useState<ScriptLibraryQuery["status"]>("all");
@@ -346,13 +346,14 @@ export function ScriptLibrary({ onOpenScript, onCreateEditorProject, beforeDelet
                   </span>
                   <div className="col-span-2 flex flex-wrap items-center justify-end gap-1 sm:col-span-1 sm:flex-nowrap">
                     {sent && item.editorProjectAvailable && item.editorProjectId ? (
-                      <Link
-                        href={`/video-editor?projectId=${encodeURIComponent(item.editorProjectId)}`}
+                      <button
+                        type="button"
+                        onClick={() => onOpenEditorProject?.(item)}
                         className="flex min-h-11 items-center gap-1 rounded-lg px-3 text-xs font-medium"
                         style={{ color: VIOLET }}
                       >
                         เปิดงานตัดต่อเดิม <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                      </Link>
+                      </button>
                     ) : sent ? (
                       <span className="px-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>
                     ) : null}

@@ -104,12 +104,20 @@ const detailGets: string[] = [];
 const saveBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
 const handoffPosts: string[] = [];
 let nextSaveDelayMs = 0;
+let nextSaveRelease: Promise<void> | null = null;
 let failNextSave = false;
 let nextHandoffDelayMs = 0;
+let nextHandoffRelease: Promise<void> | null = null;
+let failNextHandoff = false;
 let slowDetailDelayMs = 0;
 type DeferredReply = { delayMs?: number; release?: Promise<void>; status?: number; body: Record<string, unknown> };
 const generationReplies: DeferredReply[] = [];
 const regenReplies: Array<DeferredReply & { target: "hook" | "body" | "cta" }> = [];
+const deferredReply = () => {
+  let resolve!: () => void;
+  const release = new Promise<void>((done) => { resolve = done; });
+  return { release, resolve };
+};
 
 const fixtureShell = (scriptPath: string) => `<!doctype html><html class="dark"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><body><div class="fixture-shell"><header class="fixture-topbar" aria-label="Dashboard top navigation"></header><div class="fixture-shell-body"><aside class="fixture-sidebar" aria-label="Dashboard sidebar"></aside><main class="fixture-main"><div class="fixture-root" id="root"></div></main></div><nav class="fixture-bottom-tabs" aria-label="Dashboard bottom navigation"></nav></div><script src="${scriptPath}"></script></body></html>`;
 const html = fixtureShell("/app.js");
@@ -182,7 +190,10 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(handoffMatch[1]);
     handoffPosts.push(id);
     const delay = nextHandoffDelayMs; nextHandoffDelayMs = 0;
+    const release = nextHandoffRelease; nextHandoffRelease = null;
+    if (release) await release;
     if (delay) await wait(delay);
+    if (failNextHandoff) { failNextHandoff = false; return json({ error: "handoff failed" }, 500); }
     const current = records.get(id);
     if (!current) return json({ error: "missing" }, 404);
     records.set(id, { ...current, status: "sent", editorProjectId: `project-${handoffPosts.length}`, editorProjectAvailable: true });
@@ -199,6 +210,8 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(detailMatch[1]); const body = await readBody();
     saveBodies.push({ id, body });
     const delay = nextSaveDelayMs; nextSaveDelayMs = 0;
+    const release = nextSaveRelease; nextSaveRelease = null;
+    if (release) await release;
     if (delay) await wait(delay);
     if (failNextSave) { failNextSave = false; return json({ error: "save failed" }, 500); }
     const current = records.get(id);
@@ -316,6 +329,22 @@ try {
   await page.locator('::-p-text(สร้าง Hook)').click();
   await page.locator('::-p-text(Hook fixture)').click();
   await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  const routesBeforeBriefProjectOpen = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const handoffsBeforeBriefProjectOpen = handoffPosts.length;
+  await page.evaluate(() => {
+    const article = [...document.querySelectorAll("article")].find((node) => node.textContent?.includes("Sent available"));
+    [...(article?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes("เปิดงานตัดต่อเดิม"))?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.body.textContent?.includes("ทิ้งสิ่งที่กำลังเขียน?"));
+  await page.locator('button::-p-text(ยกเลิก)').click();
+  assert.equal(await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), routesBeforeBriefProjectOpen, "library existing-project cancel preserves a pre-generation brief");
+  await page.evaluate(() => {
+    const article = [...document.querySelectorAll("article")].find((node) => node.textContent?.includes("Sent available"));
+    [...(article?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes("เปิดงานตัดต่อเดิม"))?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await page.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
+  await page.waitForFunction((count) => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > count, {}, routesBeforeBriefProjectOpen);
+  assert.equal(handoffPosts.length, handoffsBeforeBriefProjectOpen, "library existing-project discard navigates with zero handoff POSTs");
   await page.evaluate(() => [...document.querySelectorAll("article button")].find((button) => button.textContent?.includes("Fast detail"))?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   await page.waitForFunction(() => document.body.textContent?.includes("ทิ้งสิ่งที่กำลังเขียน?"));
   await page.locator('button::-p-text(ยกเลิก)').click();
@@ -335,10 +364,44 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 450));
   assert.equal(await page.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "Sent available", "a delayed prior detail cannot replace the newest selection");
 
+  const fillBodyEditor = async (value: string) => page.evaluate((next) => {
+    const visible = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter((node) => node.getClientRects().length > 0);
+    const input = visible.slice(-3)[1];
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const fillMountedBodyEditor = async (value: string) => page.evaluate((next) => {
+    const input = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].slice(-3)[1];
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const readBodyEditor = async () => page.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).slice(-3)[1]?.value);
+
   const handoffsBeforeOpen = handoffPosts.length;
+  await fillBodyEditor("Existing project save began");
+  const existingOpenGate = deferredReply();
+  nextSaveRelease = existingOpenGate.release;
+  const routesBeforeExistingSave = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const existingFirstSavePromise = page.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Existing project save began");
   await page.locator('button::-p-text(เปิดงานตัดต่อเดิม)').click();
-  await page.waitForFunction(() => (window as unknown as { __fixtureManageUrl?: string }).__fixtureManageUrl?.includes("owned-project"));
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  assert.equal(await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), routesBeforeExistingSave, "existing-project navigation waits for the latest save");
+  const existingFirstSave = await existingFirstSavePromise;
+  assert.ok(existingFirstSave);
+  await fillBodyEditor("Latest while existing project awaited save");
+  existingOpenGate.resolve();
+  await page.waitForFunction((count) => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > count, {}, routesBeforeExistingSave);
+  assert.equal(records.get("sent-record")?.bodyText, "Latest while existing project awaited save", "existing-project navigation drains edits made after save begins");
   assert.equal(handoffPosts.length, handoffsBeforeOpen, "opening an existing project performs zero handoff POSTs");
+  await fillBodyEditor("Existing project save failure");
+  failNextSave = true;
+  const routesBeforeExistingFailure = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const existingFailureResponse = page.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Existing project save failure");
+  await page.locator('button::-p-text(เปิดงานตัดต่อเดิม)').click();
+  await existingFailureResponse;
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  assert.equal(await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), routesBeforeExistingFailure, "failed save blocks existing-project navigation");
+  assert.equal(await readBodyEditor(), "Existing project save failure", "failed existing-project navigation preserves the latest text");
   nextHandoffDelayMs = 250;
   await page.evaluate(() => {
     const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.includes("สร้างงานตัดต่อใหม่"))!;
@@ -347,73 +410,56 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 350));
   assert.equal(handoffPosts.length, handoffsBeforeOpen + 1, "explicit create-new sends exactly one POST while pending");
 
-  await page.evaluate(() => {
-    const visible = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter((node) => node.getClientRects().length > 0);
-    const input = visible.slice(-3)[1];
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, "Latest before another record");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  nextSaveDelayMs = 250;
+  await fillBodyEditor("Snapshot when record open began");
+  const recordOpenSaveGate = deferredReply();
+  nextSaveRelease = recordOpenSaveGate.release;
+  const recordOpenFirstSave = page.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Snapshot when record open began");
   await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
   const detailCountBeforeMissing = detailGets.length;
   await page.evaluate(() => [...document.querySelectorAll("article button")].find((button) => button.textContent?.includes("Sent missing"))?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await recordOpenFirstSave;
   assert.equal(detailGets.length, detailCountBeforeMissing, "opening another record waits for the latest serialized save");
+  await fillMountedBodyEditor("Latest edit while record open awaited save");
+  recordOpenSaveGate.resolve();
   await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Sent missing");
-  assert.equal(records.get("sent-record")?.bodyText, "Latest before another record");
+  assert.equal(records.get("sent-record")?.bodyText, "Latest edit while record open awaited save", "record open drains edits made after save begins");
   assert.equal(await page.evaluate(() => document.body.innerText.includes("งานตัดต่อเดิมไม่พร้อมใช้งาน")), true, "missing projects remain truthful and offer explicit create-new");
 
   await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
   await page.evaluate(() => [...document.querySelectorAll("article button")].find((button) => button.textContent?.includes("Fast detail"))?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Fast detail");
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.setViewport({ width: 320, height: 844 });
   assert.equal(await page.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).slice(-3).every((input) => Number.parseFloat(getComputedStyle(input).fontSize) >= 16)), true, "editable Hook/body/CTA text stays at least 16px");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "editor actions do not cause 320px horizontal scrolling");
-  const fillBodyEditor = async (value: string) => page.evaluate((next) => {
-    const visible = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter((node) => node.getClientRects().length > 0);
-    const input = visible.slice(-3)[1];
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  }, value);
-  const readBodyEditor = async () => page.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).slice(-3)[1]?.value);
   await fillBodyEditor("Latest before failed handoff");
   failNextSave = true;
+  nextSaveDelayMs = 100;
   const handoffsBeforeFailure = handoffPosts.length;
-  await page.locator('button::-p-text(ส่งไปตัดต่อ)').click();
-  await page.waitForFunction(() => document.body.innerText.includes("บันทึกไม่สำเร็จ ลองอีกครั้ง"));
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("ส่งไปตัดต่อ") && !button.disabled));
+  const failedHandoffSaveResponse = page.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest before failed handoff");
+  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ส่งไปตัดต่อ") && button.getClientRects().length > 0)?.click());
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("ส่งไปตัดต่อ") && button.disabled));
+  await failedHandoffSaveResponse;
   assert.equal(handoffPosts.length, handoffsBeforeFailure, "a failed latest save blocks stale handoff");
   assert.equal(await readBodyEditor(), "Latest before failed handoff", "save failure preserves working text");
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("ส่งไปตัดต่อ") && !button.disabled));
   const routesBeforeRetry = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
   nextSaveDelayMs = 250;
-  await page.locator('button::-p-text(ส่งไปตัดต่อ)').click();
+  const retrySaveResponse = page.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest before failed handoff");
+  const retryHandoffResponse = page.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ส่งไปตัดต่อ") && button.getClientRects().length > 0)?.click());
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(handoffPosts.length, handoffsBeforeFailure, "handoff waits for a delayed latest save");
+  assert.equal((await retrySaveResponse).status(), 200);
+  await retryHandoffResponse;
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.waitForFunction((count) => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > count, {}, routesBeforeRetry);
   assert.equal(records.get("fast-record")?.bodyText, "Latest before failed handoff", "handoff follows the latest committed body");
   assert.equal(handoffPosts.length, handoffsBeforeFailure + 1);
-
-  await fillBodyEditor("Delayed replacement body");
-  nextSaveDelayMs = 300;
-  await page.locator('::-p-text(สคริปต์ใหม่)').click();
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  assert.equal(await page.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "Fast detail", "replacement waits for delayed serialized save");
-  await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
-  assert.equal(records.get("fast-record")?.bodyText, "Delayed replacement body");
-
-  await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
-  await page.evaluate(() => [...document.querySelectorAll("article button")].find((button) => button.textContent?.includes("Fast detail"))?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-  await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Fast detail");
-  await fillBodyEditor("Unsaved replacement body");
-  failNextSave = true;
-  await page.locator('::-p-text(สคริปต์ใหม่)').click();
-  await page.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
-  await page.locator('button::-p-text(ยกเลิก)').click();
-  assert.equal(await readBodyEditor(), "Unsaved replacement body", "cancel after save failure keeps the exact working text");
-  failNextSave = true;
-  await page.locator('::-p-text(สคริปต์ใหม่)').click();
-  await page.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
-  await page.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
-  await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("สร้างงานตัดต่อใหม่") && !button.disabled));
+  await page.reload();
+  await page.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
 
   await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
   slowDetailDelayMs = 400;
@@ -452,6 +498,100 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.equal(saveBodies.some(({ body }) => body.bodyText === "Latest before failed handoff"), true);
 
+  records.set("fast-record", script({ id: "fast-record", topic: "Fast detail", durationSec: 30, brandProfileId: "legacy-revision-zero" }));
+  const saveDrainPage = await browser.newPage();
+  saveDrainPage.setDefaultTimeout(5_000);
+  await saveDrainPage.setViewport({ width: 390, height: 844 });
+  await saveDrainPage.goto(`http://127.0.0.1:${port}/hero-script`);
+  await saveDrainPage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  const settleSaveDrainPage = async () => saveDrainPage.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const openOnSaveDrainPage = async (topicName: string) => {
+    await saveDrainPage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+    await saveDrainPage.waitForFunction((topic) => [...document.querySelectorAll("article button")].some((button) => button.textContent?.includes(topic)), {}, topicName);
+    await saveDrainPage.evaluate((topic) => [...document.querySelectorAll<HTMLButtonElement>("article button")].find((button) => button.textContent?.includes(topic))?.click(), topicName);
+    await saveDrainPage.waitForFunction((topic) => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === topic, {}, topicName);
+    await settleSaveDrainPage();
+  };
+  const fillSaveDrainBody = async (value: string) => saveDrainPage.evaluate((next) => {
+    const input = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter((node) => node.getClientRects().length > 0).slice(-3)[1];
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const fillMountedSaveDrainBody = async (value: string) => saveDrainPage.evaluate((next) => {
+    const input = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].slice(-3)[1];
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const saveDrainBody = async () => saveDrainPage.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).slice(-3)[1]?.value);
+
+  await openOnSaveDrainPage("Fast detail");
+  await fillSaveDrainBody("Snapshot when New began");
+  const newSaveGate = deferredReply();
+  nextSaveRelease = newSaveGate.release;
+  const newFirstSave = saveDrainPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Snapshot when New began");
+  await saveDrainPage.locator('button::-p-text(สคริปต์ใหม่)').click();
+  await newFirstSave;
+  await fillSaveDrainBody("Latest edit while New awaited save");
+  const newLatestSave = saveDrainPage.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest edit while New awaited save");
+  newSaveGate.resolve();
+  await newLatestSave;
+  await saveDrainPage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
+  assert.equal(records.get("fast-record")?.bodyText, "Latest edit while New awaited save", "New commits edits made after its awaited save begins");
+
+  await openOnSaveDrainPage("Fast detail");
+  await fillSaveDrainBody("First snapshot before follow-up failure");
+  const firstFollowupGate = deferredReply();
+  nextSaveRelease = firstFollowupGate.release;
+  const firstFollowupSave = saveDrainPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "First snapshot before follow-up failure");
+  await saveDrainPage.locator('button::-p-text(สคริปต์ใหม่)').click();
+  await firstFollowupSave;
+  await fillSaveDrainBody("Latest text whose follow-up save fails");
+  const secondFollowupGate = deferredReply();
+  nextSaveRelease = secondFollowupGate.release;
+  const secondFollowupSave = saveDrainPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Latest text whose follow-up save fails");
+  firstFollowupGate.resolve();
+  await secondFollowupSave;
+  assert.equal(await saveDrainPage.evaluate(() => document.body.innerText.includes("บันทึกแล้ว")), false, "save state does not report saved while a newer visible snapshot is pending");
+  failNextSave = true;
+  secondFollowupGate.resolve();
+  await saveDrainPage.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
+  assert.equal(await saveDrainBody(), "Latest text whose follow-up save fails", "a failed follow-up save preserves its latest visible text");
+  assert.equal(await saveDrainPage.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "Fast detail", "failed follow-up save blocks replacement");
+  await saveDrainPage.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
+  await saveDrainPage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
+
+  await openOnSaveDrainPage("Fast detail");
+  await fillSaveDrainBody("Snapshot when record open began");
+  const openSaveGate = deferredReply();
+  nextSaveRelease = openSaveGate.release;
+  const openFirstSave = saveDrainPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Snapshot when record open began");
+  await saveDrainPage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  await saveDrainPage.waitForFunction(() => [...document.querySelectorAll("article button")].some((button) => button.textContent?.includes("Recent fixture")));
+  await saveDrainPage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("article button")].find((button) => button.textContent?.includes("Recent fixture"))?.click());
+  await openFirstSave;
+  await fillMountedSaveDrainBody("Latest edit while record open awaited save");
+  const openLatestSave = saveDrainPage.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest edit while record open awaited save");
+  openSaveGate.resolve();
+  await openLatestSave;
+  await saveDrainPage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Recent fixture");
+  assert.equal(records.get("fast-record")?.bodyText, "Latest edit while record open awaited save", "record open commits edits made after its awaited save begins");
+
+  await openOnSaveDrainPage("Fast detail");
+  await fillSaveDrainBody("Snapshot when create began");
+  const createSaveGate = deferredReply();
+  nextSaveRelease = createSaveGate.release;
+  const createFirstSave = saveDrainPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Snapshot when create began");
+  const createHandoffResponse = saveDrainPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await saveDrainPage.locator('button::-p-text(ส่งไปตัดต่อ)').click();
+  await createFirstSave;
+  await fillSaveDrainBody("Latest edit while create awaited save");
+  const createLatestSave = saveDrainPage.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest edit while create awaited save");
+  createSaveGate.resolve();
+  await createLatestSave;
+  await createHandoffResponse;
+  assert.equal(records.get("fast-record")?.bodyText, "Latest edit while create awaited save", "create handoff commits edits made after its awaited save begins");
+  await saveDrainPage.close();
+
   const racePage = await browser.newPage();
   racePage.setDefaultTimeout(5_000);
   await racePage.setViewport({ width: 390, height: 844 });
@@ -459,11 +599,6 @@ try {
   await racePage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
   const setTopic = async (value: string) => racePage.locator('input[aria-label="หัวข้อสคริปต์"]').fill(value);
   const settleReact = async () => racePage.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  const deferredReply = () => {
-    let resolve!: () => void;
-    const release = new Promise<void>((done) => { resolve = done; });
-    return { release, resolve };
-  };
   const requestBody = (candidate: import("puppeteer").HTTPResponse) => JSON.parse(candidate.request().postData() ?? "{}");
   const waitForGeneration = (requestTopic: string) => racePage.waitForResponse((candidate) =>
     candidate.url().endsWith("/api/scripts/generate") && requestBody(candidate).topic === requestTopic);
@@ -501,6 +636,12 @@ try {
     const labelNode = [...document.querySelectorAll<HTMLSpanElement>("span")].find((node) => node.textContent === sectionLabel && node.getClientRects().length > 0)!;
     (labelNode.parentElement?.querySelector("button") as HTMLButtonElement).click();
   }, label);
+  const clickCreateProject = async () => racePage.evaluate(() => {
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.getClientRects().length > 0
+      && ["ส่งไปตัดต่อ", "สร้างงานตัดต่อใหม่"].includes(button.textContent?.trim() ?? ""),
+    )?.click();
+  });
   const editorValues = async () => racePage.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).map((input) => input.value).slice(-3));
 
   // Full generation: explicit record replacement owns the workspace even when
@@ -691,6 +832,89 @@ try {
   await secondRegenResponse;
   await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].some((input) => input.value === "LATEST REGEN BODY"));
   assert.equal((await editorValues()).includes("STALE REGEN FINALIZER"), false);
+
+  // Starting a handoff owns the current Script and invalidates generation work
+  // that was already in flight before the handoff began.
+  const generationBeforeHandoffGate = deferredReply();
+  generationReplies.push({ release: generationBeforeHandoffGate.release, body: { structure: "how-to", bodyText: "STALE GENERATION DURING HANDOFF", ctaText: "stale" } });
+  const generationBeforeHandoffRequest = racePage.waitForRequest((request) => request.url().endsWith("/api/scripts/generate"));
+  const generationBeforeHandoffResponse = waitForGeneration("Sent available");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await generationBeforeHandoffRequest;
+  const generationHandoffGate = deferredReply();
+  nextHandoffRelease = generationHandoffGate.release;
+  const routesBeforeGenerationHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const generationHandoffRequest = racePage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const generationHandoffResponse = racePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickCreateProject();
+  await generationHandoffRequest;
+  generationBeforeHandoffGate.resolve();
+  await generationBeforeHandoffResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE GENERATION DURING HANDOFF"), false, "handoff invalidates an already-running full generation");
+  generationHandoffGate.resolve();
+  await generationHandoffResponse;
+  await racePage.waitForFunction((count) => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > count, {}, routesBeforeGenerationHandoff);
+
+  await racePage.reload();
+  await racePage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  await openRecord("Fast detail");
+  const regenBeforeHandoffGate = deferredReply();
+  regenReplies.push({ target: "body", release: regenBeforeHandoffGate.release, body: { text: "STALE REGEN DURING HANDOFF" } });
+  const regenBeforeHandoffRequest = racePage.waitForRequest((request) => request.url().endsWith("/api/scripts/regen-section"));
+  const regenBeforeHandoffResponse = waitForRegen("body");
+  await clickRegen("เนื้อหา");
+  await regenBeforeHandoffRequest;
+  const regenHandoffGate = deferredReply();
+  nextHandoffRelease = regenHandoffGate.release;
+  const routesBeforeRegenHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const regenHandoffRequest = racePage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const regenHandoffResponse = racePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickCreateProject();
+  await regenHandoffRequest;
+  regenBeforeHandoffGate.resolve();
+  await regenBeforeHandoffResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE REGEN DURING HANDOFF"), false, "handoff invalidates an already-running section regeneration");
+  regenHandoffGate.resolve();
+  await regenHandoffResponse;
+  await racePage.waitForFunction((count) => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > count, {}, routesBeforeRegenHandoff);
+
+  // Replacing the workspace while the non-idempotent POST is held prevents the
+  // old response from mutating or navigating away from the replacement.
+  await racePage.reload();
+  await racePage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  await openRecord("Fast detail");
+  const openDuringHandoffGate = deferredReply();
+  nextHandoffRelease = openDuringHandoffGate.release;
+  const routesBeforeOpenDuringHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const openDuringHandoffRequest = racePage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const openDuringHandoffResponse = racePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickCreateProject();
+  await openDuringHandoffRequest;
+  await openRecord("Sent missing");
+  openDuringHandoffGate.resolve();
+  await openDuringHandoffResponse;
+  await settleReact();
+  assert.equal(await racePage.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "Sent missing", "a held handoff cannot replace an opened record");
+  assert.equal(await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), routesBeforeOpenDuringHandoff, "a handoff owned by the previous record cannot navigate away from an opened record");
+
+  const heldHandoffGate = deferredReply();
+  nextHandoffRelease = heldHandoffGate.release;
+  const routesBeforeHeldHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
+  const toastsBeforeHeldHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0);
+  const heldHandoffRequest = racePage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const heldHandoffResponse = racePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickCreateProject();
+  await heldHandoffRequest;
+  await newWorkspace();
+  failNextHandoff = true;
+  heldHandoffGate.resolve();
+  await heldHandoffResponse;
+  await settleReact();
+  assert.equal(await racePage.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "", "a held handoff cannot replace New");
+  assert.equal(await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), routesBeforeHeldHandoff, "a handoff owned by the previous workspace cannot navigate away from New");
+  assert.equal(await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0), toastsBeforeHeldHandoff, "a stale handoff failure stays silent after New");
   await racePage.close();
 
   // Scale and access QA use a fresh mounted page. Every record/profile below is

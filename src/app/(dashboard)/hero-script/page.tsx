@@ -33,7 +33,10 @@ import {
 
 const VIOLET_LIGHT = "#B9A6FF";
 
-type Replacement = { kind: "new" } | { kind: "open"; item: ScriptLibraryItem };
+type WorkspaceAction =
+  | { kind: "new" }
+  | { kind: "open"; item: ScriptLibraryItem }
+  | { kind: "navigate"; projectId: string };
 
 export default function HeroScriptPage() {
   const router = useRouter();
@@ -49,7 +52,7 @@ export default function HeroScriptPage() {
   const [recentDraft, setRecentDraft] = useState<ScriptLibraryItem | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
   const [openingScriptId, setOpeningScriptId] = useState<string | null>(null);
-  const [pendingReplacement, setPendingReplacement] = useState<Replacement | null>(null);
+  const [pendingReplacement, setPendingReplacement] = useState<WorkspaceAction | null>(null);
   const [replacementAfterSaveFailure, setReplacementAfterSaveFailure] = useState(false);
   const hydratedAccountRef = useRef<string | null>(null);
   const workspaceChangedRef = useRef(false);
@@ -197,25 +200,26 @@ export default function HeroScriptPage() {
     }
   }, [restoreScript]);
 
-  const executeReplacement = useCallback(async (replacement: Replacement) => {
+  const executeWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
     editorRef.current?.invalidateAsyncRequests();
-    if (replacement.kind === "new") resetWorkspace();
-    else await openScript(replacement.item);
-  }, [openScript, resetWorkspace]);
+    if (action.kind === "new") resetWorkspace();
+    else if (action.kind === "open") await openScript(action.item);
+    else router.push(`/video-editor?projectId=${encodeURIComponent(action.projectId)}`);
+  }, [openScript, resetWorkspace, router]);
 
-  const requestReplacement = useCallback(async (replacement: Replacement) => {
+  const requestWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
     if (!draftRef.current && (topic.trim() || selectedHook)) {
       setReplacementAfterSaveFailure(false);
-      setPendingReplacement(replacement);
+      setPendingReplacement(action);
       return;
     }
     if (draftRef.current && !(await editorRef.current?.saveLatest())) {
       setReplacementAfterSaveFailure(true);
-      setPendingReplacement(replacement);
+      setPendingReplacement(action);
       return;
     }
-    await executeReplacement(replacement);
-  }, [executeReplacement, selectedHook, topic]);
+    await executeWorkspaceAction(action);
+  }, [executeWorkspaceAction, selectedHook, topic]);
 
   const handleSaved = useCallback((savedDraft: ScriptDraft) => {
     libraryDirtyRef.current = true;
@@ -293,7 +297,7 @@ export default function HeroScriptPage() {
               <h1 className="text-2xl font-bold tracking-tight md:text-3xl" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>เขียนสคริปต์ AI</h1>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" onClick={() => { void requestReplacement({ kind: "new" }); }} className="min-h-11 rounded-lg px-3 text-sm font-semibold" style={{ color: VIOLET_LIGHT }}>สคริปต์ใหม่</button>
+              <button type="button" onClick={() => { void requestWorkspaceAction({ kind: "new" }); }} className="min-h-11 rounded-lg px-3 text-sm font-semibold" style={{ color: VIOLET_LIGHT }}>สคริปต์ใหม่</button>
               <div role="tablist" aria-label="พื้นที่สคริปต์" className="flex min-h-11 items-center gap-1 rounded-lg p-1" style={{ background: "var(--ui-btn-bg)" }}>
                 <button type="button" role="tab" aria-selected={activeTab === "write"} onClick={() => setActiveTab("write")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "write" ? VIOLET_LIGHT : "transparent", color: activeTab === "write" ? "#241a3c" : "var(--ui-text-secondary)" }}>เขียนสคริปต์</button>
                 <button type="button" role="tab" aria-selected={activeTab === "library"} onClick={showLibrary} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "library" ? VIOLET_LIGHT : "transparent", color: activeTab === "library" ? "#241a3c" : "var(--ui-text-secondary)" }}>คลังสคริปต์</button>
@@ -304,7 +308,7 @@ export default function HeroScriptPage() {
           <div role="tabpanel" hidden={activeTab !== "write"} className="space-y-6">
             <HeroScriptQuickStart accountId={accountId} />
             {recentDraft && (
-              <button type="button" disabled={openingScriptId === recentDraft.id} onClick={() => { void requestReplacement({ kind: "open", item: recentDraft }); }} className="min-h-11 rounded-lg px-3 text-left text-sm font-medium" style={{ color: VIOLET_LIGHT }}>
+              <button type="button" disabled={openingScriptId === recentDraft.id} onClick={() => { void requestWorkspaceAction({ kind: "open", item: recentDraft }); }} className="min-h-11 rounded-lg px-3 text-left text-sm font-medium" style={{ color: VIOLET_LIGHT }}>
                 {openingScriptId === recentDraft.id ? "กำลังเปิดร่างล่าสุด…" : `ทำร่างล่าสุดต่อ · ${recentDraft.topic}`}
               </button>
             )}
@@ -313,7 +317,7 @@ export default function HeroScriptPage() {
             {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
             {!selectedHook && draft && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
             <div hidden={!selectedHook && !draft}>
-              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} />
+              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} onOpenEditorProject={(projectId) => { void requestWorkspaceAction({ kind: "navigate", projectId }); }} />
             </div>
           </div>
 
@@ -322,7 +326,8 @@ export default function HeroScriptPage() {
               active={activeTab === "library"}
               refreshKey={historyKey}
               activeScriptId={draft?.id ?? null}
-              onOpenScript={(item) => { void requestReplacement({ kind: "open", item }); }}
+              onOpenScript={(item) => { void requestWorkspaceAction({ kind: "open", item }); }}
+              onOpenEditorProject={(item) => { if (item.editorProjectId) void requestWorkspaceAction({ kind: "navigate", projectId: item.editorProjectId }); }}
               onCreateEditorProject={createEditorProject}
               beforeDelete={beforeDelete}
               onDeleted={handleDeleted}
@@ -348,7 +353,7 @@ export default function HeroScriptPage() {
               <button type="button" className="min-h-11 rounded-md border px-4 text-sm font-medium" onClick={() => {
                 const replacement = pendingReplacement;
                 setPendingReplacement(null);
-                if (replacement) void requestReplacement(replacement);
+                if (replacement) void requestWorkspaceAction(replacement);
               }}>
                 ลองบันทึกอีกครั้ง
               </button>
@@ -356,7 +361,7 @@ export default function HeroScriptPage() {
             <AlertDialogAction className="min-h-11" onClick={() => {
               const replacement = pendingReplacement;
               setPendingReplacement(null);
-              if (replacement) void executeReplacement(replacement);
+              if (replacement) void executeWorkspaceAction(replacement);
             }}>ทิ้งแล้วไปต่อ</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
