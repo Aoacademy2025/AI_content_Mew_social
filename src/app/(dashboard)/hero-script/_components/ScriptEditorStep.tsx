@@ -65,6 +65,7 @@ export interface ScriptDraft {
 export interface ScriptEditorStepHandle {
   saveLatest: () => Promise<boolean>;
   createEditorProject: () => Promise<boolean>;
+  invalidateAsyncRequests: () => void;
 }
 
 type RegenTarget = "hook" | "body" | "cta";
@@ -72,10 +73,11 @@ type RegenTarget = "hook" | "body" | "cta";
 async function toastErrorResponse(
   res: Response,
   fallback: string,
-  opts?: { onUpgrade?: () => void }
+  opts?: { onUpgrade?: () => void; isCurrent?: () => boolean }
 ) {
   let data: { error?: string; code?: string } | null = null;
   try { data = await res.json(); } catch { /* no body */ }
+  if (opts?.isCurrent && !opts.isCurrent()) return;
   if (res.status === 429) { toast.error(QUOTA_MESSAGE); return; }
   if (res.status === 401) {
     toast.error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง");
@@ -163,6 +165,14 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
   const generationRef = useRef(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRequestRef = useRef(0);
+
+  const invalidateAsyncRequests = useCallback(() => {
+    workspaceRequestRef.current += 1;
+    setGenerating(false);
+    setRegenTarget(null);
+    setGenerationError(null);
+  }, []);
 
   const snapshotOf = useCallback((d: ScriptDraft) => JSON.stringify({
     id: d.id,
@@ -288,6 +298,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
   async function handleGenerate() {
     const currentContext = hookContextKey(topic, durationSec, selectedProfileId);
     if (!selectedHook || selectedHook.contextKey !== currentContext || !topic.trim()) return;
+    const requestId = ++workspaceRequestRef.current;
     const startedAt = performance.now();
     trackEvent("hero_script_generation_requested", {
       status: "started",
@@ -297,6 +308,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
     setGenerationError(null);
     try {
       if (draftRef.current && !(await saveLatest())) return;
+      if (requestId !== workspaceRequestRef.current) return;
       const res = await authenticatedFetch("/api/scripts/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -308,19 +320,25 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
           durationSec,
         }),
       });
+      if (requestId !== workspaceRequestRef.current) return;
       if (!res.ok) {
+        const errorBody = await res.clone().json().catch(() => null);
+        if (requestId !== workspaceRequestRef.current) return;
         trackEvent("hero_script_generation_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { httpStatus: res.status, durationSec, profileUsed: Boolean(selectedProfileId) },
         });
-        const errorBody = await res.clone().json().catch(() => null);
         setGenerationError(typeof errorBody?.error === "string" && errorBody.error.trim()
           ? errorBody.error
           : "สร้างสคริปต์ไม่สำเร็จ กรุณาลองอีกครั้ง");
-        await toastErrorResponse(res, "สร้างสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
+        await toastErrorResponse(res, "สร้างสคริปต์ไม่สำเร็จ", {
+          onUpgrade: goToPricing,
+          isCurrent: () => requestId === workspaceRequestRef.current,
+        });
         return;
       }
       const data = await res.json();
+      if (requestId !== workspaceRequestRef.current) return;
       if (data.warning) toast.warning(data.warning);
       // A fresh generation is a NEW script (id: null) — the autosave creates
       // its own row, so regenerating never overwrites an earlier script.
@@ -351,6 +369,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
       });
       setSaveState("idle");
     } catch {
+      if (requestId !== workspaceRequestRef.current) return;
       trackEvent("hero_script_generation_failed", {
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { failure: "network", durationSec, profileUsed: Boolean(selectedProfileId) },
@@ -358,13 +377,14 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
       setGenerationError("เชื่อมต่อไม่สำเร็จ กรุณาลองอีกครั้ง");
       toast.error("สร้างสคริปต์ไม่สำเร็จ");
     } finally {
-      setGenerating(false);
+      if (requestId === workspaceRequestRef.current) setGenerating(false);
     }
   }
 
   async function handleRegen(target: RegenTarget) {
     const d = draftRef.current;
     if (!d) return;
+    const requestId = ++workspaceRequestRef.current;
     const startedAt = performance.now();
     trackEvent("hero_script_regen_requested", { status: "started", properties: { target } });
     setRegenTarget(target);
@@ -381,15 +401,19 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
           current: { hookText: d.hookText, bodyText: d.bodyText, ctaText: d.ctaText },
         }),
       });
+      if (requestId !== workspaceRequestRef.current) return;
       if (!res.ok) {
         trackEvent("hero_script_regen_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { target, httpStatus: res.status },
         });
-        await toastErrorResponse(res, "เขียนใหม่ไม่สำเร็จ");
+        await toastErrorResponse(res, "เขียนใหม่ไม่สำเร็จ", {
+          isCurrent: () => requestId === workspaceRequestRef.current,
+        });
         return;
       }
       const data = await res.json();
+      if (requestId !== workspaceRequestRef.current) return;
       if (data.warning) toast.warning(data.warning);
       const text = typeof data.text === "string" ? data.text : "";
       if (!text) return;
@@ -397,28 +421,29 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
       if (!current) return;
       if (target === "hook") {
         const formula = typeof data.formula === "string" ? data.formula : current.hookFormula;
-        editSection({ hookText: text, hookFormula: formula });
+        applyDraftPatch({ hookText: text, hookFormula: formula });
         onSelectedHookChange({
           formula: formula ?? "",
           text,
           contextKey: hookContextKey(d.topic, d.durationSec, d.brandProfileId),
         });
       } else if (target === "body") {
-        editSection({ bodyText: text });
+        applyDraftPatch({ bodyText: text });
       } else {
-        editSection({ ctaText: text });
+        applyDraftPatch({ ctaText: text });
       }
       trackEvent("hero_script_regenerated", {
         status: "done", durationMs: performance.now() - startedAt, properties: { target },
       });
     } catch {
+      if (requestId !== workspaceRequestRef.current) return;
       trackEvent("hero_script_regen_failed", {
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { target, failure: "network" },
       });
       toast.error("เขียนใหม่ไม่สำเร็จ");
     } finally {
-      setRegenTarget(null);
+      if (requestId === workspaceRequestRef.current) setRegenTarget(null);
     }
   }
 
@@ -480,15 +505,20 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
     }
   }, [goToPricing, router, saveLatest]);
 
-  useImperativeHandle(ref, () => ({ saveLatest, createEditorProject }), [createEditorProject, saveLatest]);
+  useImperativeHandle(ref, () => ({ saveLatest, createEditorProject, invalidateAsyncRequests }), [createEditorProject, invalidateAsyncRequests, saveLatest]);
 
-  function editSection(patch: Partial<ScriptDraft>) {
+  function applyDraftPatch(patch: Partial<ScriptDraft>) {
     const current = draftRef.current;
     if (!current) return;
     const next = { ...current, ...patch };
     draftRef.current = next;
     setSaveState("saving");
     onDraftChange(next);
+  }
+
+  function editSection(patch: Partial<ScriptDraft>) {
+    invalidateAsyncRequests();
+    applyDraftPatch(patch);
   }
 
   // Plan gate for step 5 — the same `allowVideoEditor` limit the API enforces
@@ -526,7 +556,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
           )}
           <Button
             onClick={handleGenerate}
-            disabled={generating || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
+            disabled={generating || regenTarget !== null || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
             size="sm"
             className="min-h-11 gap-1.5 text-white"
             style={{ background: VIOLET }}
@@ -552,7 +582,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
                 <span className="text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>{section.label}</span>
                 <Button
                   onClick={() => handleRegen(section.key)}
-                  disabled={regenTarget !== null}
+                  disabled={generating || regenTarget !== null}
                   size="sm"
                   variant="ghost"
                   className="min-h-11 gap-1 px-2 text-[11px]"

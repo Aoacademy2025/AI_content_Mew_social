@@ -16,7 +16,7 @@ const bundle = await build({
         : args.path === "next/navigation" ? `export function useRouter(){return {push:(url)=>{window.__fixtureManageUrl=url;(window.__fixtureRoutes??=[]).push(url)}}}`
           : args.path === "@/lib/use-me" ? `export async function fetchMe(){return {id:'fixture-account',plan:'PRO'}}`
             : args.path === "@/lib/authenticated-fetch" ? `export const authenticatedFetch=fetch`
-              : args.path === "sonner" ? `export const toast={error:()=>{},success:()=>{},warning:()=>{}}`
+              : args.path === "sonner" ? `export const toast={error:(message)=>(window.__fixtureToasts??=[]).push(String(message)),success:()=>{},warning:()=>{}}`
                 : `export const trackEvent=()=>{}`,
     }));
   } }],
@@ -52,6 +52,9 @@ let nextSaveDelayMs = 0;
 let failNextSave = false;
 let nextHandoffDelayMs = 0;
 let slowDetailDelayMs = 0;
+type DeferredReply = { delayMs?: number; release?: Promise<void>; status?: number; body: Record<string, unknown> };
+const generationReplies: DeferredReply[] = [];
+const regenReplies: Array<DeferredReply & { target: "hook" | "body" | "cta" }> = [];
 
 const html = `<!doctype html><html class="dark"><meta name="viewport" content="width=device-width,initial-scale=1"><body><div id="root"></div><script src="/app.js"></script></body></html>`;
 const server = createServer(async (req, res) => {
@@ -85,7 +88,20 @@ const server = createServer(async (req, res) => {
     return json({ items: summaries, brandOptions: [{ id: "legacy-revision-zero", name: "Legacy fixture" }], total: summaries.length, page: 1, pageSize: 20, hasNextPage: false });
   }
   if (url.pathname === "/api/scripts/hooks") return json({ hooks: [{ formula: "question-poll", text: "Hook fixture" }] });
-  if (url.pathname === "/api/scripts/generate") return json({ structure: "how-to", bodyText: "Body fixture", ctaText: "CTA fixture" });
+  if (url.pathname === "/api/scripts/generate") {
+    const reply = generationReplies.shift();
+    if (reply?.release) await reply.release;
+    if (reply?.delayMs) await wait(reply.delayMs);
+    return json(reply?.body ?? { structure: "how-to", bodyText: "Body fixture", ctaText: "CTA fixture" }, reply?.status ?? 200);
+  }
+  if (url.pathname === "/api/scripts/regen-section") {
+    const requestBody = await readBody();
+    const reply = regenReplies.shift();
+    assert.equal(requestBody.target, reply?.target, "fixture regen target follows the expected request");
+    if (reply?.release) await reply.release;
+    if (reply?.delayMs) await wait(reply.delayMs);
+    return json(reply?.body ?? { text: "Regenerated fixture" }, reply?.status ?? 200);
+  }
   const handoffMatch = url.pathname.match(/^\/api\/scripts\/([^/]+)\/send-to-editor$/);
   if (handoffMatch && req.method === "POST") {
     const id = decodeURIComponent(handoffMatch[1]);
@@ -349,7 +365,249 @@ try {
   await page.waitForFunction(() => (window as unknown as { __fixtureManageUrl?: string }).__fixtureManageUrl === "/brands");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.equal(saveBodies.some(({ body }) => body.bodyText === "Latest before failed handoff"), true);
-  console.log("verify-hero-script-workspace-browser: PASS explicit recovery, mounted saves, replacement guards, detail/delete races, and handoff semantics");
+
+  const racePage = await browser.newPage();
+  racePage.setDefaultTimeout(5_000);
+  await racePage.setViewport({ width: 390, height: 844 });
+  await racePage.goto(`http://127.0.0.1:${port}/hero-script`);
+  await racePage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  const setTopic = async (value: string) => racePage.locator('input[aria-label="หัวข้อสคริปต์"]').fill(value);
+  const settleReact = async () => racePage.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const deferredReply = () => {
+    let resolve!: () => void;
+    const release = new Promise<void>((done) => { resolve = done; });
+    return { release, resolve };
+  };
+  const requestBody = (candidate: import("puppeteer").HTTPResponse) => JSON.parse(candidate.request().postData() ?? "{}");
+  const waitForGeneration = (requestTopic: string) => racePage.waitForResponse((candidate) =>
+    candidate.url().endsWith("/api/scripts/generate") && requestBody(candidate).topic === requestTopic);
+  const waitForRegen = (target: "hook" | "body" | "cta") => racePage.waitForResponse((candidate) =>
+    candidate.url().endsWith("/api/scripts/regen-section") && requestBody(candidate).target === target);
+  const chooseHook = async () => {
+    await settleReact();
+    const activeTopic = await racePage.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value);
+    const response = racePage.waitForResponse((candidate) => candidate.url().endsWith("/api/scripts/hooks") && requestBody(candidate).topic === activeTopic);
+    await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => ["สร้าง Hook", "ขออีกชุด"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0));
+    await racePage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["สร้าง Hook", "ขออีกชุด"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0)?.click());
+    await response;
+    await settleReact();
+    await racePage.locator('button::-p-text(Hook fixture)').click();
+  };
+  const openRecord = async (name: string) => {
+    await racePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+    await racePage.waitForFunction((topic) => [...document.querySelectorAll<HTMLButtonElement>("article button")].some((button) => button.textContent?.includes(topic)), {}, name);
+    await racePage.evaluate((topic) => [...document.querySelectorAll<HTMLButtonElement>("article button")].find((button) => button.textContent?.includes(topic))?.click(), name);
+    await racePage.waitForFunction((topic) => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === topic, {}, name);
+  };
+  const newWorkspace = async () => {
+    await racePage.locator('button::-p-text(สคริปต์ใหม่)').click();
+    const nextState = await racePage.waitForFunction(() => {
+      const topic = (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value;
+      if (topic === "") return "blank";
+      return document.body.textContent?.includes("ทิ้งสิ่งที่กำลังเขียน?") ? "discard" : false;
+    }).then((handle) => handle.jsonValue());
+    if (nextState === "discard") {
+      await racePage.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
+    }
+    await racePage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
+  };
+  const clickRegen = async (label: "Hook" | "เนื้อหา" | "CTA") => racePage.evaluate((sectionLabel) => {
+    const labelNode = [...document.querySelectorAll<HTMLSpanElement>("span")].find((node) => node.textContent === sectionLabel && node.getClientRects().length > 0)!;
+    (labelNode.parentElement?.querySelector("button") as HTMLButtonElement).click();
+  }, label);
+  const editorValues = async () => racePage.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).map((input) => input.value).slice(-3));
+
+  // Full generation: explicit record replacement owns the workspace even when
+  // the older generation finishes later.
+  await setTopic("Full generation before open");
+  await chooseHook();
+  const fullOpenGate = deferredReply();
+  generationReplies.push({ release: fullOpenGate.release, body: { structure: "how-to", bodyText: "STALE FULL OPEN", ctaText: "stale" } });
+  const fullOpenResponse = waitForGeneration("Full generation before open");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await racePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("article button")].some((button) => button.textContent?.includes("Fast detail")));
+  await racePage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("article button")].find((button) => button.textContent?.includes("Fast detail"))?.click());
+  await racePage.waitForFunction(() => document.body.textContent?.includes("ทิ้งสิ่งที่กำลังเขียน?"));
+  await racePage.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
+  await racePage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Fast detail");
+  fullOpenGate.resolve();
+  await fullOpenResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE FULL OPEN"), false, "delayed full generation cannot overwrite an opened record");
+
+  await newWorkspace();
+  await setTopic("Full generation before New");
+  await chooseHook();
+  const fullNewGate = deferredReply();
+  generationReplies.push({ release: fullNewGate.release, body: { structure: "how-to", bodyText: "STALE FULL NEW", ctaText: "stale" } });
+  const fullNewResponse = waitForGeneration("Full generation before New");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await newWorkspace();
+  fullNewGate.resolve();
+  await fullNewResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE FULL NEW"), false, "delayed full generation cannot overwrite New");
+
+  // Topic, duration and profile changes each invalidate the old generation.
+  await newWorkspace();
+  await setTopic("Old topic context");
+  await chooseHook();
+  const topicGate = deferredReply();
+  generationReplies.push({ release: topicGate.release, body: { structure: "how-to", bodyText: "STALE TOPIC", ctaText: "stale" } });
+  const topicResponse = waitForGeneration("Old topic context");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await setTopic("New topic context");
+  topicGate.resolve();
+  await topicResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE TOPIC"), false);
+
+  await newWorkspace();
+  await setTopic("Old duration context");
+  await chooseHook();
+  const durationGate = deferredReply();
+  generationReplies.push({ release: durationGate.release, body: { structure: "how-to", bodyText: "STALE DURATION", ctaText: "stale" } });
+  const durationResponse = waitForGeneration("Old duration context");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  const currentDuration = await racePage.$eval('[role="combobox"]', (element) => element.textContent?.trim());
+  const nextDuration = currentDuration === "60 วิ" ? "90 วิ" : "60 วิ";
+  await racePage.locator('[role="combobox"]').click();
+  await racePage.waitForFunction((label) => [...document.querySelectorAll<HTMLElement>('[role="option"]')].some((node) => node.textContent?.trim() === label && node.getClientRects().length > 0), {}, nextDuration);
+  await racePage.evaluate((label) => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === label && node.getClientRects().length > 0)?.click(), nextDuration);
+  await racePage.waitForFunction((label) => document.querySelector('[role="combobox"]')?.textContent?.trim() === label, {}, nextDuration);
+  durationGate.resolve();
+  await durationResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE DURATION"), false);
+
+  await newWorkspace();
+  await setTopic("Old profile context");
+  await chooseHook();
+  const profileGate = deferredReply();
+  generationReplies.push({ release: profileGate.release, body: { structure: "how-to", bodyText: "STALE PROFILE", ctaText: "stale" } });
+  const profileResponse = waitForGeneration("Old profile context");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  const currentProfile = await racePage.evaluate(() => [...document.querySelectorAll<HTMLElement>("summary")].find((node) => node.getClientRects().length > 0 && (node.textContent?.includes("Legacy fixture") || node.textContent?.includes("ไม่ใช้โปรไฟล์")))?.textContent);
+  const nextProfile = currentProfile?.includes("Legacy fixture") ? "ไม่ใช้โปรไฟล์" : "Legacy fixture";
+  await racePage.evaluate(() => [...document.querySelectorAll<HTMLElement>("summary")].find((node) => node.getClientRects().length > 0 && (node.textContent?.includes("Legacy fixture") || node.textContent?.includes("ไม่ใช้โปรไฟล์")))?.click());
+  await racePage.waitForSelector('[role="option"]');
+  await racePage.evaluate((profileName) => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((node) => node.textContent?.includes(profileName))?.click(), nextProfile);
+  await racePage.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("details")].find((node) => node.querySelector('[role="listbox"]'))?.removeAttribute("open"));
+  profileGate.resolve();
+  await profileResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE PROFILE"), false);
+
+  // A stale failure is silent, and the first request's finally block cannot
+  // clear the loading state owned by a newer generation.
+  await setTopic("Stale failure context");
+  await chooseHook();
+  const toastsBeforeStaleFailure = await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0);
+  const staleFailureGate = deferredReply();
+  generationReplies.push({ release: staleFailureGate.release, status: 500, body: { error: "STALE GENERATION FAILURE" } });
+  const staleFailureResponse = waitForGeneration("Stale failure context");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await setTopic("Context after stale failure");
+  staleFailureGate.resolve();
+  await staleFailureResponse;
+  await settleReact();
+  assert.equal(await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0), toastsBeforeStaleFailure);
+  assert.equal(await racePage.evaluate(() => document.body.innerText.includes("STALE GENERATION FAILURE")), false);
+
+  await newWorkspace();
+  await setTopic("First generation request");
+  await chooseHook();
+  const firstGenerationGate = deferredReply();
+  const secondGenerationGate = deferredReply();
+  generationReplies.push(
+    { release: firstGenerationGate.release, body: { structure: "how-to", bodyText: "STALE FIRST GENERATION", ctaText: "stale" } },
+    { release: secondGenerationGate.release, body: { structure: "how-to", bodyText: "LATEST GENERATION", ctaText: "latest" } },
+  );
+  const firstGenerationResponse = waitForGeneration("First generation request");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await setTopic("Second generation request");
+  await chooseHook();
+  const secondGenerationResponse = waitForGeneration("Second generation request");
+  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  firstGenerationGate.resolve();
+  await firstGenerationResponse;
+  await settleReact();
+  assert.equal(await racePage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("กำลังสร้างสคริปต์…") && button.disabled)), true, "stale full-generation finalizer cannot clear newer loading state");
+  secondGenerationGate.resolve();
+  await secondGenerationResponse;
+  await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].some((input) => input.value === "LATEST GENERATION"));
+  assert.equal((await editorValues()).includes("STALE FIRST GENERATION"), false);
+
+  // Each section target rejects replies from the previous Script/reset.
+  await openRecord("Fast detail");
+  const hookReplacementGate = deferredReply();
+  regenReplies.push({ target: "hook", release: hookReplacementGate.release, body: { text: "STALE HOOK", formula: "question-poll" } });
+  const hookReplacementResponse = waitForRegen("hook");
+  await clickRegen("Hook");
+  await openRecord("Sent missing");
+  hookReplacementGate.resolve();
+  await hookReplacementResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE HOOK"), false);
+
+  await openRecord("Fast detail");
+  const bodyResetGate = deferredReply();
+  regenReplies.push({ target: "body", release: bodyResetGate.release, body: { text: "STALE BODY RESET" } });
+  const bodyResetResponse = waitForRegen("body");
+  await clickRegen("เนื้อหา");
+  await newWorkspace();
+  bodyResetGate.resolve();
+  await bodyResetResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE BODY RESET"), false);
+
+  await openRecord("Fast detail");
+  const ctaReplacementGate = deferredReply();
+  regenReplies.push({ target: "cta", release: ctaReplacementGate.release, body: { text: "STALE CTA" } });
+  const ctaReplacementResponse = waitForRegen("cta");
+  await clickRegen("CTA");
+  await openRecord("Sent available");
+  ctaReplacementGate.resolve();
+  await ctaReplacementResponse;
+  await settleReact();
+  assert.equal((await editorValues()).includes("STALE CTA"), false);
+
+  // Stale section failures are silent; stale finalizers do not enable controls
+  // while the newer record's regeneration is still pending.
+  const toastsBeforeRegenFailure = await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0);
+  const staleRegenFailureGate = deferredReply();
+  regenReplies.push({ target: "cta", release: staleRegenFailureGate.release, status: 500, body: { error: "STALE REGEN FAILURE" } });
+  const staleRegenFailureResponse = waitForRegen("cta");
+  await clickRegen("CTA");
+  await openRecord("Fast detail");
+  staleRegenFailureGate.resolve();
+  await staleRegenFailureResponse;
+  await settleReact();
+  assert.equal(await racePage.evaluate(() => (window as unknown as { __fixtureToasts?: string[] }).__fixtureToasts?.length ?? 0), toastsBeforeRegenFailure);
+
+  const firstRegenGate = deferredReply();
+  const secondRegenGate = deferredReply();
+  regenReplies.push(
+    { target: "hook", release: firstRegenGate.release, body: { text: "STALE REGEN FINALIZER", formula: "question-poll" } },
+    { target: "body", release: secondRegenGate.release, body: { text: "LATEST REGEN BODY" } },
+  );
+  const firstRegenResponse = waitForRegen("hook");
+  await clickRegen("Hook");
+  await openRecord("Sent available");
+  const secondRegenResponse = waitForRegen("body");
+  await clickRegen("เนื้อหา");
+  firstRegenGate.resolve();
+  await firstRegenResponse;
+  await settleReact();
+  assert.equal(await racePage.$$eval("button", (buttons: HTMLButtonElement[]) => buttons.filter((button) => button.textContent?.includes("เขียนใหม่") && button.getClientRects().length > 0).every((button) => button.disabled)), true, "stale regen finalizer cannot enable controls owned by a newer regen");
+  secondRegenGate.resolve();
+  await secondRegenResponse;
+  await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].some((input) => input.value === "LATEST REGEN BODY"));
+  assert.equal((await editorValues()).includes("STALE REGEN FINALIZER"), false);
+  await racePage.close();
+
+  console.log("verify-hero-script-workspace-browser: PASS recovery, save/handoff, and generation/regen workspace ownership races");
 } finally {
   await browser?.close();
   await new Promise<void>((resolve) => server.close(() => resolve()));

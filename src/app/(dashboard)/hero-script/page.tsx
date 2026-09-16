@@ -106,6 +106,7 @@ export default function HeroScriptPage() {
   }, [accountId]);
 
   const changeProfile = useCallback((profileId: string | null) => {
+    editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, profileId)) setSelectedHook(null);
     setSelectedProfileId(profileId);
@@ -113,6 +114,7 @@ export default function HeroScriptPage() {
   }, [durationSec, rememberWritingPreferences, selectedHook, topic]);
 
   const changeDuration = useCallback((nextDurationSec: DurationSec) => {
+    editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(topic, nextDurationSec, selectedProfileId)) setSelectedHook(null);
     setDurationSec(nextDurationSec);
@@ -120,6 +122,7 @@ export default function HeroScriptPage() {
   }, [rememberWritingPreferences, selectedHook, selectedProfileId, topic]);
 
   const restoreScript = useCallback((script: SavedScript) => {
+    editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     setSelectedProfileId(script.brandProfileId);
     setDurationSec(script.durationSec as DurationSec);
@@ -149,12 +152,14 @@ export default function HeroScriptPage() {
   }, []);
 
   const changeTopic = useCallback((nextTopic: string) => {
+    editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(nextTopic, durationSec, selectedProfileId)) setSelectedHook(null);
     setTopic(nextTopic);
   }, [durationSec, selectedHook, selectedProfileId]);
 
   const changeHook = useCallback((hook: HookChoice | null) => {
+    editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     setSelectedHook(hook);
   }, []);
@@ -166,6 +171,7 @@ export default function HeroScriptPage() {
   }, []);
 
   const resetWorkspace = useCallback(() => {
+    editorRef.current?.invalidateAsyncRequests();
     detailRequestRef.current += 1;
     openingScriptIdRef.current = null;
     setOpeningScriptId(null);
@@ -192,6 +198,7 @@ export default function HeroScriptPage() {
   }, [restoreScript]);
 
   const executeReplacement = useCallback(async (replacement: Replacement) => {
+    editorRef.current?.invalidateAsyncRequests();
     if (replacement.kind === "new") resetWorkspace();
     else await openScript(replacement.item);
   }, [openScript, resetWorkspace]);
