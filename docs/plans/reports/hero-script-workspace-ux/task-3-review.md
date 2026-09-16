@@ -1,0 +1,5 @@
+# Task 3 review — BLOCK
+
+**Blocking — `ScriptEditorStep.tsx:288-352,365-410` (high confidence):** generation and section-regeneration requests have no request/context guard. If a user starts either request, then opens another record or chooses New before its reply, the old full-generation reply calls `onDraftChange` and replaces the new workspace; a stale section reply applies its text to `draftRef.current`, corrupting the newly opened script. This violates the state contract for responses started under another topic/profile/script. Capture a workspace/request token when each request starts, invalidate it on draft replacement/reset, and apply a reply only if it still matches. Add delayed mounted-browser cases for full generation and all section targets across New/open.
+
+The scoped state and mounted-browser checks pass, including save/handoff, detail, delete, and pre-generation-discard cases. They do not delay or assert stale generation/regen replies, so helpers alone do not cover this regression.

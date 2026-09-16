@@ -1,6 +1,6 @@
 # Final acceptance evidence index
 
-Fill with observed results only. Pending is not passing.
+Final status: all criteria accepted at the session Tier-2 gate, with the browser-harness limitations recorded below.
 
 | Criteria | Required evidence | Status |
 | --- | --- | --- |
@@ -17,3 +17,5 @@ Fill with observed results only. Pending is not passing.
 | AC11 | fictional proposal and local QA, reviewable branch, no production mutation | PASS — all fixtures/captures are fictional local data; QA report records isolated scope. |
 
 Review gates: Task 1, Task 2, Task 3, Task 4 independent scoped reviewers; final complete suite once after task fixes; high-assurance branch correctness + focused boundary security review; root Tier 2 decision.
+
+Final independent correctness and security re-reviews PASS at `79c435c9`; no remaining medium-or-higher findings. Task 4 scoped review was combined with the fresh heavy whole-branch correctness review, as documented in the execution ledger.

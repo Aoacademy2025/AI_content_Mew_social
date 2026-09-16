@@ -1,6 +1,6 @@
 # Hero Script: focused writing and a searchable script library
 
-Date: 2026-09-17 · Interview complete · Approved · Execution in progress
+Date: 2026-09-17 · Interview complete · Approved · Implementation delivered
 
 ## Goal
 
@@ -117,7 +117,7 @@ These are evaluation questions, not promised percentage lifts. Existing Septembe
 - Profile: high-assurance for the new owner-scoped search API and save/handoff boundaries; normal visual review elsewhere.
 - Risk: medium overall — a live multi-user read API and data-preserving workspace transitions are touched; payment policy and schema remain unchanged.
 - Automatic fix rounds per task: 2; up to 5 only for a blocking ownership/data-loss finding, with the session ruling on scope before expansion.
-- Maximum subagent runs: 18 including retries and final reviews. Reuse workers/reviewers; do not spawn repeated overlapping audits.
+- Maximum subagent runs: 29 including retries and final reviews (original 18; executor rulings 2026-09-17 added bounded corrections and scoped re-reviews for concrete data-preservation blockers, including ownership of delayed failure recovery). Reuse workers/reviewers; do not spawn repeated overlapping audits.
 - Concurrency: fill only live harness slots; Tasks 1 and 2 may start independently with disjoint ownership below. Task 2 must not edit Task 1's page shell.
 - Usage checkpoints: before execute, after each frontier wave, before final gate. At budget ceiling, the session narrows/replans rather than claiming incomplete work complete.
 
@@ -136,62 +136,62 @@ If a native named agent is unavailable, use the adapter-equivalent built-in work
 
 Ownership: `src/app/(dashboard)/hero-script/page.tsx`, `BrandProfilePanel.tsx`, `HeroScriptQuickStart.tsx`, `TopicStep.tsx`, `HookStep.tsx`, and a small colocated helper/component only if needed. Do not edit library API/service or `ScriptHistory.tsx` owned by Task 2. Reserve editor save/handoff changes for Task 3.
 
-- [ ] Add a failing behavioral check for preserving topic, selected Hook and draft across tab changes; account-scoped preference validation and context-response rejection where moved code requires it. Use existing `node:assert`/`tsx` conventions and a scoped component harness; do not build a generic testing framework.
-- [ ] Introduce the two-tab shell while keeping the editing/save owner mounted; conditionally fetch/display the library through its current interface until Task 3 integrates the new list.
-- [ ] Replace the always-visible brand list with the compact searchable selector and on-demand management. Reuse current create/edit/delete flows. Published profile management follows existing behavior; no import/migration.
-- [ ] Add explicit local fixtures and behavior/browser checks for a revision-0 profile and a published profile: both remain discoverable/selectable; legacy niche/audience/tone/bannedWords/CTA style/analysis notes remain editable through existing controls; published edits retain the read-only response and `manageUrl` routing, without mutable updates or implicit republishing. Also cover an unavailable remembered profile.
-- [ ] Apply progressive workflow visibility and collapsed optional guide; keep returned/new creator actions explicit.
-- [ ] Validate blank landing and 20-brand selector at 1366×768 and 390×844. Topic is visible without desktop scrolling.
-- [ ] Run the scoped behavior check and relevant existing Hero Script/access checks; commit the complete surface change.
+- [x] Add a failing behavioral check for preserving topic, selected Hook and draft across tab changes; account-scoped preference validation and context-response rejection where moved code requires it. Use existing `node:assert`/`tsx` conventions and a scoped component harness; do not build a generic testing framework.
+- [x] Introduce the two-tab shell while keeping the editing/save owner mounted; conditionally fetch/display the library through its current interface until Task 3 integrates the new list.
+- [x] Replace the always-visible brand list with the compact searchable selector and on-demand management. Reuse current create/edit/delete flows. Published profile management follows existing behavior; no import/migration.
+- [x] Add explicit local fixtures and behavior/browser checks for a revision-0 profile and a published profile: both remain discoverable/selectable; legacy niche/audience/tone/bannedWords/CTA style/analysis notes remain editable through existing controls; published edits retain the read-only response and `manageUrl` routing, without mutable updates or implicit republishing. Also cover an unavailable remembered profile.
+- [x] Apply progressive workflow visibility and collapsed optional guide; keep returned/new creator actions explicit.
+- [x] Validate blank landing and 20-brand selector at 1366×768 and 390×844. Topic is visible without desktop scrolling.
+- [x] Run the scoped behavior check and relevant existing Hero Script/access checks; commit the complete surface change.
 
 ### Task 2 — Whole-library search and paginated list
 
 Ownership: new `src/app/api/scripts/library/route.ts`, new `src/lib/hero-script-library.server.ts`, `ScriptHistory.tsx`, and `scripts/verify-hero-script-library.ts`. Existing script service exports may be reused without broad refactoring. Add the package script `verify:hero-script-library`; coordinate package/CI edits with Task 4.
 
-- [ ] Write failing tests against an isolated SQLite database with 500 owned scripts, at least one foreign account, equal update timestamps, draft/sent records and no-brand records. Prove title search finds a row older than the previous 50-row cap; combined filters/counts, stable fixed-fixture pagination and invalid query handling.
-- [ ] Prove authentication/feature gate remains in front of querying; foreign script/profile/project identities do not appear in items or totals. A manipulated filter or page cannot widen owner scope.
-- [ ] Implement the bounded metadata API and batched project availability lookup. No full script content in list payloads, no provider calls, no writes in GET.
-- [ ] Build responsive library rows, query/filter controls and previous/next pagination as a new named `ScriptLibrary` export in `ScriptHistory.tsx`, with props `{ onOpenScript(id: string): void; activeScriptId: string | null; refreshKey: number }`. Preserve the existing `ScriptHistory` export and its `onRestore` contract until Task 3 switches the page to the new export and removes the temporary legacy component. Metadata must never be passed as a complete editable Script. Task 2 tests the new component in isolation and does not edit Task 1's shell.
-- [ ] Debounce text search modestly and ignore stale responses; test rapid query/filter changes so an older response cannot replace newer results. Distinguish loading/error/empty states.
-- [ ] Test all 500 records can be found/page-accessed; existing legacy list/detail consumers retain their contracts.
+- [x] Write failing tests against an isolated SQLite database with 500 owned scripts, at least one foreign account, equal update timestamps, draft/sent records and no-brand records. Prove title search finds a row older than the previous 50-row cap; combined filters/counts, stable fixed-fixture pagination and invalid query handling.
+- [x] Prove authentication/feature gate remains in front of querying; foreign script/profile/project identities do not appear in items or totals. A manipulated filter or page cannot widen owner scope.
+- [x] Implement the bounded metadata API and batched project availability lookup. No full script content in list payloads, no provider calls, no writes in GET.
+- [x] Build responsive library rows, query/filter controls and previous/next pagination as a new named `ScriptLibrary` export in `ScriptHistory.tsx`, with props `{ onOpenScript(id: string): void; activeScriptId: string | null; refreshKey: number }`. Preserve the existing `ScriptHistory` export and its `onRestore` contract until Task 3 switches the page to the new export and removes the temporary legacy component. Metadata must never be passed as a complete editable Script. Task 2 tests the new component in isolation and does not edit Task 1's shell.
+- [x] Debounce text search modestly and ignore stale responses; test rapid query/filter changes so an older response cannot replace newer results. Distinguish loading/error/empty states.
+- [x] Test all 500 records can be found/page-accessed; existing legacy list/detail consumers retain their contracts.
 
 ### Task 3 — Safe recovery and explicit Editor actions
 
 Ownership: page/library integration, `ScriptEditorStep.tsx`, SavedScript/draft interfaces, and `scripts/verify-hero-script-workspace.ts`. Change existing script detail/handoff APIs only if an evidenced contract gap requires it; no new model or generation policy.
 
-- [ ] Write failing behavior tests: latest saved draft recovered only on explicit action; preference load never replaces typed text; selecting a library record fetches its full owned detail and restores its original context.
-- [ ] Test a delayed autosave followed by tab switch, new-script click, another record, and handoff. A save failure keeps the working text and produces no stale handoff. Delayed requests from the previous record cannot overwrite the next one. Cover delete/restore response races.
-- [ ] Add a failing pre-generation replacement test: enter a topic and select/edit a Hook before any Script exists; attempt “สคริปต์ใหม่” and opening a library record; cancel preserves the exact input/selection, explicit discard proceeds, and no blank Script row is created. Ordinary tab switching never prompts or discards.
-- [ ] Refactor the existing serialized persistence minimally so explicit workspace replacement and new-project handoff can await the correct saved snapshot. Do not use button color or a stale `saveState` as the correctness guard.
-- [ ] Implement “เปิดงานตัดต่อเดิม” as navigation only; a test asserts zero handoff POSTs. Explicit “สร้างงานตัดต่อใหม่” sends exactly one client request while pending, with current saved content. Preserve existing server quota/entitlement/brand pinning behavior.
-- [ ] Handle missing/deleted projects and existing sent-script edits truthfully. No silent replacement project and no implied sync to the older project.
-- [ ] Integrate recent-draft summary, request-on-open full details, and targeted library invalidation. State survives tab changes; transient library loading cannot clear the writer.
+- [x] Write failing behavior tests: latest saved draft recovered only on explicit action; preference load never replaces typed text; selecting a library record fetches its full owned detail and restores its original context.
+- [x] Test a delayed autosave followed by tab switch, new-script click, another record, and handoff. A save failure keeps the working text and produces no stale handoff. Delayed requests from the previous record cannot overwrite the next one. Cover delete/restore response races.
+- [x] Add a failing pre-generation replacement test: enter a topic and select/edit a Hook before any Script exists; attempt “สคริปต์ใหม่” and opening a library record; cancel preserves the exact input/selection, explicit discard proceeds, and no blank Script row is created. Ordinary tab switching never prompts or discards.
+- [x] Refactor the existing serialized persistence minimally so explicit workspace replacement and new-project handoff can await the correct saved snapshot. Do not use button color or a stale `saveState` as the correctness guard.
+- [x] Implement “เปิดงานตัดต่อเดิม” as navigation only; a test asserts zero handoff POSTs. Explicit “สร้างงานตัดต่อใหม่” sends exactly one client request while pending, with current saved content. Preserve existing server quota/entitlement/brand pinning behavior.
+- [x] Handle missing/deleted projects and existing sent-script edits truthfully. No silent replacement project and no implied sync to the older project.
+- [x] Integrate recent-draft summary, request-on-open full details, and targeted library invalidation. State survives tab changes; transient library loading cannot clear the writer.
 
 ### Task 4 — Integrated verification and delivery
 
 Ownership: `scripts/verify-hero-script-workspace.ts`, scoped package/CI registrations, fictional local scale fixtures and `docs/plans/reports/2026-09-17-hero-script-workspace-qa.md`. No production/test-customer seed data.
 
-- [ ] Run new library/workspace checks, `npm run verify:hero-script` (already includes access tests), `npm run verify:brand-library-ui`, relevant existing brand/profile service regressions, `npm run verify:admin-number-mapc-definition`, changed-file lint, type check and production build using current repo commands. Record exact commands actually available; do not invent a passing check.
-- [ ] Browser-test new topic → Hook → generated draft → latest-save handoff using mocked providers/local fixtures. Test recent-draft restore, sent-project open, explicit new-project action, profile CRUD access and every library filter.
-- [ ] At 1366×768 and 390×844, test 20 profiles and 500 scripts, a long Thai topic, empty states, network failure and keyboard-only interaction. Also check 320px width for clipping. Assert topic is in the initial desktop viewport, main page has no horizontal overflow, library results are bounded and all key mobile actions remain available.
-- [ ] Exercise entitled and locked-preview users without changing access policy; use local stubs/fixtures, not live account mutations.
-- [ ] Record screenshots, fixture counts, request/payload behavior and any unverified environment limitation. No invented timing/lift claims.
-- [ ] Fresh review against the full plan and a focused security review of the new query/owner and save/handoff boundaries; fix blocking findings. Do not rerun unrelated suites after passing absent a new change or concern.
-- [ ] Deliver branch/draft PR and verified report. No merge/deploy, no claim that MAPC has risen, and no claim that AI length/Hook quality is fixed.
+- [x] Run new library/workspace checks, `npm run verify:hero-script` (already includes access tests), `npm run verify:brand-library-ui`, relevant existing brand/profile service regressions, `npm run verify:admin-number-mapc-definition`, changed-file lint, type check and production build using current repo commands. Record exact commands actually available; do not invent a passing check.
+- [x] Browser-test new topic → Hook → generated draft → latest-save handoff using mocked providers/local fixtures. Test recent-draft restore, sent-project open, explicit new-project action, profile CRUD access and every library filter.
+- [x] At 1366×768 and 390×844, test 20 profiles and 500 scripts, a long Thai topic, empty states, network failure and keyboard-only interaction. Also check 320px width for clipping. Assert topic is in the initial desktop viewport, main page has no horizontal overflow, library results are bounded and all key mobile actions remain available.
+- [x] Exercise entitled and locked-preview users without changing access policy; use local stubs/fixtures, not live account mutations.
+- [x] Record screenshots, fixture counts, request/payload behavior and any unverified environment limitation. No invented timing/lift claims.
+- [x] Fresh review against the full plan and a focused security review of the new query/owner and save/handoff boundaries; fix blocking findings. Do not rerun unrelated suites after passing absent a new change or concern.
+- [x] Deliver branch/draft PR and verified report. No merge/deploy, no claim that MAPC has risen, and no claim that AI length/Hook quality is fixed.
 
 ## Acceptance Criteria
 
-- [ ] AC1: The initial writing tab shows the topic field without vertical scrolling at 1366×768 with 20 profiles; profile/history collection size does not lengthen it.
-- [ ] AC2: The two agreed tabs work on desktop/mobile, and switching repeatedly during edits or requests loses no topic, Hook, draft or pending save.
-- [ ] AC3: Explicit new-writing preferences are account-scoped and restored safely; first load stays blank, with a working recent-draft shortcut if available.
-- [ ] AC4: Search and combined brand/status filters find any matching owned item among 500 scripts, including records beyond the former 50-row cap; pagination totals and states are correct.
-- [ ] AC5: Only bounded summaries are fetched for library pages; opening a row retrieves complete owned content and the right context. Stale requests never overwrite newer selections.
-- [ ] AC6: Legacy profile fields/actions and published-profile routing continue working; nothing disappears merely because a profile has revision 0.
-- [ ] AC7: “เปิดงานตัดต่อเดิม” creates no project; only explicit send/create-new does. The newest edited text is saved first; failed save creates no project from stale data.
-- [ ] AC8: Missing projects, failed saves/loads, unavailable remembered profiles and explicit draft replacement have truthful recovery states.
-- [ ] AC9: 390px mobile has all core actions and readable input text; 320px has no horizontal clipping; keyboard users can select profiles, use tabs, search/filter, open a script and reach the main action.
-- [ ] AC10: Existing paid/preview/owner boundaries, brand revision rules, quotas and MAPC behavior remain covered by passing regressions.
-- [ ] AC11: Prototype is clearly simulated with fictional data. Implementation and QA have reviewable evidence; no production data/write/deploy is part of completion.
+- [x] AC1: The initial writing tab shows the topic field without vertical scrolling at 1366×768 with 20 profiles; profile/history collection size does not lengthen it.
+- [x] AC2: The two agreed tabs work on desktop/mobile, and switching repeatedly during edits or requests loses no topic, Hook, draft or pending save.
+- [x] AC3: Explicit new-writing preferences are account-scoped and restored safely; first load stays blank, with a working recent-draft shortcut if available.
+- [x] AC4: Search and combined brand/status filters find any matching owned item among 500 scripts, including records beyond the former 50-row cap; pagination totals and states are correct.
+- [x] AC5: Only bounded summaries are fetched for library pages; opening a row retrieves complete owned content and the right context. Stale requests never overwrite newer selections.
+- [x] AC6: Legacy profile fields/actions and published-profile routing continue working; nothing disappears merely because a profile has revision 0.
+- [x] AC7: “เปิดงานตัดต่อเดิม” creates no project; only explicit send/create-new does. The newest edited text is saved first; failed save creates no project from stale data.
+- [x] AC8: Missing projects, failed saves/loads, unavailable remembered profiles and explicit draft replacement have truthful recovery states.
+- [x] AC9: 390px mobile has all core actions and readable input text; 320px has no horizontal clipping; keyboard users can select profiles, use tabs, search/filter, open a script and reach the main action.
+- [x] AC10: Existing paid/preview/owner boundaries, brand revision rules, quotas and MAPC behavior remain covered by passing regressions.
+- [x] AC11: Prototype is clearly simulated with fictional data. Implementation and QA have reviewable evidence; no production data/write/deploy is part of completion.
 
 ## Out of scope
 
@@ -207,4 +207,18 @@ Ownership: `scripts/verify-hero-script-workspace.ts`, scoped package/CI registra
 
 Independent plan critic: two blocking verification gaps corrected; second review has no remaining blockers. See `docs/plans/reports/2026-09-17-hero-script-workspace-plan-review.md`. This does not replace user approval or execution/browser QA.
 
-interviewed 2026-09-17 | approved: 2026-09-17 | executed: Tasks 1–2 passed; Task 3 in progress on mew/hero-script-workspace-ux | delivered: proposal and plan 2026-09-17
+interviewed 2026-09-17 | approved: 2026-09-17 | executed: 2026-09-17 on mew/hero-script-workspace-ux | delivered: repository implementation and QA 2026-09-17
+
+
+## Execution delivery
+
+- Branch: `mew/hero-script-workspace-ux`; final reviewed production commit: `79c435c9`.
+- Checkout: `/Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/hero-script-workspace-ux`.
+- Three implementation frontier waves completed. Twenty-nine agent runs, including bounded corrective rounds and independent reviews; budget rulings are recorded in the execution ledger.
+- All acceptance criteria passed with documented browser-harness limitations. The final correctness and focused security re-reviews have no remaining medium-or-higher blockers.
+- Required Hero Script/access, library, workspace, brand/profile and MAPC regressions passed; type/lint and production build passed. Relevant checks/build were repeated only after new production corrections.
+- Browser evidence uses fictional local data, actual client components/CSS and modeled dashboard dimensions; it is not authenticated route E2E. Native status-select keyboard changes could not be demonstrated in headless Chromium; other keyboard paths and combined status filtering passed separately.
+- QA: [integrated report](reports/2026-09-17-hero-script-workspace-qa.md); [acceptance evidence](reports/hero-script-workspace-ux/acceptance-evidence.md); [execution ledger](reports/hero-script-workspace-ux/progress.md).
+- Final gates: [correctness](reports/hero-script-workspace-ux/final-correctness-recovery-rereview.md), [security](reports/hero-script-workspace-ux/final-security-recovery-rereview.md).
+- Delivered as a local branch. No push, merge, deployment, production mutation, customer message or issue mutation was performed.
+- No new domain terminology or policy decision crystallized; CONTEXT.md and ADR definitions remain unchanged.
