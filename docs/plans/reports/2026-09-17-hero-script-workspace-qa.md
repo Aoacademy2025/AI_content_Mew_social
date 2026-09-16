@@ -29,6 +29,10 @@ RED: the mounted verifier reproduced three release blockers: New discarded an ed
 
 RED: creating an Editor project from a non-active library row skipped the mounted writer's pending save/brief confirmation and used a separate POST owner. GREEN: every editor and library create action now enters one page-owned operation. The mounted verifier proves latest-save drain and failure preservation, brief cancel/discard, one POST for editor↔library competition, first-owner navigation, and a retained POST gate after New/open invalidates response ownership.
 
+## Final save-prerequisite correction
+
+RED: the failed-save handoff dialog still exposed “ทิ้งแล้วไปต่อ,” which posted stale saved text. GREEN: active and library handoff failures now offer retry/cancel only, while New/open/navigation keep their approved discard path. Pending handoffs carry immutable operation identity, preventing an invalidated held-save continuation from consuming a newer same-script token.
+
 ## Commands rerun after the final correction
 
 | Command | Status |

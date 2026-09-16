@@ -444,6 +444,9 @@ try {
   assert.equal(handoffPosts.length, handoffsBeforeFailure, "a failed latest save blocks stale handoff");
   assert.equal(await readBodyEditor(), "Latest before failed handoff", "save failure preserves working text");
   await page.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
+  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ทิ้งแล้วไปต่อ") && button.getClientRects().length > 0)?.click());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, handoffsBeforeFailure, "failed active handoff save exposes no stale discard-to-POST path");
   const routesBeforeRetry = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
   nextSaveDelayMs = 250;
   const retrySaveResponse = page.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest before failed handoff");
@@ -633,6 +636,9 @@ try {
   await librarySavePage.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
   assert.equal(handoffPosts.length, postsBeforeLibrarySaveFailure, "failed active-workspace save blocks a non-active library handoff");
   assert.equal(await librarySavePage.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.slice(-3)[1]?.value), "Library handoff save failure");
+  await librarySavePage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ทิ้งแล้วไปต่อ") && button.getClientRects().length > 0)?.click());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, postsBeforeLibrarySaveFailure, "failed library handoff save exposes no stale discard-to-POST path");
   await librarySavePage.locator('button::-p-text(ยกเลิก)').click();
 
   await fillMountedFixtureBody(librarySavePage, "Library handoff first snapshot");
@@ -710,6 +716,29 @@ try {
   await libraryFirstPage.waitForFunction(() => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) === 1);
   assert.equal(await libraryFirstPage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.at(-1)), `/video-editor?projectId=project-${postsBeforeLibraryFirst + 1}`, "the library-first handoff alone owns navigation");
   await libraryFirstPage.close();
+
+  // An invalidated save continuation must not authorize itself through a newer
+  // same-script operation (ABA): the immutable operation, not the script ID,
+  // owns the single POST and navigation.
+  records.set("fast-record", script({ id: "fast-record", topic: "Fast detail", durationSec: 30, brandProfileId: "legacy-revision-zero" }));
+  const abaPage = await newHandoffPage();
+  await openFixtureRecord(abaPage, "Fast detail");
+  await fillMountedFixtureBody(abaPage, "Held save before ABA replacement");
+  const abaSaveGate = deferredReply();
+  nextSaveRelease = abaSaveGate.release;
+  const abaFirstSave = abaPage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Held save before ABA replacement");
+  await abaPage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["ส่งไปตัดต่อ", "สร้างงานตัดต่อใหม่"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0)?.click());
+  await abaFirstSave;
+  await abaPage.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Context invalidates first operation");
+  const postsBeforeAba = handoffPosts.length;
+  const abaHandoffResponse = abaPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickLibraryCreate(abaPage, "Fast detail");
+  abaSaveGate.resolve();
+  await abaHandoffResponse;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(handoffPosts.length, postsBeforeAba + 1, "an old save continuation cannot consume a newer same-script handoff token");
+  assert.equal(await abaPage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0), 1, "only the newer same-script operation may navigate");
+  await abaPage.close();
 
   const racePage = await browser.newPage();
   racePage.setDefaultTimeout(5_000);

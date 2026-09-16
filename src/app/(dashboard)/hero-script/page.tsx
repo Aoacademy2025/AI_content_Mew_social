@@ -38,7 +38,7 @@ type WorkspaceAction =
   | { kind: "new" }
   | { kind: "open"; item: ScriptLibraryItem }
   | { kind: "navigate"; projectId: string }
-  | { kind: "handoff"; scriptId: string | null };
+  | { kind: "handoff"; operation: HandoffOperation };
 
 type HandoffOperation = {
   scriptId: string | null;
@@ -229,10 +229,10 @@ export default function HeroScriptPage() {
 
   const executeWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
     if (action.kind === "handoff") {
-      const operation = handoffOperationRef.current;
-      if (!operation || operation.scriptId !== action.scriptId) return;
+      const operation = action.operation;
+      if (handoffOperationRef.current !== operation || !operation.valid || operation.posting) return;
       editorRef.current?.invalidateAsyncRequests();
-      const scriptId = action.scriptId ?? draftRef.current?.id;
+      const scriptId = operation.scriptId ?? draftRef.current?.id;
       if (!scriptId) {
         handoffOperationRef.current = null;
         setHandoffPhase(null);
@@ -334,7 +334,7 @@ export default function HeroScriptPage() {
     const operation: HandoffOperation = { scriptId, workspaceDraft: draftRef.current, posting: false, valid: true };
     handoffOperationRef.current = operation;
     setHandoffPhase("saving");
-    await requestWorkspaceAction({ kind: "handoff", scriptId });
+    await requestWorkspaceAction({ kind: "handoff", operation });
     return true;
   }, [requestWorkspaceAction]);
 
@@ -419,7 +419,9 @@ export default function HeroScriptPage() {
             <AlertDialogTitle>{replacementAfterSaveFailure ? "บันทึกไม่สำเร็จ" : "ทิ้งสิ่งที่กำลังเขียน?"}</AlertDialogTitle>
             <AlertDialogDescription>
               {replacementAfterSaveFailure
-                ? "ข้อความล่าสุดยังอยู่ในหน้านี้ ลองบันทึกอีกครั้ง หรือทิ้งการแก้ไขเพื่อไปต่อ"
+                ? pendingReplacement?.kind === "handoff"
+                  ? "ข้อความล่าสุดยังอยู่ในหน้านี้ ลองบันทึกอีกครั้ง หรือยกเลิกเพื่อกลับไปแก้ไข"
+                  : "ข้อความล่าสุดยังอยู่ในหน้านี้ ลองบันทึกอีกครั้ง หรือทิ้งการแก้ไขเพื่อไปต่อ"
                 : "หัวข้อและ Hook นี้ยังไม่ได้สร้างเป็นสคริปต์ คุณต้องการทิ้งแล้วไปต่อหรือไม่"}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -435,12 +437,15 @@ export default function HeroScriptPage() {
                 ลองบันทึกอีกครั้ง
               </button>
             )}
-            <AlertDialogAction className="min-h-11" onClick={() => {
-              const replacement = pendingReplacement;
-              dialogActionRef.current = true;
-              setPendingReplacement(null);
-              if (replacement) void executeWorkspaceAction(replacement);
-            }}>ทิ้งแล้วไปต่อ</AlertDialogAction>
+            {!(replacementAfterSaveFailure && pendingReplacement?.kind === "handoff") && (
+              <AlertDialogAction className="min-h-11" onClick={() => {
+                const replacement = pendingReplacement;
+                if (replacement?.kind === "handoff" && replacementAfterSaveFailure) return;
+                dialogActionRef.current = true;
+                setPendingReplacement(null);
+                if (replacement) void executeWorkspaceAction(replacement);
+              }}>ทิ้งแล้วไปต่อ</AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
