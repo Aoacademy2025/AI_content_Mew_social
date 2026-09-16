@@ -13,14 +13,24 @@ const steps = [
   { title: "ตัดต่อ", detail: "ส่งเข้า Video Editor" },
 ] as const;
 
-export function HeroScriptQuickStart() {
-  const [open, setOpen] = useState(true);
+export function HeroScriptQuickStart({ accountId }: { accountId: string | null }) {
+  const [open, setOpen] = useState(false);
   const mountedRef = useRef(false);
 
   useEffect(() => {
     trackEvent("hero_script_guide_viewed");
     mountedRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (!accountId) return;
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates the optional browser-only guide preference after the account is known.
+      setOpen(window.localStorage.getItem(`hero-script-guide:${accountId}`) === "open");
+    } catch {
+      // Storage is optional; a collapsed guide is still the safe default.
+    }
+  }, [accountId]);
 
   return (
     <details
@@ -30,12 +40,15 @@ export function HeroScriptQuickStart() {
       onToggle={(event) => {
         const nextOpen = event.currentTarget.open;
         setOpen(nextOpen);
+        if (accountId) {
+          try { window.localStorage.setItem(`hero-script-guide:${accountId}`, nextOpen ? "open" : "closed"); } catch { /* optional storage */ }
+        }
         if (mountedRef.current && nextOpen) trackEvent("hero_script_guide_opened");
       }}
     >
       <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 [&::-webkit-details-marker]:hidden">
         <div className="min-w-0">
-          <span className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>เริ่มครั้งแรก? เดินตาม 5 ขั้นตอนนี้</span>
+          <span className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>วิธีใช้</span>
           <span className="ml-2 hidden text-xs sm:inline" style={{ color: "var(--ui-text-muted)" }}>ระบบบันทึกร่างให้อัตโนมัติ</span>
         </div>
         <ChevronDown className="h-4 w-4 shrink-0 transition-transform duration-200 group-open:rotate-180" style={{ color: "var(--ui-text-muted)" }} />

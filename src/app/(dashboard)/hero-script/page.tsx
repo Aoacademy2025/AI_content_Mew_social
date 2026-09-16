@@ -9,7 +9,7 @@
 // is lifted here: profile/duration/topic/hook feed generation, and `draft` is
 // the working Script that step 4 autosaves and the history list restores into.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchMe } from "@/lib/use-me";
 import {
   BrandProfilePanel,
@@ -20,11 +20,18 @@ import { HookStep, hookContextKey, type HookChoice } from "./_components/HookSte
 import { ScriptEditorStep, type ScriptDraft } from "./_components/ScriptEditorStep";
 import { ScriptHistory, type SavedScript } from "./_components/ScriptHistory";
 import { HeroScriptQuickStart } from "./_components/HeroScriptQuickStart";
+import {
+  readHeroScriptWritingPreferences,
+  writeHeroScriptWritingPreferences,
+} from "./_components/hero-script-workspace-state";
 
 const VIOLET_LIGHT = "#B9A6FF";
 
 export default function HeroScriptPage() {
   const [plan, setPlan] = useState("FREE");
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [availableProfiles, setAvailableProfiles] = useState<Array<{ id: string }> | null>(null);
+  const [activeTab, setActiveTab] = useState<"write" | "library">("write");
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [durationSec, setDurationSec] = useState<DurationSec>(60);
   const [topic, setTopic] = useState("");
@@ -35,8 +42,32 @@ export default function HeroScriptPage() {
   useEffect(() => {
     fetchMe().then((me) => {
       if (me) setPlan((me.effectivePlan ?? me.plan) || "FREE");
+      setAccountId(typeof me?.id === "string" ? me.id : null);
     });
   }, []);
+
+  useEffect(() => {
+    if (!accountId || !availableProfiles) return;
+    const preferences = readHeroScriptWritingPreferences(window.localStorage, accountId, availableProfiles);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from validated browser-only preferences.
+    setSelectedProfileId(preferences.profileId);
+    setDurationSec(preferences.durationSec);
+  }, [accountId, availableProfiles]);
+
+  const rememberWritingPreferences = useCallback((profileId: string | null, nextDurationSec: DurationSec) => {
+    if (!accountId) return;
+    writeHeroScriptWritingPreferences(window.localStorage, accountId, { profileId, durationSec: nextDurationSec });
+  }, [accountId]);
+
+  const changeProfile = useCallback((profileId: string | null) => {
+    setSelectedProfileId(profileId);
+    rememberWritingPreferences(profileId, durationSec);
+  }, [durationSec, rememberWritingPreferences]);
+
+  const changeDuration = useCallback((nextDurationSec: DurationSec) => {
+    setDurationSec(nextDurationSec);
+    rememberWritingPreferences(selectedProfileId, nextDurationSec);
+  }, [rememberWritingPreferences, selectedProfileId]);
 
   // Restore a saved script into step 4 — and back-fill the earlier steps it
   // was written with, so a regenerate uses the same profile/duration/topic.
@@ -64,66 +95,45 @@ export default function HeroScriptPage() {
     <div className="relative flex-1 overflow-y-auto">
       <div className="mx-auto max-w-5xl px-4 py-6 md:px-6 md:py-8">
         <div className="space-y-6">
-          {/* ── Page header ── */}
-          <div>
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
-              Hero Script
-            </p>
-            <h1
-              className="text-2xl font-bold tracking-tight md:text-3xl"
-              style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}
-            >
-              เขียนสคริปต์ AI
-            </h1>
+          <header className="flex flex-wrap items-end justify-between gap-4 border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
+            <div>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
+                Hero Script
+              </p>
+              <h1 className="text-2xl font-bold tracking-tight md:text-3xl" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
+                เขียนสคริปต์ AI
+              </h1>
+            </div>
+            <div role="tablist" aria-label="พื้นที่สคริปต์" className="flex min-h-11 items-center gap-1 rounded-lg p-1" style={{ background: "var(--ui-btn-bg)" }}>
+              <button type="button" role="tab" aria-selected={activeTab === "write"} onClick={() => setActiveTab("write")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "write" ? VIOLET_LIGHT : "transparent", color: activeTab === "write" ? "#241a3c" : "var(--ui-text-secondary)" }}>
+                เขียนสคริปต์
+              </button>
+              <button type="button" role="tab" aria-selected={activeTab === "library"} onClick={() => setActiveTab("library")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "library" ? VIOLET_LIGHT : "transparent", color: activeTab === "library" ? "#241a3c" : "var(--ui-text-secondary)" }}>
+                คลังสคริปต์
+              </button>
+            </div>
+          </header>
+
+          {/* Keep this pane mounted while the library is open: the editor owns
+              debounced saves and its in-flight work must survive tab changes. */}
+          <div role="tabpanel" hidden={activeTab !== "write"} className="space-y-6">
+            <HeroScriptQuickStart accountId={accountId} />
+            <BrandProfilePanel
+              plan={plan}
+              selectedProfileId={selectedProfileId}
+              onSelectedProfileIdChange={changeProfile}
+              durationSec={durationSec}
+              onDurationSecChange={changeDuration}
+              onProfilesChange={setAvailableProfiles}
+            />
+            <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={setTopic} />
+            <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={setSelectedHook} />
+            <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={setSelectedHook} draft={draft} onDraftChange={setDraft} onSaved={() => setHistoryKey((k) => k + 1)} />
           </div>
 
-          <HeroScriptQuickStart />
-
-          {/* ── Step 1: Setup rail ── */}
-          <BrandProfilePanel
-            plan={plan}
-            selectedProfileId={selectedProfileId}
-            onSelectedProfileIdChange={setSelectedProfileId}
-            durationSec={durationSec}
-            onDurationSecChange={setDurationSec}
-          />
-
-          {/* ── Step 2: หัวข้อ ── */}
-          <TopicStep
-            selectedProfileId={selectedProfileId}
-            topic={topic}
-            onTopicChange={setTopic}
-          />
-
-          {/* ── Step 3: เลือก Hook ── */}
-          <HookStep
-            topic={topic}
-            durationSec={durationSec}
-            selectedProfileId={selectedProfileId}
-            selectedHook={selectedHook}
-            onSelectedHookChange={setSelectedHook}
-          />
-
-          {/* ── Step 4: สคริปต์เต็ม (+ the step-5 ส่งไปตัดต่อ CTA) ── */}
-          <ScriptEditorStep
-            topic={topic}
-            durationSec={durationSec}
-            plan={plan}
-            selectedProfileId={selectedProfileId}
-            selectedHook={selectedHook}
-            onSelectedHookChange={setSelectedHook}
-            draft={draft}
-            onDraftChange={setDraft}
-            onSaved={() => setHistoryKey((k) => k + 1)}
-          />
-
-          {/* ── History: สคริปต์ของฉัน ── */}
-          <ScriptHistory
-            refreshKey={historyKey}
-            activeScriptId={draft?.id ?? null}
-            onRestore={restoreScript}
-            onDeleted={(id) => setDraft((d) => (d?.id === id ? null : d))}
-          />
+          <div role="tabpanel" hidden={activeTab !== "library"}>
+            <ScriptHistory refreshKey={historyKey} activeScriptId={draft?.id ?? null} onRestore={restoreScript} onDeleted={(id) => setDraft((d) => (d?.id === id ? null : d))} />
+          </div>
         </div>
       </div>
     </div>
