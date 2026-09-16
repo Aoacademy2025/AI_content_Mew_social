@@ -9,7 +9,7 @@
 // is lifted here: profile/duration/topic/hook feed generation, and `draft` is
 // the working Script that step 4 autosaves and the history list restores into.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchMe } from "@/lib/use-me";
 import {
   BrandProfilePanel,
@@ -38,6 +38,8 @@ export default function HeroScriptPage() {
   const [selectedHook, setSelectedHook] = useState<HookChoice | null>(null);
   const [draft, setDraft] = useState<ScriptDraft | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
+  const hydratedAccountRef = useRef<string | null>(null);
+  const workspaceChangedRef = useRef(false);
 
   useEffect(() => {
     fetchMe().then((me) => {
@@ -47,7 +49,15 @@ export default function HeroScriptPage() {
   }, []);
 
   useEffect(() => {
+    workspaceChangedRef.current = false;
+    hydratedAccountRef.current = null;
+  }, [accountId]);
+
+  useEffect(() => {
     if (!accountId || !availableProfiles) return;
+    if (hydratedAccountRef.current === accountId) return;
+    hydratedAccountRef.current = accountId;
+    if (workspaceChangedRef.current) return;
     const preferences = readHeroScriptWritingPreferences(window.localStorage, accountId, availableProfiles);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from validated browser-only preferences.
     setSelectedProfileId(preferences.profileId);
@@ -60,11 +70,13 @@ export default function HeroScriptPage() {
   }, [accountId]);
 
   const changeProfile = useCallback((profileId: string | null) => {
+    workspaceChangedRef.current = true;
     setSelectedProfileId(profileId);
     rememberWritingPreferences(profileId, durationSec);
   }, [durationSec, rememberWritingPreferences]);
 
   const changeDuration = useCallback((nextDurationSec: DurationSec) => {
+    workspaceChangedRef.current = true;
     setDurationSec(nextDurationSec);
     rememberWritingPreferences(selectedProfileId, nextDurationSec);
   }, [rememberWritingPreferences, selectedProfileId]);
@@ -72,6 +84,7 @@ export default function HeroScriptPage() {
   // Restore a saved script into step 4 — and back-fill the earlier steps it
   // was written with, so a regenerate uses the same profile/duration/topic.
   function restoreScript(script: SavedScript) {
+    workspaceChangedRef.current = true;
     setSelectedProfileId(script.brandProfileId);
     setDurationSec(script.durationSec as DurationSec);
     setTopic(script.topic);
@@ -90,6 +103,21 @@ export default function HeroScriptPage() {
       status: script.status,
     });
   }
+
+  const changeTopic = useCallback((nextTopic: string) => {
+    workspaceChangedRef.current = true;
+    setTopic(nextTopic);
+  }, []);
+
+  const changeHook = useCallback((hook: HookChoice | null) => {
+    workspaceChangedRef.current = true;
+    setSelectedHook(hook);
+  }, []);
+
+  const changeDraft = useCallback((nextDraft: ScriptDraft | null) => {
+    if (nextDraft) workspaceChangedRef.current = true;
+    setDraft(nextDraft);
+  }, []);
 
   return (
     <div className="relative flex-1 overflow-y-auto">
@@ -126,9 +154,9 @@ export default function HeroScriptPage() {
               onDurationSecChange={changeDuration}
               onProfilesChange={setAvailableProfiles}
             />
-            <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={setTopic} />
-            <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={setSelectedHook} />
-            <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={setSelectedHook} draft={draft} onDraftChange={setDraft} onSaved={() => setHistoryKey((k) => k + 1)} />
+            <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={changeTopic} />
+            {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
+            {selectedHook && <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={() => setHistoryKey((k) => k + 1)} />}
           </div>
 
           <div role="tabpanel" hidden={activeTab !== "library"}>
