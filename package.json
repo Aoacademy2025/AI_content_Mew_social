@@ -14,6 +14,7 @@
     "verify:gallery-project-rename": "tsx scripts/verify-gallery-project-rename.ts",
     "verify:deploy-maintenance": "tsx scripts/verify-deploy-maintenance-window.ts",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
+    "verify:cron-route": "tsx scripts/verify-cron-route.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:db-backup-r2": "tsx scripts/verify-db-backup-r2.ts",
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",

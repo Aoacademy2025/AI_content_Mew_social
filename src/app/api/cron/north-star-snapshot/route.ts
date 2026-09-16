@@ -1,19 +1,23 @@
 import { NextResponse } from "next/server";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
+import { runAuthorizedCronJob } from "@/lib/cron-route";
 import { writeSubscriptionNorthStarSnapshot } from "@/lib/subscription-north-star.server";
-import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 
 export const runtime = "nodejs";
 
 // Daily counts-only snapshot. Fails closed when CRON_SECRET is not configured.
+// Prisma lock timeouts return 503 instead of an unhandled route error (HERO-10 / HERO-STUDIO-WEB-W).
 export async function GET(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  const auth = req.headers.get("authorization");
-  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  const result = await writeSubscriptionNorthStarSnapshot();
-  writeCronHeartbeat("north-star-snapshot");
-  console.log(`[north-star-snapshot] ${result.snapshotDate} mapc=${result.activeCreators} paying=${result.activePayingCustomers} recurring=${result.activeRecurringPayers}`);
-  return NextResponse.json({ ok: true, ...result });
+  const result = await runAuthorizedCronJob({
+    authorization: req.headers.get("authorization"),
+    secret: process.env.CRON_SECRET,
+    name: "north-star-snapshot",
+    run: async () => {
+      const outcome = await writeSubscriptionNorthStarSnapshot();
+      console.log(`[north-star-snapshot] ${outcome.snapshotDate} mapc=${outcome.activeCreators} paying=${outcome.activePayingCustomers} recurring=${outcome.activeRecurringPayers}`);
+      return outcome;
+    },
+    onSuccess: writeCronHeartbeat,
+  });
+  return NextResponse.json(result.body, { status: result.status });
 }

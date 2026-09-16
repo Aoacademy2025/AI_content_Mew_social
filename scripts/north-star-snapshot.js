@@ -7,7 +7,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 const SECRET = process.env.CRON_SECRET || "";
 const url = `${BASE_URL}/api/cron/north-star-snapshot`;
 const client = url.startsWith("https") ? https : http;
-const options = { method: "GET", timeout: 30000, headers: { ...(SECRET ? { authorization: `Bearer ${SECRET}` } : {}) } };
+const options = { method: "GET", timeout: 90000, headers: { ...(SECRET ? { authorization: `Bearer ${SECRET}` } : {}) } };
 
 function attempt(retries) {
   const req = client.request(url, options, (res) => {
@@ -30,4 +30,4 @@ function attempt(retries) {
   req.end();
 }
 
-attempt(3);
+attempt(1);
