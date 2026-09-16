@@ -33,6 +33,10 @@ RED: creating an Editor project from a non-active library row skipped the mounte
 
 RED: the failed-save handoff dialog still exposed “ทิ้งแล้วไปต่อ,” which posted stale saved text. GREEN: active and library handoff failures now offer retry/cancel only, while New/open/navigation keep their approved discard path. Pending handoffs carry immutable operation identity, preventing an invalidated held-save continuation from consuming a newer same-script token.
 
+## Final recovery-owner correction
+
+RED: invalidated operation A could publish its delayed save-failure dialog after same-script operation B became current. GREEN: recovery publication, close, cancel and retry all require A's exact live operation object. The held-save failure ABA fixture proves no stale dialog, one POST and B's valid navigation.
+
 ## Commands rerun after the final correction
 
 | Command | Status |

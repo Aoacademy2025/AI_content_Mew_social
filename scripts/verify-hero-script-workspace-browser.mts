@@ -731,9 +731,17 @@ try {
   await abaFirstSave;
   await abaPage.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Context invalidates first operation");
   const postsBeforeAba = handoffPosts.length;
-  const abaHandoffResponse = abaPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  const abaHandoffGate = deferredReply();
+  nextHandoffRelease = abaHandoffGate.release;
+  const abaHandoffRequest = abaPage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
   await clickLibraryCreate(abaPage, "Fast detail");
+  failNextSave = true;
   abaSaveGate.resolve();
+  await abaHandoffRequest;
+  assert.equal(await abaPage.evaluate(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้")), false, "invalidated operation A cannot publish recovery over operation B");
+  assert.equal(handoffPosts.length, postsBeforeAba + 1, "operation B alone reaches the POST boundary after A's save fails");
+  const abaHandoffResponse = abaPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  abaHandoffGate.resolve();
   await abaHandoffResponse;
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(handoffPosts.length, postsBeforeAba + 1, "an old save continuation cannot consume a newer same-script handoff token");

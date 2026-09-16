@@ -85,6 +85,18 @@ export default function HeroScriptPage() {
     }
   }, []);
 
+  const ownsHandoffAction = useCallback((action: WorkspaceAction) => action.kind !== "handoff"
+    || (handoffOperationRef.current === action.operation && action.operation.valid), []);
+
+  const cancelHandoffOperation = useCallback((operation: HandoffOperation) => {
+    if (handoffOperationRef.current !== operation) return;
+    operation.valid = false;
+    if (!operation.posting) {
+      handoffOperationRef.current = null;
+      setHandoffPhase(null);
+    }
+  }, []);
+
   useEffect(() => { draftRef.current = draft; }, [draft]);
 
   useEffect(() => {
@@ -287,19 +299,31 @@ export default function HeroScriptPage() {
   }, [invalidateHandoff, openScript, resetWorkspace, router]);
 
   const requestWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
+    if (!ownsHandoffAction(action)) return false;
     if (!draftRef.current && (topic.trim() || selectedHook)) {
       setReplacementAfterSaveFailure(false);
       setPendingReplacement(action);
       return false;
     }
-    if (draftRef.current && !(await editorRef.current?.saveLatest())) {
+    let savedLatest: boolean | undefined;
+    try {
+      savedLatest = !draftRef.current || await editorRef.current?.saveLatest();
+    } catch (error) {
+      if (action.kind !== "handoff") throw error;
+      if (!ownsHandoffAction(action)) return false;
+      setReplacementAfterSaveFailure(true);
+      setPendingReplacement(action);
+      return false;
+    }
+    if (!ownsHandoffAction(action)) return false;
+    if (!savedLatest) {
       setReplacementAfterSaveFailure(true);
       setPendingReplacement(action);
       return false;
     }
     await executeWorkspaceAction(action);
     return true;
-  }, [executeWorkspaceAction, selectedHook, topic]);
+  }, [executeWorkspaceAction, ownsHandoffAction, selectedHook, topic]);
 
   const handleSaved = useCallback((savedDraft: ScriptDraft) => {
     libraryDirtyRef.current = true;
@@ -411,7 +435,7 @@ export default function HeroScriptPage() {
           dialogActionRef.current = false;
           return;
         }
-        if (pendingReplacement?.kind === "handoff") invalidateHandoff();
+        if (pendingReplacement?.kind === "handoff") cancelHandoffOperation(pendingReplacement.operation);
         setPendingReplacement(null);
       }}>
         <AlertDialogContent>
@@ -430,9 +454,14 @@ export default function HeroScriptPage() {
             {replacementAfterSaveFailure && (
               <button type="button" className="min-h-11 rounded-md border px-4 text-sm font-medium" onClick={() => {
                 const replacement = pendingReplacement;
+                if (!replacement || !ownsHandoffAction(replacement)) {
+                  dialogActionRef.current = true;
+                  setPendingReplacement(null);
+                  return;
+                }
                 dialogActionRef.current = true;
                 setPendingReplacement(null);
-                if (replacement) void requestWorkspaceAction(replacement);
+                void requestWorkspaceAction(replacement);
               }}>
                 ลองบันทึกอีกครั้ง
               </button>
@@ -441,9 +470,10 @@ export default function HeroScriptPage() {
               <AlertDialogAction className="min-h-11" onClick={() => {
                 const replacement = pendingReplacement;
                 if (replacement?.kind === "handoff" && replacementAfterSaveFailure) return;
+                if (!replacement || !ownsHandoffAction(replacement)) return;
                 dialogActionRef.current = true;
                 setPendingReplacement(null);
-                if (replacement) void executeWorkspaceAction(replacement);
+                void executeWorkspaceAction(replacement);
               }}>ทิ้งแล้วไปต่อ</AlertDialogAction>
             )}
           </AlertDialogFooter>
