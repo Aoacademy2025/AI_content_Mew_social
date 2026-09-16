@@ -492,6 +492,10 @@ export function BrandProfilePanel({
                 <Input value={form.tone} onChange={(e) => setForm((f) => ({ ...f, tone: e.target.value }))} placeholder="เช่น เป็นกันเอง ขี้เล่น มีสาระ" />
               </div>
               <div>
+                <Label className="mb-1.5 block text-xs">บันทึกจากการวิเคราะห์</Label>
+                <Textarea value={form.analysisNotes} onChange={(e) => setForm((f) => ({ ...f, analysisNotes: e.target.value }))} rows={2} placeholder="แนวทางเพิ่มเติมสำหรับการเขียน" />
+              </div>
+              <div>
                 <Label className="mb-1.5 block text-xs">คำต้องห้าม (คั่นด้วยจุลภาค)</Label>
                 <Textarea
                   value={form.bannedWordsText}

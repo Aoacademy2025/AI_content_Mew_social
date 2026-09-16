@@ -106,8 +106,9 @@ export default function HeroScriptPage() {
 
   const changeTopic = useCallback((nextTopic: string) => {
     workspaceChangedRef.current = true;
+    if (selectedHook?.contextKey !== hookContextKey(nextTopic, durationSec, selectedProfileId)) setSelectedHook(null);
     setTopic(nextTopic);
-  }, []);
+  }, [durationSec, selectedHook, selectedProfileId]);
 
   const changeHook = useCallback((hook: HookChoice | null) => {
     workspaceChangedRef.current = true;
@@ -156,7 +157,10 @@ export default function HeroScriptPage() {
             />
             <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={changeTopic} />
             {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
-            {selectedHook && <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={() => setHistoryKey((k) => k + 1)} />}
+            {(selectedHook || draft) && <>
+              {!selectedHook && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
+              <ScriptEditorStep topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={() => setHistoryKey((k) => k + 1)} />
+            </>}
           </div>
 
           <div role="tabpanel" hidden={activeTab !== "library"}>

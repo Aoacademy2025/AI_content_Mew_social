@@ -91,7 +91,7 @@ export function TopicStep({ selectedProfileId, topic, onTopicChange }: TopicStep
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="flex-1">
           <Label className="mb-1.5 block text-xs" style={{ color: "var(--ui-text-secondary)" }}>หัวข้อคลิป</Label>
-          <Input className="min-h-11" value={topic} onChange={(e) => onTopicChange(e.target.value)} />
+          <Input aria-label="หัวข้อสคริปต์" className="min-h-11" value={topic} onChange={(e) => onTopicChange(e.target.value)} />
         </div>
         <Button
           onClick={handleGenerateIdeas}
