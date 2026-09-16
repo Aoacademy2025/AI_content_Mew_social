@@ -124,11 +124,15 @@ interface ScriptEditorStepProps {
   /** Fired after a successful save so the recent shortcut/library can invalidate. */
   onSaved?: (draft: ScriptDraft) => void;
   onOpenEditorProject: (projectId: string) => void;
+  onCreateEditorProject: () => Promise<boolean>;
+  handoffPending: boolean;
+  handoffPosting: boolean;
 }
 
 export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorStepProps>(function ScriptEditorStep({
   topic, durationSec, plan, selectedProfileId, selectedHook, onSelectedHookChange,
-  draft, onDraftChange, onSaved, onOpenEditorProject,
+  draft, onDraftChange, onSaved, onOpenEditorProject, onCreateEditorProject,
+  handoffPending, handoffPosting,
 }, ref) {
   const router = useRouter();
   const [generating, setGenerating] = useState(false);
@@ -137,9 +141,6 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [handoffPosting, setHandoffPosting] = useState(false);
-  const handoffPostingRef = useRef(false);
-  const handoffOwnerRef = useRef<{ scriptId: string; draft: ScriptDraft } | null>(null);
   const goToPricing = useCallback(() => {
     trackEvent("hero_script_upgrade_clicked", { properties: { surface: "limit_error" } });
     router.push("/pricing?source=hero_script_limit");
@@ -173,7 +174,6 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
 
   const invalidateAsyncRequests = useCallback(() => {
     workspaceRequestRef.current += 1;
-    if (handoffPostingRef.current) handoffOwnerRef.current = null;
     setGenerating(false);
     setRegenTarget(null);
     setGenerationError(null);
@@ -467,76 +467,13 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
     sendingRef.current = true;
     setSending(true);
     invalidateAsyncRequests();
-    const startedAt = performance.now();
-    let owner: { scriptId: string; draft: ScriptDraft } | null = null;
-    const ownsWorkspace = () => owner !== null
-      && handoffOwnerRef.current === owner
-      && draftRef.current === owner.draft;
     try {
-      const savedLatest = await saveLatest();
-      if (!savedLatest) return false;
-      const d = draftRef.current;
-      const scriptId = d?.id ?? rowIdRef.current;
-      if (!d || !scriptId) return false;
-      owner = { scriptId, draft: d };
-      handoffOwnerRef.current = owner;
-      handoffPostingRef.current = true;
-      setHandoffPosting(true);
-      trackEvent("hero_script_handoff_requested", { status: "started" });
-      const res = await authenticatedFetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
-      if (!ownsWorkspace()) return false;
-      if (!res.ok) {
-        trackEvent("hero_script_handoff_failed", {
-          category: "error", status: "error", durationMs: performance.now() - startedAt,
-          properties: { httpStatus: res.status },
-        });
-        await toastErrorResponse(res, "ส่งไปตัดต่อไม่สำเร็จ", {
-          onUpgrade: goToPricing,
-          isCurrent: ownsWorkspace,
-        });
-        return false;
-      }
-      const data = await res.json();
-      if (!ownsWorkspace()) return false;
-      const projectId = typeof data?.projectId === "string" ? data.projectId : "";
-      if (!projectId) {
-        trackEvent("hero_script_handoff_failed", {
-          category: "error", status: "error", durationMs: performance.now() - startedAt,
-          properties: { failure: "missing_project_id" },
-        });
-        toast.error("ส่งไปตัดต่อไม่สำเร็จ");
-        return false;
-      }
-      // Flip the local status so the history chip reads "ส่งแล้ว" even if the
-      // navigation takes a moment.
-      const latest = draftRef.current;
-      if (latest?.id === scriptId) {
-        const sentDraft = { ...latest, status: "sent", editorProjectId: projectId, editorProjectAvailable: true };
-        draftRef.current = sentDraft;
-        onDraftChangeRef.current(sentDraft);
-        onSavedRef.current?.(sentDraft);
-      }
-      trackEvent("hero_script_handoff_completed", {
-        status: "done", durationMs: performance.now() - startedAt,
-      });
-      router.push(`/video-editor?projectId=${encodeURIComponent(projectId)}`);
-      return true;
-    } catch {
-      if (!ownsWorkspace()) return false;
-      trackEvent("hero_script_handoff_failed", {
-        category: "error", status: "error", durationMs: performance.now() - startedAt,
-        properties: { failure: "network" },
-      });
-      toast.error("ส่งไปตัดต่อไม่สำเร็จ");
-      return false;
+      return await onCreateEditorProject();
     } finally {
-      if (handoffOwnerRef.current === owner) handoffOwnerRef.current = null;
-      handoffPostingRef.current = false;
-      setHandoffPosting(false);
       sendingRef.current = false;
       setSending(false);
     }
-  }, [goToPricing, invalidateAsyncRequests, router, saveLatest]);
+  }, [invalidateAsyncRequests, onCreateEditorProject]);
 
   useImperativeHandle(ref, () => ({ saveLatest, createEditorProject, invalidateAsyncRequests }), [createEditorProject, invalidateAsyncRequests, saveLatest]);
 
@@ -550,7 +487,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
   }
 
   function editSection(patch: Partial<ScriptDraft>) {
-    if (handoffPostingRef.current) return;
+    if (handoffPosting) return;
     invalidateAsyncRequests();
     applyDraftPatch(patch);
   }
@@ -590,7 +527,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
           )}
           <Button
             onClick={handleGenerate}
-            disabled={sending || generating || regenTarget !== null || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
+            disabled={sending || handoffPending || generating || regenTarget !== null || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
             size="sm"
             className="min-h-11 gap-1.5 text-white"
             style={{ background: VIOLET }}
@@ -616,7 +553,7 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
                 <span className="text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>{section.label}</span>
                 <Button
                   onClick={() => handleRegen(section.key)}
-                  disabled={sending || generating || regenTarget !== null}
+                  disabled={sending || handoffPending || generating || regenTarget !== null}
                   size="sm"
                   variant="ghost"
                   className="min-h-11 gap-1 px-2 text-[11px]"
@@ -654,14 +591,14 @@ export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorS
                 {draft.status === "sent" && <p className="max-w-md text-xs" style={{ color: "var(--ui-text-muted)" }}>การแก้สคริปต์นี้ยังไม่เปลี่ยนงานตัดต่อเดิม</p>}
                 <div className="flex flex-wrap justify-end gap-2">
                   {draft.status === "sent" && draft.editorProjectAvailable && draft.editorProjectId && (
-                    <Button type="button" variant="outline" className="min-h-11" disabled={sending} onClick={() => onOpenEditorProject(draft.editorProjectId!)}>
+                    <Button type="button" variant="outline" className="min-h-11" disabled={sending || handoffPending} onClick={() => onOpenEditorProject(draft.editorProjectId!)}>
                       เปิดงานตัดต่อเดิม
                     </Button>
                   )}
                   {draft.status === "sent" && !draft.editorProjectAvailable && <span className="self-center text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>}
                   <Button
                     onClick={() => { void createEditorProject(); }}
-                    disabled={sending}
+                    disabled={sending || handoffPending}
                     className="min-h-11 gap-1.5 text-white sm:w-auto"
                     style={{ background: VIOLET }}
                   >

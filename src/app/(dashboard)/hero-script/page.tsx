@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { fetchMe } from "@/lib/use-me";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { trackEvent } from "@/lib/client-telemetry";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -36,7 +37,15 @@ const VIOLET_LIGHT = "#B9A6FF";
 type WorkspaceAction =
   | { kind: "new" }
   | { kind: "open"; item: ScriptLibraryItem }
-  | { kind: "navigate"; projectId: string };
+  | { kind: "navigate"; projectId: string }
+  | { kind: "handoff"; scriptId: string | null };
+
+type HandoffOperation = {
+  scriptId: string | null;
+  workspaceDraft: ScriptDraft | null;
+  posting: boolean;
+  valid: boolean;
+};
 
 export default function HeroScriptPage() {
   const router = useRouter();
@@ -54,6 +63,7 @@ export default function HeroScriptPage() {
   const [openingScriptId, setOpeningScriptId] = useState<string | null>(null);
   const [pendingReplacement, setPendingReplacement] = useState<WorkspaceAction | null>(null);
   const [replacementAfterSaveFailure, setReplacementAfterSaveFailure] = useState(false);
+  const [handoffPhase, setHandoffPhase] = useState<"saving" | "posting" | null>(null);
   const hydratedAccountRef = useRef<string | null>(null);
   const workspaceChangedRef = useRef(false);
   const newWritingPreferencesRef = useRef<HeroScriptWritingPreferences>({ profileId: null, durationSec: 60 });
@@ -61,8 +71,19 @@ export default function HeroScriptPage() {
   const editorRef = useRef<ScriptEditorStepHandle>(null);
   const detailRequestRef = useRef(0);
   const openingScriptIdRef = useRef<string | null>(null);
-  const handoffScriptIdRef = useRef<string | null>(null);
+  const handoffOperationRef = useRef<HandoffOperation | null>(null);
+  const dialogActionRef = useRef(false);
   const libraryDirtyRef = useRef(false);
+
+  const invalidateHandoff = useCallback(() => {
+    const operation = handoffOperationRef.current;
+    if (!operation) return;
+    operation.valid = false;
+    if (!operation.posting) {
+      handoffOperationRef.current = null;
+      setHandoffPhase(null);
+    }
+  }, []);
 
   useEffect(() => { draftRef.current = draft; }, [draft]);
 
@@ -109,22 +130,25 @@ export default function HeroScriptPage() {
   }, [accountId]);
 
   const changeProfile = useCallback((profileId: string | null) => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, profileId)) setSelectedHook(null);
     setSelectedProfileId(profileId);
     rememberWritingPreferences(profileId, durationSec);
-  }, [durationSec, rememberWritingPreferences, selectedHook, topic]);
+  }, [durationSec, invalidateHandoff, rememberWritingPreferences, selectedHook, topic]);
 
   const changeDuration = useCallback((nextDurationSec: DurationSec) => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(topic, nextDurationSec, selectedProfileId)) setSelectedHook(null);
     setDurationSec(nextDurationSec);
     rememberWritingPreferences(selectedProfileId, nextDurationSec);
-  }, [rememberWritingPreferences, selectedHook, selectedProfileId, topic]);
+  }, [invalidateHandoff, rememberWritingPreferences, selectedHook, selectedProfileId, topic]);
 
   const restoreScript = useCallback((script: SavedScript) => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     setSelectedProfileId(script.brandProfileId);
@@ -152,20 +176,22 @@ export default function HeroScriptPage() {
     draftRef.current = next;
     setDraft(next);
     setActiveTab("write");
-  }, []);
+  }, [invalidateHandoff]);
 
   const changeTopic = useCallback((nextTopic: string) => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     if (selectedHook?.contextKey !== hookContextKey(nextTopic, durationSec, selectedProfileId)) setSelectedHook(null);
     setTopic(nextTopic);
-  }, [durationSec, selectedHook, selectedProfileId]);
+  }, [durationSec, invalidateHandoff, selectedHook, selectedProfileId]);
 
   const changeHook = useCallback((hook: HookChoice | null) => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
     setSelectedHook(hook);
-  }, []);
+  }, [invalidateHandoff]);
 
   const changeDraft = useCallback((nextDraft: ScriptDraft | null) => {
     if (nextDraft) workspaceChangedRef.current = true;
@@ -174,6 +200,7 @@ export default function HeroScriptPage() {
   }, []);
 
   const resetWorkspace = useCallback(() => {
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     detailRequestRef.current += 1;
     openingScriptIdRef.current = null;
@@ -186,7 +213,7 @@ export default function HeroScriptPage() {
     draftRef.current = null;
     setDraft(null);
     setActiveTab("write");
-  }, []);
+  }, [invalidateHandoff]);
 
   const openScript = useCallback(async (item: ScriptLibraryItem) => {
     openingScriptIdRef.current = item.id;
@@ -201,24 +228,77 @@ export default function HeroScriptPage() {
   }, [restoreScript]);
 
   const executeWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
+    if (action.kind === "handoff") {
+      const operation = handoffOperationRef.current;
+      if (!operation || operation.scriptId !== action.scriptId) return;
+      editorRef.current?.invalidateAsyncRequests();
+      const scriptId = action.scriptId ?? draftRef.current?.id;
+      if (!scriptId) {
+        handoffOperationRef.current = null;
+        setHandoffPhase(null);
+        return;
+      }
+      operation.scriptId = scriptId;
+      operation.workspaceDraft = draftRef.current;
+      operation.posting = true;
+      setHandoffPhase("posting");
+      const startedAt = performance.now();
+      const ownsWorkspace = () => operation.valid
+        && handoffOperationRef.current === operation
+        && draftRef.current === operation.workspaceDraft;
+      try {
+        trackEvent("hero_script_handoff_requested", { status: "started" });
+        const response = await authenticatedFetch(`/api/scripts/${encodeURIComponent(scriptId)}/send-to-editor`, { method: "POST" });
+        if (!ownsWorkspace()) return;
+        const payload = await response.json().catch(() => null);
+        if (!ownsWorkspace()) return;
+        if (!response.ok || typeof payload?.projectId !== "string") {
+          trackEvent("hero_script_handoff_failed", {
+            category: "error", status: "error", durationMs: performance.now() - startedAt,
+            properties: { httpStatus: response.status },
+          });
+          toast.error(payload?.error || "ส่งไปตัดต่อไม่สำเร็จ");
+          return;
+        }
+        libraryDirtyRef.current = true;
+        trackEvent("hero_script_handoff_completed", { status: "done", durationMs: performance.now() - startedAt });
+        router.push(`/video-editor?projectId=${encodeURIComponent(payload.projectId)}`);
+      } catch {
+        if (ownsWorkspace()) {
+          trackEvent("hero_script_handoff_failed", {
+            category: "error", status: "error", durationMs: performance.now() - startedAt,
+            properties: { failure: "network" },
+          });
+          toast.error("ส่งไปตัดต่อไม่สำเร็จ");
+        }
+      } finally {
+        if (handoffOperationRef.current === operation) {
+          handoffOperationRef.current = null;
+          setHandoffPhase(null);
+        }
+      }
+      return;
+    }
+    invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     if (action.kind === "new") resetWorkspace();
     else if (action.kind === "open") await openScript(action.item);
     else router.push(`/video-editor?projectId=${encodeURIComponent(action.projectId)}`);
-  }, [openScript, resetWorkspace, router]);
+  }, [invalidateHandoff, openScript, resetWorkspace, router]);
 
   const requestWorkspaceAction = useCallback(async (action: WorkspaceAction) => {
     if (!draftRef.current && (topic.trim() || selectedHook)) {
       setReplacementAfterSaveFailure(false);
       setPendingReplacement(action);
-      return;
+      return false;
     }
     if (draftRef.current && !(await editorRef.current?.saveLatest())) {
       setReplacementAfterSaveFailure(true);
       setPendingReplacement(action);
-      return;
+      return false;
     }
     await executeWorkspaceAction(action);
+    return true;
   }, [executeWorkspaceAction, selectedHook, topic]);
 
   const handleSaved = useCallback((savedDraft: ScriptDraft) => {
@@ -249,27 +329,14 @@ export default function HeroScriptPage() {
     setActiveTab("library");
   }, []);
 
-  const createEditorProject = useCallback(async (item: ScriptLibraryItem) => {
-    if (handoffScriptIdRef.current) return;
-    if (draftRef.current?.id === item.id) {
-      await editorRef.current?.createEditorProject();
-      return;
-    }
-    handoffScriptIdRef.current = item.id;
-    try {
-      const response = await authenticatedFetch(`/api/scripts/${encodeURIComponent(item.id)}/send-to-editor`, { method: "POST" });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || typeof payload?.projectId !== "string") {
-        toast.error(payload?.error || "ส่งไปตัดต่อไม่สำเร็จ");
-        return;
-      }
-      router.push(`/video-editor?projectId=${encodeURIComponent(payload.projectId)}`);
-    } catch {
-      toast.error("ส่งไปตัดต่อไม่สำเร็จ");
-    } finally {
-      handoffScriptIdRef.current = null;
-    }
-  }, [router]);
+  const createEditorProject = useCallback(async (scriptId: string | null) => {
+    if (handoffOperationRef.current) return false;
+    const operation: HandoffOperation = { scriptId, workspaceDraft: draftRef.current, posting: false, valid: true };
+    handoffOperationRef.current = operation;
+    setHandoffPhase("saving");
+    await requestWorkspaceAction({ kind: "handoff", scriptId });
+    return true;
+  }, [requestWorkspaceAction]);
 
   const beforeDelete = useCallback(async (item: ScriptLibraryItem) => {
     if (draftRef.current?.id !== item.id) return true;
@@ -317,7 +384,7 @@ export default function HeroScriptPage() {
             {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
             {!selectedHook && draft && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
             <div hidden={!selectedHook && !draft}>
-              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} onOpenEditorProject={(projectId) => { void requestWorkspaceAction({ kind: "navigate", projectId }); }} />
+              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} onOpenEditorProject={(projectId) => { void requestWorkspaceAction({ kind: "navigate", projectId }); }} onCreateEditorProject={() => createEditorProject(draftRef.current?.id ?? null)} handoffPending={handoffPhase !== null} handoffPosting={handoffPhase === "posting"} />
             </div>
           </div>
 
@@ -328,7 +395,8 @@ export default function HeroScriptPage() {
               activeScriptId={draft?.id ?? null}
               onOpenScript={(item) => { void requestWorkspaceAction({ kind: "open", item }); }}
               onOpenEditorProject={(item) => { if (item.editorProjectId) void requestWorkspaceAction({ kind: "navigate", projectId: item.editorProjectId }); }}
-              onCreateEditorProject={createEditorProject}
+              onCreateEditorProject={async (item) => { await createEditorProject(item.id); }}
+              handoffPending={handoffPhase !== null}
               beforeDelete={beforeDelete}
               onDeleted={handleDeleted}
               onStartWriting={() => setActiveTab("write")}
@@ -337,7 +405,15 @@ export default function HeroScriptPage() {
         </div>
       </div>
 
-      <AlertDialog open={!!pendingReplacement} onOpenChange={(open) => { if (!open) setPendingReplacement(null); }}>
+      <AlertDialog open={!!pendingReplacement} onOpenChange={(open) => {
+        if (open) return;
+        if (dialogActionRef.current) {
+          dialogActionRef.current = false;
+          return;
+        }
+        if (pendingReplacement?.kind === "handoff") invalidateHandoff();
+        setPendingReplacement(null);
+      }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{replacementAfterSaveFailure ? "บันทึกไม่สำเร็จ" : "ทิ้งสิ่งที่กำลังเขียน?"}</AlertDialogTitle>
@@ -352,6 +428,7 @@ export default function HeroScriptPage() {
             {replacementAfterSaveFailure && (
               <button type="button" className="min-h-11 rounded-md border px-4 text-sm font-medium" onClick={() => {
                 const replacement = pendingReplacement;
+                dialogActionRef.current = true;
                 setPendingReplacement(null);
                 if (replacement) void requestWorkspaceAction(replacement);
               }}>
@@ -360,6 +437,7 @@ export default function HeroScriptPage() {
             )}
             <AlertDialogAction className="min-h-11" onClick={() => {
               const replacement = pendingReplacement;
+              dialogActionRef.current = true;
               setPendingReplacement(null);
               if (replacement) void executeWorkspaceAction(replacement);
             }}>ทิ้งแล้วไปต่อ</AlertDialogAction>

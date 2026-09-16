@@ -25,6 +25,10 @@ RED: after a genuine empty library response, a later failed refresh displayed bo
 
 RED: the mounted verifier reproduced three release blockers: New discarded an edit typed after its first save request began, existing-project navigation bypassed a held save, and a held handoff navigated away from a replacement workspace. GREEN: serialized saves drain through the current visible snapshot, project navigation uses the page guard, and generation/regeneration/handoff responses validate the initiating workspace before finalization.
 
+## Final library handoff correction
+
+RED: creating an Editor project from a non-active library row skipped the mounted writer's pending save/brief confirmation and used a separate POST owner. GREEN: every editor and library create action now enters one page-owned operation. The mounted verifier proves latest-save drain and failure preservation, brief cancel/discard, one POST for editor↔library competition, first-owner navigation, and a retained POST gate after New/open invalidates response ownership.
+
 ## Commands rerun after the final correction
 
 | Command | Status |

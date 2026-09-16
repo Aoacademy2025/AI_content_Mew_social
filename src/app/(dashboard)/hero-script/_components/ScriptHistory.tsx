@@ -130,6 +130,7 @@ interface ScriptLibraryProps {
   onOpenScript: (item: ScriptLibraryItem) => void;
   onOpenEditorProject?: (item: ScriptLibraryItem) => void;
   onCreateEditorProject?: (item: ScriptLibraryItem) => Promise<void>;
+  handoffPending?: boolean;
   beforeDelete?: (item: ScriptLibraryItem) => Promise<boolean>;
   onDeleted?: (id: string) => void;
   onStartWriting?: () => void;
@@ -141,7 +142,7 @@ interface ScriptLibraryProps {
 const LIBRARY_PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 300;
 
-export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEditorProject, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
+export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEditorProject, handoffPending = false, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status, setStatus] = useState<ScriptLibraryQuery["status"]>("all");
@@ -229,7 +230,7 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
   }
 
   async function createEditorProject(item: ScriptLibraryItem) {
-    if (creatingId || !onCreateEditorProject) return;
+    if (creatingId || handoffPending || !onCreateEditorProject) return;
     setCreatingId(item.id);
     try {
       await onCreateEditorProject(item);
@@ -362,7 +363,7 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
                         <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
                       </summary>
                       <div className="absolute right-0 z-20 mt-1 min-w-48 rounded-lg border p-1 shadow-lg" style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}>
-                        <button type="button" disabled={creatingId !== null || !onCreateEditorProject} onClick={() => { void createEditorProject(item); }} className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm disabled:opacity-50">
+                        <button type="button" disabled={creatingId !== null || handoffPending || !onCreateEditorProject} onClick={() => { void createEditorProject(item); }} className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm disabled:opacity-50">
                           {creatingId === item.id ? "กำลังสร้าง…" : "สร้างงานตัดต่อใหม่"}
                         </button>
                         <button type="button" onClick={() => setDeleteItem(item)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm">

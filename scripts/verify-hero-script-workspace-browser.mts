@@ -443,12 +443,12 @@ try {
   await failedHandoffSaveResponse;
   assert.equal(handoffPosts.length, handoffsBeforeFailure, "a failed latest save blocks stale handoff");
   assert.equal(await readBodyEditor(), "Latest before failed handoff", "save failure preserves working text");
-  await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.includes("ส่งไปตัดต่อ") && !button.disabled));
+  await page.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
   const routesBeforeRetry = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
   nextSaveDelayMs = 250;
   const retrySaveResponse = page.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Latest before failed handoff");
   const retryHandoffResponse = page.waitForResponse((response) => response.url().includes("/send-to-editor"));
-  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ส่งไปตัดต่อ") && button.getClientRects().length > 0)?.click());
+  await page.locator('button::-p-text(ลองบันทึกอีกครั้ง)').click();
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(handoffPosts.length, handoffsBeforeFailure, "handoff waits for a delayed latest save");
   assert.equal((await retrySaveResponse).status(), 200);
@@ -591,6 +591,125 @@ try {
   await createHandoffResponse;
   assert.equal(records.get("fast-record")?.bodyText, "Latest edit while create awaited save", "create handoff commits edits made after its awaited save begins");
   await saveDrainPage.close();
+
+  const newHandoffPage = async () => {
+    const nextPage = await browser.newPage();
+    nextPage.setDefaultTimeout(5_000);
+    await nextPage.setViewport({ width: 390, height: 844 });
+    await nextPage.goto(`http://127.0.0.1:${port}/hero-script`);
+    await nextPage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+    return nextPage;
+  };
+  const openFixtureRecord = async (fixturePage: import("puppeteer").Page, topicName: string) => {
+    await fixturePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+    await fixturePage.waitForFunction((name) => [...document.querySelectorAll("article button")].some((button) => button.textContent?.includes(name)), {}, topicName);
+    await fixturePage.evaluate((name) => [...document.querySelectorAll<HTMLButtonElement>("article button")].find((button) => button.textContent?.includes(name))?.click(), topicName);
+    await fixturePage.waitForFunction((name) => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === name, {}, topicName);
+  };
+  const fillMountedFixtureBody = async (fixturePage: import("puppeteer").Page, value: string) => fixturePage.evaluate((next) => {
+    const input = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].slice(-3)[1];
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const clickLibraryCreate = async (fixturePage: import("puppeteer").Page, topicName: string) => {
+    await fixturePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+    await fixturePage.waitForFunction((name) => [...document.querySelectorAll("article")].some((article) => article.textContent?.includes(name)), {}, topicName);
+    await fixturePage.evaluate((name) => {
+      const article = [...document.querySelectorAll("article")].find((node) => node.textContent?.includes(name))!;
+      (article.querySelector("summary") as HTMLElement).click();
+      [...article.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("สร้างงานตัดต่อใหม่"))?.click();
+    }, topicName);
+  };
+
+  // A non-active library handoff is still a workspace transition: it drains
+  // the mounted writer and blocks the POST when the latest follow-up save fails.
+  records.set("fast-record", script({ id: "fast-record", topic: "Fast detail", durationSec: 30, brandProfileId: "legacy-revision-zero" }));
+  const librarySavePage = await newHandoffPage();
+  await openFixtureRecord(librarySavePage, "Fast detail");
+  await fillMountedFixtureBody(librarySavePage, "Library handoff save failure");
+  failNextSave = true;
+  const postsBeforeLibrarySaveFailure = handoffPosts.length;
+  await clickLibraryCreate(librarySavePage, "Recent fixture");
+  await librarySavePage.waitForFunction(() => document.body.textContent?.includes("ข้อความล่าสุดยังอยู่ในหน้านี้"));
+  assert.equal(handoffPosts.length, postsBeforeLibrarySaveFailure, "failed active-workspace save blocks a non-active library handoff");
+  assert.equal(await librarySavePage.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.slice(-3)[1]?.value), "Library handoff save failure");
+  await librarySavePage.locator('button::-p-text(ยกเลิก)').click();
+
+  await fillMountedFixtureBody(librarySavePage, "Library handoff first snapshot");
+  const librarySaveGate = deferredReply();
+  nextSaveRelease = librarySaveGate.release;
+  const libraryFirstSave = librarySavePage.waitForRequest((request) => request.method() === "PUT" && JSON.parse(request.postData() ?? "{}").bodyText === "Library handoff first snapshot");
+  const libraryHandoffResponse = librarySavePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickLibraryCreate(librarySavePage, "Recent fixture");
+  await libraryFirstSave;
+  await fillMountedFixtureBody(librarySavePage, "Library handoff latest snapshot");
+  const libraryLatestSave = librarySavePage.waitForResponse((response) => response.request().method() === "PUT" && JSON.parse(response.request().postData() ?? "{}").bodyText === "Library handoff latest snapshot");
+  librarySaveGate.resolve();
+  await libraryLatestSave;
+  await libraryHandoffResponse;
+  assert.equal(records.get("fast-record")?.bodyText, "Library handoff latest snapshot", "non-active library handoff drains the current visible snapshot");
+  await librarySavePage.close();
+
+  // An unsaved topic/Hook requires the same explicit discard decision before a
+  // non-active library POST.
+  const libraryBriefPage = await newHandoffPage();
+  await libraryBriefPage.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Unsaved library handoff brief");
+  const briefHookResponse = libraryBriefPage.waitForResponse((response) => response.url().endsWith("/api/scripts/hooks"));
+  await libraryBriefPage.locator('button::-p-text(สร้าง Hook)').click();
+  await briefHookResponse;
+  await libraryBriefPage.locator('button::-p-text(Hook fixture)').click();
+  const postsBeforeLibraryBrief = handoffPosts.length;
+  await clickLibraryCreate(libraryBriefPage, "Recent fixture");
+  await libraryBriefPage.waitForFunction(() => document.body.textContent?.includes("ทิ้งสิ่งที่กำลังเขียน?"));
+  await libraryBriefPage.locator('button::-p-text(ยกเลิก)').click();
+  assert.equal(handoffPosts.length, postsBeforeLibraryBrief, "cancelling preserves a pre-generation brief without a library handoff");
+  await clickLibraryCreate(libraryBriefPage, "Recent fixture");
+  const briefHandoffResponse = libraryBriefPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await libraryBriefPage.locator('button::-p-text(ทิ้งแล้วไปต่อ)').click();
+  await briefHandoffResponse;
+  assert.equal(handoffPosts.length, postsBeforeLibraryBrief + 1, "explicit discard permits exactly one non-active library handoff");
+  await libraryBriefPage.close();
+
+  // Editor→library and library→editor competition share one non-idempotent
+  // operation owner. The first request alone may navigate.
+  const editorFirstPage = await newHandoffPage();
+  await openFixtureRecord(editorFirstPage, "Fast detail");
+  const editorFirstGate = deferredReply();
+  nextHandoffRelease = editorFirstGate.release;
+  const postsBeforeEditorFirst = handoffPosts.length;
+  const editorFirstRequest = editorFirstPage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const editorFirstResponse = editorFirstPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await editorFirstPage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["ส่งไปตัดต่อ", "สร้างงานตัดต่อใหม่"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0)?.click());
+  await editorFirstRequest;
+  assert.equal(handoffPosts.length, postsBeforeEditorFirst + 1);
+  await clickLibraryCreate(editorFirstPage, "Recent fixture");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, postsBeforeEditorFirst + 1, "held editor handoff blocks a competing library handoff");
+  editorFirstGate.resolve();
+  await editorFirstResponse;
+  await editorFirstPage.waitForFunction(() => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) === 1);
+  assert.equal(await editorFirstPage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.at(-1)), `/video-editor?projectId=project-${postsBeforeEditorFirst + 1}`, "the editor-first handoff alone owns navigation");
+  await editorFirstPage.close();
+
+  const libraryFirstPage = await newHandoffPage();
+  await openFixtureRecord(libraryFirstPage, "Fast detail");
+  const libraryFirstGate = deferredReply();
+  nextHandoffRelease = libraryFirstGate.release;
+  const postsBeforeLibraryFirst = handoffPosts.length;
+  const libraryFirstRequest = libraryFirstPage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
+  const libraryFirstResponse = libraryFirstPage.waitForResponse((response) => response.url().includes("/send-to-editor"));
+  await clickLibraryCreate(libraryFirstPage, "Recent fixture");
+  await libraryFirstRequest;
+  assert.equal(handoffPosts.length, postsBeforeLibraryFirst + 1);
+  await libraryFirstPage.locator('[role="tab"]::-p-text(เขียนสคริปต์)').click();
+  await libraryFirstPage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["ส่งไปตัดต่อ", "สร้างงานตัดต่อใหม่"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0)?.click());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, postsBeforeLibraryFirst + 1, "held library handoff blocks a competing editor handoff");
+  libraryFirstGate.resolve();
+  await libraryFirstResponse;
+  await libraryFirstPage.waitForFunction(() => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) === 1);
+  assert.equal(await libraryFirstPage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.at(-1)), `/video-editor?projectId=project-${postsBeforeLibraryFirst + 1}`, "the library-first handoff alone owns navigation");
+  await libraryFirstPage.close();
 
   const racePage = await browser.newPage();
   racePage.setDefaultTimeout(5_000);
@@ -887,12 +1006,16 @@ try {
   await openRecord("Fast detail");
   const openDuringHandoffGate = deferredReply();
   nextHandoffRelease = openDuringHandoffGate.release;
+  const postsBeforeOpenDuringHandoff = handoffPosts.length;
   const routesBeforeOpenDuringHandoff = await racePage.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
   const openDuringHandoffRequest = racePage.waitForRequest((request) => request.method() === "POST" && request.url().includes("/send-to-editor"));
   const openDuringHandoffResponse = racePage.waitForResponse((response) => response.url().includes("/send-to-editor"));
   await clickCreateProject();
   await openDuringHandoffRequest;
   await openRecord("Sent missing");
+  await clickCreateProject();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, postsBeforeOpenDuringHandoff + 1, "opening a record invalidates ownership without releasing the held POST gate");
   openDuringHandoffGate.resolve();
   await openDuringHandoffResponse;
   await settleReact();
@@ -908,6 +1031,9 @@ try {
   await clickCreateProject();
   await heldHandoffRequest;
   await newWorkspace();
+  await clickLibraryCreate(racePage, "Recent fixture");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(handoffPosts.length, postsBeforeOpenDuringHandoff + 2, "New invalidates ownership without releasing the held POST gate");
   failNextHandoff = true;
   heldHandoffGate.resolve();
   await heldHandoffResponse;
