@@ -67,6 +67,7 @@
     "verify:hero-image-scene-brief": "tsx scripts/verify-hero-image-scene-brief.ts",
     "verify:hero-script": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script.ts && node --conditions=react-server --import tsx scripts/verify-hero-script-access.ts",
     "verify:hero-script-library": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-library.ts",
+    "verify:hero-script-workspace": "tsx scripts/verify-hero-script-workspace.ts && tsx scripts/verify-hero-script-workspace-browser.mts",
     "verify:support-ticket-ui-regressions": "tsx scripts/verify-support-ticket-ui-regressions.ts",
     "verify:support-ticket-remediation": "tsx scripts/verify-support-ticket-remediation.ts",
     "verify:support-observability-links": "tsx scripts/verify-support-observability-links.ts",

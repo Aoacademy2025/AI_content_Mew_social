@@ -1,10 +1,34 @@
 import assert from "node:assert/strict";
+import { mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { build } from "esbuild";
+import postcss from "postcss";
 import puppeteer from "puppeteer";
+import tailwindcss from "@tailwindcss/postcss";
 
 const port = 8994;
 const root = process.cwd();
+// This fixture mounts the client page directly to keep Clerk/Prisma outside the
+// browser seam. Compile the actual product stylesheet so viewport measurements
+// and screenshots exercise the shipped theme and responsive utilities.
+const productCss = (await postcss([tailwindcss()]).process(
+  readFileSync("src/app/globals.css", "utf8"),
+  { from: "src/app/globals.css" },
+)).css;
+// Faithful dashboard viewport allocation for the isolated client fixture:
+// TopNav is 64px, the desktop Sidebar is 240px, and mobile BottomTabs reserve
+// 64px. Server-only shell data/auth stays out of this browser seam.
+const dashboardShellCss = `
+  body { margin: 0; }
+  .fixture-shell { display: flex; height: 100vh; flex-direction: column; overflow: hidden; background: hsl(var(--background)); }
+  .fixture-topbar { height: 64px; flex: 0 0 64px; border-bottom: 1px solid var(--ui-nav-border); background: var(--ui-nav-bg); }
+  .fixture-shell-body { display: flex; min-height: 0; flex: 1; overflow: hidden; }
+  .fixture-sidebar { display: none; flex: 0 0 240px; border-right: 1px solid var(--ui-sidebar-border); background: var(--ui-sidebar-bg); }
+  .fixture-main { display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+  .fixture-root { display: flex; min-width: 0; min-height: 0; flex: 1; }
+  .fixture-bottom-tabs { height: 64px; flex: 0 0 64px; border-top: 1px solid var(--ui-nav-border); background: var(--ui-nav-bg); }
+  @media (min-width: 1024px) { .fixture-sidebar { display: block; } .fixture-bottom-tabs { display: none; } }
+`;
 const bundle = await build({
   stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import HeroScriptPage from './src/app/(dashboard)/hero-script/page'; createRoot(document.getElementById('root')).render(<HeroScriptPage/>);`, resolveDir: root, loader: "tsx" },
   bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env": "{}", "process.env.NODE_ENV": '"development"' },
@@ -22,6 +46,18 @@ const bundle = await build({
   } }],
 });
 const js = bundle.outputFiles[0].text;
+const lockedBundle = await build({
+  stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {HeroScriptLockedPreview} from './src/app/(dashboard)/hero-script/_components/HeroScriptLockedPreview'; createRoot(document.getElementById('root')).render(<HeroScriptLockedPreview entitlementSource="fixture" isTrial={true}/>);`, resolveDir: root, loader: "tsx" },
+  bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env": "{}", "process.env.NODE_ENV": '"development"' },
+  plugins: [{ name: "locked-fixture-stubs", setup(b) {
+    b.onResolve({ filter: /^(next\/link|@\/lib\/client-telemetry)$/ }, args => ({ path: args.path, namespace: "fixture" }));
+    b.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({
+      loader: "tsx", resolveDir: root,
+      contents: args.path === "next/link" ? `export default function Link(p){return <a {...p}/>} ` : `export const trackEvent=()=>{}`,
+    }));
+  } }],
+});
+const lockedJs = lockedBundle.outputFiles[0].text;
 
 type FixtureScript = {
   id: string; topic: string; durationSec: number; hookFormula: string | null; structure: string | null;
@@ -34,6 +70,10 @@ const script = (value: Partial<FixtureScript> & Pick<FixtureScript, "id" | "topi
   bodyText: `Body ${value.topic}`, ctaText: `CTA ${value.topic}`, status: "draft", brandProfileId: null,
   editorProjectId: null, editorProjectAvailable: false, createdAt: iso, updatedAt: iso, ...value,
 });
+const profileFixtures = Array.from({ length: 20 }, (_, index) => ({
+  id: index === 0 ? "legacy-revision-zero" : index === 1 ? "published-profile" : `fixture-brand-${index + 1}`,
+  name: index === 0 ? "Legacy fixture" : index === 1 ? "Published fixture" : `Fixture Brand ${index + 1}`,
+}));
 const records = new Map<string, FixtureScript>([
   ["recent-draft", script({ id: "recent-draft", topic: "Recent fixture", durationSec: 90 })],
   ["fast-record", script({ id: "fast-record", topic: "Fast detail", durationSec: 30, brandProfileId: "legacy-revision-zero" })],
@@ -41,10 +81,25 @@ const records = new Map<string, FixtureScript>([
   ["sent-record", script({ id: "sent-record", topic: "Sent available", status: "sent", editorProjectId: "owned-project", editorProjectAvailable: true })],
   ["missing-record", script({ id: "missing-record", topic: "Sent missing", status: "sent" })],
   ["delete-race", script({ id: "delete-race", topic: "Delete race" })],
+  ...Array.from({ length: 494 }, (_, index) => {
+    const number = index + 1;
+    const id = `scale-${String(number).padStart(4, "0")}`;
+    return [id, script({
+      id,
+      topic: number === 421 ? "หัวข้อทดสอบภาษาไทยที่ยาวสำหรับค้นหาจากทั้งคลัง" : `หัวข้อจำลองในคลัง ${number}`,
+      status: number % 2 === 0 ? "sent" : "draft",
+      brandProfileId: number % 4 === 0 ? null : profileFixtures[(number % 18) + 2]?.id ?? "fixture-brand-3",
+      editorProjectId: number === 500 ? "owned-project" : null,
+      editorProjectAvailable: number === 500,
+      updatedAt: new Date(Date.parse(iso) - number * 1_000).toISOString(),
+    })] as const;
+  }),
 ]);
 let legacyUpdate: Record<string, unknown> | null = null;
 let createCount = 0;
 let libraryListCount = 0;
+const libraryRequests: string[] = [];
+let libraryMode: "success" | "empty" | "error" = "success";
 const detailGets: string[] = [];
 const saveBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
 const handoffPosts: string[] = [];
@@ -56,26 +111,30 @@ type DeferredReply = { delayMs?: number; release?: Promise<void>; status?: numbe
 const generationReplies: DeferredReply[] = [];
 const regenReplies: Array<DeferredReply & { target: "hook" | "body" | "cta" }> = [];
 
-const html = `<!doctype html><html class="dark"><meta name="viewport" content="width=device-width,initial-scale=1"><body><div id="root"></div><script src="/app.js"></script></body></html>`;
+const fixtureShell = (scriptPath: string) => `<!doctype html><html class="dark"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><body><div class="fixture-shell"><header class="fixture-topbar" aria-label="Dashboard top navigation"></header><div class="fixture-shell-body"><aside class="fixture-sidebar" aria-label="Dashboard sidebar"></aside><main class="fixture-main"><div class="fixture-root" id="root"></div></main></div><nav class="fixture-bottom-tabs" aria-label="Dashboard bottom navigation"></nav></div><script src="${scriptPath}"></script></body></html>`;
+const html = fixtureShell("/app.js");
+const lockedHtml = fixtureShell("/locked.js");
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
   const json = (body: unknown, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
   const readBody = async () => { const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString() || "{}"); };
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   if (url.pathname === "/app.js") { res.end(js); return; }
+  if (url.pathname === "/locked.js") { res.end(lockedJs); return; }
+  if (url.pathname === "/app.css") { res.writeHead(200, { "Content-Type": "text/css" }); res.end(`${productCss}\n${dashboardShellCss}`); return; }
+  if (url.pathname === "/locked-preview") { res.setHeader("Content-Type", "text/html;charset=utf-8"); res.end(lockedHtml); return; }
   if (url.pathname.startsWith("/api/brand-profiles/") && req.method === "PUT") {
     const body = await readBody();
     if (url.pathname.endsWith("published-profile")) return json({ code: "VERSIONED_PROFILE_READ_ONLY", error: "read only", manageUrl: "/brands" }, 409);
     legacyUpdate = body; return json({ id: "legacy-revision-zero", ...body });
   }
-  if (url.pathname === "/api/brand-profiles" && req.method === "GET") return setTimeout(() => json([
-    { id: "legacy-revision-zero", name: "Legacy fixture", niche: "niche", audience: "audience", tone: "tone", bannedWords: [], ctaStyle: "follow", language: "th", sampleText: null, sampleUrl: null, analysisNotes: "notes", createdAt: "", updatedAt: "" },
-    { id: "published-profile", name: "Published fixture", niche: "niche", audience: "audience", tone: "tone", bannedWords: [], ctaStyle: "follow", language: "th", sampleText: null, sampleUrl: null, analysisNotes: "notes", createdAt: "", updatedAt: "" },
-  ]), 500);
+  if (url.pathname === "/api/brand-profiles" && req.method === "GET") return setTimeout(() => json(profileFixtures.map((profile) => ({
+    ...profile, niche: "niche", audience: "audience", tone: "tone", bannedWords: [], ctaStyle: "follow", language: "th", sampleText: null, sampleUrl: null, analysisNotes: "notes", createdAt: "", updatedAt: "",
+  }))), 500);
   if (url.pathname === "/api/scripts/library") {
     const summaries = [...records.values()].map((row) => ({
       id: row.id, topic: row.topic, brandProfileId: row.brandProfileId,
-      brandName: row.brandProfileId ? "Legacy fixture" : null,
+      brandName: profileFixtures.find((profile) => profile.id === row.brandProfileId)?.name ?? null,
       durationSec: row.durationSec, status: row.status,
       editorProjectId: row.editorProjectId, editorProjectAvailable: row.editorProjectAvailable,
       createdAt: row.createdAt, updatedAt: row.updatedAt,
@@ -85,7 +144,23 @@ const server = createServer(async (req, res) => {
       return json({ items: item ? [item] : [], brandOptions: [], total: item ? 1 : 0, page: 1, pageSize: 1, hasNextPage: false });
     }
     libraryListCount += 1;
-    return json({ items: summaries, brandOptions: [{ id: "legacy-revision-zero", name: "Legacy fixture" }], total: summaries.length, page: 1, pageSize: 20, hasNextPage: false });
+    libraryRequests.push(url.search);
+    if (libraryMode === "error") return json({ error: "fictional fixture failure" }, 500);
+    const query = url.searchParams.get("q")?.toLocaleLowerCase() ?? "";
+    const status = url.searchParams.get("status") ?? "all";
+    const brandProfileId = url.searchParams.get("brandProfileId");
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const pageSize = Number(url.searchParams.get("pageSize") ?? "20");
+    const filtered = libraryMode === "empty" ? [] : summaries.filter((row) =>
+      (!query || row.topic.toLocaleLowerCase().includes(query))
+      && (status === "all" || row.status === status)
+      && (!brandProfileId || (brandProfileId === "none" ? row.brandProfileId === null : row.brandProfileId === brandProfileId)),
+    ).sort((a, b) => {
+      const fixturePriority = Number(a.id.startsWith("scale-")) - Number(b.id.startsWith("scale-"));
+      return fixturePriority || b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id);
+    });
+    const start = (page - 1) * pageSize;
+    return json({ items: filtered.slice(start, start + pageSize), brandOptions: profileFixtures, total: filtered.length, page, pageSize, hasNextPage: start + pageSize < filtered.length });
   }
   if (url.pathname === "/api/scripts/hooks") return json({ hooks: [{ formula: "question-poll", text: "Hook fixture" }] });
   if (url.pathname === "/api/scripts/generate") {
@@ -149,10 +224,21 @@ try {
   browser = await puppeteer.launch({ headless: true });
   const page = await browser.newPage();
   page.setDefaultTimeout(5_000);
-  await page.setViewport({ width: 390, height: 844 });
+  const screenshotDir = "docs/plans/reports/hero-script-workspace-ux/fixtures";
+  mkdirSync(screenshotDir, { recursive: true });
+  await page.setViewport({ width: 1366, height: 768 });
   await page.evaluateOnNewDocument(() => localStorage.setItem("hero-script-writing:fixture-account", JSON.stringify({ profileId: "legacy-revision-zero", durationSec: 90 })));
   await page.goto(`http://127.0.0.1:${port}/hero-script`);
   await page.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  await page.locator('details:has([role="listbox"]) > summary').click();
+  await page.waitForFunction(() => document.querySelectorAll('[role="option"]').length === 21);
+  await page.locator('details:has([role="listbox"]) > summary').click();
+  const topicInput = await page.$('input[aria-label="หัวข้อสคริปต์"]');
+  const topicBox = await topicInput?.boundingBox();
+  assert.ok(topicBox && topicBox.y + topicBox.height <= 768, "the topic stays in the initial 1366×768 desktop viewport with 20 profiles");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "the desktop workspace has no horizontal overflow");
+  await page.screenshot({ path: `${screenshotDir}/hero-script-workspace-desktop.png` });
+  await page.setViewport({ width: 390, height: 844 });
   assert.equal(await page.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value), "", "recent summary never auto-opens the record");
   assert.deepEqual(detailGets, [], "initial recovery metadata does not fetch a full record");
   assert.equal(libraryListCount, 0, "the hidden library does not load its full page");
@@ -607,7 +693,96 @@ try {
   assert.equal((await editorValues()).includes("STALE REGEN FINALIZER"), false);
   await racePage.close();
 
-  console.log("verify-hero-script-workspace-browser: PASS recovery, save/handoff, and generation/regen workspace ownership races");
+  // Scale and access QA use a fresh mounted page. Every record/profile below is
+  // fictional, and requests stay inside this local server.
+  for (const id of records.keys()) if (id.startsWith("draft-")) records.delete(id);
+  records.set("delete-race", script({ id: "delete-race", topic: "Delete race" }));
+  assert.equal(records.size, 500, "the scale fixture starts with exactly 500 fictional scripts");
+  const scalePage = await browser.newPage();
+  scalePage.setDefaultTimeout(5_000);
+  await scalePage.setViewport({ width: 390, height: 844 });
+  await scalePage.goto(`http://127.0.0.1:${port}/hero-script`);
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
+  const tabTo = async (selector: string, index = 0) => {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if (await scalePage.evaluate(({ selector: target, index: targetIndex }) => document.activeElement === document.querySelectorAll(target)[targetIndex], { selector, index })) return;
+      await scalePage.keyboard.press("Tab");
+    }
+    assert.fail(`keyboard focus did not reach ${selector}[${index}]`);
+  };
+  await tabTo('[role="tab"]', 1);
+  await scalePage.keyboard.press("Enter");
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 500 สคริปต์"));
+  assert.equal(await scalePage.$$eval("article", (rows) => rows.length), 20, "the 500-script library mounts one bounded 20-row page");
+
+  await tabTo("#script-library-search");
+  await scalePage.keyboard.type("หัวข้อทดสอบภาษาไทยที่ยาวสำหรับค้นหาจากทั้งคลัง");
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 1 สคริปต์"));
+  assert.equal(libraryRequests.some((request) => request.includes("q=%E0%B8%AB%E0%B8%B1%E0%B8%A7%E0%B8%82%E0%B9%89%E0%B8%AD")), true, "keyboard search reaches the server with the full Thai query");
+
+  await tabTo("select", 0);
+  await scalePage.keyboard.press("Home");
+  await scalePage.keyboard.type("Fixture Brand 10");
+  const targetBrandId = records.get("scale-0421")?.brandProfileId;
+  assert.equal(targetBrandId, "fixture-brand-10");
+  await scalePage.waitForFunction((brandProfileId) => (document.querySelectorAll("select")[0] as HTMLSelectElement | undefined)?.value === brandProfileId, {}, targetBrandId);
+  const statusSelect = (await scalePage.$$("select"))[1];
+  assert.ok(statusSelect);
+  const combinedFilterResponse = scalePage.waitForResponse((response) => response.url().includes(`brandProfileId=${targetBrandId}`) && response.url().includes("status=draft"));
+  await statusSelect.select("draft");
+  await scalePage.waitForFunction(() => (document.querySelectorAll("select")[1] as HTMLSelectElement | undefined)?.value === "draft");
+  await combinedFilterResponse;
+  assert.equal(libraryRequests.some((request) => request.includes(`brandProfileId=${targetBrandId}`) && request.includes("status=draft")), true, "combined keyboard brand/status filters query the full library");
+
+  await tabTo("article button");
+  await scalePage.keyboard.press("Enter");
+  await scalePage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "หัวข้อทดสอบภาษาไทยที่ยาวสำหรับค้นหาจากทั้งคลัง");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const mainActionFocused = await scalePage.evaluate(() => document.activeElement instanceof HTMLButtonElement && document.activeElement.textContent?.includes("ส่งไปตัดต่อ"));
+    if (mainActionFocused) break;
+    await scalePage.keyboard.press("Tab");
+  }
+  assert.equal(await scalePage.evaluate(() => document.activeElement instanceof HTMLButtonElement && document.activeElement.textContent?.includes("ส่งไปตัดต่อ")), true, "keyboard focus reaches the writing main action");
+  await scalePage.keyboard.press("Enter");
+  await scalePage.waitForFunction(() => ((window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0) > 0);
+  assert.equal(await scalePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "390px retains the library and writing actions without horizontal overflow");
+  await scalePage.screenshot({ path: `${screenshotDir}/hero-script-workspace-mobile.png` });
+  await scalePage.setViewport({ width: 320, height: 844 });
+  assert.equal(await scalePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "320px has no horizontal clipping");
+
+  await scalePage.setViewport({ width: 390, height: 844 });
+  await scalePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("ไม่พบสคริปต์ที่ตรงกับการค้นหา"));
+  await scalePage.locator('button::-p-text(ล้างตัวกรอง)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 500 สคริปต์"));
+  await scalePage.locator("#script-library-search").fill("ไม่พบในข้อมูลจำลอง");
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("ไม่พบสคริปต์ที่ตรงกับการค้นหา"));
+  await scalePage.locator('button::-p-text(ล้างตัวกรอง)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 500 สคริปต์"));
+  libraryMode = "empty";
+  await scalePage.locator('[role="tab"]::-p-text(เขียนสคริปต์)').click();
+  await scalePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("ยังไม่มีสคริปต์"));
+  await scalePage.locator('button::-p-text(เริ่มเขียนสคริปต์)').click();
+  libraryMode = "error";
+  await scalePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("โหลดคลังสคริปต์ไม่สำเร็จ"));
+  assert.equal(await scalePage.evaluate(() => document.body.textContent?.includes("ยังไม่มีสคริปต์")), false, "a failed library request never presents a false empty state");
+  libraryMode = "success";
+  await scalePage.locator('button::-p-text(ลองอีกครั้ง)').click();
+  await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 500 สคริปต์"));
+  await scalePage.close();
+
+  const lockedPage = await browser.newPage();
+  lockedPage.setDefaultTimeout(5_000);
+  await lockedPage.setViewport({ width: 390, height: 844 });
+  await lockedPage.goto(`http://127.0.0.1:${port}/locked-preview`);
+  await lockedPage.waitForFunction(() => document.body.textContent?.includes("ฟีเจอร์พรีเมียมสำหรับสมาชิก"));
+  assert.equal(await lockedPage.$eval('a[href="/pricing?source=hero_script_preview"]', (link) => link.textContent?.includes("ดูแผน")), true, "the actual locked-preview UI exposes its pricing action");
+  await lockedPage.screenshot({ path: `${screenshotDir}/hero-script-locked-preview-mobile.png` });
+  await lockedPage.close();
+
+  console.log("verify-hero-script-workspace-browser: PASS real-theme 20-profile/500-script, viewport, keyboard, empty/error, access-preview, save/handoff, and generation/regen races");
 } finally {
   await browser?.close();
   await new Promise<void>((resolve) => server.close(() => resolve()));

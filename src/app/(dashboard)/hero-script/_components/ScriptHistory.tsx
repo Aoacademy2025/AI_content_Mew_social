@@ -299,7 +299,7 @@ export function ScriptLibrary({ onOpenScript, onCreateEditorProject, beforeDelet
         </div>
       )}
 
-      {loading && !data ? (
+      {!error && (loading && !data ? (
         <div className="flex min-h-24 items-center justify-center gap-2 text-sm" style={{ color: "var(--ui-text-muted)" }}>
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> กำลังโหลดคลังสคริปต์...
         </div>
@@ -384,7 +384,7 @@ export function ScriptLibrary({ onOpenScript, onCreateEditorProject, beforeDelet
             </button>
           </nav>
         </>
-      ) : null}
+      ) : null)}
 
       <AlertDialog open={!!deleteItem} onOpenChange={(open) => !open && setDeleteItem(null)}>
         <AlertDialogContent>

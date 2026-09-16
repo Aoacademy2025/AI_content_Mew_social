@@ -210,6 +210,9 @@ jobs:
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch
 
+      - name: Verify Hero Script workspace scale and browser journey
+        run: npm run verify:hero-script-workspace
+
       - name: Verify Admin Insights revenue clarity
         run: npm run verify:admin-insights-revenue
 
