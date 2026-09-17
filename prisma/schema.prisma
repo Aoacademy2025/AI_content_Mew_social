@@ -116,6 +116,7 @@ model User {
   trialReminderLogs               TrialReminderLog[]
   renewalReminderLogs             RenewalReminderLog[]
   pastDueReminderLogs             PastDueReminderLog[]
+  paidActivationReminderLog       PaidActivationReminderLog?
 }
 
 // Private voice-clone references. The normalized WAV bytes live outside
@@ -1423,6 +1424,25 @@ model PastDueReminderLog {
 
   @@unique([userId, stripeInvoiceId, kind])
   @@index([kind, attemptedAt])
+}
+
+/// HERO-34 — one first-clip nudge per paying customer who has not started a single
+/// job three days after their first cash plan payment. (userId) unique = at most once
+/// for the customer's lifetime; the row is the claim, written before either channel.
+model PaidActivationReminderLog {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstPaidAt           DateTime
+  status                String    @default("CLAIMED") // CLAIMED | DELIVERED | PARTIAL | FAILED
+  notificationDelivered Boolean   @default(false)
+  emailAttempted        Boolean   @default(false)
+  emailDelivered        Boolean   @default(false)
+  failureCode           String?
+  attemptedAt           DateTime  @default(now())
+  completedAt           DateTime?
+
+  @@index([status, attemptedAt])
 }
 
 model TelemetryEvent {

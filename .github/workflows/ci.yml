@@ -150,6 +150,9 @@ jobs:
       - name: Verify brand voice picker failure messages (HERO-32)
         run: npm run verify:brand-voice-catalog
 
+      - name: Verify Dormant Payers list and day-3 first-clip nudge (HERO-34)
+        run: npm run verify:dormant-payers
+
       - name: Verify a scheduled cancellation stays visible (HERO-20)
         run: npm run verify:cancellation-visible
 

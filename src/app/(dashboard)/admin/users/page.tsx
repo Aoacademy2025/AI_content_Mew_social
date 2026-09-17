@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { DormantPayersPanel } from "./_components/DormantPayersPanel";
 
 // Violet single-accent house tokens (from video-editor/_v2/tokens.ts) — see admin/page.tsx
 const VIOLET = "#8B5CF6";
@@ -246,6 +247,9 @@ export default function AdminUsersPage() {
             Refresh
           </Button>
         </div>
+
+        {/* HERO-34 — the retention list to work first; clicking a name filters the cards below. */}
+        <DormantPayersPanel onSelect={(email) => setSearch(email)} />
 
         {/* Search */}
         <div className="relative">

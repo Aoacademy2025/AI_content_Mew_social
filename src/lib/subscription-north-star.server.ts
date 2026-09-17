@@ -192,7 +192,21 @@ export function computeSubscriptionNorthStar(input: {
   };
 }
 
-export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<SubscriptionNorthStar> {
+/**
+ * The raw evidence behind MAPC, exposed so other admin surfaces (HERO-34's Dormant
+ * Payer list) can subtract the same two sets the headline is built from instead of
+ * re-deriving "paying" and "creator" with a slightly different predicate.
+ */
+export type NorthStarEvidence = {
+  users: NorthStarUserEvidence[];
+  /** MAPC denominator — `activePayingBillingCohort` ≠ null. */
+  payerIds: Set<string>;
+  /** MAPC numerator — payers with ≥ 1 Core Creation Outcome in the window. */
+  creatorIds: Set<string>;
+  outcomes: NorthStarOutcomeEvidence;
+};
+
+export async function getSubscriptionNorthStarEvidence(now: Date = new Date()): Promise<NorthStarEvidence> {
   const since = new Date(now.getTime() - MAPC_WINDOW_DAYS * DAY_MS);
   const users = await prisma.user.findMany({
     where: {
@@ -215,7 +229,12 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
   });
   const payerIds = users.filter((user) => activePayingBillingCohort(user, now)).map((user) => user.id);
   if (payerIds.length === 0) {
-    return computeSubscriptionNorthStar({ users, outcomes: { videoUserIds: [], scriptUserIds: [], imageUserIds: [] }, now });
+    return {
+      users,
+      payerIds: new Set(),
+      creatorIds: new Set(),
+      outcomes: { videoUserIds: [], scriptUserIds: [], imageUserIds: [] },
+    };
   }
 
   const [videoRows, scriptRows, imageRows] = await Promise.all([
@@ -261,15 +280,21 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
     }),
   ]);
 
-  return computeSubscriptionNorthStar({
-    users,
-    outcomes: {
-      videoUserIds: videoRows.filter((row) => Boolean(row.videoUrl?.trim() || row.avatarVideoUrl?.trim())).map((row) => row.userId),
-      scriptUserIds: scriptRows.map((row) => row.userId),
-      imageUserIds: imageRows.filter((row) => Boolean(row.outputUrl?.trim())).map((row) => row.userId),
-    },
-    now,
-  });
+  const outcomes: NorthStarOutcomeEvidence = {
+    videoUserIds: videoRows.filter((row) => Boolean(row.videoUrl?.trim() || row.avatarVideoUrl?.trim())).map((row) => row.userId),
+    scriptUserIds: scriptRows.map((row) => row.userId),
+    imageUserIds: imageRows.filter((row) => Boolean(row.outputUrl?.trim())).map((row) => row.userId),
+  };
+  const payerSet = new Set(payerIds);
+  const creatorIds = new Set(
+    [...outcomes.videoUserIds, ...outcomes.scriptUserIds, ...outcomes.imageUserIds].filter((id) => payerSet.has(id)),
+  );
+  return { users, payerIds: payerSet, creatorIds, outcomes };
+}
+
+export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<SubscriptionNorthStar> {
+  const evidence = await getSubscriptionNorthStarEvidence(now);
+  return computeSubscriptionNorthStar({ users: evidence.users, outcomes: evidence.outcomes, now });
 }
 
 export function bangkokSnapshotDate(now: Date): string {
