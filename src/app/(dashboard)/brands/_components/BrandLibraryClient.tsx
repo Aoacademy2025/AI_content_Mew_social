@@ -631,8 +631,16 @@ export function BrandLibraryClient() {
         ? applyStylePackToPayload(toStylePackPayload(current), stylePack(id))
         : clearStylePack(toStylePackPayload(current)),
     ));
-    if (!id) setAdvancedOpen(true);
     trackEvent("brand_setup_style_changed", { properties: { packId: id } });
+  }
+
+  /** HERO-35: the one-axis escape from the pack list. Goes through
+   * `updateVisual` so the pack unlinks (ADR 0058) while every other value it
+   * resolved stays; the ~40-field Advanced form is deliberately NOT opened. */
+  function selectVisualFormat(id: BrandPayload["visual"]["primaryVisualFormatId"]) {
+    if (id === draft.visual.primaryVisualFormatId) return;
+    updateVisual("primaryVisualFormatId", id);
+    trackEvent("brand_setup_style_changed", { properties: { packId: null, formatId: id } });
   }
 
   /** Applying the AI visual helper's proposal writes the same pack-owned axes
@@ -914,7 +922,8 @@ export function BrandLibraryClient() {
           {recoverableDraft && <div className="rounded-lg border border-amber-500/40 p-4 text-sm"><p>พบร่างที่ยังไม่ได้เผยแพร่จากอุปกรณ์นี้</p><div className="mt-3 flex flex-wrap gap-2"><Button disabled={locked} variant="outline" onClick={() => { setDraft(recoverableDraft.payload); setExpectedRevision(recoverableDraft.expectedRevision); setRecoverableDraft(null); }}>กู้คืนร่าง</Button><Button disabled={locked} variant="ghost" onClick={() => { clearLocalDraft(); }}>ใช้ข้อมูลที่บันทึกไว้</Button></div></div>}
           {sourceProjectId && <div className="rounded-lg border border-border p-4 text-sm">กำลังบันทึกสไตล์จากคลิปนี้ ภาพเดิมจะไม่ถูกสร้างซ้ำ <Link href={`/video-editor?projectId=${encodeURIComponent(sourceProjectId)}`} className="ml-2 underline underline-offset-4">กลับคลิปต้นทาง</Link></div>}
           {frozen && <p className="text-sm text-muted-foreground">แบรนด์นี้เป็นแบบอ่านอย่างเดียวตามแผนปัจจุบัน</p>}
-          <BrandStyleWorkspace draft={payload} library={library} disabled={disabled} onSelect={selectStylePack} onCustomize={() => setAdvancedOpen(true)} />
+          {/* Keyed per profile so the "ปรับจาก <pack>" memory never leaks from one brand's draft into another's. */}
+          <BrandStyleWorkspace key={activeId ?? sourceProjectId ?? "new"} draft={payload} library={library} disabled={disabled} onSelect={selectStylePack} onFormatChange={selectVisualFormat} />
           <details className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">ชื่อแบรนด์ · {payload.name}</summary><div className="pb-4"><BrandBasicsForm name={draft.name} onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))} disabled={disabled} /><p className="mt-2 text-xs text-muted-foreground">ไม่ต้องเปลี่ยนชื่อก็เริ่มสร้างคลิปได้</p></div></details>
           <AdvancedSettings open={advancedOpen} onOpenChange={setAdvancedOpen} draft={draft} setDraft={setDraft} updateVisual={updateVisual} library={library} busy={busy} disabled={disabled} proposal={proposal} onAskHelper={askVisualHelper} onApplyProposal={applyProposal} onUploadBrandMark={(file) => void uploadBrandMark(file)} />
           <details open={previewExpanded} onToggle={(event) => setPreviewExpanded(event.currentTarget.open)} className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">{sourceProjectId ? "ทดลองภาพกับคลิปนี้" : "ทดสอบสไตล์กับ 3 แบบฉาก"} · ไม่จำเป็นต้องทดลองก่อนบันทึก</summary>

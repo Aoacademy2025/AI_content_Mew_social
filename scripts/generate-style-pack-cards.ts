@@ -4,7 +4,7 @@
  * a review directory, for inspection before versioned public promotion
  * with explicit unavailable states until a sample passes review.
  *
- * Safe default: `--dry-run` (or no flags) compiles and prints the 7 prompts
+ * Safe default: `--dry-run` (or no flags) compiles and prints every active pack prompt
  * without any network call. Paid execution requires BOTH `--execute-paid`
  * and `ALLOW_PAID_STYLE_PACK_CARDS=1`, plus the explicit approved public
  * endpoint (`--endpoint=z-image-turbo`) — same shape as
@@ -40,6 +40,7 @@ const FIXED_SCENES: Record<StylePackId & string, string> = {
   "news-fast": "a city skyline at night with light trails on a highway, high contrast",
   "health-simple": "fresh vegetables and a glass of water on a bright white kitchen counter, soft morning light",
   "premium-product": "a matte black surface with a single gold-rimmed glass bottle, soft studio light",
+  "comic-story": "a narrow Thai alley at dusk, one parked motorbike under a single bare glowing bulb, wet pavement, long hard shadows",
 } as Record<StylePackId & string, string>;
 
 /** Short English content-domain label per pack, feeding the compiler's
@@ -52,6 +53,7 @@ const CONTENT_DOMAINS: Record<StylePackId & string, string> = {
   "news-fast": "investigative news",
   "health-simple": "everyday health and wellness",
   "premium-product": "premium product lifestyle",
+  "comic-story": "Thai human drama told as a comic",
 } as Record<StylePackId & string, string>;
 
 /** Describe the positive composition once. Repeated negations naming people
@@ -121,7 +123,7 @@ const MAX_BYTES = 120 * 1024;
 const QUALITY_LADDER = [90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30];
 
 // Always compiled for every active pack — regardless of --only — so a
-// dry-run always shows all 7 prompts and a paid --only run's manifest never
+// dry-run always shows every active pack prompt and a paid --only run's manifest never
 // drops the other packs' completed-entry bookkeeping (see queue filtering in
 // main()).
 const allPacks = activeStylePacks();

@@ -175,6 +175,31 @@
         "sceneAdherence": "accepted",
         "note": "Reviewed for style, legibility at small size, and visible artifact defects."
       }
+    },
+    {
+      "id": "comic-story",
+      "sampleId": "comic-story-20260917",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "dramatic-comic-v9",
+      "visualFormatId": "dramatic-comic",
+      "treatmentPresetId": "thai-human-drama",
+      "visualIdentity": "{\"palette\":[\"#14121A\",\"#F97316\",\"#FFF4E0\"],\"personality\":\"เส้นหมึกหนัก สีตัดชัด แสงเงาแรง อารมณ์ตัวละครเด่น\"}",
+      "imageUrl": "/style-packs/2026-09-17/comic-story.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 1586842345,
+      "promptSha256": "c4c22197118af19811e53753e5c9fb46e7bff72b31c29d3f767a34a090bd8685",
+      "sha256": "4310cd2d9b0ea573371bc7fd4fe517fee5e0c74d908a26e5c635d523128bae93",
+      "width": 720,
+      "height": 1280,
+      "bytes": 116221,
+      "generatedAt": "2026-09-17T14:17:52.610Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-09-17",
+        "sceneAdherence": "accepted",
+        "note": "Reviewed for style, legibility at small size, and visible artifact defects. First attempt (glowing shop sign) rendered pseudo-lettering and was rejected; the bare-bulb scene is lettering-free."
+      }
     }
   ]
 }

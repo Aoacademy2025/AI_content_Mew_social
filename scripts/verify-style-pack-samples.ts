@@ -19,6 +19,6 @@ async function main() {
     assert.equal(entry.review.status, "agent-reviewed");
   }
   assert.equal(stylePackSample("dark-story").status, "unavailable", "unqualified packs do not acquire sample claims");
-  console.log("PASS seven versioned, decodable, size-limited style samples match their catalog identity and hashes");
+  console.log(`PASS ${activeStylePacks().length} versioned, decodable, size-limited style samples match their catalog identity and hashes`);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

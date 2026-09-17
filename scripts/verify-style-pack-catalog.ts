@@ -4,8 +4,14 @@ import { TREATMENT_PRESET_IDS } from "../src/lib/brand-treatment-catalog";
 import { VISUAL_FORMAT_IDS } from "../src/lib/brand-visual-system";
 import { normalizeSubtitleStylePresetConfig } from "../src/lib/editor-style-preset-contract";
 
-assert.equal(cat.STYLE_PACKS.length, 12);
-assert.equal(cat.activeStylePacks().length, 7);
+assert.equal(cat.STYLE_PACKS.length, 13);
+assert.equal(cat.activeStylePacks().length, 8);
+// HERO-35: the comic pack is the first customer route to the qualified
+// dramatic-comic format, and thai-human-drama is shared with life-drama, so
+// the recommendation tie-break must still hand drama scripts the realism pack.
+assert.equal(cat.stylePack("comic-story").visualFormatId, "dramatic-comic");
+assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "thai-human-drama", visualFormatId: "cinematic-realism" })?.id, "life-drama");
+assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "thai-human-drama", visualFormatId: "dramatic-comic" })?.id, "comic-story");
 for (const pack of cat.STYLE_PACKS) {
   assert.ok(/[฀-๿]/u.test(pack.thaiLabel));
   assert.ok(VISUAL_FORMAT_IDS.includes(pack.visualFormatId));
