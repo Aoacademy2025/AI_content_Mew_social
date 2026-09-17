@@ -7,6 +7,7 @@ import { MobileSidebar } from "./mobile-sidebar";
 import { BottomTabs } from "./bottom-tabs";
 import { TopNav } from "./top-nav";
 import { TrialBanner } from "./trial-banner";
+import { PastDueBanner } from "./past-due-banner";
 import { ProductUpdateBanner } from "./product-update-banner";
 import { FirstClipConvertPrompt } from "@/components/convert/first-clip-convert-prompt";
 
@@ -59,6 +60,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   ) : (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TopNav onMenuClick={() => setMobileMenuOpen(true)} />
+      <PastDueBanner />
       <TrialBanner />
 
       <div className="flex flex-1 overflow-hidden">

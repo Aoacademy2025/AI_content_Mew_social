@@ -394,6 +394,34 @@ ${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย"
 }
 
 /**
+ * HERO-33 — failed-charge dunning. Title/body/cta come from pastDueReminderCopy() so the
+ * email and the in-app notification are the same words.
+ */
+export async function sendPastDueEmail(opts: {
+  to: string;
+  title: string;
+  body: string;
+  cta: string;
+  billingUrl: string;
+}): Promise<boolean> {
+  return sendEmail({
+    to: opts.to,
+    subject: `${opts.title} — ${BRAND}`,
+    html: emailShell({
+      title: opts.title,
+      previewText: opts.body,
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">${escapeHtml(opts.title)}</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">${escapeHtml(opts.body)}</p>
+${premiumButton({ href: opts.billingUrl, label: opts.cta })}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#71717a;font-size:12px">ถ้าอัปเดตบัตรไปแล้ว ไม่ต้องทำอะไรเพิ่ม — ระบบจะเก็บเงินรอบถัดไปให้อัตโนมัติ</p>
+`.trim(),
+    }),
+  });
+}
+
+/**
  * Trial lifecycle nudge (issue #299). Title/body come from trialReminderCopy() so the
  * email and the in-app notification are the same words — there is no second copy here
  * to drift out of sync with the enforced plan limits.

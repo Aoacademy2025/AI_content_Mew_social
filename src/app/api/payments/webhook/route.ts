@@ -24,6 +24,7 @@ import {
   TRIAL_PRESERVED_PAYMENT_NOTE,
 } from "@/lib/preserve-trial";
 import { recordTelemetryEventOnce } from "@/lib/telemetry";
+import { deliverPastDueReminder } from "@/lib/past-due-dunning.server";
 
 export const config = { api: { bodyParser: false } };
 
@@ -464,11 +465,12 @@ export async function POST(req: Request) {
         if (user) {
           await prisma.user.update({ where: { id: user.id }, data: { subStatus: "past_due" } });
           await releasePendingSeatForUser(user.id);
-          await createNotification({
-            userId: user.id, type: "VIDEO_COMPLETED",
-            title: "ชำระเงินไม่สำเร็จ",
-            body: "บัตรของคุณถูกปฏิเสธ — อัปเดตวิธีจ่ายเพื่อใช้งานต่อ",
-          }).catch(() => {});
+          // HERO-33: notification + (opt-in) email, at most once per invoice — Stripe
+          // re-sends this event on every retry of the same invoice, and the per-event
+          // claim above does not dedupe those. Delivery failure never fails the webhook.
+          await deliverPastDueReminder(
+            { userId: user.id, stripeInvoiceId: typeof inv.id === "string" ? inv.id : `evt:${event.id}`, kind: "failed" },
+          ).catch(() => {});
         }
       }
     }

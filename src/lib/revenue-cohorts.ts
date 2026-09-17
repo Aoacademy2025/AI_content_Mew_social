@@ -178,6 +178,15 @@ export type RevenueCohorts = {
      *  comment). `null` when there are no committed-trialing users. */
     firstChargeDates: { earliest: string | null; latest: string | null };
   };
+  /**
+   * HERO-33 — "บัตรเก็บไม่ผ่าน": Stripe reported `past_due` for the customer's live
+   * subscription and the charge has not succeeded since. Raw field predicate like
+   * `committedTrialing`; never enters `payingTotal`/`mrr` (no cash until Stripe says so).
+   * `stillEntitled` = tier still held because `planExpiresAt` is ahead (a renewal failed
+   * mid-cycle); `lapsed` = already reverted to FREE (a Committed Trial's first charge
+   * failed, so its `planExpiresAt` — the trial end — is behind).
+   */
+  pastDue: { users: number; stillEntitled: number; lapsed: number };
 };
 
 function isAnnual(billingPeriod: string | null): boolean {
@@ -357,6 +366,8 @@ export function computeRevenueCohorts(
   let committedTrialingExpectedMonthly = 0;
   let committedTrialingEarliest: string | null = null;
   let committedTrialingLatest: string | null = null;
+  let pastDueUsers = 0;
+  let pastDueStillEntitled = 0;
 
   for (const u of users) {
     const cashPaid = paidUserIds.has(u.id);
@@ -385,6 +396,14 @@ export function computeRevenueCohorts(
         if (!committedTrialingEarliest || chargeDate < committedTrialingEarliest) committedTrialingEarliest = chargeDate;
         if (!committedTrialingLatest || chargeDate > committedTrialingLatest) committedTrialingLatest = chargeDate;
       }
+    }
+    // HERO-33 — same raw-predicate style: subStatus is Stripe's word, not ours, and the
+    // webhook clears it (via `invoice.paid` → subscription.status) the moment a retry lands.
+    if (u.subStatus === "past_due" && !u.suspended && !isTeam) {
+      pastDueUsers++;
+      const stillEntitled = (u.plan === "PRO" || u.plan === "BUSINESS")
+        && !!u.planExpiresAt && u.planExpiresAt.getTime() > now.getTime();
+      if (stillEntitled) pastDueStillEntitled++;
     }
     const source = classifyEntitlement(
       {
@@ -574,6 +593,7 @@ export function computeRevenueCohorts(
       expectedMonthlyThb: committedTrialingExpectedMonthly,
       firstChargeDates: { earliest: committedTrialingEarliest, latest: committedTrialingLatest },
     },
+    pastDue: { users: pastDueUsers, stillEntitled: pastDueStillEntitled, lapsed: pastDueUsers - pastDueStillEntitled },
   };
 }
 

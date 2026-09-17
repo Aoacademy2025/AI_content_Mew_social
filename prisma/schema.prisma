@@ -115,6 +115,7 @@ model User {
   userVoices                      UserVoice[]
   trialReminderLogs               TrialReminderLog[]
   renewalReminderLogs             RenewalReminderLog[]
+  pastDueReminderLogs             PastDueReminderLog[]
 }
 
 // Private voice-clone references. The normalized WAV bytes live outside
@@ -1399,6 +1400,29 @@ model RenewalReminderLog {
   @@unique([userId, termExpiresAt, kind])
   @@index([status, attemptedAt])
   @@index([kind, termExpiresAt])
+}
+
+/// HERO-33 — one durable claim per failed Stripe invoice and dunning moment. Stripe
+/// re-emits `invoice.payment_failed` on every retry of the same invoice, so the
+/// per-event `StripeWebhookEvent` claim cannot make the customer email at-most-once;
+/// the (userId, stripeInvoiceId, kind) unique does. Same delivery-status shape as
+/// `RenewalReminderLog` so the admin/verify tooling reads both alike.
+model PastDueReminderLog {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripeInvoiceId       String
+  kind                  String // failed | d3
+  status                String    @default("CLAIMED") // CLAIMED | DELIVERED | PARTIAL | FAILED
+  notificationDelivered Boolean   @default(false)
+  emailAttempted        Boolean   @default(false)
+  emailDelivered        Boolean   @default(false)
+  failureCode           String?
+  attemptedAt           DateTime  @default(now())
+  completedAt           DateTime?
+
+  @@unique([userId, stripeInvoiceId, kind])
+  @@index([kind, attemptedAt])
 }
 
 model TelemetryEvent {
