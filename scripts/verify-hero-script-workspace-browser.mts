@@ -234,7 +234,7 @@ const server = createServer(async (req, res) => {
 await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
 let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 try {
-  browser = await puppeteer.launch({ headless: true });
+  browser = await puppeteer.launch({ headless: true, args: process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : [] });
   const page = await browser.newPage();
   page.setDefaultTimeout(5_000);
   const screenshotDir = "docs/plans/reports/hero-script-workspace-ux/fixtures";
