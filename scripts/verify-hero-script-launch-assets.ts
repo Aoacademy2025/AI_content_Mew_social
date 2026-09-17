@@ -121,7 +121,8 @@ check(rollout.includes("resolvePaidEquivalentEntitlement")
 
 const page = source("src/app/(dashboard)/hero-script/page.tsx");
 const quickStart = source("src/app/(dashboard)/hero-script/_components/HeroScriptQuickStart.tsx");
-check(page.includes("HeroScriptQuickStart") && quickStart.includes("5 ขั้นตอน") && quickStart.includes("/docs/hero-script"),
+const quickStartStepCount = (quickStart.match(/title:/g) ?? []).length;
+check(page.includes("HeroScriptQuickStart") && quickStartStepCount === 5 && quickStart.includes("/docs/hero-script"),
   "Hero Script embeds a five-step quick start and links the full guide");
 
 const docsRegistry = source("src/app/(docs)/docs/_content/registry.ts");
