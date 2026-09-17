@@ -1,5 +1,6 @@
 import type { Breadcrumb, ErrorEvent } from "@sentry/nextjs";
 import type * as Sentry from "@sentry/nextjs";
+import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
 
 type SentryDataCollection = NonNullable<
   Parameters<typeof Sentry.init>[0]["dataCollection"]
@@ -16,23 +17,6 @@ const EMAIL_IN_TEXT = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER_IN_TEXT = /\b(Bearer\s+)[A-Z0-9._~+/=-]+/gi;
 const KNOWN_SECRET_IN_TEXT =
   /\b(?:lin_api_|sk_(?:live|test)_|rk_(?:live|test)_|whsec_|heroai_pat_)[A-Z0-9_-]+\b/gi;
-
-// Stack-frame origins that only ever hold code injected into the page by a
-// browser extension or by an in-app WebView host. `app://` with a host
-// (app://navigation_performance_logger_android) and `app:///scripts/` are how
-// Sentry normalises those injected bundles; our own client frames always
-// resolve under `_next`.
-const INJECTED_FRAME_ORIGIN =
-  /^(?:(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\/|webkit-masked-url:|app:\/\/[^/]|app:\/\/\/scripts\/)/i;
-
-// Frames that belong to this application, on either runtime.
-const APP_FRAME = /(?:\/?_next\/|\.next\/|^node:|\.tsx?(?::\d+)*$)/i;
-
-// Browser APIs this application never calls. `npm run verify:sentry-config`
-// asserts the filter; the absence of these APIs in `src/` is what makes
-// matching on the message text safe. Re-check before adding an entry.
-const FOREIGN_BROWSER_API =
-  /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers)/i;
 
 export const sentryDataCollection: SentryDataCollection = {
   userInfo: false,
@@ -129,19 +113,13 @@ function frameOrigin(frame: { filename?: string; abs_path?: string }): string {
 // browser. They are not this application's code and nobody can act on them,
 // but each new host variant opens a fresh Sentry group and a fresh alert.
 function isThirdPartyBrowserNoise(event: ErrorEvent): boolean {
-  if (FOREIGN_BROWSER_API.test(errorText(event))) return true;
-
   const frames = (event.exception?.values ?? []).flatMap(
     (exception) => exception.stacktrace?.frames ?? [],
   );
-  if (frames.length === 0) return false;
-
-  // Positive evidence of injection, and nothing of ours anywhere in the stack.
-  const origins = frames.map(frameOrigin);
-  return (
-    origins.some((origin) => INJECTED_FRAME_ORIGIN.test(origin)) &&
-    !origins.some((origin) => APP_FRAME.test(origin))
-  );
+  return isThirdPartyFrontendNoise({
+    message: errorText(event),
+    filenames: frames.map(frameOrigin),
+  });
 }
 
 // Clerk's browser SDK reports a failed request to its own hosted API as a

@@ -6,6 +6,7 @@ import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/l
 import { computeRevenueCohorts, summarizePlanCash } from "@/lib/revenue-cohorts";
 import { getPlanConfig } from "@/lib/plan-config";
 import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
+import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
 import { byokReasonFromText, classifyJobError, quotaReasonFromText } from "@/lib/job-failure-class";
 import { summarizeCreationJobs, type CreationJobRow } from "@/lib/insights-creation-jobs";
 import {
@@ -278,6 +279,15 @@ function benignTelemetryReason(row: TelemetryRow): string | null {
   if (/__SUPERSEDED__|(^|\s)superseded(\s|$)/i.test(text)) return "superseded job";
   if (/AbortError|aborted|cancelled|canceled|got cancelled|Request closed|cancelSignal/i.test(text)) return "intentional cancel";
   if (row.name === "frontend_error" && /^Script error\.?$/i.test(String(props.message ?? "").trim())) return "opaque script error";
+  if (
+    row.name === "frontend_error"
+    && isThirdPartyFrontendNoise({
+      message: String(props.message ?? ""),
+      stack: typeof props.stack === "string" ? props.stack : null,
+    })
+  ) {
+    return "third-party browser noise";
+  }
   return null;
 }
 

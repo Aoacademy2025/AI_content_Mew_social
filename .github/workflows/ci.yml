@@ -297,6 +297,9 @@ jobs:
       - name: Verify Sentry privacy and sampling configuration
         run: npm run verify:sentry-config
 
+      - name: Verify third-party frontend noise is dropped at capture and insights
+        run: npm run verify:frontend-error-noise
+
       - name: Verify signed Sentry alerts are safely formatted for LINE
         run: npm run verify:sentry-line-alert
 

@@ -19,6 +19,7 @@
     "verify:db-backup-r2": "tsx scripts/verify-db-backup-r2.ts",
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
+    "verify:frontend-error-noise": "tsx scripts/verify-frontend-error-noise.ts",
     "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
     "verify:job-failure-class": "tsx scripts/verify-job-failure-class.ts",
