@@ -421,6 +421,32 @@ ${premiumButton({ href: opts.billingUrl, label: opts.cta })}
   });
 }
 
+/** HERO-34 — first-clip nudge for a paying customer who has not started a job. */
+export async function sendPaidActivationEmail(opts: {
+  to: string;
+  subject: string;
+  title: string;
+  body: string;
+  cta: string;
+  editorUrl: string;
+}): Promise<boolean> {
+  return sendEmail({
+    to: opts.to,
+    subject: `${opts.subject} — ${BRAND}`,
+    html: emailShell({
+      title: opts.title,
+      previewText: opts.body,
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">${escapeHtml(opts.title)}</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">${escapeHtml(opts.body)}</p>
+${premiumButton({ href: opts.editorUrl, label: opts.cta })}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#71717a;font-size:12px">ติดตรงไหน ตอบอีเมลนี้ได้เลย — ทีมงานช่วยพาไปคลิปแรกให้</p>
+`.trim(),
+    }),
+  });
+}
+
 /**
  * Trial lifecycle nudge (issue #299). Title/body come from trialReminderCopy() so the
  * email and the in-app notification are the same words — there is no second copy here
