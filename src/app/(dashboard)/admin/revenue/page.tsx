@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Crown, Clock, Tag, BarChart3, Hourglass } from "lucide-react";
+import { Crown, Clock, Tag, BarChart3, Hourglass, AlertTriangle } from "lucide-react";
 import CostMarginPanel from "@/components/admin/cost-margin-panel";
 import RevenueGrowthDashboard from "@/components/admin/revenue-growth-dashboard";
 import ManualPaymentPanel from "@/components/admin/manual-payment-panel";
@@ -26,6 +26,8 @@ interface AdminStats {
   // Task C8 — "รอเก็บเงินครั้งแรก" (committed-trialing, not yet paying).
   committedTrialingUsers?: number; committedTrialingExpectedMonthlyThb?: number;
   committedTrialingFirstChargeEarliest?: string | null; committedTrialingFirstChargeLatest?: string | null;
+  // HERO-33 — "บัตรเก็บไม่ผ่าน" (Stripe past_due; still entitled vs already lapsed to FREE).
+  pastDueUsers?: number; pastDueStillEntitled?: number; pastDueLapsed?: number;
 }
 
 // Single stat card — matches the original grid card (byte-identical for non-hero);
@@ -124,6 +126,18 @@ export default function AdminRevenuePage() {
               }
               footnote="ยังไม่นับเป็นจ่ายจริงจนกว่า Stripe ตัดเงินสำเร็จ"
               icon={Hourglass}
+              loading={loading}
+            />
+            <StatCard
+              title="บัตรเก็บไม่ผ่าน (past_due)"
+              value={stats?.pastDueUsers ?? 0}
+              sub={
+                !stats?.pastDueUsers
+                  ? "—"
+                  : `ยังมีสิทธิ์ ${stats.pastDueStillEntitled ?? 0} · หลุดเป็น FREE แล้ว ${stats.pastDueLapsed ?? 0}`
+              }
+              footnote="ระบบเตือนในแอป + อีเมล (ถ้าเปิด PAST_DUE_DUNNING_EMAIL) ทันทีและอีกครั้งวันที่ 3"
+              icon={AlertTriangle}
               loading={loading}
             />
           </div>

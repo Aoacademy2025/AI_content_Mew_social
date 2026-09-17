@@ -24,6 +24,9 @@ export interface MeData {
   avatar?: string | null;
   cancelAtPeriodEnd?: boolean;
   cancelAt?: string | null;
+  /** Stripe subscription status mirror (`active` | `trialing` | `past_due` | `canceled` | …). */
+  subStatus?: string | null;
+  planExpiresAt?: string | null;
   /** HERO-20: the raw subscription id never reaches the browser, only this. */
   hasStripeSubscription?: boolean;
   trialStartedAt?: string | null;

@@ -73,6 +73,10 @@ export async function GET() {
       committedTrialingExpectedMonthlyThb: cohorts.committedTrialing.expectedMonthlyThb,
       committedTrialingFirstChargeEarliest: cohorts.committedTrialing.firstChargeDates.earliest,
       committedTrialingFirstChargeLatest: cohorts.committedTrialing.firstChargeDates.latest,
+      // HERO-33 — "บัตรเก็บไม่ผ่าน" count only; identity stays in Stripe.
+      pastDueUsers: cohorts.pastDue.users,
+      pastDueStillEntitled: cohorts.pastDue.stillEntitled,
+      pastDueLapsed: cohorts.pastDue.lapsed,
     });
   } catch (error) {
     return apiError({ route: "admin/stats", error });
