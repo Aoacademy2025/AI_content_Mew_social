@@ -5,6 +5,7 @@ export type RunpodTerminalFailure = {
     | "RUNPOD_RATE_LIMIT"
     | "RUNPOD_ENDPOINT_UNAVAILABLE"
     | "RUNPOD_QUEUE_TIMEOUT"
+    | "RUNPOD_OUTPUT_INVALID"
     | "RUNPOD_FAILED";
   systemic: boolean;
   retryable: boolean;
@@ -53,7 +54,22 @@ export function classifyRunpodTerminalFailure(message: string | null | undefined
   if (/\b404\b|endpoint (?:is )?not found|unknown endpoint/i.test(source)) {
     return { code: "RUNPOD_ENDPOINT_UNAVAILABLE", systemic: true, retryable: false };
   }
+  if (
+    /RUNPOD_OUTPUT_INVALID|completed without an image|"ok"\s*:\s*false/i.test(source)
+  ) {
+    return { code: "RUNPOD_OUTPUT_INVALID", systemic: false, retryable: true };
+  }
   return { code: "RUNPOD_FAILED", systemic: false, retryable: true };
+}
+
+export function isSqliteWriteContentionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  if (code === "P1008") return true;
+  const message = error instanceof Error
+    ? error.message
+    : String((error as { message?: unknown }).message ?? "");
+  return /Socket timeout|Transaction already closed|SQLITE_BUSY|database is locked/i.test(message);
 }
 
 export function openHeroRunpodCircuit(
@@ -85,7 +101,7 @@ export function recordHeroRunpodFailure(
   signalId: string,
   now = Date.now(),
 ): { circuitOpened: boolean; independentSignals: number } {
-  if (code !== "RUNPOD_QUEUE_TIMEOUT") {
+  if (code !== "RUNPOD_QUEUE_TIMEOUT" && code !== "RUNPOD_OUTPUT_INVALID") {
     openHeroRunpodCircuit(code, now);
     return { circuitOpened: true, independentSignals: 1 };
   }

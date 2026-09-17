@@ -1,6 +1,7 @@
 "use client";
 
 import { getToken } from "@clerk/nextjs";
+import { clearAuthSessionEnded, isAuthSessionEnded, markAuthSessionEnded } from "@/lib/auth-session-ended";
 import { trackEvent } from "@/lib/client-telemetry";
 
 type FetchInput = string | URL;
@@ -30,6 +31,26 @@ function emit(deps: AuthRecoveryDependencies, event: AuthRecoveryEvent) {
   try { deps.onEvent?.(event); } catch { /* recovery must not depend on telemetry */ }
 }
 
+/** Intermediate `refreshing` rows were the bulk of the error stream: every
+ * recovered 401 wrote an error first. Only terminal outcomes are stored. */
+export function authRecoveryTelemetrySpec(event: AuthRecoveryEvent): {
+  category: "product" | "error";
+  status: string;
+  properties: Record<string, unknown>;
+} | null {
+  if (event.status === "refreshing") return null;
+  return {
+    category: event.status === "recovered" ? "product" : "error",
+    status: event.status === "recovered" ? "done" : event.status,
+    properties: {
+      initialStatus: event.initialStatus,
+      ...(event.status === "recovered" || event.status === "retry_failed"
+        ? { retryStatus: event.retryStatus }
+        : {}),
+    },
+  };
+}
+
 /**
  * Replays one same-origin request after a forced Clerk token refresh when the
  * server rejects the first attempt with 401. Callers pass replayable bodies
@@ -47,6 +68,7 @@ export async function fetchWithAuthRecovery(
 ): Promise<Response> {
   const initial = await deps.fetcher(input, init);
   if (initial.status !== 401) return initial;
+  if (isAuthSessionEnded()) return initial;
 
   const path = telemetryPath(input);
   emit(deps, { status: "refreshing", path, initialStatus: 401 });
@@ -59,9 +81,11 @@ export async function fetchWithAuthRecovery(
     return initial;
   }
   if (!token) {
+    markAuthSessionEnded();
     emit(deps, { status: "signed_out", path, initialStatus: 401 });
     return initial;
   }
+  clearAuthSessionEnded();
 
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
@@ -81,17 +105,14 @@ export function authenticatedFetch(input: FetchInput, init?: RequestInit): Promi
     fetcher: (requestInput, requestInit) => fetch(requestInput, requestInit),
     getFreshToken: () => getToken({ skipCache: true }),
     onEvent: (event) => {
+      const spec = authRecoveryTelemetrySpec(event);
+      if (!spec) return;
       trackEvent("auth_request_recovery", {
-        category: event.status === "recovered" ? "product" : "error",
+        category: spec.category,
         path: event.path,
         step: "session_refresh",
-        status: event.status === "recovered" ? "done" : event.status,
-        properties: {
-          initialStatus: event.initialStatus,
-          ...(event.status === "recovered" || event.status === "retry_failed"
-            ? { retryStatus: event.retryStatus }
-            : {}),
-        },
+        status: spec.status,
+        properties: spec.properties,
       });
     },
   });

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createClientPoller } from "../src/lib/client-polling";
+import { clearAuthSessionEnded, markAuthSessionEnded } from "../src/lib/auth-session-ended";
 
 type TimerTask = { id: number; at: number; fn: () => void };
 
@@ -81,6 +82,30 @@ async function main() {
   poller.stop();
   await advance(60_000);
   assert.equal(calls, 4, "stop removes all future work");
+
+  clearAuthSessionEnded();
+  let signedOutCalls = 0;
+  const signedOutPoller = createClientPoller({
+    task: async () => {
+      signedOutCalls += 1;
+    },
+    isActive: () => true,
+    isVisible: () => true,
+    nextDelayMs: () => 5_000,
+    schedule,
+    cancel,
+  });
+  signedOutPoller.start();
+  await advance(0);
+  assert.equal(signedOutCalls, 1);
+  markAuthSessionEnded();
+  await advance(5_000);
+  assert.equal(signedOutCalls, 1, "a terminal signed-out outcome stops background polling");
+  signedOutPoller.wake();
+  await advance(0);
+  assert.equal(signedOutCalls, 1, "focus/visibility must not restart polls after signed-out");
+  signedOutPoller.stop();
+  clearAuthSessionEnded();
 
   const notificationSource = readFileSync(join(process.cwd(), "src/components/layout/notification-bell.tsx"), "utf8");
   assert.match(notificationSource, /createClientPoller/);

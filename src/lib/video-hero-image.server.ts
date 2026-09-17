@@ -594,8 +594,27 @@ export async function generateHeroImageForVideo(
         continue;
       }
       if (snapshot.status === "COMPLETED") {
+        if (!snapshot.image) {
+          const signal = recordHeroRunpodFailure("RUNPOD_OUTPUT_INVALID", job.id);
+          await failAndRefundAiJob(
+            input.userId,
+            job.id,
+            "OUTPUT_INVALID",
+            snapshot.error || "RunPod completed without an image",
+          );
+          throw new HeroImageGenerationError(
+            "Hero AI Image สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
+            "OUTPUT_INVALID",
+            503,
+            {
+              code: "RUNPOD_OUTPUT_INVALID",
+              systemic: signal.circuitOpened,
+              retryable: true,
+              stopBatch: signal.circuitOpened,
+            },
+          );
+        }
         try {
-          if (!snapshot.image) throw new Error("RunPod completed without an image");
           // Persist the file ONCE, outside the retry: the provider work is paid
           // for and the bytes are already ours. Only the bookkeeping write is
           // retried, because SQLite's single writer can expire this interactive

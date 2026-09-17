@@ -14,6 +14,7 @@
     "verify:gallery-project-rename": "tsx scripts/verify-gallery-project-rename.ts",
     "verify:deploy-maintenance": "tsx scripts/verify-deploy-maintenance-window.ts",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
+    "verify:cron-route": "tsx scripts/verify-cron-route.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:db-backup-r2": "tsx scripts/verify-db-backup-r2.ts",
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
@@ -250,6 +251,7 @@
     "verify:partial-alignment": "tsx scripts/verify-partial-alignment.ts",
     "verify:acoustic-subtitle-clock": "tsx scripts/verify-acoustic-repeat-selection.ts && tsx scripts/verify-acoustic-verified-share-selection.ts && tsx scripts/verify-acoustic-subtitle-clock.ts && tsx scripts/verify-acoustic-subtitle-worker.ts",
     "verify:content-preflight-beat-count": "node --conditions=react-server --import tsx scripts/verify-content-preflight-beat-count.ts",
+    "verify:content-preflight-degrade": "tsx scripts/verify-content-preflight-degrade.ts",
     "verify:ai-audio-preflight": "tsx scripts/verify-ai-audio-preflight.ts"
   },
   "prisma": {

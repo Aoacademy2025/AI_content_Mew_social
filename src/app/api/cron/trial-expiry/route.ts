@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
 import { revertExpiredEntitlements } from "@/lib/entitlements";
-import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
+import { runAuthorizedCronJob } from "@/lib/cron-route";
 
 export const runtime = "nodejs";
 
 // GET /api/cron/trial-expiry  (daily, Bearer CRON_SECRET)
 // Reverts expired trials/timed paid plans to FREE and notifies users with the upgrade prompt.
-// Fails CLOSED if CRON_SECRET is unset.
+// Fails CLOSED if CRON_SECRET is unset. Prisma lock timeouts return 503 instead of
+// bubbling as an unhandled route error (HERO-10 / HERO-STUDIO-WEB-11).
 export async function GET(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  const auth = req.headers.get("authorization");
-  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  const result = await revertExpiredEntitlements();
-  console.log(`[trial-expiry] ${new Date().toISOString()} checked=${result.checked} reverted=${result.reverted}`);
-  writeCronHeartbeat("trial-expiry");
-  return NextResponse.json({ ok: true, ...result });
+  const result = await runAuthorizedCronJob({
+    authorization: req.headers.get("authorization"),
+    secret: process.env.CRON_SECRET,
+    name: "trial-expiry",
+    run: async () => {
+      const outcome = await revertExpiredEntitlements();
+      console.log(`[trial-expiry] ${new Date().toISOString()} checked=${outcome.checked} reverted=${outcome.reverted}`);
+      return outcome;
+    },
+    onSuccess: writeCronHeartbeat,
+  });
+  return NextResponse.json(result.body, { status: result.status });
 }

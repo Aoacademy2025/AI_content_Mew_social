@@ -10,7 +10,7 @@ import {
   type RunpodJobResponse,
 } from "@/lib/runpod-image-contract";
 
-export { firstRunpodImage } from "@/lib/runpod-image-contract";
+export { firstRunpodImage, RunpodImageOutputError } from "@/lib/runpod-image-contract";
 export type {
   RunpodComfyImageInput,
   RunpodImageInput,

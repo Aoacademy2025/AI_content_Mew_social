@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  RunpodImageOutputError,
   firstRunpodImage,
   publicZImageProviderInput,
 } from "../src/lib/runpod-image-contract";
@@ -115,7 +116,28 @@ assert.deepEqual(
 );
 assert.throws(
   () => firstRunpodImage({ status: "COMPLETED", output: { errors: ["no image"] } }),
-  /no image/,
+  (error) => error instanceof RunpodImageOutputError
+    && error.code === "RUNPOD_OUTPUT_INVALID"
+    && /no image/.test(error.message),
+);
+assert.throws(
+  () => firstRunpodImage({ status: "COMPLETED", output: { ok: false } }),
+  (error) => error instanceof RunpodImageOutputError
+    && error.code === "RUNPOD_OUTPUT_INVALID",
+  "a clone-style {ok:false} payload is invalid output, not a missing optional field",
+);
+assert.throws(
+  () => firstRunpodImage({
+    status: "COMPLETED",
+    output: { ok: false, image_url: "https://image.runpod.ai/job/output.png" },
+  }),
+  (error) => error instanceof RunpodImageOutputError,
+  "ok:false wins over a leftover URL so a boot-script refusal cannot settle as a paid image",
+);
+assert.throws(
+  () => firstRunpodImage({ status: "COMPLETED", output: {} }),
+  (error) => error instanceof RunpodImageOutputError
+    && error.code === "RUNPOD_OUTPUT_INVALID",
 );
 
 console.log("Runpod public image contract checks passed.");
