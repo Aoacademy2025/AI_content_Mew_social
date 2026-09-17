@@ -5,7 +5,10 @@ import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contra
 /** Style Pack catalog V1 — encodes docs/audits/2026-09-02-brands-review.md §8.
  * Wave 1 (packs 1-7) ships active; wave 2 (packs 8-12) is `pending-benchmark`
  * until its narrative treatment clears the Treatment Qualification Benchmark
- * (ADR 0010) — pending packs are never customer-visible and never recommended. */
+ * (ADR 0010) — pending packs are never customer-visible and never recommended.
+ * `comic-story` (HERO-35) ships active on an already-qualified pair: the
+ * benchmark covers every Visual Format × Treatment, so `dramatic-comic` ×
+ * `thai-human-drama` needed no new qualification run. */
 
 export const STYLE_PACK_IDS = [
   "thai-ghost",
@@ -15,6 +18,7 @@ export const STYLE_PACK_IDS = [
   "news-fast",
   "health-simple",
   "premium-product",
+  "comic-story",
   "dark-story",
   "politics",
   "mystery",
@@ -229,6 +233,28 @@ export const STYLE_PACKS: readonly StylePack[] = [
     musicMood: "lounge",
     subtitle: { preset: "plain", effect: "fade", cardLen: "sentence", fontFamily: "Prompt", bold: false, fontWeight: 400, fontSize: 52, textColor: "#FFFFFF", accentColor: "#D4A017", shadow: true, outline: false, outlineSize: 2, verticalPos: 80 },
     scriptTone: "เล่าช้าและมั่นใจ เน้นคุณค่าและรายละเอียด ไม่ขายดุดัน",
+  },
+  {
+    id: "comic-story",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "การ์ตูนคอมิก",
+    tagline: "การ์ตูนเส้นหนัก อารมณ์เข้ม เล่าเรื่องคน",
+    visualFormatId: "dramatic-comic",
+    treatmentPresetId: "thai-human-drama",
+    palette: ["#14121A", "#F97316", "#FFF4E0"],
+    personality: "เส้นหมึกหนัก สีตัดชัด แสงเงาแรง อารมณ์ตัวละครเด่น",
+    stockMood: {
+      queryToken: "dramatic",
+      positive: ["street", "home interior", "rain", "hands", "silhouette", "window light", "city night", "market", "motorbike street", "doorway"],
+      avoid: ["corporate", "product", "luxury", "infographic", "bright office"],
+      direction: "bold expressive human-story mood, high contrast light and shadow, warm accent against dark tones, punchy energy",
+      fallbackQueries: ["rainy street night", "hands close up dramatic", "silhouette in doorway", "city street dusk", "window light room"],
+    },
+    pacing: "normal",
+    musicMood: "emotional",
+    subtitle: { preset: "pop-outline", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 64, textColor: "#FFFFFF", accentColor: "#F97316", shadow: false, outline: true, outlineSize: 3, verticalPos: 78 },
+    scriptTone: "เล่าเป็นฉาก ๆ เหมือนช่องการ์ตูน ประโยคสั้น เปิดปมเร็ว ใส่บทพูดและอารมณ์ตัวละคร",
   },
   {
     id: "dark-story",

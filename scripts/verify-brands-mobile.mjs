@@ -91,7 +91,7 @@ draft.visual.stylePackId = "life-drama";
 const source = read("src/app/(dashboard)/brands/_components/BrandLibraryClient.tsx");
 const inner = source.match(/<div className="(mx-auto max-w-\[1200px\][^"]*)"/)[1];
 const bodies = [
-  h(BrandStyleWorkspace, { draft, library, disabled: false, onSelect: noop, onCustomize: noop }),
+  h(BrandStyleWorkspace, { draft, library, disabled: false, onSelect: noop, onFormatChange: noop }),
   h(BrandLibraryOverview, { library: { ...library, profiles: [profile("p1", "Mew Social"), profile("p2", "แบรนด์ทดสอบชื่อยาวมากสำหรับหน้าจอมือถือ", { frozen: true })] }, busy: false, onNew: noop, onOpen: noop, onUse: noop, onArchive: noop }),
   h(AdvancedSettings, { open: true, onOpenChange: noop, draft, setDraft: noop, updateVisual: noop, library, busy: null, disabled: false, proposal: null, onAskHelper: noop, onApplyProposal: noop, onUploadBrandMark: noop }),
   ...[false, true].map(failing => h("section", { "data-preview": true }, h(BrandLookPreviewPanel, { preview: previewBatch({ failing }), previewGenerationCount: 2, allowance: null, imageAccess: failing ? { canUse: false, reason: "payment_required", upgradeUrl: "/pricing" } : library.imageAccess, canPublish: true, busy: null, disabled: false, onPreview: noop, onReroll: noop }))),
@@ -123,7 +123,7 @@ try {
     const where = `fixture ${fixture} at ${width}px, root text ${fontSize}px`;
     assert.equal(found.overflow, false, `${where}: no horizontal overflow: ${JSON.stringify(found.overflowingElements)}`);
     if (fixture === 0) {
-      assert.equal(found.radios.length, 3, `${where}: three starting choices`);
+      assert.equal(found.radios.length, 4, `${where}: four starting choices (drama, finance, health, comic)`);
       assert.equal(found.radios.filter(r => r.checked).length, 1, `${where}: one selected default`);
       assert.ok(found.radios.every(r => r.height >= 44), `${where}: touch targets`);
       if (width < 1024) assert.ok(found.workspace.asideTop < found.workspace.optionsTop, `${where}: selected summary first on mobile`);
