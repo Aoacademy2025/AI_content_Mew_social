@@ -9,11 +9,11 @@
 // returns a hook — line 1 of the saved script is always the exact text the user
 // picked/edited in step 3.
 //
-// Step 5 ("ส่งไปตัดต่อ") is the money path and lives here too: paid plans POST
-// /api/scripts/[id]/send-to-editor and land in the editor on the new project;
-// FREE sees the locked CTA + the /pricing upsell.
+// Step 5 commits the latest snapshot before creating one Editor project. A sent
+// script opens its available linked project by navigation only, or explicitly
+// creates another; FREE sees the locked CTA + the /pricing upsell.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -58,6 +58,14 @@ export interface ScriptDraft {
   bodyText: string;
   ctaText: string;
   status: string;
+  editorProjectId: string | null;
+  editorProjectAvailable: boolean;
+}
+
+export interface ScriptEditorStepHandle {
+  saveLatest: () => Promise<boolean>;
+  createEditorProject: () => Promise<boolean>;
+  invalidateAsyncRequests: () => void;
 }
 
 type RegenTarget = "hook" | "body" | "cta";
@@ -65,10 +73,11 @@ type RegenTarget = "hook" | "body" | "cta";
 async function toastErrorResponse(
   res: Response,
   fallback: string,
-  opts?: { onUpgrade?: () => void }
+  opts?: { onUpgrade?: () => void; isCurrent?: () => boolean }
 ) {
   let data: { error?: string; code?: string } | null = null;
   try { data = await res.json(); } catch { /* no body */ }
+  if (opts?.isCurrent && !opts.isCurrent()) return;
   if (res.status === 429) { toast.error(QUOTA_MESSAGE); return; }
   if (res.status === 401) {
     toast.error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง");
@@ -112,20 +121,26 @@ interface ScriptEditorStepProps {
   onSelectedHookChange: (hook: HookChoice | null) => void;
   draft: ScriptDraft | null;
   onDraftChange: (draft: ScriptDraft | null) => void;
-  /** Fired after a successful save so the history list can refresh. */
-  onSaved?: () => void;
+  /** Fired after a successful save so the recent shortcut/library can invalidate. */
+  onSaved?: (draft: ScriptDraft) => void;
+  onOpenEditorProject: (projectId: string) => void;
+  onCreateEditorProject: () => Promise<boolean>;
+  handoffPending: boolean;
+  handoffPosting: boolean;
 }
 
-export function ScriptEditorStep({
+export const ScriptEditorStep = forwardRef<ScriptEditorStepHandle, ScriptEditorStepProps>(function ScriptEditorStep({
   topic, durationSec, plan, selectedProfileId, selectedHook, onSelectedHookChange,
-  draft, onDraftChange, onSaved,
-}: ScriptEditorStepProps) {
+  draft, onDraftChange, onSaved, onOpenEditorProject, onCreateEditorProject,
+  handoffPending, handoffPosting,
+}, ref) {
   const router = useRouter();
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const goToPricing = useCallback(() => {
     trackEvent("hero_script_upgrade_clicked", { properties: { surface: "limit_error" } });
     router.push("/pricing?source=hero_script_limit");
@@ -154,6 +169,15 @@ export function ScriptEditorStep({
   const rowIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRequestRef = useRef(0);
+
+  const invalidateAsyncRequests = useCallback(() => {
+    workspaceRequestRef.current += 1;
+    setGenerating(false);
+    setRegenTarget(null);
+    setGenerationError(null);
+  }, []);
 
   const snapshotOf = useCallback((d: ScriptDraft) => JSON.stringify({
     id: d.id,
@@ -167,12 +191,12 @@ export function ScriptEditorStep({
     brandProfileId: d.brandProfileId,
   }), []);
 
-  const persist = useCallback(async () => {
+  const persist = useCallback(async (): Promise<boolean> => {
     const d = draftRef.current;
-    if (!d) return;
+    if (!d) return true;
     const generation = generationRef.current;
     const snapshot = snapshotOf(d);
-    if (snapshot === lastSavedRef.current) return;
+    if (snapshot === lastSavedRef.current) return true;
 
     const rowId = d.id ?? rowIdRef.current;
     const saveMode = rowId ? "update" : "create";
@@ -202,39 +226,60 @@ export function ScriptEditorStep({
           });
       // The draft was replaced while this save was in flight (new generation or
       // a restore) — its result must not touch what's on screen now.
-      if (generationRef.current !== generation) return;
+      if (generationRef.current !== generation) return false;
       if (!res.ok) {
-        setSaveState("idle");
+        setSaveState("failed");
         trackEvent("hero_script_save_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { httpStatus: res.status, saveMode },
         });
         // 403 SCRIPT_LIMIT lands here — the FREE 3-scripts/30-days cap.
         await toastErrorResponse(res, "บันทึกสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
-        return;
+        return false;
       }
       const saved = await res.json();
       rowIdRef.current = saved.id;
       lastSavedRef.current = JSON.stringify({ ...JSON.parse(snapshot), id: saved.id });
       const latest = draftRef.current;
-      if (latest && latest.id !== saved.id) onDraftChangeRef.current({ ...latest, id: saved.id });
-      setSaveState("saved");
+      const latestWithId = latest ? { ...latest, id: saved.id } : null;
+      if (latestWithId) draftRef.current = latestWithId;
+      if (latestWithId && latest?.id !== saved.id) onDraftChangeRef.current(latestWithId);
+      setSaveState(latestWithId && snapshotOf(latestWithId) === lastSavedRef.current ? "saved" : "saving");
       trackEvent("hero_script_saved", {
         status: "done", durationMs: performance.now() - startedAt,
         properties: { saveMode, profileUsed: Boolean(d.brandProfileId) },
       });
-      onSavedRef.current?.();
+      onSavedRef.current?.({ ...d, id: saved.id });
+      return true;
     } catch {
       if (generationRef.current === generation) {
-        setSaveState("idle");
+        setSaveState("failed");
         trackEvent("hero_script_save_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { failure: "network", saveMode },
         });
         toast.error("บันทึกสคริปต์ไม่สำเร็จ");
       }
+      return false;
     }
   }, [snapshotOf, goToPricing]);
+
+  const saveLatest = useCallback((): Promise<boolean> => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const drainLatest = async () => {
+      while (true) {
+        if (!(await persist())) return false;
+        const latest = draftRef.current;
+        if (!latest || snapshotOf(latest) === lastSavedRef.current) return true;
+      }
+    };
+    const result = chainRef.current.then(drainLatest);
+    chainRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, [persist, snapshotOf]);
 
   // Debounced autosave.
   useEffect(() => {
@@ -252,14 +297,21 @@ export function ScriptEditorStep({
       return;
     }
     const timer = setTimeout(() => {
-      chainRef.current = chainRef.current.then(persist).catch(() => {});
+      autosaveTimerRef.current = null;
+      void saveLatest();
     }, AUTOSAVE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [draft, snapshotOf, persist]);
+    autosaveTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (autosaveTimerRef.current === timer) autosaveTimerRef.current = null;
+    };
+  }, [draft, snapshotOf, saveLatest]);
 
   async function handleGenerate() {
+    if (sendingRef.current) return;
     const currentContext = hookContextKey(topic, durationSec, selectedProfileId);
     if (!selectedHook || selectedHook.contextKey !== currentContext || !topic.trim()) return;
+    const requestId = ++workspaceRequestRef.current;
     const startedAt = performance.now();
     trackEvent("hero_script_generation_requested", {
       status: "started",
@@ -268,6 +320,8 @@ export function ScriptEditorStep({
     setGenerating(true);
     setGenerationError(null);
     try {
+      if (draftRef.current && !(await saveLatest())) return;
+      if (requestId !== workspaceRequestRef.current) return;
       const res = await authenticatedFetch("/api/scripts/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -279,19 +333,25 @@ export function ScriptEditorStep({
           durationSec,
         }),
       });
+      if (requestId !== workspaceRequestRef.current) return;
       if (!res.ok) {
+        const errorBody = await res.clone().json().catch(() => null);
+        if (requestId !== workspaceRequestRef.current) return;
         trackEvent("hero_script_generation_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { httpStatus: res.status, durationSec, profileUsed: Boolean(selectedProfileId) },
         });
-        const errorBody = await res.clone().json().catch(() => null);
         setGenerationError(typeof errorBody?.error === "string" && errorBody.error.trim()
           ? errorBody.error
           : "สร้างสคริปต์ไม่สำเร็จ กรุณาลองอีกครั้ง");
-        await toastErrorResponse(res, "สร้างสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
+        await toastErrorResponse(res, "สร้างสคริปต์ไม่สำเร็จ", {
+          onUpgrade: goToPricing,
+          isCurrent: () => requestId === workspaceRequestRef.current,
+        });
         return;
       }
       const data = await res.json();
+      if (requestId !== workspaceRequestRef.current) return;
       if (data.warning) toast.warning(data.warning);
       // A fresh generation is a NEW script (id: null) — the autosave creates
       // its own row, so regenerating never overwrites an earlier script.
@@ -309,6 +369,8 @@ export function ScriptEditorStep({
         bodyText: data.bodyText ?? "",
         ctaText: data.ctaText ?? "",
         status: "draft",
+        editorProjectId: null,
+        editorProjectAvailable: false,
       });
       trackEvent("hero_script_generated", {
         status: "done", durationMs: performance.now() - startedAt,
@@ -320,6 +382,7 @@ export function ScriptEditorStep({
       });
       setSaveState("idle");
     } catch {
+      if (requestId !== workspaceRequestRef.current) return;
       trackEvent("hero_script_generation_failed", {
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { failure: "network", durationSec, profileUsed: Boolean(selectedProfileId) },
@@ -327,13 +390,15 @@ export function ScriptEditorStep({
       setGenerationError("เชื่อมต่อไม่สำเร็จ กรุณาลองอีกครั้ง");
       toast.error("สร้างสคริปต์ไม่สำเร็จ");
     } finally {
-      setGenerating(false);
+      if (requestId === workspaceRequestRef.current) setGenerating(false);
     }
   }
 
   async function handleRegen(target: RegenTarget) {
+    if (sendingRef.current) return;
     const d = draftRef.current;
     if (!d) return;
+    const requestId = ++workspaceRequestRef.current;
     const startedAt = performance.now();
     trackEvent("hero_script_regen_requested", { status: "started", properties: { target } });
     setRegenTarget(target);
@@ -350,15 +415,19 @@ export function ScriptEditorStep({
           current: { hookText: d.hookText, bodyText: d.bodyText, ctaText: d.ctaText },
         }),
       });
+      if (requestId !== workspaceRequestRef.current) return;
       if (!res.ok) {
         trackEvent("hero_script_regen_failed", {
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { target, httpStatus: res.status },
         });
-        await toastErrorResponse(res, "เขียนใหม่ไม่สำเร็จ");
+        await toastErrorResponse(res, "เขียนใหม่ไม่สำเร็จ", {
+          isCurrent: () => requestId === workspaceRequestRef.current,
+        });
         return;
       }
       const data = await res.json();
+      if (requestId !== workspaceRequestRef.current) return;
       if (data.warning) toast.warning(data.warning);
       const text = typeof data.text === "string" ? data.text : "";
       if (!text) return;
@@ -366,85 +435,61 @@ export function ScriptEditorStep({
       if (!current) return;
       if (target === "hook") {
         const formula = typeof data.formula === "string" ? data.formula : current.hookFormula;
-        onDraftChange({ ...current, hookText: text, hookFormula: formula });
+        applyDraftPatch({ hookText: text, hookFormula: formula });
         onSelectedHookChange({
           formula: formula ?? "",
           text,
           contextKey: hookContextKey(d.topic, d.durationSec, d.brandProfileId),
         });
       } else if (target === "body") {
-        onDraftChange({ ...current, bodyText: text });
+        applyDraftPatch({ bodyText: text });
       } else {
-        onDraftChange({ ...current, ctaText: text });
+        applyDraftPatch({ ctaText: text });
       }
       trackEvent("hero_script_regenerated", {
         status: "done", durationMs: performance.now() - startedAt, properties: { target },
       });
     } catch {
+      if (requestId !== workspaceRequestRef.current) return;
       trackEvent("hero_script_regen_failed", {
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { target, failure: "network" },
       });
       toast.error("เขียนใหม่ไม่สำเร็จ");
     } finally {
-      setRegenTarget(null);
+      if (requestId === workspaceRequestRef.current) setRegenTarget(null);
     }
   }
 
-  // Step 5 — hand the saved script to the video editor and go there.
-  // The row must exist first (the autosave creates it), so the CTA stays
-  // disabled until this draft has an id.
-  async function handleSendToEditor() {
-    const d = draftRef.current;
-    const scriptId = d?.id ?? rowIdRef.current;
-    if (!d || !scriptId || sending) return;
-    const startedAt = performance.now();
-    trackEvent("hero_script_handoff_requested", { status: "started" });
+  // Step 5 — commit the newest serialized snapshot, then create one project.
+  const createEditorProject = useCallback(async (): Promise<boolean> => {
+    if (sendingRef.current) return false;
+    sendingRef.current = true;
     setSending(true);
+    invalidateAsyncRequests();
     try {
-      const res = await authenticatedFetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
-      if (!res.ok) {
-        trackEvent("hero_script_handoff_failed", {
-          category: "error", status: "error", durationMs: performance.now() - startedAt,
-          properties: { httpStatus: res.status },
-        });
-        await toastErrorResponse(res, "ส่งไปตัดต่อไม่สำเร็จ", { onUpgrade: goToPricing });
-        return;
-      }
-      const data = await res.json();
-      const projectId = typeof data?.projectId === "string" ? data.projectId : "";
-      if (!projectId) {
-        trackEvent("hero_script_handoff_failed", {
-          category: "error", status: "error", durationMs: performance.now() - startedAt,
-          properties: { failure: "missing_project_id" },
-        });
-        toast.error("ส่งไปตัดต่อไม่สำเร็จ");
-        return;
-      }
-      // Flip the local status so the history chip reads "ส่งแล้ว" even if the
-      // navigation takes a moment.
-      const latest = draftRef.current;
-      if (latest) onDraftChangeRef.current({ ...latest, status: "sent" });
-      onSavedRef.current?.();
-      trackEvent("hero_script_handoff_completed", {
-        status: "done", durationMs: performance.now() - startedAt,
-      });
-      router.push(`/video-editor?projectId=${encodeURIComponent(projectId)}`);
-    } catch {
-      trackEvent("hero_script_handoff_failed", {
-        category: "error", status: "error", durationMs: performance.now() - startedAt,
-        properties: { failure: "network" },
-      });
-      toast.error("ส่งไปตัดต่อไม่สำเร็จ");
+      return await onCreateEditorProject();
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
+  }, [invalidateAsyncRequests, onCreateEditorProject]);
+
+  useImperativeHandle(ref, () => ({ saveLatest, createEditorProject, invalidateAsyncRequests }), [createEditorProject, invalidateAsyncRequests, saveLatest]);
+
+  function applyDraftPatch(patch: Partial<ScriptDraft>) {
+    const current = draftRef.current;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    draftRef.current = next;
+    setSaveState("saving");
+    onDraftChange(next);
   }
 
   function editSection(patch: Partial<ScriptDraft>) {
-    const current = draftRef.current;
-    if (!current) return;
-    onDraftChange({ ...current, ...patch });
+    if (handoffPosting) return;
+    invalidateAsyncRequests();
+    applyDraftPatch(patch);
   }
 
   // Plan gate for step 5 — the same `allowVideoEditor` limit the API enforces
@@ -482,7 +527,7 @@ export function ScriptEditorStep({
           )}
           <Button
             onClick={handleGenerate}
-            disabled={generating || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
+            disabled={sending || handoffPending || generating || regenTarget !== null || !selectedHook || !hookMatchesCurrentInputs || !topic.trim()}
             size="sm"
             className="min-h-11 gap-1.5 text-white"
             style={{ background: VIOLET }}
@@ -508,7 +553,7 @@ export function ScriptEditorStep({
                 <span className="text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>{section.label}</span>
                 <Button
                   onClick={() => handleRegen(section.key)}
-                  disabled={regenTarget !== null}
+                  disabled={sending || handoffPending || generating || regenTarget !== null}
                   size="sm"
                   variant="ghost"
                   className="min-h-11 gap-1 px-2 text-[11px]"
@@ -523,8 +568,10 @@ export function ScriptEditorStep({
               <Textarea
                 value={section.value}
                 onChange={(e) => section.onChange(e.target.value)}
+                disabled={handoffPosting}
                 rows={section.rows}
-                className="text-xs"
+                className="text-base"
+                style={{ fontSize: "1rem" }}
               />
             </div>
           ))}
@@ -536,18 +583,30 @@ export function ScriptEditorStep({
             <span className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--ui-text-muted)" }}>
               {saveState === "saving" && <><Loader2 className="h-3 w-3 animate-spin" /> กำลังบันทึก…</>}
               {saveState === "saved" && <><Check className="h-3 w-3" /> บันทึกแล้ว</>}
+              {saveState === "failed" && <>บันทึกไม่สำเร็จ ลองอีกครั้ง</>}
             </span>
             {/* ── Step 5: ส่งไปตัดต่อ ── */}
             {canSendToEditor ? (
-              <Button
-                onClick={handleSendToEditor}
-                disabled={!draft.id || sending}
-                className="min-h-11 gap-1.5 text-white sm:w-auto"
-                style={{ background: VIOLET }}
-              >
-                {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                ส่งไปตัดต่อ
-              </Button>
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                {draft.status === "sent" && <p className="max-w-md text-xs" style={{ color: "var(--ui-text-muted)" }}>การแก้สคริปต์นี้ยังไม่เปลี่ยนงานตัดต่อเดิม</p>}
+                <div className="flex flex-wrap justify-end gap-2">
+                  {draft.status === "sent" && draft.editorProjectAvailable && draft.editorProjectId && (
+                    <Button type="button" variant="outline" className="min-h-11" disabled={sending || handoffPending} onClick={() => onOpenEditorProject(draft.editorProjectId!)}>
+                      เปิดงานตัดต่อเดิม
+                    </Button>
+                  )}
+                  {draft.status === "sent" && !draft.editorProjectAvailable && <span className="self-center text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>}
+                  <Button
+                    onClick={() => { void createEditorProject(); }}
+                    disabled={sending || handoffPending}
+                    className="min-h-11 gap-1.5 text-white sm:w-auto"
+                    style={{ background: VIOLET }}
+                  >
+                    {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    {draft.status === "sent" ? "สร้างงานตัดต่อใหม่" : "ส่งไปตัดต่อ"}
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div
                 className="rounded-lg border px-3 py-2.5 text-xs"
@@ -572,4 +631,4 @@ export function ScriptEditorStep({
       )}
     </div>
   );
-}
+});

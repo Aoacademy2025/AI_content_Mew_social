@@ -8,8 +8,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Lock, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Lock, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -67,6 +68,7 @@ interface BrandProfilePanelProps {
   onSelectedProfileIdChange: (id: string | null) => void;
   durationSec: DurationSec;
   onDurationSecChange: (sec: DurationSec) => void;
+  onProfilesChange?: (profiles: Array<{ id: string }>) => void;
 }
 
 async function toastErrorResponse(res: Response, fallback: string) {
@@ -91,10 +93,12 @@ const emptyForm = {
 };
 
 export function BrandProfilePanel({
-  plan, selectedProfileId, onSelectedProfileIdChange, durationSec, onDurationSecChange,
+  plan, selectedProfileId, onSelectedProfileIdChange, durationSec, onDurationSecChange, onProfilesChange,
 }: BrandProfilePanelProps) {
+  const router = useRouter();
   const [profiles, setProfiles] = useState<BrandProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [profileQuery, setProfileQuery] = useState("");
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -126,15 +130,18 @@ export function BrandProfilePanel({
       const res = await fetch("/api/brand-profiles");
       if (res.ok) {
         const data = await res.json();
-        setProfiles(Array.isArray(data) ? data : []);
+        const nextProfiles = Array.isArray(data) ? data : [];
+        setProfiles(nextProfiles);
+        onProfilesChange?.(nextProfiles.map((profile) => ({ id: profile.id })));
       }
     } catch {
       toast.error("โหลดโปรไฟล์แบรนด์ไม่สำเร็จ");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onProfilesChange]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- the initial profile request owns the loading state it resolves.
   useEffect(() => { fetchProfiles(); }, [fetchProfiles]);
 
   function resetDialog() {
@@ -267,6 +274,14 @@ export function BrandProfilePanel({
         }),
       });
       if (!res.ok) {
+        if (res.status === 409) {
+          const data = await res.json().catch(() => null) as { code?: string; error?: string; manageUrl?: string } | null;
+          if (data?.code === "VERSIONED_PROFILE_READ_ONLY") {
+            toast.error(data.error || "โปรไฟล์นี้แก้ไขจากหน้านี้ไม่ได้");
+            router.push(data.manageUrl || "/brands");
+            return;
+          }
+        }
         if (res.status === 403) {
           const data = await res.json().catch(() => null);
           toast.error(data?.error || upsellMessage);
@@ -306,29 +321,35 @@ export function BrandProfilePanel({
   }
 
   const showManualForm = editingId != null || formTab === "manual";
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
+  const matchingProfiles = profiles.filter((profile) => profile.name.toLocaleLowerCase().includes(profileQuery.trim().toLocaleLowerCase()));
 
   return (
     <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
       <h2 className="mb-4 text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ตั้งค่าเริ่มต้น</h2>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* Profile picker */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_10rem_auto] lg:items-end">
         <div>
           <Label className="mb-1.5 block text-xs" style={{ color: "var(--ui-text-secondary)" }}>โปรไฟล์แบรนด์</Label>
-          <Select
-            value={selectedProfileId ?? "none"}
-            onValueChange={(v) => onSelectedProfileIdChange(v === "none" ? null : v)}
-          >
-            <SelectTrigger className="min-h-11">
-              <SelectValue placeholder="เลือกโปรไฟล์แบรนด์" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">ไม่ใช้โปรไฟล์</SelectItem>
-              {profiles.map((p) => (
-                <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <details className="group relative">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between rounded-md border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 [&::-webkit-details-marker]:hidden" style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
+              <span className="truncate">{selectedProfile?.name ?? "ไม่ใช้โปรไฟล์"}</span>
+              <ChevronDown className="ml-2 h-4 w-4 shrink-0 transition-transform group-open:rotate-180" style={{ color: "var(--ui-text-muted)" }} />
+            </summary>
+            <div role="listbox" aria-label="เลือกโปรไฟล์แบรนด์" className="absolute z-20 mt-2 w-full rounded-lg border p-2 shadow-lg" style={{ borderColor: "var(--ui-card-border)", background: "var(--ui-card-bg)" }}>
+              <Input value={profileQuery} onChange={(event) => setProfileQuery(event.target.value)} type="search" placeholder="ค้นหาโปรไฟล์" aria-label="ค้นหาโปรไฟล์แบรนด์" className="mb-2 min-h-11" />
+              <div className="max-h-64 space-y-1 overflow-y-auto">
+                <button type="button" role="option" aria-selected={selectedProfileId === null} onClick={() => onSelectedProfileIdChange(null)} className="min-h-11 w-full rounded px-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5" style={{ color: "var(--ui-text-primary)" }}>ไม่ใช้โปรไฟล์</button>
+                {matchingProfiles.map((profile) => (
+                  <button key={profile.id} type="button" role="option" aria-selected={selectedProfileId === profile.id} onClick={() => onSelectedProfileIdChange(profile.id)} className="min-h-11 w-full rounded px-3 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5" style={{ color: "var(--ui-text-primary)" }}>
+                    <span className="block truncate">{profile.name}</span>
+                    <span className="block truncate text-xs" style={{ color: "var(--ui-text-muted)" }}>{profile.niche}</span>
+                  </button>
+                ))}
+                {!loading && matchingProfiles.length === 0 && <p className="px-3 py-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>ไม่พบโปรไฟล์</p>}
+              </div>
+            </div>
+          </details>
         </div>
 
         {/* Duration */}
@@ -348,63 +369,30 @@ export function BrandProfilePanel({
             </SelectContent>
           </Select>
         </div>
-      </div>
+        <details className="lg:col-span-3">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center rounded-md border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 [&::-webkit-details-marker]:hidden" style={{ borderColor: "var(--ui-card-border)", color: VIOLET_LIGHT }}>
+            จัดการโปรไฟล์
+          </summary>
 
-      {/* Profile list + actions */}
-      <div className="mt-4 space-y-2">
-        {loading ? (
-          <div className="flex items-center gap-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังโหลด...
-          </div>
-        ) : profiles.length === 0 ? (
-          <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>ยังไม่มีโปรไฟล์แบรนด์</p>
-        ) : (
-          profiles.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
-              style={{
-                borderColor: selectedProfileId === p.id ? VIOLET : "var(--ui-card-border)",
-                background: selectedProfileId === p.id ? "rgba(139,92,246,.08)" : "transparent",
-              }}
-            >
-              <button
-                type="button"
-                className="min-w-0 flex-1 text-left"
-                onClick={() => onSelectedProfileIdChange(p.id)}
-              >
-                <p className="truncate font-medium" style={{ color: "var(--ui-text-primary)" }}>{p.name}</p>
-                <p className="truncate" style={{ color: "var(--ui-text-muted)" }}>{p.niche}</p>
-              </button>
-              <div className="flex shrink-0 items-center gap-2">
-                {/* 44x44 hit area (was p-1.5 ≈ 26px) — icon-only buttons need the full touch target, not just the visible glyph */}
-                <button onClick={() => openEditDialog(p)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label="แก้ไข">
-                  <Pencil className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
-                </button>
-                <button onClick={() => setDeleteId(p.id)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label="ลบ">
-                  <Trash2 className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
-                </button>
+          <div className="mt-4 space-y-2 border-t pt-4" style={{ borderColor: "var(--ui-divider)" }}>
+            {loading ? (
+              <div className="flex items-center gap-2 text-xs" style={{ color: "var(--ui-text-muted)" }}><Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังโหลด...</div>
+            ) : profiles.length === 0 ? (
+              <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>ยังไม่มีโปรไฟล์แบรนด์</p>
+            ) : profiles.map((p) => (
+              <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: selectedProfileId === p.id ? VIOLET : "var(--ui-card-border)", background: selectedProfileId === p.id ? "rgba(139,92,246,.08)" : "transparent" }}>
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onSelectedProfileIdChange(p.id)}><p className="truncate font-medium" style={{ color: "var(--ui-text-primary)" }}>{p.name}</p><p className="truncate" style={{ color: "var(--ui-text-muted)" }}>{p.niche}</p></button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button type="button" onClick={() => openEditDialog(p)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label={`แก้ไข ${p.name}`}><Pencil className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} /></button>
+                  <button type="button" onClick={() => setDeleteId(p.id)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label={`ลบ ${p.name}`}><Trash2 className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} /></button>
+                </div>
               </div>
+            ))}
+            <div className="pt-2">
+              {atCap ? <div className="rounded-lg border px-3 py-2.5 text-xs" style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-muted)" }}><div className="mb-1.5 flex items-center gap-1.5"><Lock className="h-3.5 w-3.5 shrink-0" /><span>{upsellMessage}</span></div><Link href="/pricing" className="font-medium underline" style={{ color: VIOLET_LIGHT }}>ดูแผนราคา</Link></div> : <Button onClick={openCreateDialog} size="sm" className="min-h-11 gap-1.5 text-white" style={{ background: VIOLET }}><Plus className="h-3.5 w-3.5" /> สร้างโปรไฟล์แบรนด์</Button>}
             </div>
-          ))
-        )}
-      </div>
-
-      {/* Create button (locked at cap with upsell) */}
-      <div className="mt-4">
-        {atCap ? (
-          <div className="rounded-lg border px-3 py-2.5 text-xs" style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-muted)" }}>
-            <div className="mb-1.5 flex items-center gap-1.5">
-              <Lock className="h-3.5 w-3.5 shrink-0" />
-              <span>{upsellMessage}</span>
-            </div>
-            <Link href="/pricing" className="font-medium underline" style={{ color: VIOLET_LIGHT }}>ดูแผนราคา</Link>
           </div>
-        ) : (
-          <Button onClick={openCreateDialog} size="sm" className="min-h-11 w-full gap-1.5 text-white sm:w-auto" style={{ background: VIOLET }}>
-            <Plus className="h-3.5 w-3.5" /> สร้างโปรไฟล์แบรนด์
-          </Button>
-        )}
+        </details>
       </div>
 
       {/* Create/Edit dialog */}
@@ -502,6 +490,10 @@ export function BrandProfilePanel({
               <div>
                 <Label className="mb-1.5 block text-xs">โทนเสียง</Label>
                 <Input value={form.tone} onChange={(e) => setForm((f) => ({ ...f, tone: e.target.value }))} placeholder="เช่น เป็นกันเอง ขี้เล่น มีสาระ" />
+              </div>
+              <div>
+                <Label className="mb-1.5 block text-xs">บันทึกจากการวิเคราะห์</Label>
+                <Textarea value={form.analysisNotes} onChange={(e) => setForm((f) => ({ ...f, analysisNotes: e.target.value }))} rows={2} placeholder="แนวทางเพิ่มเติมสำหรับการเขียน" />
               </div>
               <div>
                 <Label className="mb-1.5 block text-xs">คำต้องห้าม (คั่นด้วยจุลภาค)</Label>

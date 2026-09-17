@@ -1,0 +1,404 @@
+<div id="hero-script-workspace-concept" lang="th">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600&family=Noto+Sans+Thai:wght@400;500;600&display=swap');
+    #hero-script-workspace-concept {
+      --hsw-ink: #f5f3f8;
+      --hsw-muted: #a8a0ad;
+      --hsw-dim: #736b78;
+      --hsw-bg: #17141a;
+      --hsw-panel: #211d25;
+      --hsw-panel-2: #29232f;
+      --hsw-line: rgba(255, 255, 255, .11);
+      --hsw-violet: #8b5cf6;
+      --hsw-violet-soft: rgba(139, 92, 246, .18);
+      --hsw-green: #7dd3a7;
+      box-sizing: border-box;
+      color: var(--hsw-ink);
+      font-family: "Noto Sans Thai", "Leelawadee UI", Tahoma, sans-serif;
+      font-size: 15px;
+      line-height: 1.52;
+      background: var(--hsw-bg);
+      min-width: 0;
+    }
+    #hero-script-workspace-concept *, #hero-script-workspace-concept *::before, #hero-script-workspace-concept *::after { box-sizing: inherit; }
+    #hero-script-workspace-concept [hidden] { display: none !important; }
+    #hero-script-workspace-concept button, #hero-script-workspace-concept input, #hero-script-workspace-concept textarea, #hero-script-workspace-concept select { font: inherit; }
+    #hero-script-workspace-concept button { cursor: pointer; }
+    .hsw-shell { width: min(100%, 1080px); margin: 0 auto; padding: clamp(12px, 2.4vw, 28px); }
+    .hsw-topbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--hsw-line); padding-bottom: 12px; }
+    .hsw-tabs { display: flex; gap: 2px; min-width: 0; }
+    .hsw-tab { min-height: 44px; padding: 0 13px; border: 0; border-bottom: 2px solid transparent; color: var(--hsw-muted); background: transparent; white-space: nowrap; }
+    .hsw-tab[aria-selected="true"] { color: var(--hsw-ink); border-bottom-color: var(--hsw-violet); font-weight: 600; }
+    .hsw-new, .hsw-primary, .hsw-idea, .hsw-hook-go, .hsw-send { min-height: 44px; border: 0; border-radius: 9px; color: #fff; background: var(--hsw-violet); padding: 0 15px; font-weight: 600; }
+    .hsw-new { white-space: nowrap; }
+    .hsw-new i { margin-right: 5px; vertical-align: -3px; }
+    .hsw-page { padding-top: clamp(19px, 3vw, 34px); }
+    .hsw-kicker { margin: 0 0 4px; color: #cbbdf6; font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+    .hsw-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .hsw-title { margin: 0; font-family: Kanit, "Noto Sans Thai", sans-serif; font-weight: 500; font-size: clamp(25px, 4vw, 35px); line-height: 1.14; letter-spacing: -.02em; }
+    .hsw-example { flex: 0 0 auto; color: var(--hsw-dim); font-size: 12px; padding-top: 5px; }
+    .hsw-subtitle { color: var(--hsw-muted); margin: 9px 0 21px; max-width: 46rem; }
+    .hsw-resume { min-height: 36px; margin: -9px 0 18px; border: 0; color: #cbbdf6; background: transparent; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
+    .hsw-setup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 14px; align-items: end; padding: 0 0 21px; border-bottom: 1px solid var(--hsw-line); }
+    .hsw-field-label { display: block; color: var(--hsw-muted); font-size: 13px; margin-bottom: 5px; }
+    .hsw-select, .hsw-input, .hsw-textarea { width: 100%; min-height: 44px; border: 1px solid var(--hsw-line); border-radius: 8px; color: var(--hsw-ink); background: var(--hsw-panel); padding: 9px 11px; font-size: 16px; }
+    .hsw-select { appearance: auto; }
+    .hsw-input::placeholder, .hsw-textarea::placeholder { color: #79717e; }
+    .hsw-textarea { min-height: 102px; resize: vertical; }
+    .hsw-duration-block { min-width: 228px; }
+    .hsw-duration { display: flex; gap: 5px; }
+    .hsw-duration button { min-height: 44px; flex: 1; border: 1px solid var(--hsw-line); border-radius: 7px; color: var(--hsw-muted); background: transparent; }
+    .hsw-duration button[aria-pressed="true"] { border-color: rgba(139, 92, 246, .72); color: #e9e1ff; background: var(--hsw-violet-soft); }
+    .hsw-manage { grid-column: 1 / -1; justify-self: start; min-height: 44px; border: 0; color: #cbbdf6; background: transparent; padding: 2px 0; text-decoration: underline; text-underline-offset: 3px; }
+    .hsw-profiles { display: none; margin: 0 0 22px; padding: 14px 0 17px; border-bottom: 1px solid var(--hsw-line); }
+    .hsw-profiles[data-open="true"] { display: block; }
+    .hsw-profile-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .hsw-profile-heading h2 { margin: 0; font-family: Kanit, "Noto Sans Thai", sans-serif; font-size: 18px; font-weight: 500; }
+    .hsw-profile-list { display: flex; flex-wrap: wrap; gap: 7px; }
+    .hsw-profile-chip { min-height: 44px; border: 1px solid var(--hsw-line); border-radius: 20px; background: transparent; color: var(--hsw-muted); padding: 0 12px; }
+    .hsw-profile-chip[aria-pressed="true"] { color: var(--hsw-ink); border-color: var(--hsw-violet); background: var(--hsw-violet-soft); }
+    .hsw-profile-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 12px; }
+    .hsw-secondary { min-height: 44px; border: 1px solid var(--hsw-line); border-radius: 8px; color: var(--hsw-ink); background: transparent; padding: 0 12px; }
+    .hsw-topic { padding: 23px 0 22px; border-bottom: 1px solid var(--hsw-line); }
+    .hsw-section-head { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .hsw-section-head h2 { margin: 0; font-family: Kanit, "Noto Sans Thai", sans-serif; font-size: 20px; font-weight: 500; }
+    .hsw-step { color: var(--hsw-dim); font-size: 12px; white-space: nowrap; }
+    .hsw-topic-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .hsw-idea { background: var(--hsw-panel-2); color: #ded7e7; }
+    .hsw-idea i { margin-right: 4px; vertical-align: -3px; }
+    .hsw-idea-options { display: none; gap: 7px; margin-top: 9px; flex-wrap: wrap; }
+    .hsw-idea-options[data-open="true"] { display: flex; }
+    .hsw-idea-options button { min-height: 40px; border: 1px solid var(--hsw-line); border-radius: 8px; color: var(--hsw-muted); background: transparent; padding: 0 11px; text-align: left; }
+    .hsw-action-line { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 10px; }
+    .hsw-help { margin: 0; color: var(--hsw-dim); font-size: 13px; }
+    .hsw-hook-go:disabled, .hsw-send:disabled { cursor: default; opacity: .42; }
+    .hsw-hook-area, .hsw-script-area { display: none; padding: 23px 0; border-bottom: 1px solid var(--hsw-line); }
+    .hsw-hook-area[data-open="true"], .hsw-script-area[data-open="true"] { display: block; }
+    .hsw-hook-choices { display: grid; gap: 7px; }
+    .hsw-hook-choice { display: flex; gap: 11px; align-items: flex-start; min-height: 56px; width: 100%; border: 1px solid var(--hsw-line); border-radius: 9px; color: var(--hsw-ink); background: transparent; padding: 10px 11px; text-align: left; }
+    .hsw-hook-choice:hover, .hsw-hook-choice[aria-pressed="true"] { border-color: rgba(139, 92, 246, .85); background: rgba(139, 92, 246, .1); }
+    .hsw-hook-number { color: #cbbdf6; font-size: 12px; padding-top: 1px; }
+    .hsw-script-stage { display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 13px; align-items: end; }
+    .hsw-script-note { color: var(--hsw-muted); font-size: 13px; margin: 0 0 8px; }
+    .hsw-editor { display: none; margin-top: 16px; }
+    .hsw-editor[data-open="true"] { display: block; }
+    .hsw-editor-label { color: var(--hsw-muted); font-size: 13px; display: block; margin: 12px 0 5px; }
+    .hsw-editor-label:first-child { margin-top: 0; }
+    .hsw-editor-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 5px; }
+    .hsw-editor-line .hsw-editor-label { margin: 0; }
+    .hsw-rewrite { min-height: 36px; border: 0; color: #cbbdf6; background: transparent; padding: 0 3px; text-decoration: underline; text-underline-offset: 3px; }
+    .hsw-word-budget { color: var(--hsw-dim); font-size: 12px; margin: 5px 0 0; }
+    .hsw-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 0 5px; }
+    .hsw-bottom-actions { display: flex; align-items: center; gap: 8px; }
+    .hsw-editor-menu { position: relative; }
+    .hsw-editor-menu summary { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--hsw-line); border-radius: 8px; color: var(--hsw-muted); list-style: none; }
+    .hsw-editor-menu summary::-webkit-details-marker { display: none; }
+    .hsw-editor-menu-pop { position: absolute; z-index: 2; right: 0; bottom: 49px; width: 210px; padding: 5px; border: 1px solid var(--hsw-line); border-radius: 8px; background: #2a2530; box-shadow: 0 12px 28px rgba(0,0,0,.34); }
+    .hsw-editor-menu-pop button { width: 100%; min-height: 44px; border: 0; border-radius: 5px; color: var(--hsw-ink); background: transparent; padding: 0 9px; text-align: left; }
+    .hsw-save-status { color: var(--hsw-dim); font-size: 13px; }
+    .hsw-toast { min-height: 24px; color: var(--hsw-green); font-size: 13px; padding-top: 10px; }
+    .hsw-library-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; margin-bottom: 15px; }
+    .hsw-filter { min-height: 44px; border: 1px solid var(--hsw-line); border-radius: 8px; color: var(--hsw-muted); background: var(--hsw-panel); padding: 0 10px; }
+    .hsw-filter-status { display: flex; gap: 2px; align-items: center; }
+    .hsw-filter-status button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; color: var(--hsw-muted); background: transparent; padding: 0 8px; }
+    .hsw-filter-status button[aria-pressed="true"] { color: var(--hsw-ink); border-bottom-color: var(--hsw-violet); }
+    .hsw-list { border-top: 1px solid var(--hsw-line); }
+    .hsw-row { display: grid; grid-template-columns: minmax(0, 1fr) 158px 94px 62px 44px; gap: 10px; align-items: center; width: 100%; border: 0; border-bottom: 1px solid var(--hsw-line); color: inherit; background: transparent; padding: 13px 0; text-align: left; }
+    .hsw-row-main { min-width: 0; min-height: 44px; border: 0; color: inherit; background: transparent; padding: 0; text-align: left; }
+    .hsw-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .hsw-row-meta { display: block; color: var(--hsw-dim); font-size: 12px; margin-top: 2px; }
+    .hsw-row-brand, .hsw-row-date { color: var(--hsw-muted); font-size: 13px; }
+    .hsw-status { justify-self: start; font-size: 12px; white-space: nowrap; }
+    .hsw-status[data-status="sent"] { color: var(--hsw-green); }
+    .hsw-menu { position: relative; justify-self: end; }
+    .hsw-menu summary { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 7px; color: var(--hsw-muted); list-style: none; }
+    .hsw-menu summary::-webkit-details-marker { display: none; }
+    .hsw-menu summary:hover { background: var(--hsw-panel-2); color: var(--hsw-ink); }
+    .hsw-menu-pop { position: absolute; z-index: 2; top: 39px; right: 0; width: 205px; padding: 5px; border: 1px solid var(--hsw-line); border-radius: 8px; background: #2a2530; box-shadow: 0 12px 28px rgba(0,0,0,.34); }
+    .hsw-menu-pop button { display: block; width: 100%; min-height: 40px; border: 0; border-radius: 5px; color: var(--hsw-ink); background: transparent; padding: 0 9px; text-align: left; }
+    .hsw-menu-pop button:hover { background: var(--hsw-panel-2); }
+    .hsw-menu-pop .hsw-delete { color: #f2a6af; }
+    .hsw-delete-confirm { margin: 6px 9px; color: var(--hsw-muted); font-size: 13px; }
+    .hsw-pagination { display: flex; align-items: center; justify-content: space-between; padding-top: 17px; color: var(--hsw-muted); font-size: 13px; }
+    .hsw-pagination-buttons { display: flex; gap: 5px; }
+    .hsw-pagination button { min-width: 44px; min-height: 44px; border: 1px solid var(--hsw-line); border-radius: 7px; color: var(--hsw-ink); background: transparent; }
+    .hsw-pagination button:disabled { opacity: .36; cursor: default; }
+    .hsw-empty { padding: 32px 0; color: var(--hsw-muted); text-align: center; }
+    .hsw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 650px) {
+      .hsw-setup { grid-template-columns: 1fr; }
+      .hsw-duration-block { min-width: 0; }
+      .hsw-script-stage { grid-template-columns: 1fr; }
+      .hsw-library-tools { grid-template-columns: 1fr; }
+      .hsw-filter-status { order: 3; }
+      .hsw-row { grid-template-columns: minmax(0, 1fr) 44px; gap: 7px; }
+      .hsw-row-brand, .hsw-row-date, .hsw-status { grid-column: 1; }
+      .hsw-row-brand, .hsw-row-date { display: inline; }
+      .hsw-row-brand::after { content: " · "; }
+      .hsw-status { grid-row: 4; }
+      .hsw-menu { grid-column: 2; grid-row: 1 / span 4; align-self: start; }
+    }
+    @media (max-width: 410px) {
+      .hsw-shell { padding: 12px; }
+      .hsw-topbar { gap: 6px; }
+      .hsw-tab { padding: 0 7px; font-size: 14px; }
+      .hsw-new { padding: 0 10px; font-size: 14px; }
+      .hsw-topic-controls { grid-template-columns: 1fr; }
+      .hsw-bottom { align-items: stretch; flex-direction: column; }
+      .hsw-send { width: 100%; }
+    }
+  </style>
+  <main class="hsw-shell" aria-label="ตัวอย่างพื้นที่เขียนสคริปต์ Hero">
+    <header class="hsw-topbar">
+      <nav class="hsw-tabs" aria-label="พื้นที่สคริปต์">
+        <button type="button" class="hsw-tab" data-tab="write" aria-selected="true">เขียนสคริปต์</button>
+        <button type="button" class="hsw-tab" data-tab="library" aria-selected="false">คลังสคริปต์</button>
+      </nav>
+      <button type="button" class="hsw-new" id="hsw-new"><i data-lucide="plus" aria-hidden="true"></i>สคริปต์ใหม่</button>
+    </header>
+
+    <section class="hsw-page" id="hsw-write-page">
+      <div class="hsw-title-row">
+        <div>
+          <p class="hsw-kicker">เขียนทีละส่วน</p>
+          <h1 class="hsw-title" id="hsw-project-title">เริ่มสคริปต์ใหม่</h1>
+        </div>
+        <span class="hsw-example">ตัวอย่างหน้าจอ</span>
+      </div>
+      <p class="hsw-subtitle">เลือกบริบทสั้น ๆ แล้วเริ่มจากหัวข้อที่อยากเล่า</p>
+      <button type="button" class="hsw-resume" id="hsw-resume">ทำร่างล่าสุดต่อ</button>
+      <div class="hsw-setup">
+        <label>
+          <span class="hsw-field-label">โปรไฟล์แบรนด์</span>
+          <select class="hsw-select" id="hsw-brand" aria-label="เลือกโปรไฟล์แบรนด์"></select>
+        </label>
+        <div class="hsw-duration-block">
+          <span class="hsw-field-label">ความยาววิดีโอ</span>
+          <div class="hsw-duration" id="hsw-duration" aria-label="เลือกความยาววิดีโอ">
+            <button type="button" data-duration="30" aria-pressed="true">30 วินาที</button>
+            <button type="button" data-duration="60" aria-pressed="false">60 วินาที</button>
+            <button type="button" data-duration="90" aria-pressed="false">90 วินาที</button>
+          </div>
+        </div>
+        <button type="button" class="hsw-manage" id="hsw-manage">จัดการโปรไฟล์</button>
+      </div>
+
+      <section class="hsw-profiles" id="hsw-profiles" data-open="false" aria-label="จัดการโปรไฟล์แบรนด์">
+        <div class="hsw-profile-heading"><h2>โปรไฟล์แบรนด์</h2><button type="button" class="hsw-secondary" id="hsw-close-profiles">เสร็จแล้ว</button></div>
+        <div class="hsw-profile-list" id="hsw-profile-list"></div>
+        <div class="hsw-profile-form">
+          <input class="hsw-input" id="hsw-profile-name" placeholder="ชื่อโปรไฟล์ใหม่" aria-label="ชื่อโปรไฟล์ใหม่">
+          <button type="button" class="hsw-secondary" id="hsw-add-profile">เพิ่มโปรไฟล์</button>
+        </div>
+      </section>
+
+      <section class="hsw-topic" aria-labelledby="hsw-topic-heading">
+        <div class="hsw-section-head"><h2 id="hsw-topic-heading">หัวข้อที่อยากเล่า</h2><span class="hsw-step">ขั้น 1 จาก 3</span></div>
+        <div class="hsw-topic-controls">
+          <input class="hsw-input" id="hsw-topic-input" placeholder="เช่น วิธีเริ่มใช้ AI ในวันงานยุ่ง" aria-label="หัวข้อสคริปต์">
+          <button type="button" class="hsw-idea" id="hsw-ideas"><i data-lucide="sparkles" aria-hidden="true"></i>คิดไอเดีย</button>
+        </div>
+        <div class="hsw-idea-options" id="hsw-idea-options" data-open="false" aria-label="ไอเดียตัวอย่าง">
+          <button type="button">วิธีเริ่มใช้ AI ในวันงานยุ่ง</button>
+          <button type="button">ทำไมธุรกิจเล็กควรเล่าเรื่องให้เข้าใจ</button>
+          <button type="button">เรื่องเล่าธรรมดาที่ชวนคนหยุดดู</button>
+        </div>
+        <div class="hsw-action-line">
+          <p class="hsw-help">เลือก Hook ด้วยตัวเองได้ทุกเมื่อ</p>
+          <button type="button" class="hsw-hook-go" id="hsw-make-hooks" disabled>สร้าง Hook</button>
+        </div>
+      </section>
+
+      <section class="hsw-hook-area" id="hsw-hook-area" data-open="false" aria-labelledby="hsw-hook-heading">
+        <div class="hsw-section-head"><h2 id="hsw-hook-heading">เลือก Hook</h2><span class="hsw-step">หัวข้อเสร็จแล้ว · ขั้น 2 จาก 3</span></div>
+        <div class="hsw-hook-choices" id="hsw-hook-choices"></div>
+      </section>
+
+      <section class="hsw-script-area" id="hsw-script-area" data-open="false" aria-labelledby="hsw-script-heading">
+        <div class="hsw-section-head"><h2 id="hsw-script-heading">ร่างสคริปต์</h2><span class="hsw-step">Hook เสร็จแล้ว · ขั้น 3 จาก 3</span></div>
+        <div class="hsw-script-stage">
+          <p class="hsw-script-note">แก้ข้อความก่อนสร้างร่างได้</p>
+          <button type="button" class="hsw-primary" id="hsw-make-script">สร้างสคริปต์</button>
+        </div>
+        <div class="hsw-editor" id="hsw-editor" data-open="false">
+          <div class="hsw-editor-line"><label class="hsw-editor-label" for="hsw-edit-hook">Hook</label><button type="button" class="hsw-rewrite" data-rewrite="hook">เขียน Hook ใหม่</button></div>
+          <textarea class="hsw-textarea" id="hsw-edit-hook" aria-label="แก้ Hook"></textarea>
+          <div class="hsw-editor-line"><label class="hsw-editor-label" for="hsw-edit-body">เนื้อหา</label><button type="button" class="hsw-rewrite" data-rewrite="body">เขียนเนื้อหาใหม่</button></div>
+          <textarea class="hsw-textarea" id="hsw-edit-body" aria-label="แก้เนื้อหาสคริปต์"></textarea>
+          <p class="hsw-word-budget" id="hsw-word-budget">งบคำโดยประมาณ · 0 / 120 คำ</p>
+          <div class="hsw-editor-line"><label class="hsw-editor-label" for="hsw-edit-cta">CTA</label><button type="button" class="hsw-rewrite" data-rewrite="cta">เขียน CTA ใหม่</button></div>
+          <input class="hsw-input" id="hsw-edit-cta" aria-label="แก้คำชวนทำต่อ">
+        </div>
+      </section>
+
+      <footer class="hsw-bottom" id="hsw-bottom" hidden>
+        <span class="hsw-save-status" id="hsw-save-status">ตัวอย่างหน้าจอเท่านั้น · ยังไม่ได้บันทึก</span>
+        <div class="hsw-bottom-actions">
+          <details class="hsw-editor-menu" id="hsw-editor-menu" hidden><summary aria-label="เมนูงานตัดต่อ"><i data-lucide="ellipsis" aria-hidden="true"></i></summary><div class="hsw-editor-menu-pop"><button type="button" id="hsw-new-edit">สร้างงานตัดต่อใหม่</button></div></details>
+          <button type="button" class="hsw-send" id="hsw-send" disabled>ส่งไปตัดต่อ</button>
+        </div>
+      </footer>
+      <div class="hsw-toast" id="hsw-toast" aria-live="polite"></div>
+    </section>
+
+    <section class="hsw-page" id="hsw-library-page" hidden aria-labelledby="hsw-library-title">
+      <div class="hsw-title-row"><div><p class="hsw-kicker">16 สคริปต์ตัวอย่าง</p><h1 class="hsw-title" id="hsw-library-title">คลังสคริปต์</h1></div><span class="hsw-example">ตัวอย่างหน้าจอ</span></div>
+      <p class="hsw-subtitle">ค้นหาจากชื่อ เลือกสถานะ หรือเปิดสคริปต์เดิมเพื่อแก้ต่อ</p>
+      <div class="hsw-library-tools">
+        <input class="hsw-input" id="hsw-search" type="search" placeholder="ค้นหาสคริปต์" aria-label="ค้นหาสคริปต์">
+        <select class="hsw-filter" id="hsw-library-brand" aria-label="กรองตามแบรนด์"></select>
+        <div class="hsw-filter-status" id="hsw-status-filter" aria-label="กรองตามสถานะ">
+          <button type="button" data-status="all" aria-pressed="true">ทั้งหมด</button>
+          <button type="button" data-status="draft" aria-pressed="false">ร่าง</button>
+          <button type="button" data-status="sent" aria-pressed="false">ส่งแล้ว</button>
+        </div>
+      </div>
+      <div class="hsw-list" id="hsw-list" aria-live="polite"></div>
+      <div class="hsw-pagination" id="hsw-pagination"></div>
+      <div class="hsw-toast" id="hsw-library-toast" aria-live="polite"></div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const root = document.getElementById('hero-script-workspace-concept');
+      const q = (selector) => root.querySelector(selector);
+      const qa = (selector) => [...root.querySelectorAll(selector)];
+      const brands = ['AI สำหรับคนทำงาน', 'ธุรกิจเล่าให้เข้าใจ', 'เรื่องเล่ารอบตัว'];
+      const scripts = [
+        ['เริ่มใช้ AI ในวันที่งานล้น', brands[0], '16 ก.ย. 2569', 'draft'], ['3 คำถามก่อนให้ AI ช่วยงาน', brands[0], '15 ก.ย. 2569', 'sent'],
+        ['ธุรกิจเล็กเล่าเรื่องยังไงให้เข้าใจ', brands[1], '14 ก.ย. 2569', 'draft'], ['ข้อความสั้นที่ทำให้คนหยุดฟัง', brands[2], '13 ก.ย. 2569', 'sent'],
+        ['ประชุมจบแล้วทำอะไรต่อ', brands[0], '12 ก.ย. 2569', 'draft'], ['ขายของโดยไม่พูดขาย', brands[1], '11 ก.ย. 2569', 'sent'],
+        ['เรื่องเล่าจากร้านข้างบ้าน', brands[2], '10 ก.ย. 2569', 'draft'], ['AI ช่วยเริ่มต้นบทสนทนา', brands[0], '9 ก.ย. 2569', 'sent'],
+        ['คำที่ทำให้เรื่องยากง่ายขึ้น', brands[1], '8 ก.ย. 2569', 'draft'], ['ทำไมเราเก็บเรื่องเล็ก ๆ ไว้', brands[2], '7 ก.ย. 2569', 'draft'],
+        ['ลิสต์งานที่ยอมให้ AI ช่วยได้', brands[0], '6 ก.ย. 2569', 'sent'], ['เล่าเรื่องแบรนด์ใน 30 วินาที', brands[1], '5 ก.ย. 2569', 'draft'],
+        ['มุมที่คนเดินผ่านทุกวัน', brands[2], '4 ก.ย. 2569', 'sent'], ['งานซ้ำ ๆ ที่ควรเริ่มจากคำถาม', brands[0], '3 ก.ย. 2569', 'draft'],
+        ['ประโยคเปิดที่ไม่ต้องพยายามเกินไป', brands[1], '2 ก.ย. 2569', 'sent'], ['เรื่องธรรมดาที่มีคนอยากฟัง', brands[2], '1 ก.ย. 2569', 'draft']
+      ].map(([title, brand, date, status], id) => ({ id, title, brand, date, status }));
+      const state = { brands: [...brands], brand: brands[0], duration: 30, preferences: { brand: brands[0], duration: 30 }, libraryBrand: 'all', topic: '', hook: '', activeTab: 'write', filter: 'all', page: 1, pendingDelete: null, editingSent: false };
+      const hooks = [
+        'ถ้าวันนี้งานล้น ลองเริ่มจากคำถามเดียวก่อน',
+        'ก่อนเปิดเครื่องมือใหม่ ลองมอง 10 นาทีที่หายไปทุกวัน',
+        'เรื่องยากจะง่ายขึ้น เมื่อเราเล่าให้คนฟังเห็นภาพ'
+      ];
+      const brandSelect = q('#hsw-brand');
+      const libraryBrand = q('#hsw-library-brand');
+      const setToast = (message, library = false) => { q(library ? '#hsw-library-toast' : '#hsw-toast').textContent = message; };
+      const escape = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+      const fillBrands = () => {
+        brandSelect.innerHTML = `<option value=""${state.brand === '' ? ' selected' : ''}>ไม่ใช้โปรไฟล์</option>${state.brands.map((brand) => `<option value="${escape(brand)}"${brand === state.brand ? ' selected' : ''}>${escape(brand)}</option>`).join('')}`;
+        libraryBrand.innerHTML = `<option value="all"${state.libraryBrand === 'all' ? ' selected' : ''}>ทุกแบรนด์</option><option value="none"${state.libraryBrand === 'none' ? ' selected' : ''}>ไม่ใช้โปรไฟล์</option>${state.brands.map((brand) => `<option value="${escape(brand)}"${state.libraryBrand === brand ? ' selected' : ''}>${escape(brand)}</option>`).join('')}`;
+        q('#hsw-profile-list').innerHTML = `<button type="button" class="hsw-profile-chip" data-profile="" aria-pressed="${state.brand === ''}">ไม่ใช้โปรไฟล์</button>${state.brands.map((brand) => `<button type="button" class="hsw-profile-chip" data-profile="${escape(brand)}" aria-pressed="${brand === state.brand}">${escape(brand)}</button>`).join('')}`;
+      };
+      const openTab = (tab) => {
+        state.activeTab = tab;
+        q('#hsw-write-page').hidden = tab !== 'write';
+        q('#hsw-library-page').hidden = tab !== 'library';
+        qa('.hsw-tab').forEach((button) => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
+        if (tab === 'library') renderLibrary();
+      };
+      const setTopic = (value) => { state.topic = value.trim(); q('#hsw-topic-input').value = value; q('#hsw-make-hooks').disabled = !state.topic; };
+      const setDuration = (duration) => { state.duration = duration; qa('[data-duration]').forEach((button) => button.setAttribute('aria-pressed', String(Number(button.dataset.duration) === duration))); };
+      const updateEditorActions = () => {
+        const action = q('#hsw-send');
+        action.textContent = state.editingSent ? 'เปิดงานตัดต่อเดิม' : 'ส่งไปตัดต่อ';
+        q('#hsw-editor-menu').hidden = !state.editingSent;
+      };
+      const updateWordBudget = () => {
+        const content = q('#hsw-edit-body').value.trim();
+        const words = content ? content.split(/\s+/).length : 0;
+        q('#hsw-word-budget').textContent = `งบคำโดยประมาณ · ${words} / 120 คำ`;
+      };
+      const freshDraft = () => {
+        state.topic = ''; state.hook = ''; state.editingSent = false; state.brand = state.preferences.brand; setDuration(state.preferences.duration); fillBrands(); q('#hsw-project-title').textContent = 'เริ่มสคริปต์ใหม่';
+        q('#hsw-hook-area').dataset.open = 'false'; q('#hsw-script-area').dataset.open = 'false'; q('#hsw-editor').dataset.open = 'false';
+        q('#hsw-bottom').hidden = true; q('#hsw-send').disabled = true; updateEditorActions(); q('#hsw-save-status').textContent = 'ตัวอย่างหน้าจอเท่านั้น · ยังไม่ได้บันทึก'; setTopic(''); setToast(''); openTab('write');
+      };
+      const showHooks = () => {
+        if (!state.topic) return;
+        state.editingSent = false; q('#hsw-hook-area').dataset.open = 'true'; q('#hsw-script-area').dataset.open = 'false'; q('#hsw-editor').dataset.open = 'false'; q('#hsw-send').disabled = true; updateEditorActions();
+        q('#hsw-hook-choices').innerHTML = hooks.map((hook, index) => `<button type="button" class="hsw-hook-choice" data-hook="${index}" aria-pressed="false"><span class="hsw-hook-number">0${index + 1}</span><span>${hook}</span></button>`).join('');
+      };
+      const chooseHook = (index) => {
+        state.hook = hooks[index];
+        qa('.hsw-hook-choice').forEach((button) => button.setAttribute('aria-pressed', String(Number(button.dataset.hook) === index)));
+        state.editingSent = false; q('#hsw-script-area').dataset.open = 'true'; q('#hsw-editor').dataset.open = 'false'; q('#hsw-send').disabled = true; updateEditorActions();
+      };
+      const makeScript = () => {
+        if (!state.hook) return;
+        q('#hsw-edit-hook').value = state.hook;
+        q('#hsw-edit-body').value = `เริ่มจาก ${state.topic} แล้วชวนคนดูมองว่าเรื่องนี้ช่วยให้วันทำงานหรือการเล่าเรื่องชัดขึ้นอย่างไร\n\nยกตัวอย่างสั้น ๆ ที่นำไปลองทำได้ทันที แล้วปิดด้วยประโยคที่จำง่าย`;
+        q('#hsw-edit-cta').value = 'ลองหยิบเรื่องของคุณมาเล่าในแบบที่คนเข้าใจ';
+        state.editingSent = false; q('#hsw-editor').dataset.open = 'true'; q('#hsw-bottom').hidden = false; q('#hsw-send').disabled = false; updateEditorActions(); updateWordBudget(); q('#hsw-save-status').textContent = 'ตัวอย่างหน้าจอเท่านั้น · แก้ไขในหน้านี้ได้';
+      };
+      const renderLibrary = () => {
+        const query = q('#hsw-search').value.trim().toLocaleLowerCase('th');
+        const brand = state.libraryBrand;
+        const filtered = scripts.filter((item) => item.title.toLocaleLowerCase('th').includes(query) && (brand === 'all' || (brand === 'none' ? !item.brand : item.brand === brand)) && (state.filter === 'all' || item.status === state.filter));
+        const totalPages = Math.max(1, Math.ceil(filtered.length / 8)); state.page = Math.min(state.page, totalPages);
+        const view = filtered.slice((state.page - 1) * 8, state.page * 8);
+        q('#hsw-list').innerHTML = view.length ? view.map((item) => {
+          const confirming = state.pendingDelete === item.id;
+          const deleteControl = confirming ? `<p class="hsw-delete-confirm">ลบสคริปต์ตัวอย่างนี้?</p><button type="button" class="hsw-delete" data-confirm-delete="${item.id}">ยืนยันลบ</button><button type="button" data-cancel-delete="${item.id}">ยกเลิก</button>` : `<button type="button" class="hsw-delete" data-delete="${item.id}">ลบสคริปต์</button>`;
+          return `<article class="hsw-row" data-id="${item.id}" aria-label="${item.title}">
+          <button type="button" class="hsw-row-main" data-open="${item.id}"><span class="hsw-row-title">${item.title}</span><span class="hsw-row-meta">${item.status === 'sent' ? 'ส่งงานแล้ว' : 'ร่างสคริปต์'}</span></button>
+          <span class="hsw-row-brand">${item.brand}</span><span class="hsw-row-date">${item.date}</span><span class="hsw-status" data-status="${item.status}">${item.status === 'sent' ? 'ส่งแล้ว' : 'ร่าง'}</span>
+          <details class="hsw-menu"${confirming ? ' open' : ''}><summary aria-label="เมนู ${item.title}"><i data-lucide="ellipsis" aria-hidden="true"></i></summary><div class="hsw-menu-pop">
+            ${item.status === 'sent' ? `<button type="button" data-edit-existing="${item.id}">เปิดงานตัดต่อเดิม</button><button type="button" data-new-edit="${item.id}">สร้างงานตัดต่อใหม่</button>` : ''}
+            ${deleteControl}</div></details></article>`;
+        }).join('') : '<div class="hsw-empty">ไม่พบสคริปต์ที่ตรงกับเงื่อนไข</div>';
+        q('#hsw-pagination').innerHTML = `<span>แสดง ${filtered.length ? (state.page - 1) * 8 + 1 : 0}–${Math.min(state.page * 8, filtered.length)} จาก ${filtered.length}</span><div class="hsw-pagination-buttons"><button type="button" data-page="prev" ${state.page === 1 ? 'disabled' : ''} aria-label="หน้าก่อนหน้า">ก่อน</button><button type="button" data-page="next" ${state.page === totalPages ? 'disabled' : ''} aria-label="หน้าถัดไป">ถัดไป</button></div>`;
+        if (globalThis.lucide) globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      };
+      const openExisting = (id) => {
+        const item = scripts.find((script) => script.id === Number(id)); if (!item) return;
+        state.brand = item.brand; fillBrands(); setDuration(60);
+        setTopic(item.title); state.hook = `คนส่วนใหญ่พลาดจุดนี้เมื่อพูดถึง ${item.title}`; q('#hsw-project-title').textContent = item.title;
+        showHooks(); chooseHook(0); makeScript(); q('#hsw-edit-hook').value = state.hook;
+        q('#hsw-edit-body').value = `นี่คือร่างตัวอย่างของ “${item.title}” ที่เปิดแก้ไขต่อได้\n\nจัดลำดับเรื่องให้คนดูตามทัน แล้วปิดด้วยประเด็นที่อยากให้จำ`;
+        state.editingSent = item.status === 'sent'; q('#hsw-send').disabled = false; updateEditorActions(); updateWordBudget();
+        setToast('เปิดสคริปต์ตัวอย่างเพื่อแก้ต่อแล้ว'); openTab('write');
+      };
+      fillBrands();
+      qa('.hsw-tab').forEach((button) => button.addEventListener('click', () => openTab(button.dataset.tab)));
+      q('#hsw-new').addEventListener('click', freshDraft);
+      q('#hsw-resume').addEventListener('click', () => openExisting(0));
+      brandSelect.addEventListener('change', () => { state.brand = brandSelect.value; state.preferences.brand = state.brand; fillBrands(); });
+      qa('[data-duration]').forEach((button) => button.addEventListener('click', () => { const duration = Number(button.dataset.duration); setDuration(duration); state.preferences.duration = duration; }));
+      q('#hsw-manage').addEventListener('click', () => { q('#hsw-profiles').dataset.open = 'true'; q('#hsw-profile-name').focus(); });
+      q('#hsw-close-profiles').addEventListener('click', () => { q('#hsw-profiles').dataset.open = 'false'; });
+      q('#hsw-profile-list').addEventListener('click', (event) => { const button = event.target.closest('[data-profile]'); if (!button) return; state.brand = button.dataset.profile; state.preferences.brand = state.brand; fillBrands(); });
+      q('#hsw-add-profile').addEventListener('click', () => { const input = q('#hsw-profile-name'); const name = input.value.trim(); if (name && !state.brands.includes(name)) { state.brands.push(name); state.brand = name; state.preferences.brand = name; input.value = ''; fillBrands(); setToast('เพิ่มโปรไฟล์ในตัวอย่างนี้แล้ว'); } });
+      q('#hsw-topic-input').addEventListener('input', (event) => setTopic(event.target.value));
+      q('#hsw-ideas').addEventListener('click', () => { const ideas = q('#hsw-idea-options'); ideas.dataset.open = String(ideas.dataset.open !== 'true'); });
+      q('#hsw-idea-options').addEventListener('click', (event) => { const button = event.target.closest('button'); if (!button) return; setTopic(button.textContent); q('#hsw-idea-options').dataset.open = 'false'; });
+      q('#hsw-make-hooks').addEventListener('click', showHooks);
+      q('#hsw-hook-choices').addEventListener('click', (event) => { const button = event.target.closest('[data-hook]'); if (button) chooseHook(Number(button.dataset.hook)); });
+      q('#hsw-make-script').addEventListener('click', makeScript);
+      q('#hsw-send').addEventListener('click', () => setToast(state.editingSent ? 'ตัวอย่าง: เปิดงานตัดต่อเดิม' : 'ตัวอย่าง: จะส่งร่างนี้ไปยังงานตัดต่อ'));
+      q('#hsw-new-edit').addEventListener('click', () => setToast('ตัวอย่าง: สร้างงานตัดต่อใหม่จากสคริปต์นี้'));
+      q('#hsw-editor').addEventListener('click', (event) => {
+        const button = event.target.closest('[data-rewrite]'); if (!button) return;
+        const section = button.dataset.rewrite;
+        if (section === 'hook') q('#hsw-edit-hook').value = `ลองมอง ${state.topic} จากมุมที่คุณอาจยังไม่เคยคิด`;
+        if (section === 'body') q('#hsw-edit-body').value = `เริ่มจาก ${state.topic} ด้วยตัวอย่างที่เห็นภาพ\n\nอธิบายให้คนดูนำไปลองได้ แล้วทิ้งคำถามสั้น ๆ ให้คิดต่อ`;
+        if (section === 'cta') q('#hsw-edit-cta').value = 'ลองหยิบเรื่องของคุณมาเล่าให้ชัดขึ้นวันนี้';
+        updateWordBudget(); setToast(`ตัวอย่าง: เขียน${section === 'hook' ? ' Hook' : section === 'body' ? 'เนื้อหา' : ' CTA'} ใหม่แล้ว`);
+      });
+      q('#hsw-edit-body').addEventListener('input', updateWordBudget);
+      q('#hsw-search').addEventListener('input', () => { state.page = 1; renderLibrary(); });
+      libraryBrand.addEventListener('change', () => { state.libraryBrand = libraryBrand.value; state.page = 1; renderLibrary(); });
+      q('#hsw-status-filter').addEventListener('click', (event) => { const button = event.target.closest('[data-status]'); if (!button) return; state.filter = button.dataset.status; qa('#hsw-status-filter [data-status]').forEach((item) => item.setAttribute('aria-pressed', String(item === button))); state.page = 1; renderLibrary(); });
+      q('#hsw-list').addEventListener('click', (event) => {
+        const open = event.target.closest('[data-open]'); const existing = event.target.closest('[data-edit-existing]'); const create = event.target.closest('[data-new-edit]'); const remove = event.target.closest('[data-delete]'); const confirmRemove = event.target.closest('[data-confirm-delete]'); const cancelRemove = event.target.closest('[data-cancel-delete]');
+        if (open) openExisting(open.dataset.open);
+        if (existing) setToast('ตัวอย่าง: เปิดงานตัดต่อเดิม', true);
+        if (create) setToast('ตัวอย่าง: สร้างงานตัดต่อใหม่จากสคริปต์นี้', true);
+        if (remove) { state.pendingDelete = Number(remove.dataset.delete); renderLibrary(); }
+        if (cancelRemove) { state.pendingDelete = null; renderLibrary(); }
+        if (confirmRemove) { const index = scripts.findIndex((item) => item.id === Number(confirmRemove.dataset.confirmDelete)); if (index >= 0) scripts.splice(index, 1); state.pendingDelete = null; renderLibrary(); setToast('ลบสคริปต์ตัวอย่างแล้ว', true); }
+      });
+      q('#hsw-pagination').addEventListener('click', (event) => { const button = event.target.closest('[data-page]'); if (!button) return; state.page += button.dataset.page === 'next' ? 1 : -1; renderLibrary(); });
+      if (globalThis.lucide) globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+    })();
+  </script>
+</div>
