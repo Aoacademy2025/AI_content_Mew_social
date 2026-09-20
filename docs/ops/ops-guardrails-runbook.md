@@ -6,22 +6,43 @@ App dir: `/var/www/ai-content` · PM2 app: `ai-content`
 > Policy: confirm with the team (Mew/wao) before SSHing into prod; run heavy
 > steps off-peak. These steps are config-only and independent of any deploy.
 
-## 1. pm2-logrotate (50MB × 5, compressed)
+## 1. HERO-10 PM2 log retention (14-day observation readiness)
 
-Why: the PM2 error log reached 414MB / 9.7M lines (2026-06-10 audit) —
-unbounded logs eat the same disk renders need and make `pm2 logs` unusable.
+Why: HERO-10's closure gate needs fourteen calendar days of timestamped
+`[prisma-slow-tx]` lines. `log_date_format` is already set in
+`ecosystem.config.js`; this is the separate, operator-applied PM2 retention
+step. It is intentionally **not applied by this repository change**.
 
-Run on the VPS:
+`pm2-logrotate` retains a count of rotated files, not an age. Production's
+read-only September 20 check found `retain=5`, `max_size=50M`,
+`compress=true`, daily `rotateInterval`, and `workerInterval=30`. Raising only
+`retain` to 14 is the approved minimal change. It does **not** guarantee
+fourteen wall-clock days when a file rotates more than once per day; the final
+date-coverage check below is the authority. Missing history cannot be
+recreated.
+
+Run only in an authorized production maintenance window. First record the
+current configuration for rollback:
 
 ```bash
-pm2 install pm2-logrotate
-pm2 set pm2-logrotate:max_size 50M
-pm2 set pm2-logrotate:retain 5
-pm2 set pm2-logrotate:compress true
-pm2 save
+pm2 conf pm2-logrotate
+pm2 status
 ```
 
-`pm2 save` persists the module and its settings across reboots; installing the module briefly restarts only the logrotate worker — no impact on `ai-content`.
+Apply only the approved retention change on the VPS:
+
+```bash
+pm2 set pm2-logrotate:retain 14
+pm2 status
+```
+
+The installed production PM2 source was read-only verified on September 20:
+`CLI.set` writes the namespaced value and calls `restart(app_name,
+{ updateEnv: true })`; for this key, `app_name` is `pm2-logrotate`. Only the
+logrotate module is therefore restarted, not application processes. Still,
+compare `pm2 status` PIDs and restart counters before and after, and stop if
+any application counter changes. The command remains an explicit operations
+action rather than a deploy side effect.
 
 Verify:
 
@@ -29,17 +50,50 @@ Verify:
 pm2 conf pm2-logrotate
 ```
 
-Expected: output like `$ pm2 set pm2-logrotate:max_size 50M`, `$ pm2 set pm2-logrotate:retain 5`, `$ pm2 set pm2-logrotate:compress true` (pm2 prints settings as `pm2 set` lines). If any of those three shows a different value, re-run the corresponding `pm2 set` command above.
+Expected values: `max_size=50M`, `retain=14`, `compress=true`,
+`rotateInterval=0 0 * * *`, and `workerInterval=30`. PM2's existing line
+timestamps remain the source of Bangkok-day bucketing; rotated filenames must
+not be used as day boundaries.
 
-The rotation worker checks sizes on each tick (default every 30s), so the existing oversized logs get rotated into compressed archives almost immediately. Confirm:
+After fourteen elapsed days, check the **oldest timestamp only** in the retained
+`ai-content` and `story-film-system-worker` error logs. It must be at or before
+the requested fourteen-day observation start. If it is not, the seven-day
+HERO-10 closure window is invalid; increase retention and start a fresh
+observation window. Do not infer a holder from file adjacency.
+
+Confirm storage and archive counts without printing application log content:
 
 ```bash
-ls -lh /root/.pm2/logs/ | head -20
 du -sh /root/.pm2/logs/
+find /root/.pm2/logs -maxdepth 1 -type f \( -name 'ai-content-error*.log*' -o -name 'story-film-system-worker-error*.log*' \) -printf '%f\n' | sort
 ```
 
-Expected: every live `*.log` is under 50M; `*.log.gz` archives appear
-(at most 5 retained per log).
+Rollback: `pm2 set pm2-logrotate:retain 5`. This does not restore archives
+already pruned; do not apply the change until the retention capacity and disk
+budget are accepted.
+
+### Reading `[prisma-slow-tx]` provenance
+
+The marker has this deliberately narrow shape:
+
+```text
+[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location>
+```
+
+`elapsed` starts before Prisma waits for the transaction, so it can include
+queue time and is not a write-lock hold duration. `source` identifies the
+transaction invocation, not a proven lock holder. Group source values during a
+slow window, compare them with same-timestamp timeout failures, and treat a
+repeated source as an investigation candidate only.
+
+The logger keeps `src/...:line` or `scripts/...:line` when that source frame is
+available. In a Next production bundle it reduces
+`.next/server/app/.../route.js:line` to `app/.../route.js:line`; map that route
+back to `src/app/.../route.ts` at the deployed Git revision. Unknown or chunk
+frames stay `unknown` rather than logging an absolute path, function arguments,
+SQL, model names, or row data. An `unknown` source means the release did not
+provide a stable application frame and requires another discriminating probe;
+it is not evidence against any route.
 
 ## 2. SQLite WAL (one-time per DB file)
 
