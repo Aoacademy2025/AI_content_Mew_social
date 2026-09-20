@@ -39,6 +39,7 @@ assert.deepEqual(emitted[0], {
     navigationType: "navigate",
     scope: "document",
     reportedAt: 0,
+    reportSequence: 1,
   },
 });
 ok(emitted.length === 3, "zero CLS emits once and unchanged callback does not duplicate it");
@@ -65,23 +66,35 @@ ok(summary.find((v) => v.metric === "CLS")?.count === 1, "CLS updates aggregate 
 ok(summary.find((v) => v.metric === "CLS")?.p75 === 0.12, "aggregation keeps the latest CLS update");
 ok(summary.find((v) => v.metric === "INP")?.p75 === 220, "aggregation preserves the official INP value");
 
-const tiedUpdateSummary = summarizeWebVitals([
+const equalTimeUpdates = [
   {
     name: "web_vital",
     sessionId: "session-1",
     value: 2_000,
-    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100 }),
-    createdAt: new Date("2026-09-20T00:00:02.000Z"),
+    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100, reportSequence: 2 }),
+    createdAt: new Date("2026-09-20T00:00:00.000Z"),
   },
   {
     name: "web_vital",
     sessionId: "session-1",
     value: 1_000,
-    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100 }),
-    createdAt: new Date("2026-09-20T00:00:01.000Z"),
+    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100, reportSequence: 1 }),
+    createdAt: new Date("2026-09-20T00:00:00.000Z"),
   },
-]);
-ok(tiedUpdateSummary.find((v) => v.metric === "LCP")?.p75 === 2_000, "equal report times retain the reader's newest metric update");
+] as const;
+for (const updates of [equalTimeUpdates, [...equalTimeUpdates].reverse()]) {
+  const tiedUpdateSummary = summarizeWebVitals(updates);
+  ok(tiedUpdateSummary.find((v) => v.metric === "LCP")?.p75 === 2_000, "report sequence retains the newest update despite tied browser and SQLite times");
+}
+
+const missingSequenceSummary = summarizeWebVitals([{
+  name: "web_vital",
+  sessionId: "session-1",
+  value: 1_000,
+  properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100 }),
+  createdAt: new Date("2026-09-20T00:00:00.000Z"),
+}]);
+ok(missingSequenceSummary.find((v) => v.metric === "LCP")?.count === 0, "the sequenced baseline rejects updates without a finite report sequence");
 
 ok(shouldEmitPipelineStepStarted(null, "tts"), "a new pipeline phase emits started");
 ok(!shouldEmitPipelineStepStarted("tts", "tts"), "provider polling re-entry does not emit another started");

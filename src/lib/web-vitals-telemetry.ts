@@ -1,6 +1,6 @@
 export type WebVitalMetric = "LCP" | "CLS" | "INP";
 
-export const WEB_VITALS_MEASUREMENT_VERSION = "web-vitals@6.2.2";
+export const WEB_VITALS_MEASUREMENT_VERSION = "web-vitals@6.2.2+report-sequence-v1";
 
 type ReportedMetric = {
   name: WebVitalMetric;
@@ -50,6 +50,7 @@ export function createWebVitalReporter(
   now: () => number = () => performance.now(),
 ) {
   const lastValueByMetricId = new Map<string, number>();
+  let reportSequence = 0;
 
   return (metric: ReportedMetric) => {
     if (!Number.isFinite(metric.value) || metric.value < 0 || !metric.id) return;
@@ -68,38 +69,40 @@ export function createWebVitalReporter(
         navigationType: metric.navigationType ?? "navigate",
         scope: "document",
         reportedAt: now(),
+        reportSequence: ++reportSequence,
       },
     });
   };
 }
 
 /**
- * Keeps the latest value for each updated document metric. Inputs arrive newest-first,
- * so a tied browser timestamp preserves that first row. Rows without this exact collector
- * version are historical proxies and intentionally do not join this baseline.
+ * Keeps the latest value for each updated document metric by browser report sequence,
+ * independently of database timestamp precision or retrieval order. Rows without this
+ * exact collector version are historical proxies and intentionally do not join this baseline.
  */
 export function summarizeWebVitals(rows: WebVitalTelemetryRow[]) {
-  const latest = new Map<string, { metric: WebVitalMetric; value: number; reportedAt: number }>();
+  const latest = new Map<string, { metric: WebVitalMetric; value: number; reportSequence: number }>();
 
   for (const row of rows) {
     if (row.name !== "web_vital" || row.value == null || !Number.isFinite(row.value) || row.value < 0) continue;
     const props = properties(row);
     const metric = props.metric;
     const metricId = props.metricId;
+    const reportSequence = props.reportSequence;
     if (
       props.metricVersion !== WEB_VITALS_MEASUREMENT_VERSION
       || (metric !== "LCP" && metric !== "CLS" && metric !== "INP")
       || typeof metricId !== "string"
       || !metricId
+      || typeof reportSequence !== "number"
+      || !Number.isSafeInteger(reportSequence)
+      || reportSequence < 1
     ) continue;
 
-    const reportedAt = typeof props.reportedAt === "number" && Number.isFinite(props.reportedAt)
-      ? props.reportedAt
-      : row.createdAt.getTime();
     const key = `${row.sessionId ?? "no-session"}:${metric}:${metricId}`;
     const current = latest.get(key);
-    if (!current || reportedAt > current.reportedAt) {
-      latest.set(key, { metric, value: row.value, reportedAt });
+    if (!current || reportSequence > current.reportSequence) {
+      latest.set(key, { metric, value: row.value, reportSequence });
     }
   }
 
