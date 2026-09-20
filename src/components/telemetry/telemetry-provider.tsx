@@ -2,22 +2,10 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
+import { onCLS, onINP, onLCP } from "web-vitals";
 import { trackEvent } from "@/lib/client-telemetry";
 import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
-import { createWebVitalsAccumulator } from "@/lib/web-vitals-telemetry";
-
-type PerformanceEntryWithValue = PerformanceEntry & {
-  value?: number;
-  hadRecentInput?: boolean;
-  startTime: number;
-  duration: number;
-};
-
-function supportedEntry(type: string) {
-  return typeof PerformanceObserver !== "undefined"
-    && Array.isArray(PerformanceObserver.supportedEntryTypes)
-    && PerformanceObserver.supportedEntryTypes.includes(type);
-}
+import { createWebVitalReporter } from "@/lib/web-vitals-telemetry";
 
 function errorSignature(value: string) {
   let hash = 0;
@@ -116,10 +104,6 @@ export function TelemetryProvider() {
   }, []);
 
   useEffect(() => {
-    if (typeof PerformanceObserver === "undefined") return;
-
-    const observers: PerformanceObserver[] = [];
-    const vitals = createWebVitalsAccumulator();
     const vitalsPath = vitalsPathRef.current ?? window.location.pathname;
     const navigationId = navigationIdRef.current ?? (
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -127,68 +111,20 @@ export function TelemetryProvider() {
         : `nav_${Math.round(performance.timeOrigin)}_${Math.random().toString(36).slice(2)}`
     );
     navigationIdRef.current = navigationId;
+    const report = createWebVitalReporter(vitalsPath, navigationId, (event) => {
+      trackEvent("web_vital", {
+        category: "performance",
+        path: event.path,
+        value: event.value,
+        properties: event.properties,
+      });
+    });
 
-    const flushVitals = () => {
-      for (const emission of vitals.flush()) {
-        trackEvent("web_vital", {
-          category: "performance",
-          path: vitalsPath,
-          value: emission.value,
-          properties: {
-            metric: emission.metric,
-            navigationId,
-            scope: "document",
-          },
-        });
-      }
-    };
-
-    try {
-      if (supportedEntry("largest-contentful-paint")) {
-        const lcpObserver = new PerformanceObserver((list) => {
-          const entries = list.getEntries();
-          const latest = entries[entries.length - 1];
-          if (latest) vitals.recordLcp(latest.startTime);
-        });
-        lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
-        observers.push(lcpObserver);
-      }
-
-      if (supportedEntry("layout-shift")) {
-        const clsObserver = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries() as PerformanceEntryWithValue[]) {
-            if (!entry.hadRecentInput) vitals.recordCls(Number(entry.value ?? 0));
-          }
-        });
-        clsObserver.observe({ type: "layout-shift", buffered: true });
-        observers.push(clsObserver);
-      }
-
-      if (supportedEntry("event")) {
-        const inpObserver = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries() as PerformanceEntryWithValue[]) {
-            vitals.recordInp(entry.duration);
-          }
-        });
-        inpObserver.observe({ type: "event", buffered: true, durationThreshold: 40 } as PerformanceObserverInit);
-        observers.push(inpObserver);
-      }
-    } catch {
-      return undefined;
-    }
-
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") flushVitals();
-    };
-
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("pagehide", flushVitals);
-    return () => {
-      flushVitals();
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("pagehide", flushVitals);
-      observers.forEach((observer) => observer.disconnect());
-    };
+    // The library owns CLS session windows, INP interaction selection, BFCache and lifecycle reports.
+    // Repeated lifecycle callbacks are idempotent in the reporter and aggregation boundary.
+    onLCP(report, { reportAllChanges: true });
+    onCLS(report, { reportAllChanges: true });
+    onINP(report, { reportAllChanges: true });
   }, []);
 
   return null;

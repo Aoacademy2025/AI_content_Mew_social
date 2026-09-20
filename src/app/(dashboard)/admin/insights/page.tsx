@@ -40,6 +40,7 @@ type InsightSummary = {
   byokErrors: ErrorRow[];
   noise: NoiseRow[];
   vitals: VitalRow[];
+  vitalsMeasurementVersion: string;
   broll: {
     p95Ms: number | null; runs: number; requests: number; successPct: number;
     searchP95Ms: number | null; rankingP95Ms: number | null; downloadP95Ms: number | null; normalizeP95Ms: number | null;
@@ -187,11 +188,12 @@ function VitalPill({ vital }: { vital: VitalRow }) {
   const metric = vital.metric.toUpperCase();
   const value = metric === "CLS" ? (vital.p75 == null ? "-" : Number(vital.p75).toFixed(3)) : formatMs(vital.p75);
   const good = metric === "LCP" ? (vital.p75 ?? Infinity) <= 2500 : metric === "INP" ? (vital.p75 ?? Infinity) <= 200 : metric === "CLS" ? (vital.p75 ?? Infinity) <= 0.1 : false;
+  const label = vital.count === 0 ? "รอข้อมูล" : good ? "ดี" : "ต้องดู";
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-sm font-semibold text-white">{metric}<InfoTip label={metric} /></div>
-        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", good ? "bg-emerald-500/12 text-emerald-300" : "bg-amber-500/12 text-amber-300")}>{good ? "ดี" : "ต้องดู"}</span>
+        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", good ? "bg-emerald-500/12 text-emerald-300" : "bg-amber-500/12 text-amber-300")}>{label}</span>
       </div>
       <div className="mt-3 text-2xl font-semibold text-white">{value}</div>
       <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">p75 · {formatNumber(vital.count)} ครั้ง</div>
@@ -673,6 +675,8 @@ export default function AdminInsightsPage() {
                     )}
                     <Panel>
                       <h3 className="text-lg font-semibold text-white">Web Vitals</h3>
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">Baseline ที่แก้ไขแล้ว ({current.vitalsMeasurementVersion}) · ไม่รวม proxy เดิม จึงเทียบข้ามเวอร์ชันไม่ได้</p>
+                      {current.vitals.every((vital) => vital.count === 0) && <p className="mt-2 text-xs text-amber-200">ยังไม่มีตัวอย่างจาก collector ใหม่ — จะเริ่มมีหลัง deploy และมีผู้ใช้จริง</p>}
                       <div className="mt-4 grid gap-3 sm:grid-cols-3">{current.vitals.map((vital) => <VitalPill key={vital.metric} vital={vital} />)}</div>
                     </Panel>
                   </div>
