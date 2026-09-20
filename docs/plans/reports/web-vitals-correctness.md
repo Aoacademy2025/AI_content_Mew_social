@@ -32,7 +32,7 @@ Review fix round 2 found that SQLite rows can also tie on `createdAt`, so first-
 
 - RED: `npx tsx -e ...createWebVitalsAccumulator...` — failed as recorded above.
 - GREEN: `npx tsx scripts/verify-insights-data-quality.ts` — 17 passed, including both equal-timestamp/equal-database-time orderings and missing-sequence rejection.
-- `npm run verify:admin-number-telemetry-window` — 67 passed; the checked-in golden was deliberately re-recorded from this version because the versioned baseline payload intentionally changes.
+- `npm run verify:admin-number-telemetry-window` — 67 passed; its re-recorded 1/7/30-day golden payloads differ from the prior golden only in the six current/previous `web-vitals@6.2.2+report-sequence-v1` version labels.
 - `npx tsc --noEmit` — passed.
 - `npm run build` — passed; Next produced `.next/BUILD_ID`.
 
