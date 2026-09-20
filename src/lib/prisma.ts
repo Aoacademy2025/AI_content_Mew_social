@@ -69,17 +69,39 @@ if (isNewClient) {
     .catch((e) => console.warn("[prisma] could not set cache_size:", e));
 }
 
-// HERO-10. SQLite holds the write lock from a transaction's first write until
-// it commits, so one long transaction is what makes unrelated requests wait.
-// Production still loses ~11 writes a day to the 20 s socket timeout on a box
-// with a load average under 1, and the logs name only the victims
-// (`prisma.user.updateMany()` behind /api/videos/split-script and tts-gemini),
-// never the holder. Timing the transaction boundary is what tells them apart:
-// a victim shows as a failed query, a holder shows up here.
+// HERO-10. This measures elapsed time around Prisma's transaction call, which
+// includes time waiting to start; it is not a SQLite write-lock duration. The
+// source below narrows investigation to the transaction invocation without
+// claiming that invocation is the lock holder.
 //
 // Log-only, and the timer is a Date.now() pair around a call that already
 // awaits the database. Set PRISMA_SLOW_TX_MS=0 to remove it entirely.
 const slowTransactionMs = slowTransactionThresholdMsFromEnv();
+
+export function slowTransactionSourceFromStack(stack: string): string {
+  for (const line of stack.split("\n").slice(1)) {
+    const location = line.match(/(.+):(\d+):\d+\)?$/);
+    if (!location) continue;
+
+    const file = location[1];
+    const nextAppStart = file.lastIndexOf("/.next/server/app/");
+    if (nextAppStart >= 0) {
+      return `${file.slice(nextAppStart + "/.next/server/".length)}:${location[2]}`;
+    }
+
+    const sourceStart = Math.max(file.lastIndexOf("/src/"), file.lastIndexOf("/scripts/"));
+    if (sourceStart < 0) continue;
+
+    const source = file.slice(sourceStart + 1);
+    if (source !== "src/lib/prisma.ts") return `${source}:${location[2]}`;
+  }
+
+  return "unknown";
+}
+
+function slowTransactionSource(): string {
+  return slowTransactionSourceFromStack(new Error().stack ?? "");
+}
 
 if (isNewClient && slowTransactionMs > 0) {
   type TransactionFn = (...args: unknown[]) => Promise<unknown>;
@@ -90,15 +112,16 @@ if (isNewClient && slowTransactionMs > 0) {
     ...args: unknown[]
   ) => {
     const id = (sequence += 1);
+    const source = slowTransactionSource();
     const startedAt = Date.now();
     try {
       return await runTransaction(...args);
     } finally {
-      const heldMs = Date.now() - startedAt;
-      if (heldMs >= slowTransactionMs) {
-        // No arguments, no model names, no row data — a duration and a counter
-        // are enough to correlate against the timestamped lines around them.
-        console.warn(`[prisma-slow-tx] #${id} held ${heldMs}ms`);
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= slowTransactionMs) {
+        // No arguments, SQL, model names or row data — only a static source
+        // location and elapsed call time for correlation with timestamped logs.
+        console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms source=${source}`);
       }
     }
   };
