@@ -9,6 +9,7 @@ import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
 import { byokReasonFromText, classifyJobError, quotaReasonFromText } from "@/lib/job-failure-class";
 import { summarizeCreationJobs, type CreationJobRow } from "@/lib/insights-creation-jobs";
+import { summarizeWebVitals, WEB_VITALS_MEASUREMENT_VERSION } from "@/lib/web-vitals-telemetry";
 import {
   countInsightsTelemetry,
   readInsightsTelemetryRows,
@@ -637,13 +638,7 @@ function summarize(
   const byokErrors = summarizeIssueGroups(byokErrorRows, byokErrorReason);
   const noise = summarizeIssueGroups(noiseRows, benignTelemetryReason);
 
-  const vitals = ["LCP", "INP", "CLS"].map((metric) => {
-    const values = rows
-      .filter((row) => row.name === "web_vital" && String(parseProps(row).metric ?? "").toUpperCase() === metric)
-      .map((row) => row.value)
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-    return { metric, p75: percentile(values, 75), count: values.length };
-  });
+  const vitals = summarizeWebVitals(rows);
 
   const renderDurations = mainRenderDoneRows.map((row) => row.durationMs).filter((value): value is number => typeof value === "number");
   const renderP95 = percentile(renderDurations, 95);
@@ -753,6 +748,7 @@ function summarize(
     byokErrors,
     noise,
     vitals,
+    vitalsMeasurementVersion: WEB_VITALS_MEASUREMENT_VERSION,
     resource: {
       renderCount: serverRenderRows.length,
       renderStartedCount: serverStartRows.length,

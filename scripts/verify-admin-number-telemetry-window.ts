@@ -79,9 +79,9 @@ const GOLDEN_BASE_FILES = [
 const GOLDEN_FILE = "scripts/verify-admin-number-telemetry-window.golden.json";
 /**
  * `C7_REGENERATE_GOLDEN=1` re-records from GOLDEN_BASE_COMMIT (needs full git history);
- * `C7_REGENERATE_GOLDEN=head` re-records from the working tree — only for the day the fixture
- * legitimately changes AND the base commit is unreachable (this repo squashed `main` once already),
- * and only with the payload diff read by a human before it is committed.
+ * `C7_REGENERATE_GOLDEN=head` re-records from the working tree when the fixture or an explicitly
+ * versioned telemetry payload legitimately changes, and only with the payload diff read by a human
+ * before it is committed.
  */
 const REGENERATE = process.env.C7_REGENERATE_GOLDEN ?? "";
 
@@ -673,8 +673,8 @@ async function main() {
       README: "Golden /api/admin/insights payloads for scripts/verify-admin-number-telemetry-window.ts."
         + " Recorded from the code at baseCommit against the fixture that script builds, with `now` frozen."
         + " Re-record with C7_REGENERATE_GOLDEN=1 (from baseCommit, needs full git history) or"
-        + " C7_REGENERATE_GOLDEN=head (from the working tree — only when the fixture legitimately"
-        + " changed and baseCommit is unreachable; read the payload diff before committing it).",
+        + " C7_REGENERATE_GOLDEN=head (from the working tree — only when the fixture or explicitly"
+        + " versioned telemetry payload legitimately changed; read the payload diff before committing it).",
       baseCommit: GOLDEN_BASE_COMMIT,
       recordedFrom: from,
       fixtureRows: rows.length,
