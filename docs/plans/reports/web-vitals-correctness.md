@@ -17,6 +17,8 @@ Error: expected zero CLS and largest 0.12 session window; got zero=undefined win
 
 It demonstrates the two audited defects with independent literal expectations: zero CLS was omitted and separate shift values were summed. The retained behavioral check then passes: zero CLS emits once; unchanged lifecycle reports do not duplicate it; an updated document metric collapses to its newest value; historical proxy rows do not enter the corrected baseline; and initial document-path attribution remains pinned.
 
+Review fix round 1 added a second RED check: two newest-first update rows for the same LCP metric with equal `reportedAt: 100` originally resolved to the older `1,000 ms` value. Aggregation now preserves the first row on an equal timestamp, so the newer `2,000 ms` value remains authoritative.
+
 ## Change
 
 - `onCLS`, `onINP`, and `onLCP` from the official library own browser metric semantics, including CLS session windows, INP interaction selection, BFCache, and ongoing lifecycle reports.
@@ -27,7 +29,7 @@ It demonstrates the two audited defects with independent literal expectations: z
 ## Validation
 
 - RED: `npx tsx -e ...createWebVitalsAccumulator...` — failed as recorded above.
-- GREEN: `npx tsx scripts/verify-insights-data-quality.ts` — 14 passed.
+- GREEN: `npx tsx scripts/verify-insights-data-quality.ts` — 15 passed, including the equal-timestamp update case.
 - `npm run verify:admin-number-telemetry-window` — 67 passed; the checked-in golden was deliberately re-recorded from this version because the versioned baseline payload intentionally changes.
 - `npx tsc --noEmit` — passed.
 - `npm run build` — passed; Next produced `.next/BUILD_ID`.

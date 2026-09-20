@@ -65,6 +65,24 @@ ok(summary.find((v) => v.metric === "CLS")?.count === 1, "CLS updates aggregate 
 ok(summary.find((v) => v.metric === "CLS")?.p75 === 0.12, "aggregation keeps the latest CLS update");
 ok(summary.find((v) => v.metric === "INP")?.p75 === 220, "aggregation preserves the official INP value");
 
+const tiedUpdateSummary = summarizeWebVitals([
+  {
+    name: "web_vital",
+    sessionId: "session-1",
+    value: 2_000,
+    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100 }),
+    createdAt: new Date("2026-09-20T00:00:02.000Z"),
+  },
+  {
+    name: "web_vital",
+    sessionId: "session-1",
+    value: 1_000,
+    properties: JSON.stringify({ metric: "LCP", metricVersion: WEB_VITALS_MEASUREMENT_VERSION, metricId: "v6-lcp", reportedAt: 100 }),
+    createdAt: new Date("2026-09-20T00:00:01.000Z"),
+  },
+]);
+ok(tiedUpdateSummary.find((v) => v.metric === "LCP")?.p75 === 2_000, "equal report times retain the reader's newest metric update");
+
 ok(shouldEmitPipelineStepStarted(null, "tts"), "a new pipeline phase emits started");
 ok(!shouldEmitPipelineStepStarted("tts", "tts"), "provider polling re-entry does not emit another started");
 ok(shouldEmitPipelineStepStarted("tts", "keywords"), "a real phase transition emits started");

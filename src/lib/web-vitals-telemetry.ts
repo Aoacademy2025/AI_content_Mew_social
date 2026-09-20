@@ -74,8 +74,9 @@ export function createWebVitalReporter(
 }
 
 /**
- * Keeps the latest value for each updated document metric. Rows without this exact
- * collector version are historical proxies and intentionally do not join this baseline.
+ * Keeps the latest value for each updated document metric. Inputs arrive newest-first,
+ * so a tied browser timestamp preserves that first row. Rows without this exact collector
+ * version are historical proxies and intentionally do not join this baseline.
  */
 export function summarizeWebVitals(rows: WebVitalTelemetryRow[]) {
   const latest = new Map<string, { metric: WebVitalMetric; value: number; reportedAt: number }>();
@@ -97,7 +98,7 @@ export function summarizeWebVitals(rows: WebVitalTelemetryRow[]) {
       : row.createdAt.getTime();
     const key = `${row.sessionId ?? "no-session"}:${metric}:${metricId}`;
     const current = latest.get(key);
-    if (!current || reportedAt >= current.reportedAt) {
+    if (!current || reportedAt > current.reportedAt) {
       latest.set(key, { metric, value: row.value, reportedAt });
     }
   }
