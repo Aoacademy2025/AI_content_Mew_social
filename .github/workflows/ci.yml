@@ -225,6 +225,9 @@ jobs:
       - name: Verify Admin Insights revenue clarity
         run: npm run verify:admin-insights-revenue
 
+      - name: Verify Admin Insights URL range browser flow
+        run: npm run verify:admin-insights-range
+
       - name: Verify the Job Failure Class taxonomy
         run: npm run verify:job-failure-class
 
