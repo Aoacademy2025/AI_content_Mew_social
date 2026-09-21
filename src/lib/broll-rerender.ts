@@ -245,6 +245,11 @@ export function mergeWindowEdits(
       delete base.query;
       delete base.selectionReason;
       delete base.relevanceScore;
+      // `timelineAligned` belongs to the uploaded presenter clip: its source time IS the
+      // timeline time. A replacement plays from its own start; inheriting the flag asks a
+      // 5 s clip in a window at 6 s to play from its 6th second, so coverage drops it and
+      // silently puts the presenter back.
+      delete base.timelineAligned;
       base.src = e.src;
       if (e.keyword) base.keyword = e.keyword;
       if (e.clipDuration !== undefined) base.clipDuration = e.clipDuration;

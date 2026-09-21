@@ -60,3 +60,22 @@ export async function prepareFilledWindowRenderAssets(
   }
   return segments;
 }
+
+/**
+ * Stamps per-asset metadata (keyword, provider, …) onto timeline segments.
+ *
+ * The metadata table is keyed by `src`, and one `src` can back many windows — every
+ * presenter window of an uploaded clip does. A segment's own `sourceIndex` is its window
+ * identity and must win; letting the table overwrite it gives all of them the last
+ * window's index, and the coverage pass then fuses the clip into a single window.
+ */
+export function withAssetMetadata<T extends { src: string; sourceIndex?: number }>(
+  segments: T[],
+  metadataBySrc: Map<string, Partial<BrollVideo>>,
+): T[] {
+  return segments.map((segment) => ({
+    ...segment,
+    ...(metadataBySrc.get(segment.src) ?? {}),
+    ...(segment.sourceIndex !== undefined ? { sourceIndex: segment.sourceIndex } : {}),
+  }));
+}

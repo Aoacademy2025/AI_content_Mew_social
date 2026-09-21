@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 import {
   buildPlaceholderBgVideos,
   prepareFilledWindowRenderAssets,
+  withAssetMetadata,
 } from "../src/lib/broll-placeholders";
+import { coverBrollTimeline } from "../src/lib/broll-coverage";
 import { mergeWindowEdits } from "../src/lib/broll-rerender";
 import { brollWindowSpans } from "../src/lib/broll-spans";
 
@@ -65,9 +67,40 @@ async function main() {
   try { await prepareFilledWindowRenderAssets(merged as never, FPS, { ...probe({}), isUsableLocalFile: () => false }); } catch { threw = true; }
   assert(threw, "a filled window whose file is missing still fails closed");
 
+  console.log("upload clips: neighbouring presenter windows stay separate");
+  // Found by a real upload render: every presenter window shares ONE src, and the by-src
+  // metadata table stamped the LAST window's sourceIndex onto all of them, so coverage
+  // fused the whole clip into a single window and left the customer one slot to fill.
+  const presenter = [0, 1, 2].map((i) => ({
+    src: "/api/renders/presenter.mp4", start: i * 4, end: (i + 1) * 4, sourceIndex: i,
+    clipOffset: i * 4, clipDuration: 12, timelineAligned: true,
+  }));
+  const metaBySrc = new Map([["/api/renders/presenter.mp4", { keyword: "uploaded presenter clip", sourceIndex: 2 }]]);
+  const stamped = withAssetMetadata(presenter, metaBySrc);
+  assert(stamped.map((s) => s.sourceIndex).join(",") === "0,1,2", "a window keeps its own sourceIndex over the per-src metadata");
+  assert(stamped.every((s) => s.keyword === "uploaded presenter clip"), "the rest of the asset metadata still applies");
+  assert(withAssetMetadata([{ src: "/a.mp4", start: 0, end: 4 }], new Map([["/a.mp4", { sourceIndex: 5 }]]))[0].sourceIndex === 5, "a segment without its own sourceIndex still inherits one");
+  assert(coverBrollTimeline(stamped, stamped, 12, FPS).segments.length === 3, "coverage keeps three windows for the customer to fill");
+
+  console.log("upload clips: filling a presenter window");
+  // Found by a real upload re-render: the replacement inherited `timelineAligned` from the
+  // presenter it replaced, so a 5 s clip dropped into a window starting at 6 s was asked to
+  // play from ITS 6th second, judged unplayable, and silently covered by the presenter again.
+  const presenterFill = mergeWindowEdits(stamped, [{ index: 1, src: "/api/stocks/mine.mp4", clipDuration: 5, enabled: true }]);
+  assert(!("error" in presenterFill), "a presenter window accepts a replacement");
+  const filledPresenter = "error" in presenterFill ? [] : presenterFill.bgVideos;
+  assert(filledPresenter[1]?.timelineAligned !== true, "the replacement does not inherit the presenter's timeline alignment");
+  assert(filledPresenter[0]?.timelineAligned === true && filledPresenter[2]?.timelineAligned === true, "untouched presenter windows stay timeline-aligned");
+  const covered = coverBrollTimeline(filledPresenter as never, filledPresenter as never, 12, FPS);
+  assert(
+    covered.complete && covered.segments.some((seg) => seg.src === "/api/stocks/mine.mp4" && seg.start < 4.1 && seg.clipOffset === 0),
+    "coverage plays the customer's clip from its start inside the filled window",
+  );
+
   console.log("wiring");
   const config = readFileSync("src/app/api/videos/generate-config/route.ts", "utf8");
   assert(/bgVideos = brollDisabled\s*\?\s*buildPlaceholderBgVideos\(/.test(config), "generate-config emits placeholders instead of an empty timeline");
+  assert(/bgVideos = withAssetMetadata\(bgVideos, brollMetadataBySrc\);/.test(config), "generate-config applies metadata without clobbering sourceIndex");
   const render = readFileSync("src/app/api/videos/render/route.ts", "utf8");
   assert(/prepareFilledWindowRenderAssets\(/.test(render), "the render route renders filled windows of a brand-background config");
   assert(!/bgVideos: \[\],\s*\n\s*headlineHook/.test(render), "the render route no longer discards every fill");

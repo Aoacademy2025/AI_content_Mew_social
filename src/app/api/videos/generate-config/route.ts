@@ -9,7 +9,7 @@ import {
   coverBrollTimeline,
   isSupportedBrollFps,
 } from "@/lib/broll-coverage";
-import { buildPlaceholderBgVideos } from "@/lib/broll-placeholders";
+import { buildPlaceholderBgVideos, withAssetMetadata } from "@/lib/broll-placeholders";
 import { buildKeywordPopups } from "@/lib/keyword-popups";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
@@ -683,10 +683,7 @@ export async function POST(req: Request) {
     bgVideos.push(...evenSplitBgVideos(validStocks, audioDurationSec));
   }
 
-  bgVideos = bgVideos.map((seg) => ({
-    ...seg,
-    ...(brollMetadataBySrc.get(seg.src) ?? {}),
-  }));
+  bgVideos = withAssetMetadata(bgVideos, brollMetadataBySrc);
 
   const coverage = coverBrollTimeline(bgVideos, bgVideos, audioDurationSec, fps);
   const coverageTelemetryProperties = {
