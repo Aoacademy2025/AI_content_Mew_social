@@ -12,6 +12,9 @@ import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as firstClipPathModule from "../src/lib/first-clip-path";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
+// HERO-42: the real module, not a hand-written stand-in — it is pure and has no
+// React or server dependency, so the harness exercises the actual source mapping.
+import * as brollSourceModule from "../src/app/(dashboard)/video-editor/_v2/broll-source";
 
 /** The AI-audio ceiling preflight (HERO-25) reads the user's usage window through prisma.
  *  This harness replays the create route to prove idempotency and project recovery, not
@@ -564,6 +567,7 @@ function mountEditorShell(input: {
       };
     }
     if (specifier === "./export-edit-state") return exportEditStateModule;
+    if (specifier === "./broll-source") return brollSourceModule;
     if (specifier === "./RenderReceiptDialog") return { RenderReceiptDialog: marker("RenderReceiptDialog") };
     if (specifier === "./EditorProjectRecoveryDialog") return { EditorProjectRecoveryDialog: marker("EditorProjectRecoveryDialog") };
     if (specifier === "./useIsMobile") return { useIsMobile: () => false };
@@ -813,6 +817,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
       };
     }
     if (specifier === "./export-edit-state") return exportEditStateModule;
+    if (specifier === "./broll-source") return brollSourceModule;
     if (specifier === "@/lib/video-job-idempotency") {
       return {
         fingerprintVideoJobRequest: async (
@@ -1000,6 +1005,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
       };
     }
     if (specifier === "./export-edit-state") return exportEditStateModule;
+    if (specifier === "./broll-source") return brollSourceModule;
     if (specifier === "@/lib/video-job-idempotency") {
       return {
         fingerprintVideoJobRequest: async (
@@ -1199,6 +1205,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
     if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     if (specifier === "./export-edit-state") return exportEditStateModule;
+    if (specifier === "./broll-source") return brollSourceModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
