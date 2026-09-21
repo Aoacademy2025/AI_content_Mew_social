@@ -22,12 +22,12 @@ execFileSync("npx", ["prisma", "db", "push", "--skip-generate"], {
   stdio: "ignore",
 });
 
-function writeOldRender(filename: string, bytes: string): {
+function writeOldRender(filename: string, bytes: string, base = root): {
   absolutePath: string;
   sha256: string;
   mtimeMs: number;
 } {
-  const dir = path.join(root, "public", "renders");
+  const dir = path.join(base, "public", "renders");
   mkdirSync(dir, { recursive: true });
   const absolutePath = path.join(dir, filename);
   writeFileSync(absolutePath, bytes);
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     { prisma },
     { MediaCatalog },
     { getMediaCleanupPlan },
-    { runLocalMediaEviction, verifiedLocalReplica },
+    { runLocalMediaEviction, verifiedLocalReplica, evictionRunExitCode },
   ] = await Promise.all([
     import("../src/lib/prisma"),
     import("../src/lib/media-catalog"),
@@ -239,8 +239,143 @@ async function main(): Promise<void> {
     /R2 deletion must remain disabled/,
   );
 
+  // The gate itself: it must throttle by count AND by time, and latch once fired,
+  // so polling the database for activity can never become the load it relieves.
+  {
+    const { createYieldGate } = await import("../src/lib/media-job-yield");
+    let checks = 0;
+    let clock = 0;
+    const gate = createYieldGate(
+      () => {
+        checks += 1;
+        return checks > 2;
+      },
+      { everyItems: 3, minIntervalMs: 1_000, now: () => clock },
+    );
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(checks, 0, "the check must not run before everyItems iterations");
+    assert.equal(await gate(), false);
+    assert.equal(checks, 1, "third iteration polls once");
+    clock = 500;
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(checks, 1, "a poll inside minIntervalMs is suppressed");
+    clock = 2_000;
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(checks, 2, "the next interval polls again");
+    clock = 4_000;
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), false);
+    assert.equal(await gate(), true, "third poll returns true");
+    assert.equal(await gate(), true, "and latches without polling again");
+    assert.equal(checks, 3, "a latched gate never re-queries");
+    assert.equal(await createYieldGate(undefined)(), false, "no check means never yield");
+  }
+
+  // HERO-41: --deferWhenBusy must be re-evaluated while the run is in flight, not
+  // only at process start. A run that begins on an idle box must hand the machine
+  // back when customer renders arrive, instead of holding a core for 100+ minutes.
+  const yieldNames = ["evict-yield-a.mp4", "evict-yield-b.mp4"];
+  const yieldRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-yield-"));
+  const yieldFiles = yieldNames.map((name) => writeOldRender(name, `yield-${name}`, yieldRoot));
+  for (const [index, name] of yieldNames.entries()) {
+    await catalogRender(prisma, name, yieldFiles[index]);
+  }
+  const yieldEnv = {
+    MEDIA_READ_MODE: "r2-local",
+    MEDIA_LOCAL_EVICTION: "1",
+    MEDIA_R2_DELETE: "0",
+  };
+
+  const selectionPlan = await getMediaCleanupPlan({ cwd: yieldRoot, now, includeStocks: true });
+  const selectionVerifier = new FakeVerifier();
+  const deferredDuringSelection = await runLocalMediaEviction(selectionPlan, {
+    mode: "apply",
+    now,
+    catalog,
+    remote: selectionVerifier,
+    maxObjects: 10,
+    maxBytes: 1024 * 1024,
+    env: yieldEnv,
+    yieldEveryItems: 1,
+    yieldMinIntervalMs: 0,
+    shouldYield: () => true,
+  });
+  assert.equal(
+    deferredDuringSelection.deferredReason,
+    "customer_media_active",
+    "a busy box during the scan must be reported as a deferral, not a completed run",
+  );
+  assert.equal(deferredDuringSelection.evicted.count, 0);
+  for (const file of yieldFiles) {
+    assert.equal(existsSync(file.absolutePath), true, "nothing may be deleted after yielding");
+  }
+  assert.ok(
+    selectionVerifier.calls < yieldNames.length,
+    "yielding must stop the scan early rather than finish it and discard the work",
+  );
+
+  // The apply phase yields only AFTER a whole object is evicted, so a yield can
+  // never strand an object mid-quarantine.
+  const evictionPlan = await getMediaCleanupPlan({ cwd: yieldRoot, now, includeStocks: true });
+  assert.equal(evictionPlan.candidates.length, yieldNames.length, "yield fixtures must be the only candidates");
+  let gateCalls = 0;
+  const deferredDuringEviction = await runLocalMediaEviction(evictionPlan, {
+    mode: "apply",
+    now,
+    catalog,
+    remote: new FakeVerifier(),
+    maxObjects: 10,
+    maxBytes: 1024 * 1024,
+    env: yieldEnv,
+    yieldEveryItems: 1,
+    yieldMinIntervalMs: 0,
+    shouldYield: () => {
+      gateCalls += 1;
+      return gateCalls > yieldNames.length;
+    },
+  });
+  assert.equal(deferredDuringEviction.deferredReason, "customer_media_active");
+  assert.equal(
+    deferredDuringEviction.evicted.count,
+    1,
+    "the object in flight when the gate fired must finish, and the next one must not start",
+  );
+  assert.equal(
+    yieldFiles.filter((file) => existsSync(file.absolutePath)).length,
+    1,
+    "exactly one of the two fixtures survives a mid-apply yield",
+  );
+
+  // HERO-41 second defect: one failed object out of hundreds exited 1 and made
+  // systemd mark the unit FAILED. Only a run that achieved nothing may exit non-zero.
+  assert.equal(
+    evictionRunExitCode({ errors: 1, evicted: { count: 326 } }, { errors: 0, reconciled: { count: 0 } }),
+    0,
+    "326 of 327 evicted is a successful run that reports one error",
+  );
+  assert.equal(
+    evictionRunExitCode({ errors: 2, evicted: { count: 0 } }, { errors: 0, reconciled: { count: 0 } }),
+    1,
+    "errors with nothing achieved still needs a human",
+  );
+  assert.equal(
+    evictionRunExitCode({ errors: 1, evicted: { count: 0 } }, { errors: 0, reconciled: { count: 4 } }),
+    0,
+    "reconciliation progress counts as work achieved",
+  );
+  assert.equal(
+    evictionRunExitCode({ errors: 0, evicted: { count: 0 } }, { errors: 0, reconciled: { count: 0 } }),
+    0,
+    "a clean no-op run is not a failure",
+  );
+
   await prisma.$disconnect();
-  console.log("PASS verified local media eviction and rollback");
+  console.log("PASS verified local media eviction, rollback, busy-yield and exit code");
 }
 
 main().catch((error) => {

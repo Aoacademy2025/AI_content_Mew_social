@@ -35,6 +35,9 @@ jobs:
       - name: Verify narration comparison and regeneration disclosure
         run: npm run verify:narration-comparison && npm run verify:render-receipt
 
+      - name: Verify local media eviction yields to customer renders (HERO-41)
+        run: npm run verify:media-local-eviction
+
       - name: Verify editor native media keyboard isolation
         run: npm run verify:editor-media-keys
 

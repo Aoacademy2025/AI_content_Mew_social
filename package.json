@@ -36,6 +36,7 @@
     "verify:admin-number-ledger-source": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-ledger-source.ts",
     "verify:admin-number-committed-trialing": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-committed-trialing.ts",
     "verify:media-stream": "tsx scripts/verify-media-stream.ts",
+    "verify:media-local-eviction": "tsx scripts/verify-media-local-eviction.ts",
     "verify:media-storage": "tsx scripts/verify-media-stream.ts && tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts && tsx scripts/verify-media-local-missing-reconcile.ts && tsx scripts/verify-media-remote-gc.ts && tsx scripts/verify-media-r2-orphan-gc.ts",
     "smoke:r2-staging": "tsx scripts/smoke-r2-staging.ts",
     "smoke:r2-production": "DOTENV_CONFIG_PATH=.env.r2.production R2_PRODUCTION_SMOKE_ENABLED=1 tsx scripts/smoke-r2-staging.ts",

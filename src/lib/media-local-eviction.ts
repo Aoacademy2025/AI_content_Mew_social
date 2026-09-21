@@ -28,6 +28,8 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 type CatalogInspection = Awaited<ReturnType<MediaCatalog["inspect"]>>;
 
+import { createYieldGate, type YieldCheck } from "@/lib/media-job-yield";
+
 export type VerifiedLocalReplica = {
   record: MediaManifestRecord;
   identity: MediaIdentity;
@@ -55,6 +57,8 @@ export type LocalEvictionReport = {
   evicted: { count: number; sizeBytes: number };
   skipped: Record<LocalEvictionSkipReason, number>;
   errors: number;
+  /** Set when the run handed the box back to customer work before finishing (HERO-41). */
+  deferredReason?: "customer_media_active";
 };
 
 export type LocalEvictionCatalog = Pick<
@@ -70,6 +74,13 @@ export type LocalEvictionOptions = {
   catalog?: LocalEvictionCatalog;
   remote?: RemoteMediaReplicaVerifier;
   env?: Record<string, string | undefined>;
+  /**
+   * Polled during the scan and apply loops. Returning true stops the run early
+   * and reports `deferredReason` instead of pretending the pass completed.
+   */
+  shouldYield?: YieldCheck;
+  yieldEveryItems?: number;
+  yieldMinIntervalMs?: number;
 };
 
 function emptySkips(): Record<LocalEvictionSkipReason, number> {
@@ -365,8 +376,17 @@ export async function runLocalMediaEviction(
     errors: 0,
   };
 
+  const shouldYield = createYieldGate(options.shouldYield, {
+    everyItems: options.yieldEveryItems,
+    minIntervalMs: options.yieldMinIntervalMs,
+  });
+
   const selected: VerifiedLocalReplica[] = [];
   for (const record of plan.candidates) {
+    if (await shouldYield()) {
+      report.deferredReason = "customer_media_active";
+      return report;
+    }
     const identity = identityForRecord(record);
     const row = identity ? await catalog.inspect(identity) : null;
     const replica = verifiedLocalReplica(record, row);
@@ -412,6 +432,10 @@ export async function runLocalMediaEviction(
       report.skipped[result.status]++;
       if (result.error) report.errors++;
     }
+    if (await shouldYield()) {
+      report.deferredReason = "customer_media_active";
+      return report;
+    }
   }
   return report;
 }
@@ -429,4 +453,20 @@ export async function planAndRunLocalMediaEviction(input: {
     now: input.options?.now,
   });
   return runLocalMediaEviction(plan, input.options);
+}
+
+/**
+ * HERO-41: the entrypoint used to exit 1 whenever any single object errored, so
+ * a pass that evicted 326 of 327 objects made systemd mark the unit FAILED and
+ * paged a human over one bad file. A unit failure should mean "this needs a
+ * human", which is true only when the run hit errors AND achieved nothing.
+ */
+export function evictionRunExitCode(
+  eviction: { errors: number; evicted: { count: number } },
+  reconciliation: { errors: number; reconciled: { count: number } },
+): 0 | 1 {
+  const errors = eviction.errors + reconciliation.errors;
+  if (errors === 0) return 0;
+  const achieved = eviction.evicted.count + reconciliation.reconciled.count;
+  return achieved > 0 ? 0 : 1;
 }

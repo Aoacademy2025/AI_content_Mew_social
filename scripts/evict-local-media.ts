@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { planAndRunLocalMediaEviction } from "../src/lib/media-local-eviction";
+import { planAndRunLocalMediaEviction, evictionRunExitCode } from "../src/lib/media-local-eviction";
 import { reconcileMissingVerifiedLocalMedia } from "../src/lib/media-local-missing-reconcile";
 import {
   activeCustomerMediaJobs,
@@ -35,7 +35,12 @@ async function main(): Promise<void> {
   const mode = hasFlag("apply") ? "apply" : "dry-run";
   const maxBytesMb = numberArg("maxBytesMb", 1024);
   const maxObjects = numberArg("maxObjects", 10);
-  if (hasFlag("deferWhenBusy")) {
+  // HERO-41: this used to be the ONLY busy check, evaluated before the two long
+  // scans below. A run that started on an idle box then held ~98% of a core and
+  // the storage lock for over 100 minutes while customer renders piled up. The
+  // same check is now a gate the scans poll, so the run stops when work arrives.
+  const deferWhenBusy = hasFlag("deferWhenBusy");
+  if (deferWhenBusy) {
     const activity = await activeCustomerMediaJobs();
     if (hasActiveCustomerMediaJobs(activity)) {
       console.log(JSON.stringify({
@@ -50,11 +55,25 @@ async function main(): Promise<void> {
       return;
     }
   }
+  const shouldYield = deferWhenBusy
+    ? async () => hasActiveCustomerMediaJobs(await activeCustomerMediaJobs())
+    : undefined;
+
   const reconciliation = await reconcileMissingVerifiedLocalMedia({
     mode,
     maxObjects,
     maxBytes: maxBytesMb * 1024 * 1024,
+    shouldYield,
   });
+  if (reconciliation.deferredReason) {
+    console.log(JSON.stringify({
+      mode,
+      deferredReason: reconciliation.deferredReason,
+      stage: "missing_local_reconciliation",
+      missingLocalReconciliation: reconciliation,
+    }));
+    return;
+  }
   const report = await planAndRunLocalMediaEviction({
     olderThanDays: numberArg("olderThanDays", 3),
     includeStocks: hasFlag("includeStocks"),
@@ -62,6 +81,7 @@ async function main(): Promise<void> {
       mode,
       maxObjects,
       maxBytes: maxBytesMb * 1024 * 1024,
+      shouldYield,
     },
   });
   console.log(JSON.stringify({
@@ -70,7 +90,7 @@ async function main(): Promise<void> {
     eligibleMb: Math.round(report.eligible.sizeBytes / 1024 / 1024),
     evictedMb: Math.round(report.evicted.sizeBytes / 1024 / 1024),
   }));
-  if (report.errors + reconciliation.errors > 0) process.exitCode = 1;
+  process.exitCode = evictionRunExitCode(report, reconciliation);
 }
 
 main()
