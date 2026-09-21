@@ -414,7 +414,10 @@ async function loadAuthoritativeEditorProjectDraft(
 
 export type V2Mode = "script" | "upload";
 export type V2NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
-export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
+// HERO-42: the union and its API mapping live together in ./broll-source so a
+// new member cannot reach the backend unmapped.
+export type { V2BrollSource } from "./broll-source";
+import type { V2BrollSource } from "./broll-source";
 export type V2VoiceEngine = TtsProvider;
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
 

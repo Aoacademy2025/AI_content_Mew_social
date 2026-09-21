@@ -10,7 +10,7 @@ import { NarrationTargetNotice } from "./NarrationTargetNotice";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2,
+  Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2, Type,
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -84,6 +84,10 @@ const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: 
   { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ทุกช่วง · ไม่ใช้สต็อก", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
   { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
   { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
+  // HERO-42. Listed last and described plainly: this is the right answer for
+  // creators who add their own visuals afterwards, not a peer of the B-roll
+  // sources. It contacts no provider and spends no AI image credit.
+  { value: "none", title: "ไม่ใช้ B-roll", desc: "พื้นหลังสีแบรนด์ + ซับ · เอาไปตัดต่อใส่ภาพเอง", icon: <Type size={16} strokeWidth={1.6} /> },
 ];
 
 function fmtTime(sec: number) {
