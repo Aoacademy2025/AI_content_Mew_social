@@ -1071,7 +1071,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
               <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
-              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · แทรก cutaway`} />
+              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · ${p.brollSource === "none" ? "เติมเองทีละช่วง" : "แทรก cutaway"}`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />

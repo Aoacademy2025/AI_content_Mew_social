@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { pickTurnsWindowOn, seedSearchKeyword, windowSourceLabelOverride } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -90,6 +91,8 @@ function entrySourceKind(entry: Record<string, unknown> | null): WindowEditKind 
 function entrySourceLabel(entry: Record<string, unknown> | null): string {
   // HERO-44: a window the customer was left to fill has no asset to attribute.
   if (entry && !entry.src) return "ยังว่าง";
+  const override = windowSourceLabelOverride(entry);
+  if (override) return override;
   const provider = entry?.provider;
   if (provider === "kie-ai" || provider === "runpod") return "AI";
   if (typeof provider === "string" && provider) return "สต็อก";
@@ -321,8 +324,7 @@ export function BrollWindowInspector({
     setAiBusy(false);
     setAiError(null);
     setAiInsufficient(null);
-    const kw = typeof rawEntry?.keyword === "string" ? rawEntry.keyword : "";
-    setSearchKeyword(kw);
+    setSearchKeyword(seedSearchKeyword(rawEntry?.keyword));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullBrollEditEnabled, index]);
 
@@ -408,9 +410,16 @@ export function BrollWindowInspector({
     clipDuration?: number,
     imageJobId?: string,
   ) {
+    // HERO-44: a pick on a window that is off (an unfilled slot, or a presenter window of an
+    // uploaded clip) also turns it on, so one free update is enough to see the result.
+    const turnsOn = pickTurnsWindowOn({
+      currentlyEnabled: ed.isBrollWindowEnabled(index!),
+      stagedEnabled: ed.windowEdits.get(index!)?.enabled,
+    });
     ed.setWindowEdit(index!, {
       src,
       kind,
+      ...(turnsOn ? { enabled: true } : {}),
       ...(keyword ? { keyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       label: label ?? sourceLabel(kind),
@@ -805,7 +814,7 @@ export function BrollWindowInspector({
                 {ed.preview?.avatarModel === "upload-cutaway"
                   ? "ช่วงนี้จะแสดงคลิป Avatar ต้นฉบับแทน"
                   : "ช่วงนี้จะใช้พื้นหลังเรียบแทน"}
-                {" — เปลี่ยนหรืออัปโหลดคลิปได้ แต่จะยังไม่แสดงจนกว่าจะเปิด B-roll ช่วงนี้"}
+                {" — เลือกสต็อก อัปโหลด หรือสร้างภาพ AI ด้านล่าง ระบบจะเปิด B-roll ช่วงนี้ให้เอง"}
               </span>
             </div>
           </div>
