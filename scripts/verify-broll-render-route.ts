@@ -6,6 +6,7 @@ import nodeCrypto from "node:crypto";
 import ts from "typescript";
 
 import * as brollCoverage from "../src/lib/broll-coverage";
+import * as brollPlaceholders from "../src/lib/broll-placeholders";
 import * as headlineHook from "../src/lib/headline-hook";
 import { resolveMediaBaseUrl } from "../src/lib/render/media-base-url";
 
@@ -145,6 +146,7 @@ async function main(): Promise<void> {
       return { recordTelemetryEvent: async (_userId: string, event: Record<string, unknown>) => { telemetryEvents.push(event); } };
     }
     if (specifier === "@/lib/broll-coverage") return brollCoverage;
+    if (specifier === "@/lib/broll-placeholders") return brollPlaceholders;
     if (specifier === "@/lib/headline-hook") return headlineHook;
     if (specifier === "@/lib/render/run-render") return { runRender: async () => { throw new Error("must not render"); }, SupersededError };
     if (specifier === "@/lib/render/remotion-public-dir") return { prepareRemotionBundlePublicDir: () => "/tmp/public" };

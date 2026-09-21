@@ -234,6 +234,10 @@ export function mergeWindowEdits(
     if (typeof e.start === "number") base.start = e.start;
     if (typeof e.end === "number") base.end = e.end;
     if (e.src) {
+      // HERO-44: a window the customer was left to fill is hidden only because it had
+      // nothing to show. Filling it makes it visible; a hidden window that already had
+      // footage keeps its state, and an explicit `enabled` below still wins either way.
+      if (!base.src && base.brollEnabled === false) base.brollEnabled = true;
       // Replacement: reset clip playback and strip metadata that describes the OLD asset.
       delete base.clipDuration;
       delete base.provider;
@@ -241,6 +245,11 @@ export function mergeWindowEdits(
       delete base.query;
       delete base.selectionReason;
       delete base.relevanceScore;
+      // `timelineAligned` belongs to the uploaded presenter clip: its source time IS the
+      // timeline time. A replacement plays from its own start; inheriting the flag asks a
+      // 5 s clip in a window at 6 s to play from its 6th second, so coverage drops it and
+      // silently puts the presenter back.
+      delete base.timelineAligned;
       base.src = e.src;
       if (e.keyword) base.keyword = e.keyword;
       if (e.clipDuration !== undefined) base.clipDuration = e.clipDuration;

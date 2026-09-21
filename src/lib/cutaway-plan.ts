@@ -167,14 +167,21 @@ export function cutawayTimelineSourceFromJob(job: {
  * hook is always the person, no two consecutive b-roll windows. B-roll ratio is
  * ~40–50% for clips with >= 4 windows; short clips intentionally get fewer cutaways
  * (n=3 => 33%, n=2 => 50%). Fewer than 2 valid windows => all person (skip cutaway).
+ *
+ * HERO-44 `fillYourself`: the customer chose to add B-roll themselves. Every window stays
+ * with the presenter, so nothing is requested from keywords/stock/AI, while the windows
+ * survive as the per-window slots the editor lets them fill afterwards.
  */
-export function planCutaway(windows: { startMs: number; endMs: number }[]): CutawayPlan {
+export function planCutaway(
+  windows: { startMs: number; endMs: number }[],
+  options: { fillYourself?: boolean } = {},
+): CutawayPlan {
   const person: CutawayRange[] = [];
   const broll: CutawayRange[] = [];
   const ws = (windows ?? []).filter(
     (w) => w && Number.isFinite(w.startMs) && Number.isFinite(w.endMs) && w.endMs > w.startMs,
   );
-  if (ws.length < 2) {
+  if (ws.length < 2 || options.fillYourself) {
     for (const w of ws) person.push({ startMs: w.startMs, endMs: w.endMs });
     return { person, broll };
   }

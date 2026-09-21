@@ -88,6 +88,8 @@ function entrySourceKind(entry: Record<string, unknown> | null): WindowEditKind 
 // Source badge for a live bgVideos entry: both the legacy Cloud path and Hero
 // RunPod path are AI; otherwise fall back to filename inference after apply.
 function entrySourceLabel(entry: Record<string, unknown> | null): string {
+  // HERO-44: a window the customer was left to fill has no asset to attribute.
+  if (entry && !entry.src) return "ยังว่าง";
   const provider = entry?.provider;
   if (provider === "kie-ai" || provider === "runpod") return "AI";
   if (typeof provider === "string" && provider) return "สต็อก";
@@ -674,7 +676,11 @@ export function BrollWindowInspector({
               className="h-full w-full object-contain"
             />
           ) : (
-            <span style={{ fontSize: 11.5, color: color.textFaint }}>ไม่พบไฟล์ตัวอย่างของฉากนี้</span>
+            <span className="px-4 text-center" style={{ fontSize: 11.5, lineHeight: 1.6, color: color.textFaint }}>
+              {rawEntry && !rawEntry.src
+                ? "ช่วงนี้ยังว่าง — เลือกสต็อก อัปโหลด หรือสร้างภาพ AI ด้านล่าง ถ้าไม่ใส่จะเป็นพื้นหลังสีแบรนด์"
+                : "ไม่พบไฟล์ตัวอย่างของฉากนี้"}
+            </span>
           )}
         </div>
       </div>

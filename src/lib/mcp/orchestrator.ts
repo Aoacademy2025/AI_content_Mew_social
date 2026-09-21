@@ -1921,7 +1921,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Plan the final composite before any provider request. The uploaded presenter
       // covers every `person` range, so media generated for those ranges can never be
       // seen and must not consume image credits.
-      const upCutawayPlan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
+      // HERO-44: with auto B-roll off every window stays with the presenter, so the
+      // keyword, preflight and provider stages below all see zero visible windows and
+      // spend nothing. The windows still reach generate-config for the customer to fill.
+      const upCutawayPlan = planCutaway(
+        upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        { fillYourself: brollDisabled },
+      );
       const visibleBrollRanges = new Set(
         upCutawayPlan.broll.map((range) => `${range.startMs}:${range.endMs}`),
       );
@@ -2590,12 +2596,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // treats that as ×1 (same as "normal"), but the AI-gen/auto-mix minHoldSec
     // default further down must NOT fire on `null` (see that call site).
     const pacing = await resolvePacing();
-    // HERO-42: "none" means the customer asked for a video with no B-roll. No windows
-    // are planned, no keywords are extracted and no provider is contacted, so the run
-    // spends no stock quota and no AI image credit. The frame is painted from the
-    // brand palette by the composition instead.
-    const brollWindows = brollDisabled ? [] : (narrativeAlignedWindows
-      ?? (brollWindowMode || manualBrollCount > 0
+    // HERO-42: "none" means no auto B-roll. No keywords are extracted and no provider is
+    // contacted, so the run spends no stock quota and no AI image credit. The frame is
+    // painted from the brand palette by the composition instead.
+    // HERO-44: the windows are still planned — always, even where window mode is off —
+    // because they are the empty slots the customer fills in the editor afterwards.
+    const brollWindows = (narrativeAlignedWindows
+      ?? (brollWindowMode || manualBrollCount > 0 || brollDisabled
         ? manualBrollCount > 0
         ? buildFixedCountBrollWindows(
             timedCaptionInput,
@@ -2660,7 +2667,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       !forceStockBroll && input.stockSource === "kie-image" && input.imageEngine === "runpod",
       aiGenSource,
     );
-    emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
+    // Windows left for the customer to fill request nothing from stock; reporting them
+    // here would read as a provider shortfall.
+    emitBrollStockInventory(brollDisabled ? 0 : aligned.windows.length, stock.results ?? []);
 
     // HERO-42: with B-roll off the frame is the account's brand palette. Read only
     // on that path, so accounts using B-roll pay nothing for it. A missing profile,
