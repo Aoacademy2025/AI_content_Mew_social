@@ -29,6 +29,8 @@ export type MissingLocalReconcileSkipReason =
   | "remote_unverified"
   | "catalog_changed";
 
+import { createYieldGate, type YieldCheck } from "@/lib/media-job-yield";
+
 export type MissingLocalReconcileReport = {
   mode: "dry-run" | "apply";
   generatedAt: string;
@@ -38,6 +40,8 @@ export type MissingLocalReconcileReport = {
   reconciled: { count: number; sizeBytes: number };
   skipped: Record<MissingLocalReconcileSkipReason, number>;
   errors: number;
+  /** Set when the run handed the box back to customer work before finishing (HERO-41). */
+  deferredReason?: "customer_media_active";
 };
 
 type MissingLocalCatalog = Pick<
@@ -55,6 +59,10 @@ export type MissingLocalReconcileOptions = {
   remote?: RemoteMediaReplicaVerifier;
   env?: Record<string, string | undefined>;
   quarantinedKeys?: ReadonlySet<string>;
+  /** See media-job-yield: polled during the inventory scan and the apply loop. */
+  shouldYield?: YieldCheck;
+  yieldEveryItems?: number;
+  yieldMinIntervalMs?: number;
 };
 
 type Candidate = {
@@ -211,8 +219,16 @@ export async function reconcileMissingVerifiedLocalMedia(
     errors: 0,
   };
   const selected: Candidate[] = [];
+  const shouldYield = createYieldGate(options.shouldYield, {
+    everyItems: options.yieldEveryItems,
+    minIntervalMs: options.yieldMinIntervalMs,
+  });
 
   for (const row of inventory) {
+    if (await shouldYield()) {
+      report.deferredReason = "customer_media_active";
+      return report;
+    }
     if (row.remoteState !== "verified" || row.localState !== "present") {
       report.skipped.not_verified_present++;
       continue;
@@ -295,6 +311,10 @@ export async function reconcileMissingVerifiedLocalMedia(
     }
     report.reconciled.count++;
     report.reconciled.sizeBytes += candidate.sizeBytes;
+    if (await shouldYield()) {
+      report.deferredReason = "customer_media_active";
+      return report;
+    }
   }
   return report;
 }
