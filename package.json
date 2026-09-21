@@ -18,6 +18,7 @@
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:db-backup-r2": "tsx scripts/verify-db-backup-r2.ts",
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
+    "verify:admin-insights-range": "tsx scripts/verify-admin-insights-range.mts",
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
     "verify:frontend-error-noise": "tsx scripts/verify-frontend-error-noise.ts",
     "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",

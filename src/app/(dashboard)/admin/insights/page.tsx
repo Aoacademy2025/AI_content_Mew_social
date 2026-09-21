@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
@@ -17,6 +18,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { INSIGHTS_RANGE_DAYS, insightsRangeHref, readInsightsRange } from "@/lib/insights-range";
 
 type FunnelRow = { key: string; label: string; count: number; conversionPct: number; dropOffPct: number; previousCount: number };
 type StepRow = { step: string; label: string; started: number; done: number; error: number; skipped: number; notFinished: number; p50Ms: number | null; p95Ms: number | null; successPct: number };
@@ -288,7 +290,12 @@ function Panel({ children, className }: { children: React.ReactNode; className?:
 }
 
 export default function AdminInsightsPage() {
-  const [days, setDays] = useState(1);
+  return <Suspense fallback={null}><AdminInsightsContent /></Suspense>;
+}
+
+function AdminInsightsContent() {
+  const searchParams = useSearchParams();
+  const days = readInsightsRange(searchParams);
   const [data, setData] = useState<InsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -367,8 +374,8 @@ export default function AdminInsightsPage() {
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">รายได้ &amp; ลูกค้าจ่ายจริง → คนหลุดตรงไหน → สุขภาพระบบ → รายละเอียด dev (กดเปิด). ตัวเลขทั้งหมดมาจากระบบจริง</p>
           </div>
           <div className="inline-flex w-full rounded-lg border border-white/10 bg-white/[0.035] p-1 sm:w-auto">
-            {[1, 7, 30].map((option) => (
-              <button key={option} type="button" onClick={() => setDays(option)}
+            {INSIGHTS_RANGE_DAYS.map((option) => (
+              <button key={option} type="button" onClick={() => window.history.pushState(null, "", insightsRangeHref(window.location.pathname, searchParams, option))}
                 className={cn("flex-1 rounded-md px-4 py-2 text-sm font-semibold transition sm:flex-none", days === option ? "bg-white text-slate-950" : "text-slate-400 hover:bg-white/10 hover:text-white")}>
                 {option === 1 ? "24 ชม." : `${option} วัน`}
               </button>
