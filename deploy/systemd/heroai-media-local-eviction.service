@@ -13,7 +13,7 @@ WorkingDirectory=/var/www/ai-content
 Environment=NODE_ENV=production
 Environment=DOTENV_CONFIG_PATH=/var/www/ai-content/.env.r2.production
 Environment=MEDIA_LOCAL_EVICTION=1
-ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/evict-local-media.ts --apply --deferWhenBusy --olderThanDays=3 --includeStocks --maxObjects=500 --maxBytesMb=51200
+ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/evict-local-media.ts --apply --deferWhenBusy --olderThanDays=3 --includeStocks --maxObjects=500 --maxBytesMb=51200 --maxRuntimeMin=90
 
 Nice=15
 CPUWeight=10
@@ -21,7 +21,11 @@ IOWeight=10
 IOSchedulingClass=idle
 IOSchedulingPriority=7
 MemoryMax=2G
-TimeoutStartSec=infinity
+# The script stops itself cleanly at --maxRuntimeMin between objects. This is
+# only a backstop for a wedged process: above the worst observed run (2h05m
+# on 2026-09-21) yet well under the 4h timer, so two runs can never overlap
+# and queue behind the flock.
+TimeoutStartSec=2h
 UMask=0077
 
 NoNewPrivileges=true

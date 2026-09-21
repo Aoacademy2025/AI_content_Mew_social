@@ -118,6 +118,19 @@ install -m 0644 \
 install -m 0644 \
   deploy/systemd/heroai-r2-reconcile.timer \
   /etc/systemd/system/heroai-r2-reconcile.timer
+> **HERO-41 (2026-09-21) — re-install the eviction unit after this change.**
+> `heroai-media-local-eviction.service` now passes `--maxRuntimeMin=90` and sets
+> `TimeoutStartSec=2h` instead of `infinity`. A code deploy does NOT update unit
+> files, so after deploying you must re-run the `install` + `systemctl daemon-reload`
+> below for the change to take effect. Until then the old unit keeps running with
+> no runtime ceiling.
+>
+> The script stops itself cleanly between objects when the budget expires and
+> reports `deferredReason: "runtime_budget"`. `TimeoutStartSec` is only a backstop
+> for a wedged process — it sends SIGTERM, which can land mid-quarantine, so it is
+> deliberately set above the worst observed run (2 h 05 m) and below the 4 h timer
+> so two runs can never overlap behind `flock --wait 3600`.
+
 systemctl daemon-reload
 systemctl enable --now heroai-r2-reconcile.timer
 ```

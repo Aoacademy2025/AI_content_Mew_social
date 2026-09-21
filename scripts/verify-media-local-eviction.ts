@@ -252,28 +252,54 @@ async function main(): Promise<void> {
       },
       { everyItems: 3, minIntervalMs: 1_000, now: () => clock },
     );
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
     assert.equal(checks, 0, "the check must not run before everyItems iterations");
-    assert.equal(await gate(), false);
+    assert.equal(await gate(), null);
     assert.equal(checks, 1, "third iteration polls once");
     clock = 500;
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
     assert.equal(checks, 1, "a poll inside minIntervalMs is suppressed");
     clock = 2_000;
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
     assert.equal(checks, 2, "the next interval polls again");
     clock = 4_000;
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), false);
-    assert.equal(await gate(), true, "third poll returns true");
-    assert.equal(await gate(), true, "and latches without polling again");
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), null);
+    assert.equal(await gate(), "customer_media_active", "third poll fires");
+    assert.equal(await gate(), "customer_media_active", "and latches without polling again");
     assert.equal(checks, 3, "a latched gate never re-queries");
-    assert.equal(await createYieldGate(undefined)(), false, "no check means never yield");
+    assert.equal(await createYieldGate(undefined)(), null, "no check and no deadline means never yield");
+
+    // The runtime budget is what bounds a run on an IDLE box, where the activity
+    // check never fires because no customer work ever arrives to displace it.
+    let budgetClock = 0;
+    let budgetChecks = 0;
+    const budgeted = createYieldGate(
+      () => {
+        budgetChecks += 1;
+        return false;
+      },
+      { everyItems: 1, minIntervalMs: 0, deadlineAt: 1_000, now: () => budgetClock },
+    );
+    assert.equal(await budgeted(), null);
+    budgetClock = 999;
+    assert.equal(await budgeted(), null);
+    budgetClock = 1_000;
+    assert.equal(await budgeted(), "runtime_budget", "the deadline fires on an idle box");
+    assert.equal(await budgeted(), "runtime_budget", "and latches");
+    assert.equal(budgetChecks, 2, "the deadline short-circuits before querying activity");
+
+    const budgetOnly = createYieldGate(undefined, { deadlineAt: 5, now: () => 10 });
+    assert.equal(
+      await budgetOnly(),
+      "runtime_budget",
+      "a budget works without --deferWhenBusy",
+    );
   }
 
   // HERO-41: --deferWhenBusy must be re-evaluated while the run is in flight, not
@@ -350,6 +376,24 @@ async function main(): Promise<void> {
     1,
     "exactly one of the two fixtures survives a mid-apply yield",
   );
+
+  const budgetPlan = await getMediaCleanupPlan({ cwd: yieldRoot, now, includeStocks: true });
+  const budgetRun = await runLocalMediaEviction(budgetPlan, {
+    mode: "apply",
+    now,
+    catalog,
+    remote: new FakeVerifier(),
+    maxObjects: 10,
+    maxBytes: 1024 * 1024,
+    env: yieldEnv,
+    yieldDeadlineAt: 0,
+  });
+  assert.equal(
+    budgetRun.deferredReason,
+    "runtime_budget",
+    "an expired budget stops the scan even with no customer work and no shouldYield",
+  );
+  assert.equal(budgetRun.evicted.count, 0);
 
   // HERO-41 second defect: one failed object out of hundreds exited 1 and made
   // systemd mark the unit FAILED. Only a run that achieved nothing may exit non-zero.
