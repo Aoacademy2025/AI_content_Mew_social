@@ -33,3 +33,20 @@ export function windowSourceLabelOverride(
 ): string | null {
   return entry?.timelineAligned === true || entry?.keyword === PRESENTER_KEYWORD ? "คลิปของคุณ" : null;
 }
+
+/**
+ * Copy for a window with nothing in it. AI is offered only where this video can actually
+ * generate an image: a fill-it-yourself video skips the content preflight, has no Project
+ * Visual Context, and its AI tab is disabled for good.
+ */
+export function emptyWindowHint(aiAvailable: boolean): string {
+  return aiAvailable
+    ? "ช่วงนี้ยังว่าง — เลือกสต็อก อัปโหลด หรือสร้างภาพ AI ด้านล่าง ถ้าไม่ใส่จะเป็นพื้นหลังสีแบรนด์"
+    : "ช่วงนี้ยังว่าง — เลือกสต็อกหรืออัปโหลดด้านล่าง ถ้าไม่ใส่จะเป็นพื้นหลังสีแบรนด์";
+}
+
+/** Tail of the "B-roll is off for this window" banner. The AI tab keeps its money guard. */
+export function offWindowHint(aiAvailable: boolean): string {
+  const base = " — เลือกสต็อกหรืออัปโหลดด้านล่าง ระบบจะเปิด B-roll ช่วงนี้ให้เอง";
+  return aiAvailable ? `${base} · ถ้าจะสร้างภาพ AI ให้กดเปิดช่วงนี้ก่อน` : base;
+}

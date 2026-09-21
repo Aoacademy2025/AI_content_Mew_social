@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import {
   PRESENTER_KEYWORD,
   brollTimelineLabel,
+  emptyWindowHint,
+  offWindowHint,
   pickTurnsWindowOn,
   seedSearchKeyword,
   windowSourceLabelOverride,
@@ -43,6 +45,23 @@ assert(!/จะยังไม่แสดงจนกว่าจะเปิ�
 assert(/seedSearchKeyword\(/.test(inspector) && /windowSourceLabelOverride\(/.test(inspector), "the inspector uses the shared label rules");
 const timeline = readFileSync("src/app/(dashboard)/video-editor/_v2/TimelinePanel.tsx", "utf8");
 assert(/brollTimelineLabel\(/.test(timeline) && !/`ปิด · \$\{s\.label\}`/.test(timeline), "the timeline uses the shared label rule");
+// Found on the phone layout on prod: PostPhaseMobile kept its own copy of the old label
+// rule, so an unfilled window still read "ปิด · คลิป 1" there.
+const mobile = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "utf8");
+assert(/brollTimelineLabel\(/.test(mobile) && !/`ปิด · \$\{s\.label\}`/.test(mobile), "the phone layout uses the shared label rule too");
+// The AI tab keeps its money guard (no image is generated for a window that is off), so the
+// banner must not promise that an AI pick turns the window on by itself.
+assert(!/หรือสร้างภาพ AI ด้านล่าง ระบบจะเปิด/.test(inspector), "the banner never promises that an AI pick turns the window on");
+assert(/if \(!enabled\) \{ setAiError\(/.test(inspector), "the AI money guard for a window that is off is untouched");
+// Found generating an AI image on prod: a fill-it-yourself video skips the content preflight,
+// so it has no Project Visual Context and the AI tab is permanently disabled — yet the copy
+// invited the customer to "สร้างภาพ AI", and the tooltip blamed an "old clip" on a new one.
+assert(emptyWindowHint(true) === "ช่วงนี้ยังว่าง — เลือกสต็อก อัปโหลด หรือสร้างภาพ AI ด้านล่าง ถ้าไม่ใส่จะเป็นพื้นหลังสีแบรนด์", "with AI available the empty-window hint offers all three");
+assert(!/AI/.test(emptyWindowHint(false)) && /เลือกสต็อกหรืออัปโหลด/.test(emptyWindowHint(false)), "without AI the empty-window hint offers only stock and upload");
+assert(/สร้างภาพ AI/.test(offWindowHint(true)) && !/AI/.test(offWindowHint(false)), "the off-window banner mentions AI only where AI can be used");
+assert(/emptyWindowHint\(sceneRerollEnabled\)/.test(inspector) && /offWindowHint\(sceneRerollEnabled\)/.test(inspector), "the inspector picks its copy from whether AI is available for this video");
+const capability = readFileSync("src/lib/scene-reroll-capability.ts", "utf8");
+assert(!/message: "คลิปเก่ายังไม่มีข้อมูลฉาก/.test(capability) && /ใส่ B-roll เอง/.test(capability), "the unavailable reason no longer calls a brand-new fill-it-yourself video an old clip");
 const step2 = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
 assert(/p\.brollSource === "none"[\s\S]{0,80}เติมเองทีละช่วง/.test(step2), "the upload summary stops promising cutaways when the customer fills B-roll themselves");
 

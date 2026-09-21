@@ -23,6 +23,8 @@ export function resolveSceneRerollCapability(input: {
   return {
     available: false,
     reason: "legacy_project_missing_visual_context",
-    message: "คลิปเก่ายังไม่มีข้อมูลฉากสำหรับลองภาพใหม่ กรุณาสร้างคลิปใหม่เพื่อใช้ฟีเจอร์นี้",
+    // Two kinds of video land here: projects rendered before Scene Reroll existed, and
+    // "ใส่ B-roll เอง" videos, which skip the content preflight by design.
+    message: "คลิปนี้ไม่มีข้อมูลฉากสำหรับสร้างภาพ AI — เป็นคลิปเก่า หรือคลิปแบบ \"ใส่ B-roll เอง\" ใช้สต็อกหรืออัปโหลดแทนได้",
   };
 }
