@@ -2,6 +2,8 @@
 // what the API accepts and what the composition paints. A validator and a renderer
 // with separate definitions is how you get a frame that passes checks and renders black.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 async function main(): Promise<void> {
   const {
@@ -37,7 +39,30 @@ async function main(): Promise<void> {
   // No caller-controlled text may escape into the CSS value.
   assert.equal(backgroundGradientCss(sanitizeBackgroundColors(["javascript:alert(1)"])).includes("javascript"), false);
 
-  console.log("PASS b-roll-off brand background sanitising and gradient");
+  // generate-config refuses an empty result set twice over, and BOTH refusals have
+  // to stand aside for the no-B-roll path — the first was found by reading the route,
+  // the second only by rendering a real clip, which failed with
+  // "B-roll coverage ไม่ครบ" at step config. Asserted structurally so neither guard
+  // can quietly drop its exemption, and so a third guard added later is noticed.
+  const route = readFileSync(
+    path.resolve(__dirname, "../src/app/api/videos/generate-config/route.ts"),
+    "utf8",
+  );
+  assert.match(
+    route,
+    /if \(validStocks\.length === 0 && !brollDisabled\)/,
+    "the empty-stock guard must stand aside when B-roll is off",
+  );
+  assert.match(
+    route,
+    /if \(!coverage\.complete && !brollDisabled\)/,
+    "the coverage guard must stand aside when B-roll is off — there is nothing to cover",
+  );
+  // Both guards must still fail closed for every other caller.
+  assert.equal(route.includes("if (validStocks.length === 0) {"), false);
+  assert.equal(route.includes("if (!coverage.complete) {"), false);
+
+  console.log("PASS b-roll-off brand background, sanitising and both config guards");
 }
 
 main().catch((error) => {
