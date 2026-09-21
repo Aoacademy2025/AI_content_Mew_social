@@ -62,7 +62,26 @@ async function main(): Promise<void> {
   assert.equal(route.includes("if (validStocks.length === 0) {"), false);
   assert.equal(route.includes("if (!coverage.complete) {"), false);
 
-  console.log("PASS b-roll-off brand background, sanitising and both config guards");
+  // The render route has a coverage gate of its own, found only by a real render
+  // after the two in generate-config were cleared. `backgroundColors` is the marker
+  // that the config was built with B-roll off; an empty bgVideos WITHOUT it is still
+  // the accidental case and must still fail.
+  const renderRoute = readFileSync(
+    path.resolve(__dirname, "../src/app/api/videos/render/route.ts"),
+    "utf8",
+  );
+  assert.match(
+    renderRoute,
+    /const brollDisabled = Boolean\(shortVideoConfig\?\.backgroundColors\?\.length\)/,
+    "the render route must recognise a no-B-roll config",
+  );
+  assert.match(
+    renderRoute,
+    /if \(isShortVideo && shortVideoConfig && brollDisabled\)/,
+    "the render coverage pass must be skipped when B-roll is off",
+  );
+
+  console.log("PASS b-roll-off background, sanitising, and all three coverage guards");
 }
 
 main().catch((error) => {

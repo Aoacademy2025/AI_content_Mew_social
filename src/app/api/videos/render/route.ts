@@ -914,7 +914,24 @@ export async function POST(req: Request) {
     }
 
     let resolvedShortConfig = shortVideoConfig;
-    if (isShortVideo && shortVideoConfig) {
+    // HERO-42: a config carrying `backgroundColors` was produced with B-roll off, so
+    // an empty `bgVideos` is the intended result. The coverage pass below exists to
+    // catch a timeline that would show black gaps; here the composition paints the
+    // brand background across the whole clip instead, so there is nothing to cover.
+    // An empty `bgVideos` WITHOUT `backgroundColors` is still the accidental case and
+    // still fails, which is what this gate is for.
+    const brollDisabled = Boolean(shortVideoConfig?.backgroundColors?.length);
+    if (isShortVideo && shortVideoConfig && brollDisabled) {
+      resolvedShortConfig = {
+        ...shortVideoConfig,
+        voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
+        bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
+        bgVideos: [],
+        headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
+      };
+      if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
+      console.log("[render] b-roll disabled — brand background, no coverage pass");
+    } else if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       // Probe duration and clamp source metadata. Keep the desired timeline end intact;
       // the coverage pass below splits/reuses media instead of creating a black gap.
