@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { pickTurnsWindowOn, seedSearchKeyword, windowSourceLabelOverride } from "@/lib/broll-window-ux";
+import { emptyWindowHint, offWindowHint, pickTurnsWindowOn, seedSearchKeyword, windowSourceLabelOverride } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -687,7 +687,7 @@ export function BrollWindowInspector({
           ) : (
             <span className="px-4 text-center" style={{ fontSize: 11.5, lineHeight: 1.6, color: color.textFaint }}>
               {rawEntry && !rawEntry.src
-                ? "ช่วงนี้ยังว่าง — เลือกสต็อก อัปโหลด หรือสร้างภาพ AI ด้านล่าง ถ้าไม่ใส่จะเป็นพื้นหลังสีแบรนด์"
+                ? emptyWindowHint(sceneRerollEnabled)
                 : "ไม่พบไฟล์ตัวอย่างของฉากนี้"}
             </span>
           )}
@@ -814,7 +814,7 @@ export function BrollWindowInspector({
                 {ed.preview?.avatarModel === "upload-cutaway"
                   ? "ช่วงนี้จะแสดงคลิป Avatar ต้นฉบับแทน"
                   : "ช่วงนี้จะใช้พื้นหลังเรียบแทน"}
-                {" — เลือกสต็อกหรืออัปโหลดด้านล่าง ระบบจะเปิด B-roll ช่วงนี้ให้เอง · ถ้าจะสร้างภาพ AI ให้กดเปิดช่วงนี้ก่อน"}
+                {offWindowHint(sceneRerollEnabled)}
               </span>
             </div>
           </div>
