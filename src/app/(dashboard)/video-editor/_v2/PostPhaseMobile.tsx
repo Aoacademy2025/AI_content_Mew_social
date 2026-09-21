@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { brollTimelineLabel } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
   Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Type, Undo2,
@@ -543,7 +544,7 @@ export function PostPhaseMobile({
                   >
                     <span style={{ fontSize: 10, color: color.textFaint }}>{fmtMs(s.startMs)}–{fmtMs(s.endMs)}</span>
                     <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>
-                      {enabled ? s.label : `ปิด · ${s.label}`}
+                      {brollTimelineLabel({ enabled, label: s.label, src: s.src })}
                     </span>
                   </button>
                 );

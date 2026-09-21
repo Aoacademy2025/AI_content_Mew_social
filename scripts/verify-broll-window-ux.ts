@@ -43,6 +43,15 @@ assert(!/จะยังไม่แสดงจนกว่าจะเปิ�
 assert(/seedSearchKeyword\(/.test(inspector) && /windowSourceLabelOverride\(/.test(inspector), "the inspector uses the shared label rules");
 const timeline = readFileSync("src/app/(dashboard)/video-editor/_v2/TimelinePanel.tsx", "utf8");
 assert(/brollTimelineLabel\(/.test(timeline) && !/`ปิด · \$\{s\.label\}`/.test(timeline), "the timeline uses the shared label rule");
+// Found on the phone layout on prod: PostPhaseMobile kept its own copy of the old label
+// rule, so an unfilled window still read "ปิด · คลิป 1" there.
+const mobile = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "utf8");
+assert(/brollTimelineLabel\(/.test(mobile) && !/`ปิด · \$\{s\.label\}`/.test(mobile), "the phone layout uses the shared label rule too");
+// The AI tab keeps its money guard (no image is generated for a window that is off), so the
+// banner must not promise that an AI pick turns the window on by itself.
+const banner = inspector.match(/ปิด B-roll ช่วงนี้อยู่[\s\S]{0,700}/)?.[0] ?? "";
+assert(/เลือกสต็อกหรืออัปโหลด/.test(banner) && !/หรือสร้างภาพ AI ด้านล่าง ระบบจะเปิด/.test(banner), "the banner only promises what happens: stock and upload turn the window on");
+assert(/if \(!enabled\) \{ setAiError\(/.test(inspector), "the AI money guard for a window that is off is untouched");
 const step2 = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
 assert(/p\.brollSource === "none"[\s\S]{0,80}เติมเองทีละช่วง/.test(step2), "the upload summary stops promising cutaways when the customer fills B-roll themselves");
 
