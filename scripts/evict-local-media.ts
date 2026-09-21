@@ -26,6 +26,7 @@ async function main(): Promise<void> {
     "--olderThanDays=",
     "--maxObjects=",
     "--maxBytesMb=",
+    "--maxRuntimeMin=",
   ];
   const unknown = process.argv.slice(2).find((arg) =>
     !known.some((item) => item.endsWith("=") ? arg.startsWith(item) : arg === item)
@@ -59,11 +60,19 @@ async function main(): Promise<void> {
     ? async () => hasActiveCustomerMediaJobs(await activeCustomerMediaJobs())
     : undefined;
 
+  // The busy gate cannot bound a run on an idle box, because no customer work
+  // ever arrives to displace it — the 2026-09-21 pass ran past two hours with
+  // zero active jobs. One deadline spans BOTH stages, so the budget is the
+  // total runtime rather than per stage.
+  const maxRuntimeMin = numberArg("maxRuntimeMin", 0);
+  const yieldDeadlineAt = maxRuntimeMin > 0 ? Date.now() + maxRuntimeMin * 60_000 : undefined;
+
   const reconciliation = await reconcileMissingVerifiedLocalMedia({
     mode,
     maxObjects,
     maxBytes: maxBytesMb * 1024 * 1024,
     shouldYield,
+    yieldDeadlineAt,
   });
   if (reconciliation.deferredReason) {
     console.log(JSON.stringify({
@@ -82,6 +91,7 @@ async function main(): Promise<void> {
       maxObjects,
       maxBytes: maxBytesMb * 1024 * 1024,
       shouldYield,
+      yieldDeadlineAt,
     },
   });
   console.log(JSON.stringify({

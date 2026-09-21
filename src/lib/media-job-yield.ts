@@ -1,14 +1,27 @@
 /**
  * HERO-41: long media maintenance scans must hand the box back when customer
  * renders arrive. The eviction entrypoint used to evaluate `--deferWhenBusy`
- * once at process start, so a run that began on an idle VPS kept ~98% of a core
- * and the storage lock for over 100 minutes while renders queued behind it.
+ * once at process start, so a run that began on an idle VPS kept the storage
+ * lock for over two hours while renders queued behind it.
  *
- * A gate is polled from inside the scan loops. It throttles two ways — every
- * `everyItems` iterations and at most once per `minIntervalMs` — so the check
- * itself never becomes the load it is meant to relieve. Once it fires it latches,
- * because a run that has decided to stop must not query again on the way out.
+ * Note the unit already sets `Nice=15`, `CPUWeight=10` and idle IO scheduling
+ * and still caused contention: what these runs hold is the SQLite write lock,
+ * which no scheduler priority can yield. Stopping the loop is the only lever.
+ *
+ * A gate is polled from inside the scan loops and reports WHY it fired:
+ *
+ * - `customer_media_active` — work arrived, hand the machine back. Throttled by
+ *   iteration count and wall time so the activity query never becomes the load
+ *   it is meant to relieve.
+ * - `runtime_budget` — the run outstayed its welcome on an idle box, where no
+ *   customer work will ever arrive to displace it. Checked on every call since
+ *   it costs nothing, and it is what actually bounds the runtime.
+ *
+ * Once fired the gate latches, because a run that has decided to stop must not
+ * keep querying on the way out.
  */
+export type YieldReason = "customer_media_active" | "runtime_budget";
+
 export type YieldCheck = () => boolean | Promise<boolean>;
 
 export const DEFAULT_YIELD_EVERY_ITEMS = 200;
@@ -17,14 +30,19 @@ export const DEFAULT_YIELD_MIN_INTERVAL_MS = 5_000;
 export type YieldGateOptions = {
   everyItems?: number;
   minIntervalMs?: number;
+  /** Epoch ms after which the run stops regardless of activity. */
+  deadlineAt?: number;
   now?: () => number;
 };
+
+export type YieldGate = () => Promise<YieldReason | null>;
 
 export function createYieldGate(
   check: YieldCheck | undefined,
   options: YieldGateOptions = {},
-): () => Promise<boolean> {
-  if (!check) return async () => false;
+): YieldGate {
+  const { deadlineAt } = options;
+  if (!check && deadlineAt === undefined) return async () => null;
 
   const everyItems = Math.max(1, Math.trunc(options.everyItems ?? DEFAULT_YIELD_EVERY_ITEMS));
   const minIntervalMs = Math.max(0, options.minIntervalMs ?? DEFAULT_YIELD_MIN_INTERVAL_MS);
@@ -32,16 +50,23 @@ export function createYieldGate(
 
   let seen = 0;
   let lastCheckedAt = Number.NEGATIVE_INFINITY;
-  let latched = false;
+  let latched: YieldReason | null = null;
 
-  return async function shouldYield(): Promise<boolean> {
-    if (latched) return true;
-    seen += 1;
-    if (seen % everyItems !== 0) return false;
+  return async function shouldYield(): Promise<YieldReason | null> {
+    if (latched) return latched;
+
     const at = now();
-    if (at - lastCheckedAt < minIntervalMs) return false;
+    if (deadlineAt !== undefined && at >= deadlineAt) {
+      latched = "runtime_budget";
+      return latched;
+    }
+    if (!check) return null;
+
+    seen += 1;
+    if (seen % everyItems !== 0) return null;
+    if (at - lastCheckedAt < minIntervalMs) return null;
     lastCheckedAt = at;
-    latched = Boolean(await check());
+    latched = (await check()) ? "customer_media_active" : null;
     return latched;
   };
 }

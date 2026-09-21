@@ -29,7 +29,7 @@ export type MissingLocalReconcileSkipReason =
   | "remote_unverified"
   | "catalog_changed";
 
-import { createYieldGate, type YieldCheck } from "@/lib/media-job-yield";
+import { createYieldGate, type YieldCheck, type YieldReason } from "@/lib/media-job-yield";
 
 export type MissingLocalReconcileReport = {
   mode: "dry-run" | "apply";
@@ -40,8 +40,8 @@ export type MissingLocalReconcileReport = {
   reconciled: { count: number; sizeBytes: number };
   skipped: Record<MissingLocalReconcileSkipReason, number>;
   errors: number;
-  /** Set when the run handed the box back to customer work before finishing (HERO-41). */
-  deferredReason?: "customer_media_active";
+  /** Set when the run stopped early rather than finishing the pass (HERO-41). */
+  deferredReason?: YieldReason;
 };
 
 type MissingLocalCatalog = Pick<
@@ -63,6 +63,8 @@ export type MissingLocalReconcileOptions = {
   shouldYield?: YieldCheck;
   yieldEveryItems?: number;
   yieldMinIntervalMs?: number;
+  /** Epoch ms after which the run stops even on a completely idle box. */
+  yieldDeadlineAt?: number;
 };
 
 type Candidate = {
@@ -222,11 +224,13 @@ export async function reconcileMissingVerifiedLocalMedia(
   const shouldYield = createYieldGate(options.shouldYield, {
     everyItems: options.yieldEveryItems,
     minIntervalMs: options.yieldMinIntervalMs,
+    deadlineAt: options.yieldDeadlineAt,
   });
 
   for (const row of inventory) {
-    if (await shouldYield()) {
-      report.deferredReason = "customer_media_active";
+    const scanYield = await shouldYield();
+    if (scanYield) {
+      report.deferredReason = scanYield;
       return report;
     }
     if (row.remoteState !== "verified" || row.localState !== "present") {
@@ -311,8 +315,9 @@ export async function reconcileMissingVerifiedLocalMedia(
     }
     report.reconciled.count++;
     report.reconciled.sizeBytes += candidate.sizeBytes;
-    if (await shouldYield()) {
-      report.deferredReason = "customer_media_active";
+    const applyYield = await shouldYield();
+    if (applyYield) {
+      report.deferredReason = applyYield;
       return report;
     }
   }

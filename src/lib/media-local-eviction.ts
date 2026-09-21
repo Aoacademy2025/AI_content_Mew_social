@@ -28,7 +28,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 type CatalogInspection = Awaited<ReturnType<MediaCatalog["inspect"]>>;
 
-import { createYieldGate, type YieldCheck } from "@/lib/media-job-yield";
+import { createYieldGate, type YieldCheck, type YieldReason } from "@/lib/media-job-yield";
 
 export type VerifiedLocalReplica = {
   record: MediaManifestRecord;
@@ -57,8 +57,8 @@ export type LocalEvictionReport = {
   evicted: { count: number; sizeBytes: number };
   skipped: Record<LocalEvictionSkipReason, number>;
   errors: number;
-  /** Set when the run handed the box back to customer work before finishing (HERO-41). */
-  deferredReason?: "customer_media_active";
+  /** Set when the run stopped early rather than finishing the pass (HERO-41). */
+  deferredReason?: YieldReason;
 };
 
 export type LocalEvictionCatalog = Pick<
@@ -81,6 +81,8 @@ export type LocalEvictionOptions = {
   shouldYield?: YieldCheck;
   yieldEveryItems?: number;
   yieldMinIntervalMs?: number;
+  /** Epoch ms after which the run stops even on a completely idle box. */
+  yieldDeadlineAt?: number;
 };
 
 function emptySkips(): Record<LocalEvictionSkipReason, number> {
@@ -379,12 +381,14 @@ export async function runLocalMediaEviction(
   const shouldYield = createYieldGate(options.shouldYield, {
     everyItems: options.yieldEveryItems,
     minIntervalMs: options.yieldMinIntervalMs,
+    deadlineAt: options.yieldDeadlineAt,
   });
 
   const selected: VerifiedLocalReplica[] = [];
   for (const record of plan.candidates) {
-    if (await shouldYield()) {
-      report.deferredReason = "customer_media_active";
+    const scanYield = await shouldYield();
+    if (scanYield) {
+      report.deferredReason = scanYield;
       return report;
     }
     const identity = identityForRecord(record);
@@ -432,8 +436,9 @@ export async function runLocalMediaEviction(
       report.skipped[result.status]++;
       if (result.error) report.errors++;
     }
-    if (await shouldYield()) {
-      report.deferredReason = "customer_media_active";
+    const applyYield = await shouldYield();
+    if (applyYield) {
+      report.deferredReason = applyYield;
       return report;
     }
   }
