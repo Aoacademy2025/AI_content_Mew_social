@@ -77,6 +77,12 @@ const MIX_PRESET_LABEL: Record<MixPreset, string> = {
   free: "ฟรีล้วน", recommended: "AutoMix แนะนำ", full: "AI เด่น",
 };
 
+// HERO-44: customers only see the fill-it-yourself card once a real render has been checked
+// end to end. Build-baked and copy-only — the server accepts "none" regardless.
+const BROLL_FILL_YOURSELF_ON = process.env.NEXT_PUBLIC_BROLL_FILL_YOURSELF === "1";
+const FILL_YOURSELF_TITLE = "ใส่ B-roll เอง";
+const FILL_YOURSELF_DESC = "ระบบเว้นช่องไว้ให้ · เติมคลิป/ภาพเองทีละช่วงหลังเรนเดอร์ · 0 เครดิต AI";
+
 // ลำดับตามความสำคัญจริง: สต็อกฟรีเสมอ แต่ไม่ติดป้าย "แนะนำ" แบบ global;
 // สำหรับลูกค้าที่จ่ายเงิน AutoMix เป็นคำแนะนำตาม product default.
 const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
@@ -84,10 +90,11 @@ const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: 
   { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ทุกช่วง · ไม่ใช้สต็อก", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
   { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
   { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
-  // HERO-42. Listed last and described plainly: this is the right answer for
-  // creators who add their own visuals afterwards, not a peer of the B-roll
-  // sources. It contacts no provider and spends no AI image credit.
-  { value: "none", title: "ไม่ใช้ B-roll", desc: "พื้นหลังสีแบรนด์ + ซับ · เอาไปตัดต่อใส่ภาพเอง", icon: <Type size={16} strokeWidth={1.6} /> },
+  // HERO-42/44. Listed last and described plainly: this is the right answer for
+  // creators who add their own visuals, not a peer of the B-roll sources. It contacts
+  // no provider and spends no AI image credit; the windows stay empty in the editor
+  // and unfilled ones show the brand background.
+  { value: "none", title: FILL_YOURSELF_TITLE, desc: FILL_YOURSELF_DESC, icon: <Type size={16} strokeWidth={1.6} /> },
 ];
 
 function fmtTime(sec: number) {
@@ -200,7 +207,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     ? "Hero AI Image"
     : p.brollSource === "automix"
       ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
-      : "สต็อกฟรี";
+      : p.brollSource === "none"
+        ? FILL_YOURSELF_TITLE
+        : "สต็อกฟรี";
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -1138,7 +1147,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
   const hasAiRenderAccess = p.heroAiImageEligible || p.hasAdmittedVisualPin;
   const heroImageUnlocked = hasAiRenderAccess && hasFunding;
   const autoMixUnlocked = hasAiRenderAccess && hasFunding;
-  const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
+  const options: { value: "stock" | "kie-image" | "automix" | "none"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     {
       value: "kie-image",
@@ -1148,6 +1157,9 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       icon: <ImagePlus size={16} strokeWidth={1.6} />,
     },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
+    ...(BROLL_FILL_YOURSELF_ON
+      ? [{ value: "none" as const, title: FILL_YOURSELF_TITLE, desc: FILL_YOURSELF_DESC, icon: <Type size={16} strokeWidth={1.6} /> }]
+      : []),
   ];
 
   function showLockedPreview(feature: "hero_ai_image" | "automix") {
@@ -1165,7 +1177,11 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
     setLockedFeature(feature);
   }
 
-  function selectSource(value: "stock" | "kie-image" | "automix") {
+  function selectSource(value: "stock" | "kie-image" | "automix" | "none") {
+    if (value === "none") {
+      if (p.brollSource !== value) p.setBrollSource("none");
+      return;
+    }
     if (value === "stock") {
       if (p.brollSource === value) return;
       p.setMixPreset("free");
@@ -1192,7 +1208,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+      <div className={`grid grid-cols-1 gap-2.5 ${options.length > 3 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
         {options.map((option) => {
           const locked = option.value === "kie-image"
             ? !heroImageUnlocked
@@ -1200,7 +1216,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
               ? !autoMixUnlocked
               : false;
           const selected = p.brollSource === option.value;
-          const badge = option.value === "stock"
+          const badge = option.value === "stock" || option.value === "none"
             ? "ฟรี"
             : option.value === "automix" && p.recommendedAutoMixDefault
               ? "แนะนำ"
@@ -1229,8 +1245,8 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
                 className="absolute right-2.5 top-2 rounded-full px-1.5"
                 style={{
                   fontSize: 9.5,
-                  color: option.value === "stock" ? color.primary300 : color.warning,
-                  border: `1px solid ${option.value === "stock" ? color.selectedBorder : "rgba(251,191,36,.35)"}`,
+                  color: badge === "ฟรี" ? color.primary300 : color.warning,
+                  border: `1px solid ${badge === "ฟรี" ? color.selectedBorder : "rgba(251,191,36,.35)"}`,
                 }}
               >
                 {badge}

@@ -62,6 +62,27 @@ async function main(): Promise<void> {
   }
   assert(offered.includes("none"), "the picker must offer the no-B-roll option");
 
+  // HERO-44 gap (a): ordinary customers get a SECOND, separately written picker. HERO-42's
+  // card was added to the admin list only, passed QA on an admin account, and no customer
+  // could see it. Both pickers and the summary label must know the option.
+  const customerBlock = step2.match(/function CustomerBrollSourceButtons[\s\S]*?\n\}\n/);
+  assert(customerBlock, "could not find CustomerBrollSourceButtons in Step2Elements.tsx");
+  assert(/value:\s*"none"/.test(customerBlock[0]), "the customer picker must offer the fill-it-yourself option");
+  assert(
+    /BROLL_FILL_YOURSELF_ON/.test(customerBlock[0])
+      && /const BROLL_FILL_YOURSELF_ON = process\.env\.NEXT_PUBLIC_BROLL_FILL_YOURSELF === "1";/.test(step2),
+    "the customer card stays behind NEXT_PUBLIC_BROLL_FILL_YOURSELF until a real render is checked",
+  );
+  assert(/p\.setBrollSource\("none"\)/.test(customerBlock[0]), "choosing the customer card selects the none source");
+  const labelBlock = step2.match(/const customerBrollLabel =[\s\S]*?;/);
+  assert(labelBlock && /"none"/.test(labelBlock[0]), "the customer summary label names the fill-it-yourself choice instead of สต็อกฟรี");
+  assert(!/title: "ไม่ใช้ B-roll"/.test(step2), "the old name no longer describes the behaviour");
+  assert(/const FILL_YOURSELF_TITLE = "ใส่ B-roll เอง";/.test(step2), "the option carries the name Mew chose");
+  assert(
+    /title: FILL_YOURSELF_TITLE/.test(block[0]) && /title: FILL_YOURSELF_TITLE/.test(customerBlock[0]),
+    "both pickers take the name from the one constant",
+  );
+
   console.log("PASS v2 b-roll source mapping reaches the API for every option");
 }
 
