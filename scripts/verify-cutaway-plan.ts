@@ -49,6 +49,39 @@ assert(
   assert(planCutaway([]).person.length === 0 && planCutaway([]).broll.length === 0, "0 windows => empty plan");
 }
 
+// 4b) HERO-44 "ใส่ B-roll เอง": every window stays with the presenter, so no range is
+// ever sent to keywords/stock/AI, but the windows themselves survive for the customer
+// to fill one at a time in the editor.
+{
+  const { person, broll } = planCutaway(mk(6), { fillYourself: true });
+  assert(broll.length === 0, "fill-yourself => no b-roll range is planned");
+  assert(person.length === 6, "fill-yourself => every window is kept as a person range");
+  assert(
+    JSON.stringify(person) === JSON.stringify(mk(6)),
+    "fill-yourself => person ranges are the windows, untouched and in order",
+  );
+  const timeline = buildCutawayBackgroundTimeline({
+    windows: mk(6),
+    brollRanges: broll,
+    brollAssets: [],
+    presenterAsset: { videoUrl: "/api/renders/presenter.mp4", duration: 24, timelineAligned: true },
+  });
+  assert(timeline.windows.length === 6, "fill-yourself => the background timeline keeps all 6 windows");
+  assert(
+    timeline.assets.every((asset, index) =>
+      asset.videoUrl === "/api/renders/presenter.mp4" && asset.sourceIndex === index),
+    "fill-yourself => each window is the presenter with its own sourceIndex (never merged)",
+  );
+}
+{
+  const source = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+  assert(
+    /planCutaway\(\s*upWindows\.map\([^)]*\)\s*\)\s*,\s*\{\s*fillYourself:\s*brollDisabled\s*\}/.test(source)
+      || /planCutaway\([\s\S]{0,160}\{\s*fillYourself:\s*brollDisabled\s*\}/.test(source),
+    "upload path passes the no-auto-B-roll decision into planCutaway",
+  );
+}
+
 // 5) b-roll ratio ~40-50% for typical lengths
 {
   const ratio = planCutaway(mk(10)).broll.length / 10;

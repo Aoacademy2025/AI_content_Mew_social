@@ -38,6 +38,9 @@ jobs:
       - name: Verify no-B-roll source and brand background (HERO-42)
         run: npm run verify:broll-none
 
+      - name: Verify fill-it-yourself B-roll plans windows without provider calls (HERO-44)
+        run: npm run verify:broll-fill-yourself
+
       - name: Verify local media eviction yields to customer renders (HERO-41)
         run: npm run verify:media-local-eviction
 

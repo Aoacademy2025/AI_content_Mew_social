@@ -1921,7 +1921,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Plan the final composite before any provider request. The uploaded presenter
       // covers every `person` range, so media generated for those ranges can never be
       // seen and must not consume image credits.
-      const upCutawayPlan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
+      // HERO-44: with auto B-roll off every window stays with the presenter, so the
+      // keyword, preflight and provider stages below all see zero visible windows and
+      // spend nothing. The windows still reach generate-config for the customer to fill.
+      const upCutawayPlan = planCutaway(
+        upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        { fillYourself: brollDisabled },
+      );
       const visibleBrollRanges = new Set(
         upCutawayPlan.broll.map((range) => `${range.startMs}:${range.endMs}`),
       );
