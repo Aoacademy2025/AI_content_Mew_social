@@ -29,6 +29,7 @@ import {
   BrollCoverageError,
   prepareBrollRenderAssets,
 } from "@/lib/broll-coverage";
+import { prepareFilledWindowRenderAssets } from "@/lib/broll-placeholders";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
@@ -920,17 +921,27 @@ export async function POST(req: Request) {
     // brand background across the whole clip instead, so there is nothing to cover.
     // An empty `bgVideos` WITHOUT `backgroundColors` is still the accidental case and
     // still fails, which is what this gate is for.
+    // HERO-44: the customer may since have filled some windows. Those render; the
+    // windows left empty keep the brand background, and no fill is stretched over them.
     const brollDisabled = Boolean(shortVideoConfig?.backgroundColors?.length);
     if (isShortVideo && shortVideoConfig && brollDisabled) {
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
-        bgVideos: [],
+        bgVideos: await prepareFilledWindowRenderAssets(shortVideoConfig.bgVideos, fps, {
+          resolveAsset: (src) => {
+            const resolvedSrc = toAbsolute(resolveStockUrl(src));
+            return { src: resolvedSrc, localPath: toLocalFilePathIfInternal(resolvedSrc) };
+          },
+          isUsableLocalFile: (localPath) =>
+            fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500,
+          probeDurationSec: probeVideoDurationSec,
+        }),
         headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
-      console.log("[render] b-roll disabled — brand background, no coverage pass");
+      console.log(`[render] brand background — ${resolvedShortConfig.bgVideos?.length ?? 0} customer-filled b-roll segment(s)`);
     } else if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       // Probe duration and clamp source metadata. Keep the desired timeline end intact;

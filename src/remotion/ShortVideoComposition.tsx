@@ -614,7 +614,8 @@ export function ShortVideoComposition({
             endFrame,
             clipOffset,
             clipDuration,
-            brollEnabled: v.brollEnabled !== false,
+            // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
+            brollEnabled: v.brollEnabled !== false && Boolean(v.src),
           });
         }
 

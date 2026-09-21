@@ -9,6 +9,7 @@ import {
   coverBrollTimeline,
   isSupportedBrollFps,
 } from "@/lib/broll-coverage";
+import { buildPlaceholderBgVideos } from "@/lib/broll-placeholders";
 import { buildKeywordPopups } from "@/lib/keyword-popups";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
@@ -725,7 +726,11 @@ export async function POST(req: Request) {
       { status: 422 },
     );
   }
-  bgVideos = brollDisabled ? [] : coverage.segments;
+  // HERO-44: with auto B-roll off the planned windows survive as empty slots the customer
+  // fills in the editor. No windows (legacy callers) still means an empty timeline.
+  bgVideos = brollDisabled
+    ? buildPlaceholderBgVideos(brollWindows, audioDurationSec)
+    : coverage.segments;
   await recordTelemetryEvent(authUser.id, {
     name: "broll_config_coverage",
     category: "performance",

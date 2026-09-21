@@ -53,6 +53,32 @@ async function main() {
   );
   assert(paths.includes("/api/videos/render"), "upload: the base render is requested");
 
+  // === script path ===
+  const scriptJob = await prisma.videoJob.create({ data: { userId: u.id, status: "processing", inputJson: JSON.stringify({
+    script: "ประโยคแรกของคลิป ประโยคที่สองของคลิป ประโยคที่สามของคลิป", voiceProvider: "gemini", stockSource: "none", preview: true,
+  }) } });
+  const scriptRun = mockCaller({
+    "/api/videos/tts-gemini": { voiceUrl: "/api/renders/v.wav", audioDurationMs: 12000, timing: { provider: "gemini", segments: [
+      { text: "ประโยคแรกของคลิป", startMs: 0, durationMs: 4000 },
+      { text: "ประโยคที่สองของคลิป", startMs: 4000, durationMs: 4000 },
+      { text: "ประโยคที่สามของคลิป", startMs: 8000, durationMs: 4000 },
+    ], chars: null } },
+    "/api/videos/generate-config": { config: { durationInFrames: 360, voiceFile: "/api/renders/v.wav", bgVideos: [] } },
+    "/api/videos/render": { jobId: "job-script-fill" },
+    "/api/videos/render-progress": { progress: 100, stage: "done", videoUrl: "/api/renders/script-fill.mp4", error: null },
+    "/api/videos": { id: "vid_fill" },
+    "/api/videos/vid_fill": { ok: true },
+  });
+  await runOrchestrator(scriptJob.id, u.id, { caller: scriptRun.caller as never, refundOneClip: async () => {}, sleep: async () => {} });
+  const scriptPaths = scriptRun.calls.map((c) => c.path.split("?")[0]);
+  assert(!scriptPaths.includes("/api/videos/extract-keywords"), "script: no keyword extraction");
+  assert(!scriptPaths.includes("/api/videos/fetch-stock"), "script: no stock/AI provider call");
+  const scriptConfigBody = scriptRun.calls.find((c) => c.path === "/api/videos/generate-config")?.body as
+    { brollDisabled?: boolean; brollWindows?: unknown[]; stockVideos?: unknown[] } | undefined;
+  assert(scriptConfigBody?.brollDisabled === true, "script: generate-config is told auto B-roll is off");
+  assert((scriptConfigBody?.brollWindows?.length ?? 0) >= 1, `script: the planned windows reach generate-config (got ${scriptConfigBody?.brollWindows?.length ?? 0})`);
+  assert((scriptConfigBody?.stockVideos?.length ?? 0) === 0, "script: no media is attached to the windows");
+
   await prisma.videoJob.deleteMany();
   await prisma.user.deleteMany();
   await prisma.$disconnect();

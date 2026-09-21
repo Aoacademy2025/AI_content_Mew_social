@@ -234,6 +234,10 @@ export function mergeWindowEdits(
     if (typeof e.start === "number") base.start = e.start;
     if (typeof e.end === "number") base.end = e.end;
     if (e.src) {
+      // HERO-44: a window the customer was left to fill is hidden only because it had
+      // nothing to show. Filling it makes it visible; a hidden window that already had
+      // footage keeps its state, and an explicit `enabled` below still wins either way.
+      if (!base.src && base.brollEnabled === false) base.brollEnabled = true;
       // Replacement: reset clip playback and strip metadata that describes the OLD asset.
       delete base.clipDuration;
       delete base.provider;
