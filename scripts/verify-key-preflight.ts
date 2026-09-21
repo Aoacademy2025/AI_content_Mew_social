@@ -439,6 +439,11 @@ async function main() {
   });
 
   await check("kie-image stockSource -> never uses Pexels/Pixabay", async () => {
+    // HERO-42: "none" produces a video with no B-roll at all, so the key gate must
+    // not demand Pexels/Pixabay credentials for it — that is the whole point of the
+    // option being available on FREE.
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "none" }), false);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "none", autoMixProviders: ["video"] }), false);
     assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "kie-image" }), false);
     assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "kie-image", autoMixProviders: ["video"] }), false);
   });

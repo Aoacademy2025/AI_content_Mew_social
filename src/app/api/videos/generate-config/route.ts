@@ -1,5 +1,6 @@
 ﻿import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { sanitizeBackgroundColors } from "@/lib/render-background";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
 import {
@@ -170,6 +171,8 @@ export async function POST(req: Request) {
     sceneDurations = [] as number[],
     minHoldSec: minHoldSecParam,
     brollWindows = [] as { startMs: number; endMs: number }[],
+    brollDisabled = false,
+    backgroundColors = [] as string[],
   }: {
     sceneCaptions?: Cap[];
     stockVideos: StockVideo[];
@@ -193,6 +196,11 @@ export async function POST(req: Request) {
     sceneDurations?: number[];
     minHoldSec?: number;
     brollWindows?: { startMs: number; endMs: number }[];
+    /** HERO-42: the customer asked for a video with no B-roll. An empty
+     *  `stockVideos` is then the intended result, not a caller mistake. */
+    brollDisabled?: boolean;
+    /** Brand palette painted behind the subtitles when there is no B-roll. */
+    backgroundColors?: string[];
   } = body ?? {};
 
   const primaryColor = subtitleColor ?? "#FFFFFF";
@@ -662,7 +670,7 @@ export async function POST(req: Request) {
   // 3. Normalize and enforce coverage. Never stretch an individual media segment beyond
   // its playable duration: the coverage helper fills gaps and splits/reuses source media.
   bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
-  if (validStocks.length === 0) {
+  if (validStocks.length === 0 && !brollDisabled) {
     return NextResponse.json({ error: "à¹„à¸¡à¹ˆà¸¡à¸µ stock video â€” à¸à¸£à¸¸à¸“à¸² fetch stock à¸à¹ˆà¸­à¸™ generate config", retryable: false }, { status: 400 });
   }
   if (!bgVideos.length && validStocks.length > 0) {
@@ -744,6 +752,10 @@ export async function POST(req: Request) {
     // Ken Burns motion on b-roll — env-gated (STOCK_KEN_BURNS=1, default off). Set in
     // the config so the render AND the editor preview (both read ShortVideoConfig) match.
     kenBurns: process.env.STOCK_KEN_BURNS === "1",
+    // HERO-42: with B-roll off there is no footage to paint over, so the frame is
+    // the brand palette. Omitted for every other source, leaving the composition's
+    // own black backdrop exactly as before.
+    ...(brollDisabled ? { backgroundColors: sanitizeBackgroundColors(backgroundColors) } : {}),
   };
 
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups, kenBurns=${config.kenBurns}`);

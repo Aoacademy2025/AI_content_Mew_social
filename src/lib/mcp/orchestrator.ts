@@ -957,6 +957,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (!job) return;
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
+    // HERO-42: the customer asked for a video with no B-roll. Declared once here so
+    // every stage below — window planning, keyword extraction, the provider call and
+    // the preflight degrade path — reads the same decision.
+    const brollDisabled = input.stockSource === "none";
     const persistedNarrationPlan = typeof input.script === "string"
       ? parseNarrationPlan(input.narrationPlan, input.script)
       : null;
@@ -2559,7 +2563,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioEndMs: durMs,
         })
       : null;
-    if (contentPreflightStockDegradeReason({
+    if (!brollDisabled && contentPreflightStockDegradeReason({
       pinnedWindowCount: pinnedBrandVisualWindowCount,
       narrativeAligned: Boolean(narrativeAlignedWindows),
     })) {
@@ -2586,7 +2590,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // treats that as ×1 (same as "normal"), but the AI-gen/auto-mix minHoldSec
     // default further down must NOT fire on `null` (see that call site).
     const pacing = await resolvePacing();
-    const brollWindows = narrativeAlignedWindows
+    // HERO-42: "none" means the customer asked for a video with no B-roll. No windows
+    // are planned, no keywords are extracted and no provider is contacted, so the run
+    // spends no stock quota and no AI image credit. The frame is painted from the
+    // brand palette by the composition instead.
+    const brollWindows = brollDisabled ? [] : (narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0
         ? manualBrollCount > 0
         ? buildFixedCountBrollWindows(
@@ -2600,12 +2608,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             durMs,
             { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
           )
-        : []);
+        : []));
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
     // 3. Keywords
     await step("keywords", 40);
-    const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
+    const kw = brollDisabled
+      ? { keywords: [] as string[] }
+      : await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
       "/api/videos/extract-keywords",
       {
         ...buildKeywordsPayload(brollUnits.map((c) => c.text), input.script, durMs, {
@@ -2628,7 +2638,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
     const aiGenSource = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
     const effectiveStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
-    const stock = await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
+    const stock = brollDisabled ? { results: [] as unknown[] } : await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
       {
         ...buildStockPayload(aligned.keywords, totalDur, effectiveStockSource, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
@@ -2652,6 +2662,27 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     );
     emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
 
+    // HERO-42: with B-roll off the frame is the account's brand palette. Read only
+    // on that path, so accounts using B-roll pay nothing for it. A missing profile,
+    // `languageMode: "none"` or unreadable JSON all fall through to an empty list,
+    // which generate-config turns into the house default rather than a black frame.
+    const resolveBrandPalette = async (): Promise<string[]> => {
+      if (!job.projectId) return [];
+      const project = await prisma.editorProject.findFirst({
+        where: { id: job.projectId, userId },
+        select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+      });
+      const raw = project?.brandProfileRevision?.visualRecipeJson;
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw) as { brandVisualLanguage?: { palette?: unknown } | null };
+        const palette = parsed.brandVisualLanguage?.palette;
+        return Array.isArray(palette) ? palette.filter((c): c is string => typeof c === "string") : [];
+      } catch {
+        return [];
+      }
+    };
+
     // 5. Config
     await step("config", 65);
     // Window mode → empty sceneClipCounts so generate-config takes the window branch (one clip
@@ -2662,7 +2693,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : (captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []));
     const cfgRes = await caller.post<{ config: Record<string, unknown> }>(
       "/api/videos/generate-config",
-      buildConfigPayload(
+      {
+        ...(brollDisabled
+          ? { brollDisabled: true, backgroundColors: await resolveBrandPalette() }
+          : {}),
+        ...buildConfigPayload(
         captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
         kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
         aligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
@@ -2674,6 +2709,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // STOCK_MIN_HOLD_SEC / legacy default applies, exactly as before this task.
         aiGenSource && pacing ? PACING_MIN_HOLD_SEC[pacing] : undefined,
       ),
+      },
     );
 
     // 6. Base render (no burned subs) → poll

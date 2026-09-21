@@ -94,6 +94,11 @@ function SectionLabel({ children, right }: { children: React.ReactNode; right?: 
 }
 
 export function OrderPanel(p: OrderPanelProps) {
+  // HERO-42: the Free card is selected only for the stock sources it actually covers.
+  // It used to be "anything that is not kie-image or auto-mix", which lit it up for
+  // "none" (no B-roll) too.
+  const freeSelected = p.stockSource === "pexels" || p.stockSource === "pixabay" || p.stockSource === "both";
+  const noBrollSelected = p.stockSource === "none";
   const posCanvasRef = React.useRef<HTMLDivElement>(null);
   const musicPreviewRef = React.useRef<HTMLAudioElement | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
@@ -248,20 +253,20 @@ export function OrderPanel(p: OrderPanelProps) {
               {/* Free */}
               <button onClick={() => p.setStockSource("both")}
                 className={cn("relative w-full rounded-xl border px-3 py-2.5 text-left transition-all overflow-hidden",
-                  p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
-                style={p.stockSource !== "kie-image" && p.stockSource !== "auto-mix"
+                  freeSelected ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
+                style={freeSelected
                   ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.07) 55%, rgba(139,92,246,0.04))", boxShadow: "0 0 18px rgba(139,92,246,0.18), inset 0 1px 0 rgba(255,255,255,0.06)" }
                   : { background: "#15151b" }}>
                 <div className="flex items-center gap-2.5">
                   <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
-                    p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
-                    <Film className={cn("w-3.5 h-3.5", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-300" : "text-slate-500")} />
+                    freeSelected ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
+                    <Film className={cn("w-3.5 h-3.5", freeSelected ? "text-violet-300" : "text-slate-500")} />
                   </div>
                   <div className="min-w-0">
-                    <div className={cn("text-[12px] font-bold leading-tight", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-200" : "text-slate-400")}>Free</div>
+                    <div className={cn("text-[12px] font-bold leading-tight", freeSelected ? "text-violet-200" : "text-slate-400")}>Free</div>
                     <div className="text-[9px] text-slate-500 mt-0.5">Pexels + Pixabay</div>
                   </div>
-                  {p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" && (
+                  {freeSelected && (
                     <span className="ml-auto w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(139,92,246,0.6)]">
                       <Check className="w-3 h-3 text-white" strokeWidth={3} />
                     </span>
@@ -469,6 +474,33 @@ export function OrderPanel(p: OrderPanelProps) {
                   </p>
                 </div>
               )}
+
+              {/* No B-roll — brand-coloured frame + subtitles only (HERO-42).
+                  Deliberately the quietest card in the group: it is the right answer
+                  for creators who add their own visuals afterwards, not a peer of the
+                  B-roll sources. */}
+              <button onClick={() => p.setStockSource("none")}
+                title="ไม่ดึง B-roll เลย — พื้นหลังสีแบรนด์ + ซับ"
+                className={cn("relative w-full rounded-xl border px-3 py-2.5 text-left transition-all overflow-hidden",
+                  noBrollSelected ? "border-slate-300/40 bg-[#1b1b22]" : "border-[#26262f] bg-[#15151b] hover:border-slate-500/40")}>
+                <div className="flex items-center gap-2.5">
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    noBrollSelected ? "bg-slate-200/15 border-slate-300/35" : "bg-[#1e1e26] border-[#2a2a36]")}>
+                    <Film className={cn("w-3.5 h-3.5", noBrollSelected ? "text-slate-200" : "text-slate-600")} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className={cn("text-[12px] font-bold leading-tight", noBrollSelected ? "text-slate-100" : "text-slate-400")}>
+                      ไม่ใช้ B-roll
+                    </div>
+                    <div className="text-[9px] text-slate-500 mt-0.5">พื้นหลังสีแบรนด์ + ซับ · เหมาะกับคลิปที่จะเอาไปตัดต่อใส่ภาพเอง</div>
+                  </div>
+                  {noBrollSelected && (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full bg-slate-200 flex items-center justify-center shrink-0">
+                      <Check className="w-3 h-3 text-slate-900" strokeWidth={3} />
+                    </span>
+                  )}
+                </div>
+              </button>
             </div>
           </div>
 

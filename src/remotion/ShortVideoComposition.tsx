@@ -1,4 +1,5 @@
 import React from "react";
+import { backgroundGradientCss } from "../lib/render-background";
 import {
   AbsoluteFill,
   Audio,
@@ -565,6 +566,7 @@ export function ShortVideoComposition({
   subtitleOutlineSize = 2,
   kenBurns = false,
   watermark = false,
+  backgroundColors,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -575,7 +577,16 @@ export function ShortVideoComposition({
   const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
+    <AbsoluteFill style={{
+      // HERO-42: with no B-roll the backdrop IS the picture, so it is painted from
+      // the account's brand palette. Every other source keeps the black backdrop the
+      // clips sit on, so nothing changes for them.
+      ...(backgroundColors?.length
+        ? { background: backgroundGradientCss(backgroundColors) }
+        : { backgroundColor: "#000" }),
+      fontFamily: resolvedFont,
+      overflow: "hidden",
+    }}>
       <link rel="stylesheet" href={FONTS_CSS} />
 
       {/* ── Stock video clips ─────────────────────────────────────────────── */}
