@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiStockSource } from "./broll-source";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import type { SceneRerollCapability } from "@/lib/scene-reroll-capability";
@@ -444,7 +445,7 @@ export function useV2Job(p: V2Project) {
       mode: "upload",
       clipUrl: p.clipUrl,
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
-      stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
+      stockSource: apiStockSource(p.brollSource),
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       // ADR 0057: the footage style now comes from the project's pinned Style
@@ -485,7 +486,7 @@ export function useV2Job(p: V2Project) {
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
       ...bgmInput,
       // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
-      stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
+      stockSource: apiStockSource(p.brollSource),
       // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
       ...(p.useAvatar && p.avatarId
         ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
