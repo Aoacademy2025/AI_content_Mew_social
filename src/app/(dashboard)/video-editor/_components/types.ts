@@ -34,7 +34,10 @@ export interface Caption {
 // "kie-image" = สร้างภาพด้วย AI แล้วแปลงเป็นวิดีโอผ่าน kie.ai — admin-only
 // "auto-mix" = วิดีโอ Pexels/Pixabay เป็นหลัก ถ้า keyword ไหนหา clip ดีไม่ได้ fallback เป็นภาพ
 //   (Unsplash -> kie.ai AI image) แล้วทำ Ken Burns — admin-only (ทดลอง)
-export type StockSource = "pexels" | "pixabay" | "both" | "kie-image" | "auto-mix";
+/** "none" = no B-roll at all: the frame is painted from the account's brand palette
+ *  and only subtitles (and the avatar, when enabled) are drawn over it. It contacts
+ *  no provider and spends no AI image credit, so it is available on every plan. */
+export type StockSource = "pexels" | "pixabay" | "both" | "kie-image" | "auto-mix" | "none";
 
 // โมเดล text-to-image ของ kie.ai ที่เลือกได้ — ขนาดภาพ fix ที่ 9:16 เสมอ
 export type KieImageModel =

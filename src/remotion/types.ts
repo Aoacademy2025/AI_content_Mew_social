@@ -138,6 +138,9 @@ export interface SubtitleOverlayConfig {
 
 export interface ShortVideoConfig {
   bgVideos: BrollVideo[];
+  /** HERO-42: painted behind the subtitles when the video has no B-roll at all.
+   *  Absent for every other source, leaving the composition's black backdrop. */
+  backgroundColors?: string[];
   /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
   requestedBrollWindowCount?: number;
   keywordPopups: KeywordPopupItem[];

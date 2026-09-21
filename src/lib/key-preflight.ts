@@ -252,6 +252,7 @@ export async function preflightStockProviders(input: {
  * search at all (review round, 2026-07-17 — fixes the Pexels preflight running before
  * stockSource was parsed, which could block a kie-image/video-excluded auto-mix job over
  * a Pexels key it would never touch). Pure so it's unit-testable without a live route:
+ *  - "none": no B-roll at all — no provider is contacted, so no key is required.
  *  - "kie-image": never touches Pexels/Pixabay (AI image-to-video only).
  *  - "auto-mix": only touches them when the "video" bucket is enabled — default ON
  *    (undefined/empty providers list = every bucket on), OFF only if the caller
@@ -259,6 +260,7 @@ export async function preflightStockProviders(input: {
  *  - "stock" (default/undefined) or anything else: unchanged, always may be used.
  */
 export function stockVideoProvidersMayBeUsed(input: { stockSource?: string; autoMixProviders?: string[] }): boolean {
+  if (input.stockSource === "none") return false;
   if (input.stockSource === "kie-image") return false;
   if (input.stockSource === "auto-mix") {
     // Matches fetch-stock's own `autoMixUsesVideo` exactly: undefined/no list = every

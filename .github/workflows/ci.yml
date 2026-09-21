@@ -35,6 +35,9 @@ jobs:
       - name: Verify narration comparison and regeneration disclosure
         run: npm run verify:narration-comparison && npm run verify:render-receipt
 
+      - name: Verify no-B-roll source and brand background (HERO-42)
+        run: npm run verify:broll-none
+
       - name: Verify local media eviction yields to customer renders (HERO-41)
         run: npm run verify:media-local-eviction
 

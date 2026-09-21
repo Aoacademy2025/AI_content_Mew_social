@@ -125,7 +125,9 @@ type Body = {
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
 // gate SERVER-SIDE (the UI disables the cards, but that's not security).
-const STOCK_SOURCES = new Set(["stock", "kie-image", "auto-mix"]);
+// "none" (HERO-42) stays a distinct value rather than collapsing to "stock" below,
+// because it is the one source that contacts no provider at all.
+const STOCK_SOURCES = new Set(["stock", "kie-image", "auto-mix", "none"]);
 
 const SUB_MODES = new Set(["sentence", "1", "2", "3", "4"]);
 const SUB_POSITIONS = new Set(["top", "middle", "bottom"]);
