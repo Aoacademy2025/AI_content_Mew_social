@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { brollTimelineLabel } from "@/lib/broll-window-ux";
 import { Eye, EyeOff, Play, Pause, Magnet, Redo2, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
@@ -527,7 +528,7 @@ export function TimelinePanel({
                     title={enabled ? s.label : `ปิด B-roll · ${s.label}`}
                     aria-label={enabled ? s.label : `ปิด B-roll ${s.label}`}
                   >
-                    {enabled ? s.label : `ปิด · ${s.label}`}
+                    {brollTimelineLabel({ enabled, label: s.label, src: s.src })}
                     {editedWindowIndices?.has(s.index) && (
                       <span
                         aria-hidden
