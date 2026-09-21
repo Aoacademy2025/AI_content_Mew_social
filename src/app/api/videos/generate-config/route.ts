@@ -699,7 +699,11 @@ export async function POST(req: Request) {
     uncoveredTailSec: coverage.metrics.uncoveredTailSec,
     coverageRejected: !coverage.complete,
   };
-  if (!coverage.complete) {
+  // HERO-42: with B-roll off there is deliberately nothing to cover — the frame is
+  // the brand background, painted by the composition for the whole clip. The gate
+  // stays fail-closed for every other caller, where an uncovered timeline really
+  // does mean the video would show black gaps.
+  if (!coverage.complete && !brollDisabled) {
     await recordTelemetryEvent(authUser.id, {
       name: "broll_config_coverage",
       category: "error",
@@ -721,7 +725,7 @@ export async function POST(req: Request) {
       { status: 422 },
     );
   }
-  bgVideos = coverage.segments;
+  bgVideos = brollDisabled ? [] : coverage.segments;
   await recordTelemetryEvent(authUser.id, {
     name: "broll_config_coverage",
     category: "performance",
