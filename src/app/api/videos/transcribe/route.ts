@@ -453,7 +453,9 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
       return;
     }
 
-    execFile(probe, ["-i", audioPath, "-f", "null", "-"], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+    // FFmpeg prints container metadata before its expected no-output error;
+    // do not decode the whole uploaded video just to read its duration.
+    execFile(probe, ["-i", audioPath], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
       const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
       if (!m) return reject(new Error("Could not parse duration from ffmpeg"));
       const ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) * 1000 + parseInt(m[4], 10) * 10;
@@ -932,10 +934,12 @@ export async function POST(req: Request) {
     }
     let sourceAudioDurationMs = 0;
     try {
-      sourceAudioDurationMs = await getAudioDurationMs(mp3Path);
+      // The uploaded media owns the render clock. MP3 encoder padding can add
+      // several frames and make a presenter-only timeline exceed its source.
+      sourceAudioDurationMs = await getAudioDurationMs(inputPath);
       console.log(`[transcribe] source audio duration ${sourceAudioDurationMs}ms`);
     } catch (e) {
-      console.warn("[transcribe] failed to read mp3 duration:", e);
+      console.warn("[transcribe] failed to read source media duration:", e);
     }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
 

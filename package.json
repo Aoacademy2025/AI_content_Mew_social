@@ -141,7 +141,7 @@
     "verify:subtitle-audio-sync": "npm run verify:subtitle-quality-policy && npm run verify:narration-plan && npm run verify:mcp-perfect && npm run verify:provider-subtitle-alignment && npm run verify:export-gallery-metadata && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-preview-mode.ts && npm run verify:subtitle-release-audit && tsx scripts/verify-subtitle-sentence-repetition.ts && tsx scripts/verify-subtitle-punctuation-parity.ts",
     "verify:narration-plan": "node --conditions=react-server --import tsx scripts/verify-narration-plan.ts",
     "verify:provider-subtitle-alignment": "node --conditions=react-server --import tsx scripts/verify-provider-subtitle-alignment.ts",
-    "verify:transcribe-alignment": "tsx scripts/verify-transcribe-quality-retry.ts && tsx scripts/verify-transcribe-words-guard.ts && tsx scripts/verify-transcribe-chunking.ts && tsx scripts/verify-transcribe-desync-guard.ts",
+    "verify:transcribe-alignment": "tsx scripts/verify-transcribe-quality-retry.ts && tsx scripts/verify-transcribe-words-guard.ts && tsx scripts/verify-transcribe-chunking.ts && tsx scripts/verify-transcribe-desync-guard.ts && tsx scripts/verify-transcribe-source-duration.ts",
     "verify:subtitle-preview-parity": "tsx scripts/verify-subtitle-preview-pause-parity.ts",
     "verify:subtitle-fit-v2": "tsx scripts/verify-subtitle-fit-v2.ts && tsx scripts/verify-subtitle-manual-newlines.ts && tsx scripts/verify-subtitle-fit-v2-remotion.ts",
     "verify:headline-hook": "tsx scripts/verify-headline-hook.ts",
