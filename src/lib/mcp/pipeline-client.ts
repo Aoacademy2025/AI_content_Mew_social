@@ -4,6 +4,7 @@ import {
   SERVICE_VIDEO_JOB_HEADER,
 } from "@/lib/mcp/service-actor";
 import { Agent, fetch as undiciFetch } from "undici";
+import { INTERNAL_TRANSCRIBE_DEADLINE_HEADER } from "@/lib/transcribe-deadline";
 
 const BASE = process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000";
 
@@ -30,7 +31,13 @@ export interface PipelineCaller {
   /** opts.retries=0 for calls that SPEND scarce external/platform capacity (Kie,
    *  OmniVoice synthesis) —
    *  a transport-timeout retry there means paying for the whole batch again. */
-  post<T>(path: string, body: unknown, opts?: { retries?: number }): Promise<T>;
+  post<T>(path: string, body: unknown, opts?: {
+    retries?: number;
+    /** Optional cooperative cancellation for one internal request. */
+    signal?: AbortSignal;
+    /** Absolute wall-clock deadline, authenticated by the normal service headers. */
+    deadlineMs?: number;
+  }): Promise<T>;
   patch<T>(path: string, body: unknown): Promise<T>;
   get<T>(path: string): Promise<T>;
 }
@@ -221,15 +228,31 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
 
 /** A caller that authenticates every request as `userId` via the service seam. */
 export function pipelineCaller(userId: string, videoJobId?: string): PipelineCaller {
-  const headers = {
+  const baseHeaders = {
     "Content-Type": "application/json",
     [SERVICE_SECRET_HEADER]: process.env.MCP_SERVICE_SECRET ?? "",
     [SERVICE_ACTAS_HEADER]: userId,
     ...(videoJobId ? { [SERVICE_VIDEO_JOB_HEADER]: videoJobId } : {}),
   };
-  async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown, opts?: { retries?: number }): Promise<T> {
+  async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown, opts?: {
+    retries?: number;
+    signal?: AbortSignal;
+    deadlineMs?: number;
+  }): Promise<T> {
     return withRetry(async () => {
-      const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
+      const headers = {
+        ...baseHeaders,
+        ...(Number.isFinite(opts?.deadlineMs)
+          ? { [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(Math.floor(opts!.deadlineMs!)) }
+          : {}),
+      };
+      const res = await undiciFetch(`${BASE}${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        dispatcher: pipelineDispatcher,
+        signal: opts?.signal,
+      });
       const text = await res.text();
       return decodePipelineResponse<T>(method, path, res.status, text);
     }, { retries: opts?.retries });

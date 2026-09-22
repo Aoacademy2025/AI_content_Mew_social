@@ -23,6 +23,27 @@ VERSION = "thai-ctc-v1"
 MAX_DURATION = 360
 MAX_CHARACTERS = 12_000
 MAX_CELLS = 250_000_000
+PHASES = {"lockWait", "modelLoad", "audioDecode", "emissions", "alignment"}
+
+
+def announce_phase(phase: str):
+    """Emit one fixed progress code for parent-side timeout attribution."""
+    if phase in PHASES:
+        print(f"HERO_ACOUSTIC_PHASE={phase}", file=sys.stderr, flush=True)
+
+
+def elapsed_ms(started: float) -> int:
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+def audio_length_bucket(duration_ms: int) -> str:
+    if duration_ms < 30_000:
+        return "lt_30s"
+    if duration_ms < 120_000:
+        return "30_119s"
+    if duration_ms < 240_000:
+        return "120_239s"
+    return "240_360s"
 
 
 def source_tokens(text: str, vocab: dict[str, int]):
@@ -109,7 +130,7 @@ class Aligner:
                 emissions.append(log[selected])
         return np.concatenate(clocks), np.concatenate(emissions)
 
-    def align(self, audio: np.ndarray, text: str):
+    def align(self, audio: np.ndarray, text: str, phase_timings: dict[str, int]):
         if not 0.1 <= len(audio) / 16_000 <= MAX_DURATION or not np.isfinite(audio).all():
             raise ValueError("audio_duration_invalid")
         if not text or len(text) > MAX_CHARACTERS:
@@ -117,7 +138,12 @@ class Aligner:
         tokens, spans = source_tokens(text, self.vocab)
         if not tokens:
             raise ValueError("unsupported_text")
+        announce_phase("emissions")
+        phase_started = time.monotonic()
         times, log = self.emissions(audio)
+        phase_timings["emissions"] = elapsed_ms(phase_started)
+        announce_phase("alignment")
+        phase_started = time.monotonic()
         frames = viterbi(log, tokens, self.model.config.pad_token_id, self.vocab["|"])
         characters = []
         for index, item in enumerate(frames):
@@ -127,6 +153,7 @@ class Aligner:
                 "endMs": min(round(len(audio) / 16), int((round(times[item[-1]] * 16000) + 160 + 8) // 16)),
                 "confidence": round(float(np.exp(np.max(log[item, tokens[index]]))), 6),
             })
+        phase_timings["alignment"] = elapsed_ms(phase_started)
         return {"version": VERSION, "modelRevision": REVISION,
                 "audioDurationMs": round(len(audio) / 16), "characters": characters}
 
@@ -163,21 +190,35 @@ def main():
     if digest != request["audioHash"]:
         raise ValueError("audio_changed")
     text = request["text"]
+    phase_timings = {}
     # Cross-process lock BEFORE loading weights bounds RSS and CPU when several
     # orchestrations arrive together. Parent wall-clock timeout also covers wait.
     import fcntl
     lock_root = Path(os.environ.get("SUBTITLE_ACOUSTIC_CACHE_DIR", "/tmp/heroai-subtitle-alignment"))
     lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (lock_root / "worker.lock").open("a") as lock:
+        announce_phase("lockWait")
+        phase_started = time.monotonic()
         fcntl.flock(lock, fcntl.LOCK_EX)
+        phase_timings["lockWait"] = elapsed_ms(phase_started)
         try:
             os.nice(10)
         except (AttributeError, OSError):
             pass
+        announce_phase("modelLoad")
+        phase_started = time.monotonic()
         aligner = Aligner(threads=int(os.environ.get("SUBTITLE_ACOUSTIC_THREADS", "2")))
-        result = aligner.align(read_audio(data), text)
+        phase_timings["modelLoad"] = elapsed_ms(phase_started)
+        announce_phase("audioDecode")
+        phase_started = time.monotonic()
+        audio = read_audio(data)
+        phase_timings["audioDecode"] = elapsed_ms(phase_started)
+        result = aligner.align(audio, text, phase_timings)
     result.update(audioHash=digest, textHash=hashlib.sha256(text.encode()).hexdigest(),
-                  durationMs=round((time.monotonic() - started) * 1000))
+                  durationMs=elapsed_ms(started), diagnostics={
+                      "phaseTimingsMs": phase_timings,
+                      "audioLengthBucket": audio_length_bucket(result["audioDurationMs"]),
+                  })
     print(json.dumps(result, separators=(",", ":")))
 
 

@@ -25,6 +25,7 @@ function loadRoute(relativePath: string): { POST(request: Request): Promise<Resp
   const exports = {};
   const boundaryRequire = (name: string): unknown => {
     if (name === "@/lib/clerk-auth") return { getCurrentUser: async () => ({ id: "fixture-user" }) };
+    if (name === "@/lib/mcp/service-actor") return { isServiceActorRequest: async () => false };
     if (name === "@/lib/prisma") return { prisma: { user: { findUnique: async () => ({ plan: "PRO" }) } } };
     if (name === "@/lib/gemini-key") return {
       resolveGeminiKey: () => ({ key: "fixture-key", mode: "byok" }), KeyRequiredError: class extends Error {},

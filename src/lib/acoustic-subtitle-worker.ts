@@ -4,8 +4,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
-  ACOUSTIC_CLOCK_VERSION, ACOUSTIC_MODEL_REVISION,
-  type AcousticCharacter, type AcousticEvidence,
+  ACOUSTIC_CLOCK_VERSION, ACOUSTIC_MODEL_REVISION, ACOUSTIC_PHASES,
+  type AcousticAudioLengthBucket, type AcousticCharacter, type AcousticEvidence, type AcousticPhase,
 } from "@/lib/acoustic-subtitle-clock";
 
 export type AcousticMode = "off" | "shadow" | "apply";
@@ -29,6 +29,26 @@ type WorkerClock = {
 };
 export type AcousticWorkerResult = { evidence: AcousticEvidence; clock?: WorkerClock };
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+
+function audioLengthBucket(durationMs: number): AcousticAudioLengthBucket {
+  if (durationMs < 30_000) return "lt_30s";
+  if (durationMs < 120_000) return "30_119s";
+  if (durationMs < 240_000) return "120_239s";
+  return "240_360s";
+}
+
+function phaseTimings(value: unknown): AcousticEvidence["phaseTimingsMs"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const timings: Partial<Record<AcousticPhase, number>> = {};
+  for (const phase of ACOUSTIC_PHASES) {
+    const duration = record[phase];
+    if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0 && duration <= 600_000) {
+      timings[phase] = Math.round(duration);
+    }
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
 
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 let lastCacheSweep = 0;
@@ -90,7 +110,7 @@ export async function runAcousticSubtitleWorker(args: {
   const started = Date.now();
   const evidence: AcousticEvidence = {
     status: "unavailable", version: ACOUSTIC_CLOCK_VERSION, modelRevision: ACOUSTIC_MODEL_REVISION,
-    mode: args.mode, applied: false, durationMs: 0,
+    mode: args.mode, applied: false, durationMs: 0, audioLengthBucket: audioLengthBucket(args.audioDurationMs),
   };
   const finish = (clock?: WorkerClock): AcousticWorkerResult => ({
     evidence: { ...evidence, durationMs: Date.now() - started }, ...(clock ? { clock } : {}),
@@ -127,8 +147,10 @@ export async function runAcousticSubtitleWorker(args: {
       let completed = false;
       let bytes = 0;
       const output: Buffer[] = [];
+      let timeoutPhase: AcousticPhase | "startup" = "startup";
+      let stderr = "";
       const child = spawn(python, [path.join(process.cwd(), "scripts/subtitle-alignment/engine.py")], {
-        stdio: ["pipe", "pipe", "ignore"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1",
           HF_HUB_DISABLE_PROGRESS_BARS: "1", SUBTITLE_ACOUSTIC_CACHE_DIR: cacheDir },
       });
@@ -140,6 +162,7 @@ export async function runAcousticSubtitleWorker(args: {
       };
       const timer = setTimeout(() => {
         evidence.status = "timeout";
+        evidence.timeoutPhase = timeoutPhase;
         child.kill("SIGKILL");
         end(null);
       }, remainingMs);
@@ -150,6 +173,17 @@ export async function runAcousticSubtitleWorker(args: {
         if (bytes > 2_000_000) { child.kill("SIGKILL"); end(null); }
         else output.push(chunk);
       });
+      child.stderr.on("data", (chunk: Buffer) => {
+        // The child may write arbitrary library errors. Retain at most one partial line in
+        // memory and accept only our fixed marker; raw stderr never reaches logs/evidence.
+        stderr = (stderr + chunk.toString("utf8")).slice(-2_048);
+        const lines = stderr.split(/\r?\n/);
+        stderr = lines.pop() ?? "";
+        for (const line of lines) {
+          const match = /^HERO_ACOUSTIC_PHASE=(lockWait|modelLoad|audioDecode|emissions|alignment)$/.exec(line);
+          if (match) timeoutPhase = match[1] as AcousticPhase;
+        }
+      });
       child.on("close", (code) => end(code === 0 ? Buffer.concat(output).toString("utf8") : null));
       child.stdin.end(JSON.stringify({ audioPath: file, audioHash, text: args.text }));
     });
@@ -157,6 +191,11 @@ export async function runAcousticSubtitleWorker(args: {
     const parsed: unknown = JSON.parse(raw);
     if (!validClock(parsed, audioHash, textHash, args.text.length)
       || Math.abs(parsed.audioDurationMs - args.audioDurationMs) > 250) return finish();
+    const diagnostics = (parsed as WorkerClock & {
+      diagnostics?: { phaseTimingsMs?: unknown };
+    }).diagnostics;
+    const safePhaseTimings = phaseTimings(diagnostics?.phaseTimingsMs);
+    if (safePhaseTimings) evidence.phaseTimingsMs = safePhaseTimings;
     // Whitelist fields so a child's diagnostic additions cannot reach disk/telemetry.
     const clock: WorkerClock = { version: parsed.version, modelRevision: parsed.modelRevision,
       audioHash, textHash, audioDurationMs: parsed.audioDurationMs, characters: parsed.characters.map(c => ({
