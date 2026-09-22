@@ -932,10 +932,12 @@ export async function POST(req: Request) {
     }
     let sourceAudioDurationMs = 0;
     try {
-      sourceAudioDurationMs = await getAudioDurationMs(mp3Path);
+      // The uploaded media owns the render clock. MP3 encoder padding can add
+      // several frames and make a presenter-only timeline exceed its source.
+      sourceAudioDurationMs = await getAudioDurationMs(inputPath);
       console.log(`[transcribe] source audio duration ${sourceAudioDurationMs}ms`);
     } catch (e) {
-      console.warn("[transcribe] failed to read mp3 duration:", e);
+      console.warn("[transcribe] failed to read source media duration:", e);
     }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
 
