@@ -76,7 +76,7 @@ async function main() {
       statusCalls += 1;
       const providerJobId = decodeURIComponent(url.split("/status/")[1] ?? "");
       if (providerJobId === "stub-terminal-failed") {
-        return json({ status: "FAILED", error: "CUDA out of memory" });
+        return json({ status: "FAILED", error: "CUDA out of memory", output: { cost: 0.0012 } });
       }
       if (providerJobId === "stub-completed") {
         return json({
@@ -95,6 +95,7 @@ async function main() {
           status: "COMPLETED",
           output: {
             images: [{ filename: "hero-image.png", type: "s3_url", data: "http://verify-bucket.invalid/x.png" }],
+            cost: 0.0052,
           },
         });
       }
@@ -124,6 +125,8 @@ async function main() {
     createReservedImageJob,
     failAndRefundAiJob,
     markImageAttemptSubmitted,
+    recordImageAttemptCost,
+    replaceCanceledImageAttempt,
   } = await import("../src/lib/ai-generation-jobs.server");
   const { sweepStaleReservedImageJobs, SWEEP_MIN_STALE_MINUTES } = await import(
     "../src/lib/ai-image-reconcile"
@@ -734,6 +737,63 @@ async function main() {
     (await sweepStaleReservedImageJobs({ limit: 0, dryRun: true })).limit === 1
       && (await sweepStaleReservedImageJobs({ limit: 10_000, dryRun: true })).limit === 200,
   );
+
+  const lostCostAttempt = await prisma.aiGenerationAttempt.findFirstOrThrow({ where: { jobId: jobB2.id } });
+  check("completed output-lost retains authoritative provider cost", lostCostAttempt.providerReportedCostUsdMicros === 5200, `observed ${lostCostAttempt.providerReportedCostUsdMicros}`);
+
+  const lateCostUser = await makeUser("late-cost", 0, 6);
+  await prisma.videoJob.create({ data: { id: "late-cost-parent", userId: lateCostUser.id, status: "processing", inputJson: "{}" } });
+  const lateCostJob = await reserve({ userId: lateCostUser.id, idempotencyKey: "video:late-cost-parent:scene:0", videoJobId: "late-cost-parent" });
+  await submit(lateCostUser.id, lateCostJob.id, "stub-completed");
+  await prisma.videoJob.update({ where: { id: "late-cost-parent" }, data: { status: "done" } });
+  await completeImageJob({
+    userId: lateCostUser.id, jobId: lateCostJob.id, outputUrl: SETTLED_IMAGE_URL,
+    providerAttempt: { sequence: 1, providerJobId: "stub-completed" },
+    providerReportedCostUsdMicros: 5200,
+  });
+  const lateCostAttempt = await prisma.aiGenerationAttempt.findFirstOrThrow({ where: { jobId: lateCostJob.id } });
+  check("terminal-parent completion retains supplied provider cost", lateCostAttempt.providerReportedCostUsdMicros === 5200, `observed ${lateCostAttempt.providerReportedCostUsdMicros}`);
+  check("terminal-parent completion still refunds without delivery", (await jobById(lateCostJob.id)).chargeState === "refunded" && await prisma.generatedImage.count({ where: { userId: lateCostUser.id } }) === 0);
+
+  const failedCostAttempt = await prisma.aiGenerationAttempt.findFirstOrThrow({ where: { jobId: jobA.id } });
+  check("failed provider snapshot retains its reported cost", failedCostAttempt.providerReportedCostUsdMicros === 1200, `observed ${failedCostAttempt.providerReportedCostUsdMicros}`);
+
+  const costRef = { userId: lateCostUser.id, jobId: lateCostJob.id, sequence: 1, providerJobId: "stub-completed" };
+  const preserved = await jobById(lateCostJob.id);
+  for (const amount of [undefined, NaN, Infinity, -1, 1.5, 2_147_483_648]) {
+    await recordImageAttemptCost({ ...costRef, providerReportedCostUsdMicros: amount });
+  }
+  await recordImageAttemptCost({ ...costRef, providerReportedCostUsdMicros: 5200 });
+  check("unknown, invalid and duplicate evidence preserve the amount and job timestamp", (await jobById(lateCostJob.id)).providerReportedCostUsdMicros === 5200 && (await jobById(lateCostJob.id)).updatedAt.getTime() === preserved.updatedAt.getTime());
+  await recordImageAttemptCost({ ...costRef, userId: userA.id, providerReportedCostUsdMicros: 9000 });
+  await recordImageAttemptCost({ ...costRef, providerJobId: "wrong-provider-id", providerReportedCostUsdMicros: 9000 });
+  await recordImageAttemptCost({ ...costRef, sequence: 2, providerReportedCostUsdMicros: 9000 });
+  check("foreign user and mismatched provider attempt cannot overwrite cost", (await jobById(lateCostJob.id)).providerReportedCostUsdMicros === 5200);
+  await recordImageAttemptCost({ ...costRef, providerReportedCostUsdMicros: 0, providerReportedCredits: 0 });
+  check("explicit reported zero survives a refunded job", (await jobById(lateCostJob.id)).providerReportedCostUsdMicros === 0 && (await jobById(lateCostJob.id)).providerReportedCredits === 0);
+  await completeImageJob({ userId: lateCostUser.id, jobId: lateCostJob.id, outputUrl: SETTLED_IMAGE_URL, providerAttempt: { sequence: 1, providerJobId: "stub-completed" }, providerReportedCostUsdMicros: 5200 });
+  check("late cost survives an already-refunded completion without recharging", (await jobById(lateCostJob.id)).providerReportedCostUsdMicros === 5200 && (await refundRows(lateCostUser.id)).length === 1 && (await balanceOf(lateCostUser.id)).purchased === 6);
+
+  const retryUser = await makeUser("cost-retry", 10, 0);
+  const retryJob = await reserve({ userId: retryUser.id, idempotencyKey: "studio:cost-retry" });
+  await submit(retryUser.id, retryJob.id, "cost-attempt-1");
+  await replaceCanceledImageAttempt({ userId: retryUser.id, jobId: retryJob.id, sequence: 1, providerJobId: "cost-attempt-1", cancellationConfirmed: true, reason: "synthetic confirmed cancellation" });
+  await markImageAttemptSubmitted({ userId: retryUser.id, jobId: retryJob.id, sequence: 2, providerJobId: "cost-attempt-2", inProgress: true });
+  await completeImageJob({ userId: retryUser.id, jobId: retryJob.id, outputUrl: SETTLED_IMAGE_URL, providerAttempt: { sequence: 2, providerJobId: "cost-attempt-2" }, providerReportedCostUsdMicros: 5200 });
+  await recordImageAttemptCost({ userId: retryUser.id, jobId: retryJob.id, sequence: 1, providerJobId: "cost-attempt-1", providerReportedCostUsdMicros: 1200 });
+  const retryAttempts = await prisma.aiGenerationAttempt.findMany({ where: { jobId: retryJob.id }, orderBy: { sequence: "asc" } });
+  check("retry costs remain attributed separately and late old evidence does not replace the current job cost", retryAttempts[0].providerReportedCostUsdMicros === 1200 && retryAttempts[1].providerReportedCostUsdMicros === 5200 && (await jobById(retryJob.id)).providerReportedCostUsdMicros === 5200);
+
+  const { pollImageGenerationAttempt } = await import("../src/lib/image-generation-provider.server");
+  process.env.KIE_API_KEY = "synthetic-cost-evidence-key";
+  let fixtureCredits = 3.5;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ code: 200, data: { state: "fail", failMsg: "synthetic failure", creditsConsumed: fixtureCredits } }), { status: 200 })) as typeof fetch;
+  const failedKie = await pollImageGenerationAttempt({ provider: "kie", providerModel: "test", providerRoute: "kie", providerEndpoint: null, providerJobId: "cost-fixture" });
+  check("failed Kie snapshot retains authoritative reported credits", failedKie.providerReportedCredits === 3.5);
+
+  fixtureCredits = -1;
+  const invalidKie = await pollImageGenerationAttempt({ provider: "kie", providerModel: "test", providerRoute: "kie", providerEndpoint: null, providerJobId: "cost-fixture" });
+  check("negative Kie credits remain unknown rather than invented zero", invalidKie.providerReportedCredits === undefined);
 
   globalThis.fetch = realFetch;
   await prisma.$disconnect();

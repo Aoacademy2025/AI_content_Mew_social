@@ -243,15 +243,15 @@ export async function pollImageGenerationAttempt(attempt: ImageGenerationAttempt
   if (attempt.provider === "runpod") {
     if (!attempt.providerEndpoint) throw new ImageGenerationConfigError("Runpod endpoint was not recorded");
     const result = await getRunpodJob(attempt.providerEndpoint, attempt.providerJobId);
+    const costMicros = typeof result.output?.cost === "number" && result.output.cost >= 0
+      ? Math.round(result.output.cost * 1_000_000) : NaN;
+    const timing = {
+      delayTimeMs: typeof result.delayTime === "number" ? Math.round(result.delayTime) : undefined,
+      executionTimeMs: typeof result.executionTime === "number" ? Math.round(result.executionTime) : undefined,
+      providerReportedCostUsdMicros: Number.isSafeInteger(costMicros) && costMicros <= 2_147_483_647
+        ? costMicros : undefined,
+    };
     if (result.status === "COMPLETED") {
-      const reportedCost = typeof result.output?.cost === "number" && Number.isFinite(result.output.cost)
-        ? Math.max(0, Math.round(result.output.cost * 1_000_000))
-        : undefined;
-      const timing = {
-        delayTimeMs: typeof result.delayTime === "number" ? Math.round(result.delayTime) : undefined,
-        executionTimeMs: typeof result.executionTime === "number" ? Math.round(result.executionTime) : undefined,
-        providerReportedCostUsdMicros: reportedCost,
-      };
       try {
         return {
           status: "COMPLETED",
@@ -272,8 +272,7 @@ export async function pollImageGenerationAttempt(attempt: ImageGenerationAttempt
     return {
       status: result.status ?? "IN_QUEUE",
       error: result.error,
-      delayTimeMs: typeof result.delayTime === "number" ? Math.round(result.delayTime) : undefined,
-      executionTimeMs: typeof result.executionTime === "number" ? Math.round(result.executionTime) : undefined,
+      ...timing,
     };
   }
 
@@ -291,7 +290,11 @@ export async function pollImageGenerationAttempt(attempt: ImageGenerationAttempt
         providerReportedCredits: snapshot.creditsConsumed,
       };
     }
-    if (snapshot.state === "fail") return { status: "FAILED", error: snapshot.failMessage || "kie.ai task failed" };
+    if (snapshot.state === "fail") return {
+      status: "FAILED",
+      error: snapshot.failMessage || "kie.ai task failed",
+      providerReportedCredits: snapshot.creditsConsumed,
+    };
     return { status: snapshot.state === "generating" ? "IN_PROGRESS" : "IN_QUEUE" };
   }
 

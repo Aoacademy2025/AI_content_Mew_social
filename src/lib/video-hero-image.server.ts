@@ -21,6 +21,7 @@ import {
   markImageAttemptProgress,
   markImageAttemptSubmitted,
   replaceCanceledImageAttempt,
+  recordImageAttemptCost,
 } from "@/lib/ai-generation-jobs.server";
 import {
   imageFundingSnapshotFromBrandVisualAcceptance,
@@ -532,6 +533,15 @@ export async function generateHeroImageForVideo(
       }
       lastProviderStatus = snapshot.status;
 
+      await withTransientDbRetry(() => recordImageAttemptCost({
+        userId: input.userId,
+        jobId: job.id,
+        sequence: durableAttempt.sequence,
+        providerJobId,
+        providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
+        providerReportedCredits: snapshot.providerReportedCredits,
+      }), { label: "recordImageAttemptCost" });
+
       if (snapshot.status === "IN_QUEUE" || snapshot.status === "IN_PROGRESS") {
         job = await markImageAttemptProgress({
           userId: input.userId,
@@ -627,6 +637,7 @@ export async function generateHeroImageForVideo(
               outputUrl,
               delayTimeMs: snapshot.delayTimeMs,
               executionTimeMs: snapshot.executionTimeMs,
+              providerAttempt: { sequence: durableAttempt.sequence, providerJobId },
               providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
               providerReportedCredits: snapshot.providerReportedCredits,
               sceneTitle: input.sceneTitle || `Video ${input.videoJobId} · scene ${input.sceneIndex + 1}`,

@@ -128,7 +128,8 @@ export async function kieGetTask(taskId: string, token: string): Promise<KieTask
     resultUrl,
     failMessage: data.failMsg,
     executionTimeMs: Number.isFinite(data.costTime) ? Math.max(0, Math.round(data.costTime!)) : undefined,
-    creditsConsumed: Number.isFinite(data.creditsConsumed) ? Math.max(0, Number(data.creditsConsumed)) : undefined,
+    creditsConsumed: typeof data.creditsConsumed === "number" && Number.isFinite(data.creditsConsumed) && data.creditsConsumed >= 0
+      ? data.creditsConsumed : undefined,
   };
 }
 
