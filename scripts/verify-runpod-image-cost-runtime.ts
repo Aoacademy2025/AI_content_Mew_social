@@ -308,6 +308,51 @@ async function main() {
   assert.equal(incomplete.pricedAttempts, 23);
   assert.equal(incomplete.costCoverage, "partial");
 
+  // Provider-reported zeroes are not an invoice: an all-zero public attempt set
+  // must not turn the monthly P&L into a known zero-cost margin.
+  await prisma.aiGenerationJob.deleteMany({ where: { providerEndpoint: publicEndpointId } });
+  const zeroPricedJobIds = Array.from({ length: 20 }, (_, index) => `runpod-public-zero-cost-${index}`);
+  await prisma.aiGenerationJob.createMany({
+    data: zeroPricedJobIds.map((id, index) => ({
+      id,
+      userId: user.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image-turbo",
+      providerRoute: "runpod-public",
+      providerEndpoint: publicEndpointId,
+      status: "completed",
+      chargeState: "settled",
+      outputUrl: `/test/runpod-public-zero-cost-${index}.png`,
+      idempotencyKey: `runpod-public-zero-cost-${index}`,
+      finishedAt: new Date(now.getTime() - 30_000),
+    })),
+  });
+  await prisma.aiGenerationAttempt.createMany({
+    data: zeroPricedJobIds.map((jobId) => ({
+      jobId,
+      sequence: 1,
+      provider: "runpod",
+      providerModel: "z-image-turbo",
+      providerRoute: "runpod-public",
+      providerEndpoint: publicEndpointId,
+      status: "completed",
+      estimatedCostUsdMicros: 0,
+      providerReportedCostUsdMicros: 0,
+      finishedAt: new Date(now.getTime() - 30_000),
+    })),
+  });
+  const zeroPriced = await getActiveRunpodImageCostSnapshot({ now, windowDays: 1 });
+  assert.equal(zeroPriced.totalAttempts, 20);
+  assert.equal(zeroPriced.pricedAttempts, 20);
+  assert.equal(zeroPriced.status, "insufficient_data");
+  assert.equal(zeroPriced.costCoverage, "unavailable");
+  assert.equal(resolveAiImageCost({
+    providerSnapshot: zeroPriced,
+    estimatedOtherBaht: 0,
+    unattributedImages: 0,
+  }).totalBaht, null);
+
   console.log("verify-runpod-image-cost-runtime: ALL PASS");
 }
 

@@ -22,7 +22,7 @@ export function heygenGenerateFailureResponse(status: number, body: unknown) {
   return toErrorResponse(providerError(
     classifyHttpStatus(status),
     "heygen",
-    `HeyGen generate failed (${status}): ${serialized.slice(0, 300)}`,
+    "HeyGen generate request failed",
     { status, ...(reason ? { reason } : {}), ...(userAction ? { userAction } : {}) },
   ));
 }

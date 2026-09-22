@@ -177,7 +177,7 @@ function addImage(
  */
 export function summarizeAiImageUsage(input: {
   spendRows: AiImageLedgerRow[];
-  refundRows: Pick<AiImageLedgerRow, "delta">[];
+  refundRows: Pick<AiImageLedgerRow, "delta" | "action">[];
   jobs: AiImageReportJob[];
   from?: Date;
   to?: Date;
@@ -193,6 +193,9 @@ export function summarizeAiImageUsage(input: {
   let deliveredImages = 0;
   let allowanceImages = 0;
   let unattributedImages = 0;
+  const hasUnlinkedLegacyRefund = input.refundRows.some(
+    (row) => row.action == null || row.action === "ai-image-refund",
+  );
 
   for (const job of input.jobs) {
     if (job.status !== "completed" || job.chargeState !== "settled") continue;
@@ -218,6 +221,10 @@ export function summarizeAiImageUsage(input: {
         ? jobsByReservation.get(`${row.userId}\u0000${reservationKey}`)
         : null;
     if (durableJob) continue;
+    if (row.action === "ai-image" && hasUnlinkedLegacyRefund) {
+      unattributedImages++;
+      continue;
+    }
     deliveredImages++;
     const bucket = aiImageCostBucket({ delta: row.delta });
     if (!bucket) {

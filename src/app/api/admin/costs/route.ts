@@ -149,7 +149,7 @@ export async function GET(req: Request) {
       // We net these out so image COGS/creditsSpent are not upward-biased.
       prisma.creditLedger.findMany({
         where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: from } },
-        select: { delta: true },
+        select: { delta: true, action: true },
       }),
 
       // ── Monthly (30-day) COGS inputs — for the P&L only (margin/profit stay monthly) ──
@@ -163,7 +163,7 @@ export async function GET(req: Request) {
       }),
       prisma.creditLedger.findMany({
         where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: monthFrom } },
-        select: { delta: true },
+        select: { delta: true, action: true },
       }),
       // Durable jobs are the delivered-image source of truth. `createdAt` keeps
       // current reservations joinable; `finishedAt` includes work completed in

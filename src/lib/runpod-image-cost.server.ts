@@ -497,7 +497,9 @@ export async function getActiveRunpodImageCostSnapshot(input: {
   const pricedAttempts = reported._count._all;
   const activeCoverage = totalAttempts === 0
     ? deliveredImages === 0 ? "complete" : "unavailable"
-    : pricedAttempts === totalAttempts
+    : pricedAttempts === totalAttempts && billedUsdMicros <= 0
+      ? "unavailable"
+      : pricedAttempts === totalAttempts
       ? "complete"
       : pricedAttempts > 0
         ? "partial"

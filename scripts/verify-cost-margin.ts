@@ -62,6 +62,18 @@ async function main() {
     aiImageCostBucket({ model: null, delta: -2 }) === "flux1k",
     "legacy 2-credit row without a job retains the historical Flux fallback",
   );
+  const refundedLegacyUsage = summarizeAiImageUsage({
+    spendRows: [{ userId: "legacy-refund-user", delta: -3, action: "ai-image" }],
+    refundRows: [{ delta: 3 }],
+    jobs: [],
+  });
+  assert(
+    refundedLegacyUsage.deliveredImages === 0
+      && refundedLegacyUsage.imageCounts.gpt1k === 0
+      && refundedLegacyUsage.unattributedImages === 1
+      && refundedLegacyUsage.creditsSpent === 0,
+    `legacy spend with an unlinked refund stays unknown instead of delivered (got delivered=${refundedLegacyUsage.deliveredImages}, gpt=${refundedLegacyUsage.imageCounts.gpt1k}, unknown=${refundedLegacyUsage.unattributedImages}, credits=${refundedLegacyUsage.creditsSpent})`,
+  );
   const routeSource = readFileSync("src/app/api/admin/costs/route.ts", "utf8");
   assert(
     routeSource.includes('...aiImageLedgerActionWhere("spend")')

@@ -41,9 +41,39 @@ async function main() {
     const otherFatalResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
       error: { message: "avatar request rejected" },
     });
+    const sensitiveAvatarResponse = heygenGenerateError.heygenGenerateFailureResponse(404, {
+      requestTrace: "outside-provider-secret",
+      error: {
+        message: "avatar look not found",
+        providerTrace: "inside-provider-secret",
+      },
+    });
+    const sensitiveWorkspaceResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
+      requestTrace: "outside-provider-secret",
+      error: {
+        code: "SPACE_ENCRYPTION_DISABLED",
+        providerTrace: "inside-provider-secret",
+      },
+    });
+    const sensitiveGenericResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
+      requestTrace: "outside-provider-secret",
+      error: { message: "provider rejected", providerTrace: "inside-provider-secret" },
+    });
     assertEqual(avatarMissingResponse.body.error, AVATAR_MISSING_LEGACY_BODY, "HERO-18: legacy route returns owned customer copy");
     assert(!avatarMissingResponse.body.error.includes("avatar look not found"), "HERO-18: legacy route never exposes provider text");
     assertEqual(avatarMissingResponse.body.reason, "HEYGEN_AVATAR_NOT_FOUND", "HERO-18: route keeps an internal durable marker");
+    for (const [label, response] of [
+      ["avatar", sensitiveAvatarResponse],
+      ["workspace", sensitiveWorkspaceResponse],
+      ["generic", sensitiveGenericResponse],
+    ] as const) {
+      const publicEnvelope = JSON.stringify(response.body);
+      assert(!publicEnvelope.includes("outside-provider-secret"), `${label}: public envelope omits provider fields outside error`);
+      assert(!publicEnvelope.includes("inside-provider-secret"), `${label}: public envelope omits provider fields inside error`);
+    }
+    assertEqual(sensitiveAvatarResponse.body.reason, "HEYGEN_AVATAR_NOT_FOUND", "HERO-18: sanitized envelope keeps internal avatar marker");
+    assertEqual(sensitiveWorkspaceResponse.body.reason, "SPACE_ENCRYPTION_DISABLED", "workspace: sanitized envelope keeps internal workspace marker");
+    assertEqual(sensitiveGenericResponse.body.reason, undefined, "generic fatal: sanitized envelope adds no specific marker");
 
     const user = await prisma.user.create({
       data: { name: "Task 2", email: "task2-transport@example.test", plan: "PRO", geminiKey: "test", pexelsKey: "test" },

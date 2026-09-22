@@ -26,6 +26,7 @@ export interface FailureJobLike {
   errorMessage: string | null;
   errorProvider: string | null;
   currentStep?: string | null;
+  reservationRefundPending?: boolean | null;
 }
 
 const HEYGEN_CREDIT_MARKER = /MOVIO_PAYMENT_INSUFFICIENT_CREDIT|INSUFFICIENT_CREDIT|Insufficient credit[^.]*api[^.]*credit|เครดิต HeyGen ไม่เพียงพอ/i;
@@ -163,7 +164,7 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
   if (kind === "heygen-avatar-rejected") {
     return {
       heading: "HeyGen ปฏิเสธ Avatar ที่เลือกไว้",
-      body: "บัญชี HeyGen ที่เชื่อมอยู่ใช้ Avatar ตัวนี้ไม่ได้ — อาจถูกลบไปแล้ว หรืออยู่คนละบัญชีกับ API Key ที่ตั้งไว้ ระบบหยุดก่อนใช้เครดิต HeyGen และคืนนาทีเรนเดอร์ของ Hero ให้แล้ว เลือก Avatar ใหม่ในหน้าตั้งค่า หรือปิด Avatar แล้วลองใหม่",
+      body: "บัญชี HeyGen ที่เชื่อมอยู่ใช้ Avatar ตัวนี้ไม่ได้ — อาจถูกลบไปแล้ว หรืออยู่คนละบัญชีกับ API Key ที่ตั้งไว้ เลือก Avatar ใหม่ในหน้าตั้งค่า หรือปิด Avatar แล้วลองใหม่",
     };
   }
   if (kind === "heygen-workspace-unavailable") {
