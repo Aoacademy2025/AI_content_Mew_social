@@ -67,12 +67,33 @@ async function main() {
     refundRows: [{ delta: 3 }],
     jobs: [],
   });
+  const refundedLegacyEstimatedCounts = refundedLegacyUsage.estimatedImageCounts;
+  const refundedLegacyEstimatedCost = computeCogs({
+    managedMinutes: 0,
+    imageCounts: refundedLegacyEstimatedCounts,
+    rates: COST_DEFAULTS,
+  }).image;
+  const refundedLegacyCostReport = resolveAiImageCost({
+    providerSnapshot: {
+      billedUsdMicros: 115_000,
+      usdThbRate: 35,
+      costCoverage: "complete",
+      costSource: "provider_reported_attempts",
+    },
+    estimatedOtherBaht: refundedLegacyEstimatedCost,
+    unattributedImages: refundedLegacyUsage.unattributedImages,
+  });
   assert(
     refundedLegacyUsage.deliveredImages === 0
       && refundedLegacyUsage.imageCounts.gpt1k === 0
+      && refundedLegacyEstimatedCounts?.gpt1k === 1
+      && refundedLegacyEstimatedCost === COST_DEFAULTS.imageGpt1k
       && refundedLegacyUsage.unattributedImages === 1
-      && refundedLegacyUsage.creditsSpent === 0,
-    `legacy spend with an unlinked refund stays unknown instead of delivered (got delivered=${refundedLegacyUsage.deliveredImages}, gpt=${refundedLegacyUsage.imageCounts.gpt1k}, unknown=${refundedLegacyUsage.unattributedImages}, credits=${refundedLegacyUsage.creditsSpent})`,
+      && refundedLegacyUsage.creditsSpent === 0
+      && refundedLegacyCostReport.status === "partial"
+      && refundedLegacyCostReport.estimatedOtherBaht === COST_DEFAULTS.imageGpt1k
+      && refundedLegacyCostReport.totalBaht === null,
+    `legacy refunded spend keeps gross provider estimate but stays unknown delivery (got delivered=${refundedLegacyUsage.deliveredImages}, deliveredGpt=${refundedLegacyUsage.imageCounts.gpt1k}, estimatedGpt=${refundedLegacyEstimatedCounts?.gpt1k}, estimate=${refundedLegacyEstimatedCost}, unknown=${refundedLegacyUsage.unattributedImages}, credits=${refundedLegacyUsage.creditsSpent}, status=${refundedLegacyCostReport.status})`,
   );
   const routeSource = readFileSync("src/app/api/admin/costs/route.ts", "utf8");
   assert(

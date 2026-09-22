@@ -85,7 +85,10 @@ type AiImageReportJob = {
 };
 
 export type AiImageUsageSummary = {
+  /** Known completed delivery counts used for customer/output reporting. */
   imageCounts: AiImageCounts;
+  /** Gross provider-work estimates, kept independent from wallet refunds. */
+  estimatedImageCounts: AiImageCounts;
   perUserImages: Map<string, AiImageCounts>;
   creditsSpent: number;
   deliveredImages: number;
@@ -183,6 +186,7 @@ export function summarizeAiImageUsage(input: {
   to?: Date;
 }): AiImageUsageSummary {
   const imageCounts = emptyAiImageCounts();
+  const estimatedImageCounts = emptyAiImageCounts();
   const perUserImages = new Map<string, AiImageCounts>();
   const jobsById = new Map(input.jobs.map((job) => [job.id, job]));
   const jobsByReservation = new Map(
@@ -209,6 +213,7 @@ export function summarizeAiImageUsage(input: {
       unattributedImages++;
       continue;
     }
+    estimatedImageCounts[bucket]++;
     addImage(imageCounts, perUserImages, job.userId, bucket);
   }
 
@@ -221,12 +226,13 @@ export function summarizeAiImageUsage(input: {
         ? jobsByReservation.get(`${row.userId}\u0000${reservationKey}`)
         : null;
     if (durableJob) continue;
+    const bucket = aiImageCostBucket({ delta: row.delta });
+    if (bucket) estimatedImageCounts[bucket]++;
     if (row.action === "ai-image" && hasUnlinkedLegacyRefund) {
       unattributedImages++;
       continue;
     }
     deliveredImages++;
-    const bucket = aiImageCostBucket({ delta: row.delta });
     if (!bucket) {
       unattributedImages++;
       continue;
@@ -238,6 +244,7 @@ export function summarizeAiImageUsage(input: {
   const refundedCredits = input.refundRows.reduce((sum, row) => sum + Math.abs(row.delta), 0);
   return {
     imageCounts,
+    estimatedImageCounts,
     perUserImages,
     creditsSpent: Math.max(0, grossCredits - refundedCredits),
     deliveredImages,

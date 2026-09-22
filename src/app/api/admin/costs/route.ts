@@ -253,7 +253,7 @@ export async function GET(req: Request) {
     // COGS/margin/profit are a MONTHLY P&L (30-day COGS + full monthly infra vs monthly MRR),
     // independent of the health-window selector — otherwise a 24h window shows ~1 day of COGS
     // against a full month of MRR and profit reads far too rosy.
-    const estimatedOtherCounts = { ...imageUsageMonth.imageCounts, hero1k: 0 };
+    const estimatedOtherCounts = { ...imageUsageMonth.estimatedImageCounts, hero1k: 0 };
     const estimatedOtherImageCogs = computeCogs({
       managedMinutes: 0,
       imageCounts: estimatedOtherCounts,
