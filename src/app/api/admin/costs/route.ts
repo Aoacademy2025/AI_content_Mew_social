@@ -16,7 +16,10 @@ import {
   aiImageCostBucket,
   aiImageJobIdFromAction,
   aiImageLedgerActionWhere,
+  aiImageReservationKeyFromAction,
   emptyAiImageCounts,
+  resolveAiImageCost,
+  summarizeAiImageUsage,
   type AiImageCounts,
 } from "@/lib/ai-image-ledger-report";
 
@@ -24,32 +27,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
 
-// Net variable COGS (฿) from raw rows — TTS minutes + AI-image spends, netting image refunds.
-// Used for the P&L, which is ALWAYS a monthly figure (matches the monthly MRR) so that gross
-// margin / profit don't swing when the health-window selector changes (a 24h window would pair
-// monthly MRR with 1 day of COGS and read misleadingly profitable).
-function netCogs(
+// P&L stays monthly. Image COGS is supplied independently from wallet credits:
+// provider attempts can cost money even when the customer reservation is refunded.
+function monthlyCogs(
   clips: Array<{ chargedMinutes: number | null }>,
-  spendRows: Array<{ delta: number; action: string | null }>,
-  refundRows: Array<{ delta: number }>,
+  imageCogs: number,
   rates: CogsRates,
-  jobModels: ReadonlyMap<string, string>,
 ) {
   const managedMinutes = clips.reduce((s, r) => s + (r.chargedMinutes ?? 0), 0);
-  const imageCounts = emptyAiImageCounts();
-  let grossImageSpend = 0;
-  for (const r of spendRows) {
-    const jobId = aiImageJobIdFromAction(r.action);
-    const bucket = aiImageCostBucket({ model: jobId ? jobModels.get(jobId) : null, delta: r.delta });
-    if (!bucket) continue;
-    imageCounts[bucket]++;
-    grossImageSpend += Math.abs(r.delta);
-  }
-  const refundCredits = refundRows.reduce((s, r) => s + Math.abs(r.delta), 0);
-  const gross = computeCogs({ managedMinutes, imageCounts, rates });
-  const ratio = grossImageSpend > 0 ? Math.max(0, 1 - refundCredits / grossImageSpend) : 1;
-  const imageNet = gross.image * ratio;
-  return { tts: gross.tts, image: imageNet, video: gross.video, total: gross.tts + imageNet + gross.video };
+  const nonImage = computeCogs({ managedMinutes, imageCounts: emptyAiImageCounts(), rates });
+  return {
+    tts: nonImage.tts,
+    image: imageCogs,
+    video: nonImage.video,
+    total: nonImage.tts + imageCogs + nonImage.video,
+  };
 }
 
 function parseDays(raw: string | null): number {
@@ -80,6 +72,7 @@ export async function GET(req: Request) {
     // Financial P&L (COGS / margin / profit) is always monthly so it stays consistent with the
     // monthly MRR regardless of the selected health window. Usage/cash/top-users still use `from`.
     const monthFrom = new Date(now.getTime() - 30 * DAY_MS);
+    const oldestFrom = from < monthFrom ? from : monthFrom;
 
     // ── Parallel data fetch ───────────────────────────────────────────────────
     const [
@@ -96,6 +89,7 @@ export async function GET(req: Request) {
       chargedClipsMonth,
       imageSpendMonth,
       imageRefundMonth,
+      imageJobs,
       runpodImageCost,
       lifetimeCash,
     ] = await Promise.all([
@@ -165,30 +159,39 @@ export async function GET(req: Request) {
       }),
       prisma.creditLedger.findMany({
         where: { kind: "spend", ...aiImageLedgerActionWhere("spend"), createdAt: { gte: monthFrom } },
-        select: { delta: true, action: true },
+        select: { userId: true, delta: true, action: true },
       }),
       prisma.creditLedger.findMany({
         where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: monthFrom } },
         select: { delta: true },
       }),
-      getActiveRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
+      // Durable jobs are the delivered-image source of truth. `createdAt` keeps
+      // current reservations joinable; `finishedAt` includes work completed in
+      // the report window after an older reservation.
+      prisma.aiGenerationJob.findMany({
+        where: {
+          kind: "image",
+          OR: [
+            { createdAt: { gte: oldestFrom, lt: now } },
+            { finishedAt: { gte: oldestFrom, lt: now } },
+          ],
+        },
+        select: {
+          id: true,
+          userId: true,
+          model: true,
+          status: true,
+          chargeState: true,
+          creditCost: true,
+          fundingSource: true,
+          idempotencyKey: true,
+          finishedAt: true,
+        },
+      }),
+      // P&L is always a 30-day window, even when the health selector says 24h/7d.
+      getActiveRunpodImageCostSnapshot({ now, windowDays: 30 }).catch(() => null),
       getLifetimeCashCollected().catch(() => null),
     ]);
-
-    // Durable ledger actions carry the AiGenerationJob id. Join once so two-credit
-    // Z-Image rows are costed as Hero/RunPod instead of being mislabeled as legacy Flux.
-    const imageJobIds = Array.from(new Set(
-      [...imageSpendRows, ...imageSpendMonth]
-        .map((row) => aiImageJobIdFromAction(row.action))
-        .filter((jobId): jobId is string => Boolean(jobId)),
-    ));
-    const imageJobs = imageJobIds.length > 0
-      ? await prisma.aiGenerationJob.findMany({
-          where: { id: { in: imageJobIds }, kind: "image" },
-          select: { id: true, model: true },
-        })
-      : [];
-    const imageJobModels = new Map(imageJobs.map((job) => [job.id, job.model]));
 
     // ── Managed minutes — sum ChargedClip.chargedMinutes (minutes billed per video) ──
     let managedMinutes = 0;
@@ -201,39 +204,30 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── AI-image counts ───────────────────────────────────────────────────────
-    const imageCounts = emptyAiImageCounts();
-    const perUserImages = new Map<string, AiImageCounts>();
-    for (const row of imageSpendRows) {
-      const jobId = aiImageJobIdFromAction(row.action);
-      const bucket = aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta });
-      if (!bucket) continue;
-      imageCounts[bucket]++;
-      if (row.userId) {
-        const u = perUserImages.get(row.userId) ?? emptyAiImageCounts();
-        u[bucket]++;
-        perUserImages.set(row.userId, u);
-      }
-    }
+    // ── AI-image usage + wallet credits ───────────────────────────────────────
+    // Delivery comes from durable jobs, while wallet credits come from ledger
+    // rows. This includes allowance-funded output and prevents a reservation row
+    // from counting the same durable image twice.
+    const imageUsage = summarizeAiImageUsage({
+      spendRows: imageSpendRows,
+      refundRows: imageRefundRows,
+      jobs: imageJobs,
+      from,
+      to: now,
+    });
+    const imageUsageMonth = summarizeAiImageUsage({
+      spendRows: imageSpendMonth,
+      refundRows: imageRefundMonth,
+      jobs: imageJobs,
+      from: monthFrom,
+      to: now,
+    });
+    const imageCounts = imageUsage.imageCounts;
+    const perUserImages = imageUsage.perUserImages;
 
     // ── Credit-pack cash ──────────────────────────────────────────────────────
     let packCash = 0;
-    // creditsSpent counts only attributable AI-image deltas so it
-    // matches imageCounts (non-bucketed rows are unknown spend not attributable
-    // to a model and should not inflate the gross).
-    let grossImageSpend = 0;
-    for (const row of imageSpendRows) {
-      const absDelta = Math.abs(row.delta);
-      const jobId = aiImageJobIdFromAction(row.action);
-      if (aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta }) !== null) {
-        grossImageSpend += absDelta;
-      }
-    }
-    // FIX 1: net out refunds — image COGS/creditsSpent are NET of refunds (best-
-    // effort estimate; per-model refund attribution not tracked because the refund
-    // row does not record which model bucket was originally charged).
-    const refundCredits = imageRefundRows.reduce((sum, r) => sum + Math.abs(r.delta), 0);
-    const creditsSpent = Math.max(0, grossImageSpend - refundCredits);
+    const creditsSpent = imageUsage.creditsSpent;
     // ── Plan cash — split by term (periodDays >= 365 = annual, else monthly) ──
     let planCashMonthly = 0;
     let planCashAnnual = 0;
@@ -259,22 +253,41 @@ export async function GET(req: Request) {
     // COGS/margin/profit are a MONTHLY P&L (30-day COGS + full monthly infra vs monthly MRR),
     // independent of the health-window selector — otherwise a 24h window shows ~1 day of COGS
     // against a full month of MRR and profit reads far too rosy.
-    const cogs = netCogs(chargedClipsMonth, imageSpendMonth, imageRefundMonth, rates, imageJobModels);
-    const margins = computeMargins({
-      revenue: mrr,
-      variableCogs: cogs.total,
-      infraMonthly: rates.infraMonthly,
-      periodDays: 30,
+    const estimatedOtherCounts = { ...imageUsageMonth.imageCounts, hero1k: 0 };
+    const estimatedOtherImageCogs = computeCogs({
+      managedMinutes: 0,
+      imageCounts: estimatedOtherCounts,
+      rates,
+    }).image;
+    const knownNonImageCogs = monthlyCogs(chargedClipsMonth, 0, rates);
+    const imageCost = resolveAiImageCost({
+      providerSnapshot: runpodImageCost,
+      estimatedOtherBaht: estimatedOtherImageCogs,
+      unattributedImages: imageUsageMonth.unattributedImages,
     });
+    const imageCogs = imageCost.totalBaht;
+    const cogs = imageCogs === null
+      ? null
+      : { ...knownNonImageCogs, image: imageCogs, total: knownNonImageCogs.total + imageCogs };
+    const margins = cogs === null
+      ? null
+      : computeMargins({
+          revenue: mrr,
+          variableCogs: cogs.total,
+          infraMonthly: rates.infraMonthly,
+          periodDays: 30,
+        });
 
     // ── Live break-even target ────────────────────────────────────────────────
     // infra ÷ gross-profit-per-paying-customer, using THIS page's own monthly margin so it can
     // never contradict the profit tile. Falls back to the static constant only when payingTotal=0.
-    const breakEvenTarget = computeBreakEvenTarget({
-      infraMonthly: rates.infraMonthly,
-      grossProfit: margins.grossProfit,
-      payingTotal: cohorts.payingTotal,
-    });
+    const breakEvenTarget = margins
+      ? computeBreakEvenTarget({
+          infraMonthly: rates.infraMonthly,
+          grossProfit: margins.grossProfit,
+          payingTotal: cohorts.payingTotal,
+        })
+      : null;
 
     // ── Top-cost users (top 10) ───────────────────────────────────────────────
     const allUserIds = new Set([...perUserMinutes.keys(), ...perUserImages.keys()]);
@@ -299,9 +312,35 @@ export async function GET(req: Request) {
     }
 
     const dailyImages = new Map<string, AiImageCounts>();
+    const imageJobIds = new Set(imageJobs.map((job) => job.id));
+    const imageReservationKeys = new Set(
+      imageJobs
+        .filter((job) => Boolean(job.idempotencyKey))
+        .map((job) => `${job.userId}\u0000${job.idempotencyKey}`),
+    );
+    for (const job of imageJobs) {
+      if (
+        job.status !== "completed"
+        || job.chargeState !== "settled"
+        || !job.finishedAt
+        || job.finishedAt < from
+        || job.finishedAt >= now
+      ) continue;
+      const bucket = aiImageCostBucket({ model: job.model, delta: -job.creditCost });
+      if (!bucket) continue;
+      const label = dateLabel(job.finishedAt);
+      const d = dailyImages.get(label) ?? emptyAiImageCounts();
+      d[bucket]++;
+      dailyImages.set(label, d);
+    }
     for (const row of imageSpendRows) {
       const jobId = aiImageJobIdFromAction(row.action);
-      const bucket = aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta });
+      const reservationKey = aiImageReservationKeyFromAction(row.action);
+      if (
+        (jobId && imageJobIds.has(jobId))
+        || (reservationKey && imageReservationKeys.has(`${row.userId}\u0000${reservationKey}`))
+      ) continue;
+      const bucket = aiImageCostBucket({ delta: row.delta });
       if (!bucket) continue;
       const label = dateLabel(row.createdAt);
       const d = dailyImages.get(label) ?? emptyAiImageCounts();
@@ -328,11 +367,11 @@ export async function GET(req: Request) {
       hero: {
         mrr,
         cashCollected,
-        variableCogs: cogs.total,
-        grossMarginPct: margins.grossMarginPct,
-        aiCostPct: margins.aiCostPct,
-        netProfit: margins.netProfit,
-        infraProrated: margins.infraProrated,
+        variableCogs: cogs?.total ?? null,
+        grossMarginPct: margins?.grossMarginPct ?? null,
+        aiCostPct: margins?.aiCostPct ?? null,
+        netProfit: margins?.netProfit ?? null,
+        infraProrated: margins?.infraProrated ?? rates.infraMonthly,
       },
       // Real paying customers (subs + one-time/PromptPay/annual), trials separated. See revenue-cohorts.ts.
       customers: cohorts,
@@ -349,15 +388,18 @@ export async function GET(req: Request) {
         allTimeAsOf: now.toISOString(),
       },
       breakdown: {
-        tts: cogs.tts,
-        image: cogs.image,
-        video: cogs.video,
+        tts: knownNonImageCogs.tts,
+        image: imageCogs,
+        video: knownNonImageCogs.video,
         infra: rates.infraMonthly,
-        infraProrated: margins.infraProrated,
+        infraProrated: rates.infraMonthly,
       },
       usage: {
         managedMinutes,
         images: imageCounts,
+        imagesDelivered: imageUsage.deliveredImages,
+        imagesAllowanceFunded: imageUsage.allowanceImages,
+        imagesUnattributed: imageUsage.unattributedImages,
         creditsSpent,
         creditsGranted,
         rendersWeb,
@@ -368,6 +410,12 @@ export async function GET(req: Request) {
       breakEven: {
         subs: cohorts.breakEvenSubs,
         target: breakEvenTarget,
+      },
+      imageCost: {
+        windowDays: 30,
+        windowStart: runpodImageCost?.windowStart ?? monthFrom.toISOString(),
+        windowEnd: runpodImageCost?.windowEnd ?? now.toISOString(),
+        ...imageCost,
       },
       runpodImageCost,
       trend,

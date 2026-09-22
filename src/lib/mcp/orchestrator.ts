@@ -3000,7 +3000,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await failJob(jobId, e instanceof AvatarProviderFailureError
       ? {
           message: e.failure.message,
-          code: e.failure.code,
+          code: e.failure.reason ?? e.failure.code,
           provider: e.failure.provider,
           ...(reservationRefundReason ? { reservationRefundReason } : {}),
         }

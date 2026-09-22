@@ -195,6 +195,9 @@ jobs:
       - name: Verify customer-facing error copy
         run: npm run verify:customer-error-copy
 
+      - name: Verify Avatar error transport and Hero image cooldown (HERO-37, HERO-45)
+        run: npm run verify:task2-transport
+
       - name: Verify quota_exceeded surfaces an upgrade path
         run: npm run verify:quota-error-shape
 
@@ -275,6 +278,11 @@ jobs:
 
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
+
+      - name: Verify durable AI-image cost reporting
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/heroai-cost-margin.db?connection_limit=1
+        run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:cost-margin
 
       - name: Verify SQLite queueing budgets, transient-DB retry, and bounded in-batch scene retry
         run: npm run verify:prisma-options && npm run verify:prisma-transient-retry && npm run verify:hero-image-scene-retry && npm run verify:hero-image-scene-coverage

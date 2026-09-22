@@ -18,6 +18,8 @@ import {
   aiImageCostBucket,
   aiImageJobIdFromAction,
   aiImageLedgerActionWhere,
+  resolveAiImageCost,
+  summarizeAiImageUsage,
 } from "../src/lib/ai-image-ledger-report";
 
 let passed = 0;
@@ -35,8 +37,14 @@ async function main() {
   // ── Ledger action namespace + durable model attribution ──────────────────
   assert(
     JSON.stringify(aiImageLedgerActionWhere("spend"))
-      === JSON.stringify({ OR: [{ action: "ai-image" }, { action: { startsWith: "ai-image:" } }] }),
-    "AI-image spend query includes legacy exact + durable ai-image:<jobId> actions",
+      === JSON.stringify({
+        OR: [
+          { action: "ai-image" },
+          { action: { startsWith: "ai-image:" } },
+          { action: { startsWith: "ai-image-reservation:" } },
+        ],
+      }),
+    "AI-image spend query includes legacy, job-id and real reservation actions",
   );
   assert(
     JSON.stringify(aiImageLedgerActionWhere("refund"))
@@ -62,23 +70,158 @@ async function main() {
   );
   assert(
     routeSource.includes("prisma.aiGenerationJob.findMany")
-      && routeSource.includes("imageJobModels"),
-    "Admin Cost/Margin route joins durable jobs for real model attribution",
+      && routeSource.includes("summarizeAiImageUsage")
+      && routeSource.includes("resolveAiImageCost")
+      && routeSource.includes("getActiveRunpodImageCostSnapshot({ now, windowDays: 30 })"),
+    "Admin Cost/Margin route reconciles durable jobs and independent provider cost",
   );
+  const panelSource = readFileSync("src/components/admin/cost-margin-panel.tsx", "utf8");
+  assert(
+    panelSource.includes("ต้นทุน AI Image ยังไม่ครบ")
+      && panelSource.includes("รอต้นทุนภาพที่ครบถ้วน")
+      && panelSource.includes("ต้นทุน P&amp;L ใช้ช่วง 30 วันเสมอ"),
+    "Admin UI shows unavailable image cost and keeps the P&L window explicitly monthly",
+  );
+  const ledgerEmail = "cost-ledger-verify@example.invalid";
+  const priorLedgerUser = await prisma.user.findUnique({ where: { email: ledgerEmail } });
+  if (priorLedgerUser) {
+    await prisma.creditLedger.deleteMany({ where: { userId: priorLedgerUser.id } });
+    await prisma.user.delete({ where: { id: priorLedgerUser.id } });
+  }
   const ledgerUser = await prisma.user.create({
-    data: { name: "Cost Ledger Verify", email: "cost-ledger-verify@example.invalid" },
+    data: { name: "Cost Ledger Verify", email: ledgerEmail },
   });
+  const finishedAt = new Date("2026-09-22T08:00:00.000Z");
+  const [creditJob, allowanceJob, refundedJob, namespacedJob] = await Promise.all([
+    prisma.aiGenerationJob.create({
+      data: {
+        id: "cost-report-credit-job",
+        userId: ledgerUser.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "completed",
+        creditCost: 2,
+        fundingSource: "credits",
+        chargeState: "settled",
+        idempotencyKey: "cost-report-credit-request",
+        finishedAt,
+      },
+    }),
+    prisma.aiGenerationJob.create({
+      data: {
+        id: "cost-report-allowance-job",
+        userId: ledgerUser.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "completed",
+        creditCost: 2,
+        fundingSource: "starter_allowance",
+        allowanceUnits: 1,
+        chargeState: "settled",
+        idempotencyKey: "cost-report-allowance-request",
+        finishedAt,
+      },
+    }),
+    prisma.aiGenerationJob.create({
+      data: {
+        id: "cost-report-refunded-job",
+        userId: ledgerUser.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "failed",
+        creditCost: 2,
+        fundingSource: "credits",
+        chargeState: "refunded",
+        idempotencyKey: "cost-report-refunded-request",
+        finishedAt,
+      },
+    }),
+    prisma.aiGenerationJob.create({
+      data: {
+        id: "cost-report-namespaced-job",
+        userId: ledgerUser.id,
+        kind: "image",
+        provider: "kie",
+        model: "gpt-image-2",
+        status: "completed",
+        creditCost: 3,
+        fundingSource: "credits",
+        chargeState: "settled",
+        idempotencyKey: "cost-report-namespaced-request",
+        finishedAt,
+      },
+    }),
+  ]);
   await prisma.creditLedger.createMany({
     data: [
       { userId: ledgerUser.id, delta: -3, kind: "spend", action: "ai-image", balanceAfter: 20 },
-      { userId: ledgerUser.id, delta: -2, kind: "spend", action: "ai-image:durable_job", balanceAfter: 18 },
-      { userId: ledgerUser.id, delta: -2, kind: "spend", action: "minute:other", balanceAfter: 16 },
+      { userId: ledgerUser.id, delta: -2, kind: "spend", action: "ai-image-reservation:cost-report-credit-request", balanceAfter: 18 },
+      { userId: ledgerUser.id, delta: -2, kind: "spend", action: "ai-image-reservation:cost-report-refunded-request", balanceAfter: 16 },
+      { userId: ledgerUser.id, delta: -3, kind: "spend", action: `ai-image:${namespacedJob.id}`, balanceAfter: 13 },
+      { userId: ledgerUser.id, delta: 2, kind: "refund", action: `ai-image-refund:${refundedJob.id}`, balanceAfter: 15 },
+      { userId: ledgerUser.id, delta: -2, kind: "spend", action: "minute:other", balanceAfter: 11 },
     ],
   });
   const matchedSpendRows = await prisma.creditLedger.findMany({
-    where: { kind: "spend", ...aiImageLedgerActionWhere("spend") },
+    where: { userId: ledgerUser.id, kind: "spend", ...aiImageLedgerActionWhere("spend") },
   });
-  assert(matchedSpendRows.length === 2, "Prisma filter returns both legacy and durable AI-image spends, excluding unrelated spend");
+  const matchedRefundRows = await prisma.creditLedger.findMany({
+    where: { userId: ledgerUser.id, kind: "refund", ...aiImageLedgerActionWhere("refund") },
+  });
+  assert(
+    matchedSpendRows.length === 4,
+    `Prisma filter returns all 4 real AI-image spend shapes, excluding unrelated spend (got ${matchedSpendRows.length})`,
+  );
+  const usage = summarizeAiImageUsage({
+    spendRows: matchedSpendRows,
+    refundRows: matchedRefundRows,
+    jobs: [creditJob, allowanceJob, refundedJob, namespacedJob],
+  });
+  assert(
+    usage.imageCounts.hero1k === 2 && usage.imageCounts.gpt1k === 2,
+    `durable usage counts credit + allowance jobs once, excludes refunded delivery, and preserves legacy spend (got hero=${usage.imageCounts.hero1k}, gpt=${usage.imageCounts.gpt1k})`,
+  );
+  assert(
+    usage.allowanceImages === 1,
+    `allowance-funded delivery remains visible without a wallet spend row (got ${usage.allowanceImages})`,
+  );
+  assert(
+    usage.creditsSpent === 8,
+    `customer credits are net wallet spend including reservation/refund rows, independent of delivered count (got ${usage.creditsSpent})`,
+  );
+  const providerCost = resolveAiImageCost({
+    providerSnapshot: {
+      billedUsdMicros: 115_000,
+      usdThbRate: 35,
+      costCoverage: "complete",
+      costSource: "provider_reported_attempts",
+    },
+    estimatedOtherBaht: 1.08,
+    unattributedImages: 0,
+  });
+  assert(
+    near(providerCost.totalBaht ?? -1, 5.105, 0.0001)
+      && providerCost.status === "actual_plus_estimates",
+    `provider attempt COGS stays independent of refunded customer credits (got ${providerCost.totalBaht}/${providerCost.status})`,
+  );
+  const partialProviderCost = resolveAiImageCost({
+    providerSnapshot: {
+      billedUsdMicros: 115_000,
+      usdThbRate: 35,
+      costCoverage: "partial",
+      costSource: "provider_reported_attempts",
+    },
+    estimatedOtherBaht: 0,
+    unattributedImages: 0,
+  });
+  assert(
+    partialProviderCost.totalBaht === null && partialProviderCost.status === "partial",
+    "partial provider-cost coverage makes monthly image COGS unavailable instead of inventing a precise total",
+  );
+  await prisma.creditLedger.deleteMany({ where: { userId: ledgerUser.id } });
   await prisma.user.delete({ where: { id: ledgerUser.id } });
 
   // ── computeMrr ─────────────────────────────────────────────────────────────

@@ -90,3 +90,17 @@ export function heroImageRateLimitMessage(check: Extract<HeroImageRateCheck, { o
   const scopeLabel = check.scope === "hour" ? "ต่อชั่วโมง" : "ต่อวัน";
   return `Hero AI Image ใช้ครบโควต้า${scopeLabel}แล้ว ลองใหม่ได้ในอีก ~${check.retryAfterSec} วินาที`;
 }
+
+/** The fetch-stock endpoint's stable rate-limit envelope. */
+export function heroImageRateLimitResponse(
+  check: Extract<HeroImageRateCheck, { ok: false }>,
+  failedScenes: number[],
+) {
+  return {
+    error: heroImageRateLimitMessage(check),
+    code: "RATE_LIMITED",
+    retryable: true,
+    retryAfterSec: check.retryAfterSec,
+    failedScenes,
+  };
+}

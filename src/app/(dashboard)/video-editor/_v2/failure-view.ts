@@ -9,6 +9,7 @@
 
 export type FailureKind =
   | "heygen-quota"
+  | "heygen-workspace-unavailable"
   | "heygen-avatar-rejected"
   | "provider-key"
   | "provider-quota"
@@ -37,19 +38,32 @@ const HERO_IMAGE_TRANSIENT_CODES = new Set([
   "HERO_IMAGE_FAILED",
   "HERO_IMAGE_ASSET_UNAVAILABLE",
 ]);
+const HEYGEN_WORKSPACE_MARKER = /SPACE_ENCRYPTION_DISABLED/i;
+const HEYGEN_AVATAR_NOT_FOUND_REASON = "HEYGEN_AVATAR_NOT_FOUND";
+const HEYGEN_AVATAR_NOT_FOUND_MARKER = /avatar look not found|avatar[^\n]{0,80}(?:not found|deleted)/i;
 
 export function classifyFailure(job: FailureJobLike): FailureKind {
   if (
     job.errorProvider === "heygen"
     && (job.errorCode === "quota" || HEYGEN_CREDIT_MARKER.test(job.errorMessage ?? ""))
   ) return "heygen-quota";
+  if (
+    job.errorProvider === "heygen"
+    && (job.errorCode === "SPACE_ENCRYPTION_DISABLED" || HEYGEN_WORKSPACE_MARKER.test(job.errorMessage ?? ""))
+  ) return "heygen-workspace-unavailable";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
   // HERO-18: a definitive HeyGen refusal that is neither key, credit, nor rate limit —
   // in practice the selected avatar is gone from the space behind the key (404 "avatar
   // look not found"). It reaches here as the taxonomy's `fatal`, and it must never fall
   // through to the generic avatar copy, which tells the customer to check their credits.
-  if (job.errorProvider === "heygen" && job.errorCode === "fatal") return "heygen-avatar-rejected";
+  if (
+    job.errorProvider === "heygen"
+    && (
+      job.errorCode === HEYGEN_AVATAR_NOT_FOUND_REASON
+      || (job.errorCode === "fatal" && HEYGEN_AVATAR_NOT_FOUND_MARKER.test(job.errorMessage ?? ""))
+    )
+  ) return "heygen-avatar-rejected";
   // The Hero plan's OWN minute/clip quota, not a third party's. Reaches a failed job when
   // /api/videos/render refuses mid-pipeline (a concurrent render drained the window after
   // this job was accepted); pipelineFailureDetails carries the envelope's `code` through
@@ -131,6 +145,13 @@ function genericStepCopy(step: string | null | undefined, exportMode: boolean): 
   }
 }
 
+function cooldownMinutes(errorMessage: string | null): number | null {
+  const seconds = Number(errorMessage?.match(/~\s*(\d+)\s*วินาที/i)?.[1]);
+  return Number.isFinite(seconds) && seconds > 0 && seconds <= 86_400
+    ? Math.max(1, Math.ceil(seconds / 60))
+    : null;
+}
+
 /** Every returned sentence is reviewed product copy; diagnostic text stays in logs/admin. */
 export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMode: boolean): FailureViewCopy {
   if (kind === "heygen-quota") {
@@ -143,6 +164,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: "HeyGen ปฏิเสธ Avatar ที่เลือกไว้",
       body: "บัญชี HeyGen ที่เชื่อมอยู่ใช้ Avatar ตัวนี้ไม่ได้ — อาจถูกลบไปแล้ว หรืออยู่คนละบัญชีกับ API Key ที่ตั้งไว้ ระบบหยุดก่อนใช้เครดิต HeyGen และคืนนาทีเรนเดอร์ของ Hero ให้แล้ว เลือก Avatar ใหม่ในหน้าตั้งค่า หรือปิด Avatar แล้วลองใหม่",
+    };
+  }
+  if (kind === "heygen-workspace-unavailable") {
+    return {
+      heading: "เชื่อมต่อพื้นที่ทำงาน HeyGen ไม่สำเร็จ",
+      body: "พื้นที่ทำงาน HeyGen ที่เชื่อมอยู่ยังไม่พร้อมสร้าง Avatar — ให้ผู้ดูแลบัญชีตรวจสอบการตั้งค่าพื้นที่ทำงาน หรือติดต่อ HeyGen แล้วลองใหม่ หรือปิด Avatar เพื่อสร้างวิดีโอต่อ",
     };
   }
   if (kind === "provider-key") {
@@ -190,9 +217,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     };
   }
   if (kind === "rate-limited") {
+    const minutes = cooldownMinutes(job.errorMessage);
     return {
-      heading: "สร้างภาพ AI ถี่เกินไปชั่วคราว",
-      body: "ระบบพักการสร้างภาพชั่วคราวและยังไม่หักเครดิต — รอสักครู่แล้วลองใหม่",
+      heading: "สร้างภาพครบขีดจำกัดชั่วคราว",
+      body: minutes
+        ? `รออีกประมาณ ${minutes} นาที แล้วลองสร้างใหม่ได้`
+        : "กรุณารอสักครู่แล้วลองใหม่",
     };
   }
   return genericStepCopy(job.currentStep, exportMode);

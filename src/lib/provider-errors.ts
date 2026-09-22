@@ -37,6 +37,8 @@ export interface ProviderError extends Error {
   retryable: boolean;
   /** Upstream HTTP status, when there was one. */
   status?: number;
+  /** A provider-specific reason used only when a reviewed recovery needs more detail. */
+  reason?: string;
 }
 
 class ProviderErrorImpl extends Error implements ProviderError {
@@ -45,12 +47,13 @@ class ProviderErrorImpl extends Error implements ProviderError {
   userAction?: string;
   retryable: boolean;
   status?: number;
+  reason?: string;
 
   constructor(
     code: ProviderErrorCode,
     provider: string,
     message: string,
-    opts?: { status?: number; userAction?: string },
+    opts?: { status?: number; userAction?: string; reason?: string },
   ) {
     super(message);
     this.name = "ProviderError";
@@ -59,6 +62,7 @@ class ProviderErrorImpl extends Error implements ProviderError {
     this.retryable = code === "rate_limit" || code === "transient";
     this.userAction = opts?.userAction ?? toUserMessage(code);
     this.status = opts?.status;
+    this.reason = opts?.reason;
   }
 }
 
@@ -66,7 +70,7 @@ export function providerError(
   code: ProviderErrorCode,
   provider: string,
   message: string,
-  opts?: { status?: number; userAction?: string },
+  opts?: { status?: number; userAction?: string; reason?: string },
 ): ProviderError {
   return new ProviderErrorImpl(code, provider, message, opts);
 }
@@ -176,6 +180,7 @@ export interface ProviderErrorBody {
    * refused" from "we broke" read this, never the response status alone.
    */
   providerStatus?: number;
+  reason?: string;
 }
 
 /** Build the JSON body + HTTP status for an API route response. */
@@ -192,6 +197,7 @@ export function toErrorResponse(err: ProviderError): { body: ProviderErrorBody; 
       // omitted because retryable===false would suppress that modal (see above).
       ...(err.code === "invalid_key" ? { missingKey: err.provider } : { retryable: err.retryable }),
       ...(typeof err.status === "number" ? { providerStatus: err.status } : {}),
+      ...(err.reason ? { reason: err.reason } : {}),
     },
     status: httpStatusForCode(err.code),
   };
