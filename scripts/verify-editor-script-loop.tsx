@@ -13,6 +13,7 @@ const worktree = process.cwd();
 const tempDir = mkdtempSync(join(tmpdir(), "hero-editor-script-loop-"));
 const bundlePath = join(tempDir, "bundle.js");
 const editorShellPath = resolve(worktree, "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx");
+const sentryConfigPath = resolve(worktree, "src/lib/sentry-config.ts");
 const compiledReact = resolve(worktree, "node_modules/next/dist/compiled/react");
 const compiledReactDom = resolve(worktree, "node_modules/next/dist/compiled/react-dom");
 const injectedReactDepthError = process.env.HERO_EDITOR_LOOP_INJECT_REACT_DEPTH_ERROR === "production"
@@ -26,10 +27,16 @@ const browserEntry = `
   import React from "react";
   import { createRoot } from "react-dom/client";
   import { EditorV2Shell } from ${JSON.stringify(editorShellPath)};
+  import { beforeSendSentryEvent } from ${JSON.stringify(sentryConfigPath)};
 
   window.__heroErrors = [];
   window.__heroCreatedProjects = 0;
   window.__heroPatchBodies = [];
+  window.__heroCaptureDepth = () => beforeSendSentryEvent({
+    release: "hero-editor-probe-release",
+    exception: { values: [{ type: "Error", value: "Maximum update depth exceeded. This can happen when a component repeatedly calls setState." }] },
+  });
+  window.__heroCaptureUnrelated = () => beforeSendSentryEvent({ message: "ordinary editor error" });
   window.addEventListener("error", (event) => {
     window.__heroErrors.push(String(event.error?.message || event.message));
   });
@@ -197,6 +204,26 @@ async function main() {
     }));
     const errors = [...pageErrors, ...state.errors];
     assert.doesNotMatch(errors.join("\n"), reactMaximumDepthError);
+    const unrelated = await page.evaluate(() => (
+      (window as unknown as { __heroCaptureUnrelated: () => unknown }).__heroCaptureUnrelated()
+    )) as { contexts?: Record<string, unknown> };
+    assert.equal(unrelated.contexts?.editor_diagnostics, undefined);
+    const diagnostic = await page.evaluate(() => (
+      (window as unknown as { __heroCaptureDepth: () => unknown }).__heroCaptureDepth()
+    )) as { release?: string; contexts?: Record<string, unknown> };
+    assert.equal(diagnostic.release, "hero-editor-probe-release");
+    assert.deepEqual(diagnostic.contexts?.editor_diagnostics, {
+      phase: "setup",
+      lifecycle: "ready",
+      recovery_validity: "none",
+      recovery_version: "none",
+      revision_relation: "unknown",
+      save_state: "saved",
+      input_type: "insertText",
+      composing: false,
+      focus_target: "script",
+      mount_count: 1,
+    }, "the real editor hook attaches only bounded content-free facts at final beforeSend");
 
     await page.click('button[aria-label="เปิดรายการโปรเจกต์"]');
     const newProject = await page.waitForSelector('::-p-text(โปรเจกต์ใหม่)');

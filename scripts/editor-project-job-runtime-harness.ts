@@ -571,6 +571,7 @@ function mountEditorShell(input: {
     if (specifier === "./broll-source") return brollSourceModule;
     if (specifier === "./RenderReceiptDialog") return { RenderReceiptDialog: marker("RenderReceiptDialog") };
     if (specifier === "./EditorProjectRecoveryDialog") return { EditorProjectRecoveryDialog: marker("EditorProjectRecoveryDialog") };
+    if (specifier === "./useEditorDiagnostics") return { useEditorDiagnostics: () => ({}) };
     if (specifier === "./useIsMobile") return { useIsMobile: () => false };
     if (specifier === "../_hooks/useCreditsQuota") return { CREDITS_LIVE_CLIENT: input.creditsLive ?? true };
     if (specifier === "./project-menu") {
