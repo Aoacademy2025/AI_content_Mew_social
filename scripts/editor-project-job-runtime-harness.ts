@@ -15,6 +15,7 @@ import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/
 // HERO-42: the real module, not a hand-written stand-in — it is pure and has no
 // React or server dependency, so the harness exercises the actual source mapping.
 import * as brollSourceModule from "../src/app/(dashboard)/video-editor/_v2/broll-source";
+import * as brollFillYourselfModule from "../src/lib/broll-fill-yourself";
 
 /** The AI-audio ceiling preflight (HERO-25) reads the user's usage window through prisma.
  *  This harness replays the create route to prove idempotency and project recovery, not
@@ -2402,6 +2403,7 @@ async function runExactReplayRouteScenario(input: {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     if (specifier === "@/lib/headline-hook") return headlineHookModule;
+    if (specifier === "@/lib/broll-fill-yourself") return brollFillYourselfModule;
     if (specifier === "@/lib/editor-export-snapshot") {
       return { createEditorExportSnapshot: () => null };
     }
