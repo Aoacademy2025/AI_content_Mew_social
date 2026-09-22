@@ -282,7 +282,7 @@ jobs:
       - name: Verify durable AI-image cost reporting
         env:
           DATABASE_URL: file:${{ runner.temp }}/heroai-cost-margin.db?connection_limit=1
-        run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:cost-margin
+        run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:runpod-image-cost-runtime && npm run verify:cost-margin
 
       - name: Verify SQLite queueing budgets, transient-DB retry, and bounded in-batch scene retry
         run: npm run verify:prisma-options && npm run verify:prisma-transient-retry && npm run verify:hero-image-scene-retry && npm run verify:hero-image-scene-coverage
