@@ -49,6 +49,17 @@ function deadlineSignal(deadlineMs: number | null, maxDurationMs: number, parent
   return parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
 }
 
+/** Give local media subprocesses the same absolute cutoff as provider requests. */
+export function transcribeDeadlineExecOptions(
+  deadlineMs: number | null,
+  parentSignal?: AbortSignal,
+): { signal?: AbortSignal; timeout?: number } {
+  if (deadlineMs === null) return {};
+  assertTranscribeDeadline(deadlineMs);
+  const timeout = Math.max(1, transcribeDeadlineRemainingMs(deadlineMs));
+  return { timeout, signal: deadlineSignal(deadlineMs, timeout, parentSignal) };
+}
+
 /** Fetch with the existing per-operation cap, additionally bounded by the trusted route deadline. */
 export async function fetchWithinTranscribeDeadline(
   input: string | URL | Request,

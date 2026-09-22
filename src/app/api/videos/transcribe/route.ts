@@ -36,12 +36,14 @@ import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { isServiceActorRequest } from "@/lib/mcp/service-actor";
 import {
   INTERNAL_TRANSCRIBE_DEADLINE_HEADER,
+  SUBTITLE_VERIFY_RESPONSE_MARGIN_MS,
   assertTranscribeDeadline,
   deriveInternalTranscribeDeadline,
   fetchWithinTranscribeDeadline,
   isTranscribeDeadlineExceeded,
   sleepWithinTranscribeDeadline,
-  transcribeDeadlineRemainingMs,
+  TranscribeDeadlineExceededError,
+  transcribeDeadlineExecOptions,
 } from "@/lib/transcribe-deadline";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import {
@@ -444,20 +446,55 @@ function getFfprobePath(): string {
   return path.join(ffmpegDir, `ffmpeg${ext}`);
 }
 
-function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: string): Promise<void> {
+type BoundedLocalMediaWork = { deadlineMs: number | null; parentSignal?: AbortSignal };
+
+function localMediaExecOptions(maxBuffer: number | undefined, bounded: BoundedLocalMediaWork) {
+  return {
+    ...(maxBuffer === undefined ? {} : { maxBuffer }),
+    ...transcribeDeadlineExecOptions(bounded.deadlineMs, bounded.parentSignal),
+  };
+}
+
+function localMediaDeadlineError(error: unknown, deadlineMs: number | null): Error | null {
+  try {
+    assertTranscribeDeadline(deadlineMs);
+  } catch (deadlineError) {
+    return deadlineError instanceof Error ? deadlineError : new TranscribeDeadlineExceededError();
+  }
+  return isTranscribeDeadlineExceeded(error, deadlineMs) ? new TranscribeDeadlineExceededError() : null;
+}
+
+function extractAudioMp3(
+  ffmpegPath: string,
+  inputPath: string,
+  outputPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
+): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(ffmpegPath, [
       "-y", "-i", inputPath,
       "-vn", "-acodec", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1",
       outputPath,
-    ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) reject(new Error(`ffmpeg audio extract failed: ${err.message}\n${stderr?.slice(-300)}`));
-      else resolve();
+    ], localMediaExecOptions(10 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      if (err) {
+        reject(localMediaDeadlineError(err, bounded.deadlineMs)
+          ?? new Error(`ffmpeg audio extract failed: ${err.message}\n${stderr?.slice(-300)}`));
+        return;
+      }
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
 
-function getAudioDurationMs(audioPath: string): Promise<number> {
+function getAudioDurationMs(
+  audioPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = getFfprobePath();
     if (!fs.existsSync(probe)) return reject(new Error("ffprobe/ffmpeg not found"));
@@ -466,22 +503,34 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
       execFile(probe, [
         "-v", "error", "-show_entries", "format=duration",
         "-of", "csv=p=0", audioPath,
-      ], (err, stdout) => {
-        if (err) return reject(err);
+      ], localMediaExecOptions(undefined, bounded), (err, stdout) => {
+        if (err) return reject(localMediaDeadlineError(err, bounded.deadlineMs) ?? err);
         const sec = parseFloat(stdout.trim());
         if (!Number.isFinite(sec)) return reject(new Error("Could not parse duration"));
-        resolve(Math.max(1, Math.round(sec * 1000)));
+        try {
+          assertTranscribeDeadline(bounded.deadlineMs);
+          resolve(Math.max(1, Math.round(sec * 1000)));
+        } catch (error) {
+          reject(error);
+        }
       });
       return;
     }
 
     // FFmpeg prints container metadata before its expected no-output error;
     // do not decode the whole uploaded video just to read its duration.
-    execFile(probe, ["-i", audioPath], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+    execFile(probe, ["-i", audioPath], localMediaExecOptions(5 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      const deadlineError = localMediaDeadlineError(err, bounded.deadlineMs);
+      if (deadlineError) return reject(deadlineError);
       const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
       if (!m) return reject(new Error("Could not parse duration from ffmpeg"));
       const ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) * 1000 + parseInt(m[4], 10) * 10;
-      resolve(Math.max(1, ms));
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve(Math.max(1, ms));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
@@ -501,14 +550,22 @@ function detectSilenceAnalysis(
   ffmpegPath: string,
   mp3Path: string,
   totalDurationMs: number,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<ReturnType<typeof parseTranscriptionSilenceAnalysis>> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(ffmpegPath, [
       "-i", mp3Path,
       "-af", "silencedetect=noise=-30dB:d=0.3",
       "-f", "null", "-",
-    ], { maxBuffer: 20 * 1024 * 1024 }, (_err, _stdout, stderr) => {
-      resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
+    ], localMediaExecOptions(20 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      const deadlineError = localMediaDeadlineError(err, bounded.deadlineMs);
+      if (deadlineError) return reject(deadlineError);
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
@@ -520,6 +577,7 @@ function sliceAudio(
   startMs: number,
   endMs: number,
   outPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const startSec = (startMs / 1000).toFixed(3);
@@ -530,9 +588,14 @@ function sliceAudio(
       // opening — later chunks then showed the first chunk's subtitles.
       "-y", "-ss", startSec, "-t", durSec, "-i", mp3Path,
       "-c", "copy", outPath,
-    ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) return reject(new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
+    ], localMediaExecOptions(10 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      if (err) {
+        try { fs.unlinkSync(outPath); } catch {}
+        return reject(localMediaDeadlineError(err, bounded.deadlineMs)
+          ?? new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
+      }
       try {
+        assertTranscribeDeadline(bounded.deadlineMs);
         const buf = fs.readFileSync(outPath);
         try { fs.unlinkSync(outPath); } catch {}
         resolve(buf);
@@ -698,61 +761,60 @@ ${script.trim().slice(0, 2000)}` : ""}
   let usedTranscribeModel = "";
   const MAX_PER_MODEL = 3;  // 3 retries per model × 3 models = 9 total attempts
 
-  outerTranscribe:
-  for (const model of TRANSCRIBE_MODELS) {
-    for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
-      geminiRes = await fetchWithinTranscribeDeadline(
-        // Auth via the x-goog-api-key header only — no ?key= query param.
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": geminiKey,
+  try {
+    outerTranscribe:
+    for (const model of TRANSCRIBE_MODELS) {
+      for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
+        geminiRes = await fetchWithinTranscribeDeadline(
+          // Auth via the x-goog-api-key header only — no ?key= query param.
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": geminiKey,
+            },
+            body: transcribeBody,
           },
-          body: transcribeBody,
-        },
-        { deadlineMs: bounded.deadlineMs, maxDurationMs: 600_000, parentSignal: bounded.parentSignal },
-      );
-      if (geminiRes.ok) {
-        usedTranscribeModel = model;
-        console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
-        break outerTranscribe;
-      }
-      lastTranscribeErr = await geminiRes.text().catch(() => "");
+          { deadlineMs: bounded.deadlineMs, maxDurationMs: 600_000, parentSignal: bounded.parentSignal },
+        );
+        if (geminiRes.ok) {
+          usedTranscribeModel = model;
+          console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
+          break outerTranscribe;
+        }
+        lastTranscribeErr = await geminiRes.text().catch(() => "");
 
-      // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
-      if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
-        console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
-        break;
-      }
+        // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
+        if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
+          console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
+          break;
+        }
 
-      // Retryable transient — exponential backoff within same model
-      if (attempt < MAX_PER_MODEL) {
-        const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
-        console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
-        await sleepWithinTranscribeDeadline(delayMs, bounded.deadlineMs);
-      } else {
-        console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+        // Retryable transient — exponential backoff within same model
+        if (attempt < MAX_PER_MODEL) {
+          const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
+          console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
+          await sleepWithinTranscribeDeadline(delayMs, bounded.deadlineMs);
+        } else {
+          console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+        }
       }
     }
-  }
-
-  // Clean up uploaded file from Gemini (best-effort)
-  if (fileName && (bounded.deadlineMs === null || transcribeDeadlineRemainingMs(bounded.deadlineMs) > 0)) {
-    // Auth via the x-goog-api-key header only — no ?key= query param.
-    const cleanupInit = {
-      method: "DELETE",
-      headers: { "x-goog-api-key": geminiKey },
-    } satisfies RequestInit;
-    const cleanup = bounded.deadlineMs === null
-      ? fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, cleanupInit)
-      : fetchWithinTranscribeDeadline(
-          `https://generativelanguage.googleapis.com/v1beta/${fileName}`,
-          cleanupInit,
-          { deadlineMs: bounded.deadlineMs, maxDurationMs: 10_000, parentSignal: bounded.parentSignal },
-        );
-    void cleanup.catch(() => {});
+  } finally {
+    // Cleanup is the only provider operation allowed after the work deadline. It
+    // is detached so response settlement does not wait, but capped inside the
+    // reserved response margin so it cannot become unbounded background work.
+    if (fileName) {
+      const cleanupInit = {
+        method: "DELETE",
+        headers: { "x-goog-api-key": geminiKey },
+        ...(bounded.deadlineMs === null ? {} : {
+          signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, SUBTITLE_VERIFY_RESPONSE_MARGIN_MS))),
+        }),
+      } satisfies RequestInit;
+      void fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, cleanupInit).catch(() => {});
+    }
   }
 
   if (!geminiRes || !geminiRes.ok) {
@@ -966,7 +1028,10 @@ export async function POST(req: Request) {
     const mp3Path = path.join(tmpDir, `transcribe-audio-${ts}.mp3`);
     mp3PathForCleanup = mp3Path;
     try {
-      await extractAudioMp3(ffmpeg, inputPath, mp3Path);
+      await extractAudioMp3(ffmpeg, inputPath, mp3Path, {
+        deadlineMs: internalDeadlineMs,
+        ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
+      });
     } catch (e) {
       console.error("[transcribe] ffmpeg extract failed:", e);
       if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
@@ -976,9 +1041,13 @@ export async function POST(req: Request) {
     try {
       // The uploaded media owns the render clock. MP3 encoder padding can add
       // several frames and make a presenter-only timeline exceed its source.
-      sourceAudioDurationMs = await getAudioDurationMs(inputPath);
+      sourceAudioDurationMs = await getAudioDurationMs(inputPath, {
+        deadlineMs: internalDeadlineMs,
+        ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
+      });
       console.log(`[transcribe] source audio duration ${sourceAudioDurationMs}ms`);
     } catch (e) {
+      if (isTranscribeDeadlineExceeded(e, internalDeadlineMs)) throw e;
       console.warn("[transcribe] failed to read source media duration:", e);
     }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
@@ -1038,8 +1107,11 @@ export async function POST(req: Request) {
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
         const silenceAnalysis = sourceAudioDurationMs > 0
-          ? await detectSilenceAnalysis(ffmpeg, mp3Path, sourceAudioDurationMs)
-              .catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }))
+          ? await detectSilenceAnalysis(ffmpeg, mp3Path, sourceAudioDurationMs, boundedTranscribe)
+              .catch((error) => {
+                if (isTranscribeDeadlineExceeded(error, internalDeadlineMs)) throw error;
+                return { cutPointsMs: [], trailingSilenceStartMs: null };
+              })
           : { cutPointsMs: [], trailingSilenceStartMs: null };
         const trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
         if (sourceAudioDurationMs > 0) {
@@ -1055,7 +1127,9 @@ export async function POST(req: Request) {
             for (let i = 0; i < bounds.length - 1; i++) {
               assertTranscribeDeadline(internalDeadlineMs);
               const startMs = bounds[i], endMs = bounds[i + 1];
-              const buf = await sliceAudio(ffmpeg, mp3Path, startMs, endMs, `${mp3Path}.chunk${i}.mp3`);
+              const buf = await sliceAudio(
+                ffmpeg, mp3Path, startMs, endMs, `${mp3Path}.chunk${i}.mp3`, boundedTranscribe,
+              );
               chunkPlan.push({ buffer: buf, startMs, durationMs: endMs - startMs });
             }
             console.log(`[transcribe] chunked ${(sourceAudioDurationMs/1000).toFixed(1)}s audio into ${chunkPlan.length} chunks at silence`);
@@ -1157,6 +1231,7 @@ export async function POST(req: Request) {
                       recoveryStartMs,
                       recoveryEndMs,
                       `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.mp3`,
+                      boundedTranscribe,
                     );
                     const scriptStart = Math.max(0, recoveryStartMs / ch.durationMs - 0.12);
                     const scriptEnd = Math.min(1, recoveryEndMs / ch.durationMs + 0.12);
@@ -1208,6 +1283,7 @@ export async function POST(req: Request) {
                               fineStartMs,
                               fineEndMs,
                               `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.fine${fineIndex + 1}.mp3`,
+                              boundedTranscribe,
                             );
                             const fineScriptStart = Math.max(0, fineStartMs / recoveryDurationMs - 0.12);
                             const fineScriptEnd = Math.min(1, fineEndMs / recoveryDurationMs + 0.12);

@@ -860,7 +860,17 @@ async function main() {
           audioDurationMs: 5000, speechCoverage: { source: "silence_analysis", spokenEndMs: 2600 } };
       } });
     let localCalls = 0;
-    await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {},
+    const telemetryWrites: Array<{ userId: string | null; input: { name: string; properties?: Record<string, unknown> } }> = [];
+    const diagnosticLines: string[] = [];
+    const originalInfo = console.info;
+    if (variant === "apply") {
+      console.info = (...args: unknown[]) => { diagnosticLines.push(args.map(String).join(" ")); };
+    }
+    try {
+      await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {},
+      recordTelemetryEvent: async (telemetryUserId, input) => {
+        telemetryWrites.push({ userId: telemetryUserId, input });
+      },
       acousticWorker: async () => {
         localCalls++;
         const positions = variant === "repeat"
@@ -868,14 +878,20 @@ async function main() {
           : [0, 1, 2, 4, 5, 6, 8, 9, 10];
         return {
           evidence: { status: "unavailable", mode: variant === "shadow" ? "shadow" : "apply", applied: false,
-            version: "thai-ctc-v1", modelRevision: "fixture", durationMs: 10, audioHash: "fixture-audio", textHash: "fixture-text" },
+            version: "thai-ctc-v1", modelRevision: "fixture", durationMs: 10, audioHash: "fixture-audio", textHash: "fixture-text",
+            audioLengthBucket: "0-30s", timeoutPhase: "emissions",
+            phaseTimingsMs: { lockWait: 1, modelLoad: 2, audioDecode: 3, emissions: 4, alignment: 5 } },
           clock: { version: "thai-ctc-v1", modelRevision: "fixture", audioHash: "fixture-audio", textHash: "fixture-text",
             audioDurationMs: 5000, characters: positions.map((startChar, i) => ({
               startChar, endChar: startChar + 1, startMs: 200 + (variant === "repeat" ? startChar : i) * 100, endMs: 300 + (variant === "repeat" ? startChar : i) * 100, confidence: .99,
             })).filter(c => variant !== "partial" || c.startChar < 4 || c.startChar >= 8) },
         };
       },
-    });
+      });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    } finally {
+      console.info = originalInfo;
+    }
     const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
     const output = parseOutput(completed.outputJson);
     const v = verificationOf(output);
@@ -883,6 +899,29 @@ async function main() {
     check(countCalls(calls, "/api/videos/tts-gemini") === 1 && countCalls(calls, "/api/videos/transcribe") === 1,
       `N/${variant}: local timing adds no provider calls or regeneration`);
     check(localCalls === (variant === "off" ? 0 : 1), `N/${variant}: local work respects the flag`);
+    if (variant === "apply") {
+      const stored = telemetryWrites.find(write => write.input.name === "subtitle_acoustic_done");
+      const storedJson = JSON.stringify(stored?.input.properties ?? {});
+      check(stored?.userId === user.id && stored?.input.properties?.jobId === job.id,
+        "N/apply: the existing per-user acoustic completion event keeps its prior identity fields");
+      check(!/(audioLengthBucket|timeoutPhase|lockWaitMs|modelLoadMs|audioDecodeMs|emissionsMs|alignmentMs)/.test(storedJson),
+        "N/apply: phase diagnostics never cross the user-linked telemetry storage boundary");
+      check(!/(audioLengthBucket|timeoutPhase|phaseTimingsMs)/.test(JSON.stringify(v.acoustic ?? {})),
+        "N/apply: phase diagnostics never enter the user-linked persisted job evidence");
+      const diagnosticLine = diagnosticLines.find(line => line.startsWith("[subtitle-acoustic-phase] "));
+      const diagnostic = diagnosticLine
+        ? JSON.parse(diagnosticLine.slice("[subtitle-acoustic-phase] ".length)) as Record<string, unknown>
+        : null;
+      check(JSON.stringify(Object.keys(diagnostic ?? {}).sort()) === JSON.stringify([
+        "alignmentMs", "audioDecodeMs", "audioLengthBucket", "emissionsMs", "lockWaitMs",
+        "mode", "modelLoadMs", "modelRevision", "status", "timeoutPhase",
+      ].sort()), "N/apply: the identity-free structured log uses only the fixed diagnostic allowlist");
+      const diagnosticJson = JSON.stringify(diagnostic);
+      check(!diagnosticJson.includes(user.id) && !diagnosticJson.includes(job.id)
+        && !diagnosticJson.includes("fixture-audio") && !diagnosticJson.includes("fixture-text")
+        && !diagnosticJson.includes(speech),
+      "N/apply: the final diagnostic log contains no user, job, media, hash, or transcript identity");
+    }
     if (variant === "off" || variant === "shadow") {
       check(output.subtitleQa?.timingSource === "tts_segment_timing", `N/${variant}: original render clock is preserved`);
       check(v.acoustic?.applied !== true, `N/${variant}: acoustic timing is never marked applied`);

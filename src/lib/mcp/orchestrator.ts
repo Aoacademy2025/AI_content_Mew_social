@@ -2402,7 +2402,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // Measure the remote alignment against the acoustic clock before either
         // renders. Report only — the selection above does not read it.
         ...(subtitleTimingSource === "forced_alignment" ? { existingWords: capRes.words } : {}) });
-      verification.acoustic = selection.evidence;
+      const persistedAcousticEvidence = { ...selection.evidence };
+      delete persistedAcousticEvidence.phaseTimingsMs;
+      delete persistedAcousticEvidence.timeoutPhase;
+      delete persistedAcousticEvidence.audioLengthBucket;
+      verification.acoustic = persistedAcousticEvidence;
       if (selection.replacement) {
         capRes = selection.replacement;
         // Interpolated spans must retain warning provenance through checkpoints
@@ -2411,16 +2415,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         if (selection.evidence.status === "aligned") {
           subtitleTimingSource = "forced_alignment";
           verification = { status: "aligned", method: "ctc", ttsCaptions,
-            durationMs: selection.evidence.durationMs, acoustic: selection.evidence };
+            durationMs: selection.evidence.durationMs, acoustic: persistedAcousticEvidence };
         }
       }
-      emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
-        step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
-        // Content-free by design: no job/user/media/text/hash identity accompanies phase timing.
-        properties: { provider, mode: acousticMode, applied: selection.evidence.applied,
-          cacheHit: selection.evidence.cacheHit ?? false,
-          verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
-          totalWordCount: selection.evidence.totalWordCount ?? 0,
+      try {
+        console.info("[subtitle-acoustic-phase] " + JSON.stringify({
+          status: selection.evidence.status,
+          mode: acousticMode,
           ...(selection.evidence.audioLengthBucket
             ? { audioLengthBucket: selection.evidence.audioLengthBucket } : {}),
           ...(selection.evidence.timeoutPhase ? { timeoutPhase: selection.evidence.timeoutPhase } : {}),
@@ -2434,6 +2435,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             ? { emissionsMs: selection.evidence.phaseTimingsMs.emissions } : {}),
           ...(selection.evidence.phaseTimingsMs?.alignment !== undefined
             ? { alignmentMs: selection.evidence.phaseTimingsMs.alignment } : {}),
+          modelRevision: selection.evidence.modelRevision,
+        }));
+      } catch { /* diagnostics must never affect rendering */ }
+      emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
+        step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
+        properties: { jobId, provider, mode: acousticMode, applied: selection.evidence.applied,
+          cacheHit: selection.evidence.cacheHit ?? false,
+          verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
+          totalWordCount: selection.evidence.totalWordCount ?? 0,
           ...(selection.evidence.disagreementMaxMs !== undefined
             ? { disagreementMaxMs: selection.evidence.disagreementMaxMs } : {}),
           ...(selection.evidence.disagreementMedianMs !== undefined

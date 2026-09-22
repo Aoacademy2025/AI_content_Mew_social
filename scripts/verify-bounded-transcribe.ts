@@ -1,7 +1,7 @@
 // HERO-51: exercise the real internal caller and transcribe route with synthetic media.
 // Provider, auth and persistence boundaries are replaced; no database or network is used.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -23,7 +23,10 @@ const originalEnv = { ...process.env };
 let reserved = 0;
 let refunded = 0;
 
-function loadRoute(): { POST(request: Request): Promise<Response> } {
+function loadRoute(options: {
+  serviceActor?: boolean;
+  execFile?: typeof childProcess.execFile;
+} = {}): { POST(request: Request): Promise<Response> } {
   const source = fs.readFileSync(path.join(root, "src/app/api/videos/transcribe/route.ts"), "utf8");
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
@@ -31,7 +34,10 @@ function loadRoute(): { POST(request: Request): Promise<Response> } {
   const exports = {};
   const boundaryRequire = (name: string): unknown => {
     if (name === "@/lib/clerk-auth") return { getCurrentUser: async () => ({ id: "fixture-user" }) };
-    if (name === "@/lib/mcp/service-actor") return { isServiceActorRequest: async () => true };
+    if (name === "@/lib/mcp/service-actor") return {
+      isServiceActorRequest: async () => options.serviceActor ?? true,
+    };
+    if (name === "child_process" && options.execFile) return { ...childProcess, execFile: options.execFile };
     if (name === "@/lib/prisma") return {
       prisma: { user: { findUnique: async () => ({ id: "fixture-user", plan: "PRO", ttsProvider: "gemini" }) } },
     };
@@ -67,8 +73,13 @@ async function runRouteCase(firstCompletes: boolean) {
   let generations = 0;
   let aborted = 0;
   let lateRejectSettled = false;
+  const deleted: Array<{ url: string; bounded: boolean }> = [];
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (init?.method === "DELETE") {
+      deleted.push({ url, bounded: init.signal instanceof AbortSignal });
+      return Response.json({});
+    }
     if (url.endsWith("/upload/v1beta/files")) {
       uploads += 1;
       return Response.json({ file: { uri: `https://example.invalid/file-${uploads}`, name: `files/${uploads}` } });
@@ -91,7 +102,6 @@ async function runRouteCase(firstCompletes: boolean) {
         else signal?.addEventListener("abort", fail, { once: true });
       });
     }
-    if (init?.method === "DELETE") return Response.json({});
     throw new Error(`Unexpected request: ${url}`);
   };
 
@@ -107,7 +117,100 @@ async function runRouteCase(firstCompletes: boolean) {
     }),
   }));
   await new Promise(resolve => setTimeout(resolve, 20));
-  return { response, uploads, generations, aborted, lateRejectSettled };
+  return { response, uploads, generations, aborted, lateRejectSettled, deleted };
+}
+
+async function runStalledSubprocessCase(stalledStep: "silence" | "slice") {
+  let subprocessAborted = 0;
+  let subprocessTimeoutMs = 0;
+  let providerCalls = 0;
+  const stalledExecFile = ((file: string, args: readonly string[], options: object, callback: Function) => {
+    const shouldStall = stalledStep === "silence"
+      ? args.some(arg => arg.includes("silencedetect="))
+      : args.includes("-c") && args.includes("copy");
+    if (!shouldStall) {
+      return (childProcess.execFile as Function)(file, args, options, callback);
+    }
+    let finished = false;
+    const finish = (error: Error) => {
+      if (finished) return;
+      finished = true;
+      callback(error, "", "");
+    };
+    const fallback = setTimeout(() => finish(new Error("fixture subprocess did not receive an abort")), 1_800);
+    const { signal, timeout } = options as { signal?: AbortSignal; timeout?: number };
+    subprocessTimeoutMs = timeout ?? 0;
+    const abort = () => {
+      clearTimeout(fallback);
+      subprocessAborted += 1;
+      const error = new Error("fixture subprocess aborted");
+      error.name = "AbortError";
+      finish(error);
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    return {};
+  }) as unknown as typeof childProcess.execFile;
+
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    throw new Error("provider work must not begin after stalled local media analysis");
+  };
+  const route = loadRoute({ execFile: stalledExecFile });
+  const refundedBefore = refunded;
+  const startedAt = Date.now();
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(Date.now() + 1_000),
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/voice.wav",
+      script: "one two three four five six",
+      scriptPrompt: "one two three four five six",
+    }),
+  }));
+  return {
+    response,
+    elapsedMs: Date.now() - startedAt,
+    subprocessAborted,
+    subprocessTimeoutMs,
+    providerCalls,
+    refunded: refunded - refundedBefore,
+  };
+}
+
+async function runPublicBoundaryCase() {
+  let aborted = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (init?.method === "DELETE") return Response.json({});
+    if (url.endsWith("/upload/v1beta/files")) {
+      return Response.json({ file: { uri: "https://example.invalid/public-file", name: "files/public" } });
+    }
+    if (url.includes(":generateContent")) {
+      const signal = init?.signal;
+      signal?.addEventListener("abort", () => { aborted += 1; }, { once: true });
+      await new Promise(resolve => setTimeout(resolve, 40));
+      return completedChunk(1_000);
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  const route = loadRoute({ serviceActor: false });
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: "1",
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/short.wav",
+      script: "one two",
+      scriptPrompt: "one two",
+    }),
+  }));
+  return { response, aborted };
 }
 
 async function verifyPipelineCallerDeadline() {
@@ -157,8 +260,25 @@ async function main() {
     "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=180",
     "-c:a", "pcm_s16le", "-y", path.join(directory, "public/renders/voice.wav"),
   ]);
+  execFileSync(getFfmpegPath(), [
+    "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=1",
+    "-c:a", "pcm_s16le", "-y", path.join(directory, "public/renders/short.wav"),
+  ]);
   process.chdir(directory);
 
+  for (const stalledStep of ["silence", "slice"] as const) {
+    const stalled = await runStalledSubprocessCase(stalledStep);
+    assert.equal(stalled.response.status, 422, `${stalledStep}: a local-media deadline keeps the existing zero-completion fallback result`);
+    assert(stalled.elapsedMs < 1_450, `${stalledStep}: the stalled subprocess is bounded by the route deadline (elapsed ${stalled.elapsedMs}ms)`);
+    assert.equal(stalled.subprocessAborted, 1, `${stalledStep}: the stalled ffmpeg subprocess receives deadline cancellation`);
+    assert(stalled.subprocessTimeoutMs > 0 && stalled.subprocessTimeoutMs <= 1_000,
+      `${stalledStep}: the subprocess also receives the remaining route deadline as a timeout`);
+    assert.equal(stalled.providerCalls, 0, `${stalledStep}: provider work never starts after local preprocessing exhausts the deadline`);
+    assert.equal(stalled.refunded, 1, `${stalledStep}: a local-media timeout refunds its managed reservation`);
+    assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], `${stalledStep}: cancellation leaves no temporary media`);
+  }
+
+  const refundedBeforePartial = refunded;
   const partial = await runRouteCase(true);
   assert.equal(partial.response.status, 200, "one completed chunk is returned before the deadline");
   const body = await partial.response.json() as { words: unknown[]; warnings?: Array<{ code: string }> };
@@ -168,15 +288,22 @@ async function main() {
   assert.equal(partial.uploads, 2, "the third chunk and retry never start");
   assert.equal(partial.aborted, 1, "the in-flight provider request is aborted at the route deadline");
   assert.equal(partial.lateRejectSettled, true, "a late abort rejection is observed and contained");
-  assert.equal(refunded, 0, "submitted managed work remains accounted after a usable partial response");
+  assert(partial.deleted.some(item => item.url.endsWith("/files/2") && item.bounded),
+    "the upload whose generation timed out is deleted within a bounded cleanup margin");
+  assert.equal(refunded, refundedBeforePartial, "submitted managed work remains accounted after a usable partial response");
   assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "temporary transcription files are cleaned");
 
   const empty = await runRouteCase(false);
   assert.equal(empty.response.status, 422, "zero completed chunks keeps the existing no-transcript fallback result");
   assert.equal(empty.generations, 1, "zero-completion timeout starts no retry or later chunk");
-  assert.equal(refunded, 1, "an unusable zero-completion request refunds its managed reservation");
-  assert.equal(reserved, 2, "each route request reserves once before provider work");
+  assert.equal(refunded, 3, "an unusable zero-completion request refunds its managed reservation");
+  assert.equal(reserved, 4, "each internal route request reserves once before provider work");
   assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "zero-completion cleanup also removes temporary files");
+
+  const publicRequest = await runPublicBoundaryCase();
+  assert.equal(publicRequest.response.status, 200, "an actual public route request cannot activate deadline mode");
+  assert.equal(publicRequest.aborted, 0, "an untrusted expired deadline header cannot cancel public transcription");
+  assert.equal(reserved, 5, "the public route still follows ordinary accounting");
   await verifyPipelineCallerDeadline();
   console.log("bounded transcribe: caller cancellation, route salvage, no-later-work, cleanup and settlement PASS");
 }
