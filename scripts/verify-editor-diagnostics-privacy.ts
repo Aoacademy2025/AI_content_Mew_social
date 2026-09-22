@@ -123,8 +123,8 @@ function main() {
     input_type: "none",
     composing: false,
     focus_target: "none",
-    mount_count: 2,
-  }, "a stale cleanup cannot clear or reuse another mount's snapshot");
+    mount_count: 1,
+  }, "a new editor mount begins with cleared mount state and ignores stale cleanup");
   deactivateSecond();
 
   const unmounted = beforeSendSentryEvent(depthEvent());

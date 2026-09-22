@@ -48,7 +48,6 @@ type ActiveEditorDiagnostics = {
 };
 
 let activeEditorDiagnostics: ActiveEditorDiagnostics | null = null;
-let editorMountCount = 0;
 
 const PHASES = ["setup", "rendering", "post", "unknown"] as const;
 const LIFECYCLES = ["new", "loading", "ready", "recovery-conflict", "unknown"] as const;
@@ -140,8 +139,10 @@ export function activateEditorDiagnostics(
   snapshot: EditorDiagnosticSnapshot,
 ): () => void {
   const owner = Symbol("editor-diagnostics-mount");
-  editorMountCount = Math.min(10, editorMountCount + 1);
-  snapshot.mountCount = editorMountCount;
+  const mountCount = typeof snapshot.mountCount === "number" && Number.isFinite(snapshot.mountCount)
+    ? Math.trunc(snapshot.mountCount)
+    : 0;
+  snapshot.mountCount = Math.max(1, Math.min(10, mountCount + 1));
   activeEditorDiagnostics = { owner, snapshot, remainingAttachments: 1 };
 
   return () => {
