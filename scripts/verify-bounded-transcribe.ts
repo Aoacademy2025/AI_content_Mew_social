@@ -234,6 +234,58 @@ async function runStalledSubprocessCase(stalledStep: "silence" | "slice") {
   };
 }
 
+async function runLateSuccessfulSliceCase() {
+  let slicePath = "";
+  let providerCalls = 0;
+  let requestedDeadline = 0;
+  const lateSuccessExecFile = ((file: string, args: readonly string[], _options: object, callback: Function) => {
+    if (!(args.includes("-c") && args.includes("copy"))) {
+      if (scheduleSyntheticMediaCommand(args, (error, stdout = "", stderr = "") => {
+        callback(error, stdout, stderr);
+      })) return {};
+      throw new Error(`Unexpected local-media subprocess fixture: ${file} ${args.join(" ")}`);
+    }
+    slicePath = String(args.at(-1));
+    fs.writeFileSync(slicePath, Buffer.from("completed slice at deadline"));
+    setImmediate(() => {
+      const realNow = Date.now;
+      Date.now = () => requestedDeadline + 1;
+      try {
+        callback(null, "", "");
+      } finally {
+        Date.now = realNow;
+      }
+    });
+    return {};
+  }) as unknown as typeof childProcess.execFile;
+
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    throw new Error("provider work must not begin after a late local-media completion");
+  };
+  const route = loadRoute({ execFile: lateSuccessExecFile });
+  const refundedBefore = refunded;
+  requestedDeadline = Date.now() + 10_000;
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(requestedDeadline),
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/voice.wav",
+      script: "one two three four five six",
+      scriptPrompt: "one two three four five six",
+    }),
+  }));
+  return {
+    response,
+    slicePath,
+    providerCalls,
+    refunded: refunded - refundedBefore,
+  };
+}
+
 async function runPublicBoundaryCase() {
   let aborted = 0;
   globalThis.fetch = async (input, init) => {
@@ -344,6 +396,14 @@ async function main() {
     assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], `${stalledStep}: cancellation leaves no temporary media`);
   }
 
+  const lateSlice = await runLateSuccessfulSliceCase();
+  assert.equal(lateSlice.response.status, 422, "a slice finishing just after deadline keeps the zero-completion fallback");
+  assert(lateSlice.slicePath, "the late-success fixture wrote a real slice output");
+  assert.equal(fs.existsSync(lateSlice.slicePath), false, "a successful slice callback after deadline removes its output");
+  assert.equal(lateSlice.providerCalls, 0, "late local success starts no provider work");
+  assert.equal(lateSlice.refunded, 1, "late local success refunds its unusable managed reservation");
+  assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "late local success leaves no temporary media");
+
   const refundedBeforePartial = refunded;
   const partial = await runRouteCase(true);
   assert.equal(partial.response.status, 200, "one completed chunk is returned before the deadline");
@@ -362,14 +422,14 @@ async function main() {
   const empty = await runRouteCase(false);
   assert.equal(empty.response.status, 422, "zero completed chunks keeps the existing no-transcript fallback result");
   assert.equal(empty.generations, 1, "zero-completion timeout starts no retry or later chunk");
-  assert.equal(refunded, 3, "an unusable zero-completion request refunds its managed reservation");
-  assert.equal(reserved, 4, "each internal route request reserves once before provider work");
+  assert.equal(refunded, 4, "an unusable zero-completion request refunds its managed reservation");
+  assert.equal(reserved, 5, "each internal route request reserves once before provider work");
   assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "zero-completion cleanup also removes temporary files");
 
   const publicRequest = await runPublicBoundaryCase();
   assert.equal(publicRequest.response.status, 200, "an actual public route request cannot activate deadline mode");
   assert.equal(publicRequest.aborted, 0, "an untrusted expired deadline header cannot cancel public transcription");
-  assert.equal(reserved, 5, "the public route still follows ordinary accounting");
+  assert.equal(reserved, 6, "the public route still follows ordinary accounting");
   await verifyPipelineCallerDeadline();
   console.log("bounded transcribe: caller cancellation, route salvage, no-later-work, cleanup and settlement PASS");
 }

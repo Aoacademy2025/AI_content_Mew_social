@@ -597,10 +597,11 @@ function sliceAudio(
       try {
         assertTranscribeDeadline(bounded.deadlineMs);
         const buf = fs.readFileSync(outPath);
-        try { fs.unlinkSync(outPath); } catch {}
         resolve(buf);
       } catch (readErr) {
         reject(readErr instanceof Error ? readErr : new Error(String(readErr)));
+      } finally {
+        try { fs.unlinkSync(outPath); } catch {}
       }
     });
   });
