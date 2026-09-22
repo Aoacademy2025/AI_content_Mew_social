@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fillYourselfWantsScenePlan } from "@/lib/broll-fill-yourself";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -759,8 +760,15 @@ export async function POST(req: Request) {
     const autoMixRequestsAi = requestedSource === "auto-mix"
       && (autoMixProviders === undefined || autoMixProviders.includes("kie-ai"))
       && (autoMixWeights?.ai ?? 1) > 0;
+    // HERO-44 (b): a fill-it-yourself job carries a visual context when the account can
+    // use Hero AI Image, so the worker plans scenes and the per-window AI tab works later.
+    const fillYourselfPlan = fillYourselfWantsScenePlan({
+      stockSource: requestedSource,
+      projectId,
+      canUseHeroAiImage: heroAiImageAccess.canUse || brandVisualAccess.canUse,
+    });
     const requestsBrandVisualImage = Boolean(
-      projectId && (useHeroRunpodImage || autoMixRequestsAi),
+      projectId && (useHeroRunpodImage || autoMixRequestsAi || fillYourselfPlan),
     );
     // Resolve an established immutable pin BEFORE the live Hero rollout gate.
     // Rollback closes new adoption, but must not reject a FREE/Trial project

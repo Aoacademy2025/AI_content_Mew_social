@@ -116,7 +116,7 @@
     "verify:managed-stock": "tsx scripts/verify-managed-stock.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-managed-stock-server.ts",
     "verify:managed-stock-cache-key": "tsx scripts/verify-managed-stock-cache-key.ts",
     "verify:broll-none": "tsx scripts/verify-broll-none-background.ts && tsx scripts/verify-broll-placeholders.ts && tsx scripts/verify-broll-window-ux.ts && tsx scripts/verify-key-preflight.ts && tsx scripts/verify-v2-broll-source-mapping.ts",
-    "verify:broll-fill-yourself": "rm -rf /tmp/heroai-broll-fill-yourself.db && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db?connection_limit=1 node --conditions=react-server --import tsx scripts/verify-broll-fill-yourself.ts",
+    "verify:broll-fill-yourself": "rm -rf /tmp/heroai-broll-fill-yourself.db && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db?connection_limit=1 node --conditions=react-server --import tsx scripts/verify-broll-fill-yourself.ts && tsx scripts/verify-broll-fill-yourself-ai.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
     "verify:broll-coverage": "tsx scripts/verify-broll-coverage.ts && tsx scripts/verify-broll-render-route.ts",
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",

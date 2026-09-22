@@ -1936,7 +1936,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       );
       const upBrollUnits = brollWindowCaptions(upVisibleWindows);
 
-      if (upVisibleWindows.length > 0) {
+      // HERO-44 (b): with fill-it-yourself every window is a presenter window, so none is
+      // "visible" — plan all of them instead, so each can be filled with Hero AI Image.
+      if (upVisibleWindows.length > 0 || brollDisabled) {
         try {
         const uploadPreflight = await ensureUploadContentPreflight({
           actor: {
@@ -1947,7 +1949,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           },
           projectId: job.projectId,
           transcriptText: upCaps.map((caption) => caption.text).join("\n"),
-          windows: upVisibleWindows.map((window) => ({
+          windows: (brollDisabled ? upWindows : upVisibleWindows).map((window) => ({
             text: window.text,
             startMs: window.startMs,
             endMs: window.endMs,
@@ -1981,6 +1983,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         }
         } catch (error) {
           const degrade = contentPreflightStockDegradeReason({ analyzerError: error });
+          // HERO-44 (b): for a fill-it-yourself clip the plan is optional — a failed plan
+          // only means the AI tab stays off; the clip still renders with its windows.
+          if (!degrade && brollDisabled) {
+            emitTelemetry({
+              name: "first_clip_preflight_fail_open",
+              category: "pipeline",
+              source: "server",
+              step: "editor.step2",
+              status: "fail_open",
+              properties: {
+                projectId: job.projectId,
+                message: error instanceof Error ? error.message : "content_preflight_failed",
+                via: "upload-worker",
+              },
+            });
+          } else {
           if (!degrade) throw error;
           forceStockBroll = true;
           emitTelemetry({
@@ -1995,6 +2013,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               via: "upload-worker",
             },
           });
+          }
         }
       }
 
@@ -2454,7 +2473,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // lockstep. In window mode generate-config places one clip per window (ignoring
     // sceneClipCounts); subtitle timing is untouched.
     let effectiveContentPreflightId = job.contentPreflightId;
-    const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    // HERO-44 (b): a fill-it-yourself video plans its scenes too (when the jobs route gave
+    // it a visual context), so Hero AI Image can fill its windows afterwards. The plan is
+    // the only provider-side work it does; keywords and stock stay skipped below.
+    const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix" || brollDisabled;
     let forceStockBroll = false;
     let awaitingContentPreflight = false;
     if (job.projectVisualContextJson) {
@@ -2525,7 +2547,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               via: "script-worker",
             },
           });
-        } else if (needsAiVisualPlan) {
+        } else if (needsAiVisualPlan && !brollDisabled) {
           throw error;
         } else {
           emitTelemetry({
