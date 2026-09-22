@@ -46,11 +46,12 @@ async function main() {
   const ffmpeg = getFfmpegPath();
   fs.mkdirSync(path.join(directory, "public/renders"), { recursive: true });
   fs.symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), "dir");
-  const source = path.join(directory, "public/renders/presenter.mp4");
+  const source = path.join(directory, "public/renders/presenter.mov");
+  // PCM avoids platform-dependent AAC encoder padding in the original fixture.
   execFileSync(ffmpeg, [
     "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=25:d=72.4",
     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=72.386",
-    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-t", "72.4", "-y", source,
+    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "pcm_s16le", "-t", "72.4", "-y", source,
   ]);
   globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -73,7 +74,7 @@ async function main() {
   const generateConfig = loadRoute("src/app/api/videos/generate-config/route.ts");
   process.chdir(directory);
   const response = await transcribe.POST(new Request("http://localhost/api/videos/transcribe", {
-    method: "POST", body: JSON.stringify({ audioUrl: "/api/renders/presenter.mp4" }),
+    method: "POST", body: JSON.stringify({ audioUrl: "/api/renders/presenter.mov" }),
   }));
   assert.equal(response.status, 200);
   const transcript = await response.json();
@@ -86,11 +87,11 @@ async function main() {
   const cutaway = planCutaway(windows, { fillYourself: true });
   const background = buildCutawayBackgroundTimeline({
     windows, brollRanges: cutaway.broll, brollAssets: [],
-    presenterAsset: { videoUrl: "/api/renders/presenter.mp4", duration: 72.4, timelineAligned: true },
+    presenterAsset: { videoUrl: "/api/renders/presenter.mov", duration: 72.4, timelineAligned: true },
   });
   const configResponse = await generateConfig.POST(new Request("http://localhost/api/videos/generate-config", {
     method: "POST", body: JSON.stringify({ sceneCaptions: transcript.captions, stockVideos: background.assets,
-      brollWindows: background.windows, audioDurationMs: transcript.audioDurationMs, voiceFile: "/api/renders/presenter.mp4", fps: 30 }),
+      brollWindows: background.windows, audioDurationMs: transcript.audioDurationMs, voiceFile: "/api/renders/presenter.mov", fps: 30 }),
   }));
   assert.equal(configResponse.status, 200);
   const { config } = await configResponse.json();
