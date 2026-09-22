@@ -30,6 +30,7 @@ export type KieTaskSnapshot = {
   state: "waiting" | "queuing" | "generating" | "success" | "fail";
   resultUrl?: string;
   failMessage?: string;
+  outputError?: string;
   executionTimeMs?: number;
   creditsConsumed?: number;
 };
@@ -112,23 +113,26 @@ export async function kieGetTask(taskId: string, token: string): Promise<KieTask
   if (!data?.state) throw new Error(`kie.ai task ${taskId} returned no state`);
 
   let resultUrl: string | undefined;
+  let outputError: string | undefined;
   if (data.state === "success") {
     try {
       const parsed = data.resultJson ? JSON.parse(data.resultJson) as { resultUrls?: unknown } : {};
       const first = Array.isArray(parsed.resultUrls) ? parsed.resultUrls[0] : undefined;
       if (typeof first === "string" && first.trim()) resultUrl = first;
     } catch {
-      throw new Error(`kie.ai task ${taskId} returned invalid resultJson`);
+      outputError = "kie.ai returned invalid resultJson";
     }
-    if (!resultUrl) throw new Error(`kie.ai task ${taskId} succeeded but has no resultUrls`);
+    if (!resultUrl) outputError ??= "kie.ai succeeded but has no resultUrls";
   }
 
   return {
     state: data.state,
     resultUrl,
+    outputError,
     failMessage: data.failMsg,
     executionTimeMs: Number.isFinite(data.costTime) ? Math.max(0, Math.round(data.costTime!)) : undefined,
-    creditsConsumed: Number.isFinite(data.creditsConsumed) ? Math.max(0, Number(data.creditsConsumed)) : undefined,
+    creditsConsumed: typeof data.creditsConsumed === "number" && Number.isFinite(data.creditsConsumed) && data.creditsConsumed >= 0
+      ? data.creditsConsumed : undefined,
   };
 }
 
@@ -137,7 +141,10 @@ export async function kiePollResult(taskId: string, token: string): Promise<stri
   const startedAt = Date.now();
   while (Date.now() - startedAt < KIE_POLL_TIMEOUT_MS) {
     const snapshot = await kieGetTask(taskId, token);
-    if (snapshot.state === "success") return snapshot.resultUrl!;
+    if (snapshot.state === "success") {
+      if (!snapshot.resultUrl) throw new Error(snapshot.outputError || "kie.ai succeeded without an output");
+      return snapshot.resultUrl;
+    }
     if (snapshot.state === "fail") throw new Error(`kie.ai task ${taskId} failed: ${snapshot.failMessage ?? "unknown error"}`);
     await new Promise((r) => setTimeout(r, KIE_POLL_INTERVAL_MS));
   }

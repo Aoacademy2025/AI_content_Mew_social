@@ -5,6 +5,7 @@ import {
   completeImageJob,
   failAndRefundAiJob,
   latestImageGenerationAttempt,
+  recordImageAttemptCost,
 } from "@/lib/ai-generation-jobs.server";
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
 import {
@@ -240,6 +241,17 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
     });
   }
 
+  if (!dryRun) {
+    await recordImageAttemptCost({
+      userId: job.userId,
+      jobId: job.id,
+      sequence: attempt.sequence,
+      providerJobId,
+      providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
+      providerReportedCredits: snapshot.providerReportedCredits,
+    });
+  }
+
   if (snapshot.status === "COMPLETED") {
     if (!snapshot.image) {
       return refundJob({
@@ -274,8 +286,6 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
       outputUrl,
       delayTimeMs: snapshot.delayTimeMs,
       executionTimeMs: snapshot.executionTimeMs,
-      providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
-      providerReportedCredits: snapshot.providerReportedCredits,
       sceneTitle: sceneTitleForJob(job),
     });
     if (completed?.status !== "completed" || !completed.outputUrl) {

@@ -7,6 +7,8 @@ import {
   latestImageGenerationAttempt,
   markImageAttemptProgress,
   publicAiGenerationJob,
+  recordImageAttemptCost,
+  recordLegacyImageJobCost,
 } from "@/lib/ai-generation-jobs.server";
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
 import {
@@ -118,6 +120,25 @@ export async function GET(
       return heroVoiceClonePrivateJson({ error: "ตรวจสถานะผู้ให้บริการไม่สำเร็จ", retryable: true }, { status: 502 });
     }
 
+    if (durableAttempt?.providerJobId) {
+      await recordImageAttemptCost({
+        userId: user.id,
+        jobId: job.id,
+        sequence: durableAttempt.sequence,
+        providerJobId: durableAttempt.providerJobId,
+        providerReportedCostUsdMicros: provider.providerReportedCostUsdMicros,
+        providerReportedCredits: provider.providerReportedCredits,
+      });
+    } else if (!durableAttempt) {
+      await recordLegacyImageJobCost({
+        userId: user.id,
+        jobId: job.id,
+        providerJobId: attemptRef.providerJobId,
+        providerReportedCostUsdMicros: provider.providerReportedCostUsdMicros,
+        providerReportedCredits: provider.providerReportedCredits,
+      });
+    }
+
     if (provider.status === "IN_QUEUE" || provider.status === "IN_PROGRESS") {
       job = await markImageAttemptProgress({
         userId: user.id,
@@ -139,8 +160,6 @@ export async function GET(
           outputUrl,
           delayTimeMs: provider.delayTimeMs,
           executionTimeMs: provider.executionTimeMs,
-          providerReportedCostUsdMicros: provider.providerReportedCostUsdMicros,
-          providerReportedCredits: provider.providerReportedCredits,
         }) ?? job;
       } catch (error) {
         job = await failAndRefundAiJob(

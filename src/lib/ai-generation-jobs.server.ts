@@ -440,6 +440,83 @@ export async function latestImageGenerationAttempt(
   });
 }
 
+type ReportedImageCost = {
+  providerReportedCostUsdMicros?: number;
+  providerReportedCredits?: number;
+};
+
+function validReportedImageCost(input: ReportedImageCost) {
+  const cost = input.providerReportedCostUsdMicros;
+  const credits = input.providerReportedCredits;
+  return {
+    ...(typeof cost === "number" && Number.isSafeInteger(cost) && cost >= 0 && cost <= 2_147_483_647
+      ? { providerReportedCostUsdMicros: cost } : {}),
+    ...(typeof credits === "number" && Number.isFinite(credits) && credits >= 0
+      ? { providerReportedCredits: credits } : {}),
+  };
+}
+
+/** Legacy jobs have no attempt row: retain only their identified job projection. */
+export async function recordLegacyImageJobCost(input: ReportedImageCost & {
+  userId: string;
+  jobId: string;
+  providerJobId: string;
+}): Promise<void> {
+  const data = validReportedImageCost(input);
+  if (!input.providerJobId || Object.keys(data).length === 0) return;
+  await prisma.$transaction(async (tx) => {
+    const job = await tx.aiGenerationJob.findFirst({
+      where: {
+        id: input.jobId,
+        userId: input.userId,
+        kind: "image",
+        provider: "runpod",
+        providerJobId: input.providerJobId,
+        attempts: { none: {} },
+      },
+    });
+    if (!job || Object.entries(data).every(([key, value]) => job[key as keyof typeof data] === value)) return;
+    await tx.aiGenerationJob.update({ where: { id: job.id }, data });
+  });
+}
+
+/** Provider expense survives failed delivery and refunds; never attribute it to a retry. */
+export async function recordImageAttemptCost(input: {
+  userId: string;
+  jobId: string;
+  sequence: number;
+  providerJobId: string;
+  providerReportedCostUsdMicros?: number;
+  providerReportedCredits?: number;
+}): Promise<void> {
+  const data = validReportedImageCost(input);
+  if (!input.providerJobId || Object.keys(data).length === 0) return;
+  await prisma.$transaction(async (tx) => {
+    const attempt = await tx.aiGenerationAttempt.findFirst({
+      where: {
+        jobId: input.jobId,
+        sequence: input.sequence,
+        providerJobId: input.providerJobId,
+        job: { userId: input.userId, kind: "image" },
+      },
+    });
+    if (!attempt) return;
+    if (Object.entries(data).every(([key, value]) => attempt[key as keyof typeof data] === value)) return;
+    await tx.aiGenerationAttempt.update({ where: { id: attempt.id }, data });
+    // The job projection describes only its current attempt; previous attempts
+    // remain separately available to gross provider-cost reporting.
+    await tx.aiGenerationJob.updateMany({
+      where: {
+        id: input.jobId,
+        userId: input.userId,
+        providerJobId: input.providerJobId,
+        attempts: { none: { sequence: { gt: input.sequence } } },
+      },
+      data,
+    });
+  });
+}
+
 /**
  * Claim the right to perform the external submission before crossing the
  * network boundary. Concurrent idempotent callers can poll the same durable
@@ -614,6 +691,8 @@ export async function replaceCanceledImageAttempt(input: {
       where: { id: job.id },
       data: {
         providerJobId: null,
+        providerReportedCostUsdMicros: null,
+        providerReportedCredits: null,
         status: "queued",
         errorCode: null,
         errorMessage: null,
@@ -696,10 +775,17 @@ export async function completeImageJob(input: {
   outputUrl: string;
   delayTimeMs?: number;
   executionTimeMs?: number;
+  providerAttempt?: { sequence: number; providerJobId: string };
   providerReportedCostUsdMicros?: number;
   providerReportedCredits?: number;
   sceneTitle?: string;
 }): Promise<AiGenerationJob | null> {
+  if (input.providerReportedCostUsdMicros !== undefined || input.providerReportedCredits !== undefined) {
+    if (!input.providerAttempt) throw new Error("Provider cost requires an exact image attempt");
+    // Commit expense before the delivery transaction: a refund, stale parent or
+    // subsequent output-bookkeeping failure must not roll this evidence back.
+    await recordImageAttemptCost({ ...input, ...input.providerAttempt });
+  }
   return prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: input.jobId, userId: input.userId } });
     if (!job) return null;
@@ -768,8 +854,6 @@ export async function completeImageJob(input: {
       where: { jobId: job.id, status: { in: ["submitted", "queued", "in_progress"] } },
       data: {
         status: "completed",
-        providerReportedCostUsdMicros: input.providerReportedCostUsdMicros,
-        providerReportedCredits: input.providerReportedCredits,
         finishedAt: new Date(),
       },
     });
@@ -793,8 +877,6 @@ export async function completeImageJob(input: {
         generatedImageId: image.id,
         delayTimeMs: input.delayTimeMs,
         executionTimeMs: input.executionTimeMs,
-        providerReportedCostUsdMicros: input.providerReportedCostUsdMicros,
-        providerReportedCredits: input.providerReportedCredits,
         finishedAt: new Date(),
       },
     });
