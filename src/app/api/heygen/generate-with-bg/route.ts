@@ -5,7 +5,8 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
-import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
+import { isProviderError, toErrorResponse } from "@/lib/provider-errors";
+import { heygenGenerateFailureResponse } from "@/lib/heygen-generate-error";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
 import { decryptKey } from "@/lib/key-crypto";
 
@@ -13,7 +14,6 @@ import { decryptKey } from "@/lib/key-crypto";
 // destructuring defaults at line ~116-118 are unchanged and easy to read.
 const HEYGEN_GEN_SCALE = HEYGEN_GEN_FRAMING.scale;
 const HEYGEN_GEN_OFFSET_Y = HEYGEN_GEN_FRAMING.offsetY;
-
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
@@ -259,13 +259,7 @@ async function handleGenerateWithBg(req: Request) {
       // §8 mapping: 401→invalid_key(401)+missingKey (key modal ถูกต้องเมื่อ key
       // ถูกปฏิเสธจริง), 402/403→quota(402) เช่น credit หมด — ไม่เปิด modal ใส่ key,
       // 429→rate_limit(429), 5xx→transient(503)
-      const pErr = providerError(
-        classifyHttpStatus(genRes.status),
-        "heygen",
-        `HeyGen generate failed (${genRes.status}): ${JSON.stringify(genData.error ?? genData).slice(0, 300)}`,
-        { status: genRes.status },
-      );
-      const { body: errBody, status } = toErrorResponse(pErr);
+      const { body: errBody, status } = heygenGenerateFailureResponse(genRes.status, genData);
       return NextResponse.json(errBody, { status });
     }
     // 200 แต่ไม่มี video_id — response ผิดรูป ไม่ใช่ปัญหา key (อย่าเปิด modal ใส่ key ซ้ำ)

@@ -68,7 +68,7 @@ check("code OMNIVOICE_PROVIDER_RATE_LIMITED (Hero Voice throttle) classifies as 
   classifyFailure(job({ errorCode: "OMNIVOICE_PROVIDER_RATE_LIMITED", errorMessage: "เสียงพากย์ติดโควต้าชั่วคราว" })) === "generic");
 check("a generic voice failure never shows the image-cap heading",
   failureViewCopy(classifyFailure(job({ errorCode: "OMNIVOICE_PROVIDER_RATE_LIMITED" })), job({ errorCode: "OMNIVOICE_PROVIDER_RATE_LIMITED" }), false).heading
-    !== "ถึงเพดานการเจนรูปชั่วคราว");
+    !== "สร้างภาพครบขีดจำกัดชั่วคราว");
 check("heygen quota (provider+code pair) takes priority over any credits/rate code",
   classifyFailure(job({ errorProvider: "heygen", errorCode: "quota" })) === "heygen-quota");
 check("insufficient-credits wins over rate-limited when (hypothetically) both markers are present",
@@ -83,7 +83,7 @@ check("insufficient-credits heading + body are pinned",
       === "งานนี้ต้องใช้เครดิตมากกว่าที่มี ระบบยังไม่เริ่มสร้างภาพ — เติมเครดิตหรือลดจำนวนภาพแล้วลองใหม่");
 check("rate-limited body stays customer-owned instead of echoing provider diagnostics",
   failureViewCopy("rate-limited", job({ errorMessage: "Hero AI Image ใช้ครบโควต้าต่อชั่วโมงแล้ว ลองใหม่ได้ในอีก ~120 วินาที" }), false).body
-    === "ระบบพักการสร้างภาพชั่วคราวและยังไม่หักเครดิต — รอสักครู่แล้วลองใหม่");
+    === "รออีกประมาณ 2 นาที แล้วลองสร้างใหม่ได้");
 
 // ── 4. Static checks — Step2Elements.tsx ────────────────────────────────────
 const step2Path = "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx";
@@ -185,8 +185,8 @@ check("insufficient-credits view shows the pinned heading + explanation copy",
 check("insufficient-credits view offers เติมเครดิต (/pricing?from=editor) plus the existing back CTA",
   /isInsufficientCredits \? \([\s\S]{0,300}href="\/pricing\?from=editor"[\s\S]{0,200}เติมเครดิต[\s\S]{0,300}onClick=\{onBack\}/.test(shell));
 check("rate-limited view uses reviewed product copy and never echoes the provider message",
-  failureView.includes('"สร้างภาพ AI ถี่เกินไปชั่วคราว"')
-    && failureView.includes("ระบบพักการสร้างภาพชั่วคราวและยังไม่หักเครดิต — รอสักครู่แล้วลองใหม่")
+  failureView.includes('"สร้างภาพครบขีดจำกัดชั่วคราว"')
+    && failureView.includes("กรุณารอสักครู่แล้วลองใหม่")
     && !/kind === "rate-limited"[\s\S]{0,240}body: job\.errorMessage/.test(failureView));
 check("rate-limited failures keep only the existing back button (no extra CTA branch — same JSX arm as generic failures)",
   !shell.includes('kind === "rate-limited" ? ('));

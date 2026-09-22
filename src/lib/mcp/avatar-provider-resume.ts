@@ -11,7 +11,7 @@ export interface AvatarProviderPollResult {
 
 export type AvatarProviderGenerateResult =
   | { kind: "accepted"; providerVideoId: string }
-  | { kind: "rejected"; code: ProviderErrorCode; message: string }
+  | { kind: "rejected"; code: ProviderErrorCode; message: string; reason?: string }
   | { kind: "unknown"; message?: string };
 
 export type AvatarCompositeFailureCode =
@@ -48,6 +48,7 @@ export type AvatarProviderAdvanceResult =
       kind: "failed";
       message: string;
       code?: ProviderErrorCode | AvatarCompositeFailureCode;
+      reason?: string;
       provider?: "heygen" | "composite";
       outcome?: "definitive" | "unknown";
     };
@@ -91,6 +92,7 @@ async function generatePhase(
       kind: "failed",
       message: generated.message,
       code: generated.code,
+      ...(generated.reason ? { reason: generated.reason } : {}),
       provider: "heygen",
       outcome: "definitive",
     };

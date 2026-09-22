@@ -1072,6 +1072,7 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
   const kind = classifyFailure(job);
   const isHeygenQuota = kind === "heygen-quota";
   const isHeygenAvatarRejected = kind === "heygen-avatar-rejected";
+  const isHeygenWorkspaceUnavailable = kind === "heygen-workspace-unavailable";
   const isProviderKey = kind === "provider-key";
   const isProviderQuota = kind === "provider-quota";
   const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
@@ -1116,6 +1117,11 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
               <BtnSecondary>เลือก Avatar ใหม่</BtnSecondary>
             </Link>
             <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isHeygenWorkspaceUnavailable ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
+            <BtnSecondary onClick={onBack}>กลับไปตั้งค่า</BtnSecondary>
           </div>
         ) : isProviderKey || isProviderQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">

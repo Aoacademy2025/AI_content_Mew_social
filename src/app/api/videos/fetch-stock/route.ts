@@ -122,7 +122,7 @@ import {
   refundSettledVideoImageBatch,
   refundSettledVideoImageJob,
 } from "@/lib/ai-generation-jobs.server";
-import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
+import { checkHeroImageRate, heroImageRateLimitResponse } from "@/lib/hero-image-rate-limit";
 import {
   authorizeHeroVideoMint,
   HERO_VIDEO_MINT_DENIAL_RESPONSES,
@@ -2341,13 +2341,7 @@ export async function POST(req: Request) {
             failedSceneCount: directJobs.length,
             completedSceneCount: 0,
           });
-          return NextResponse.json({
-            error: heroImageRateLimitMessage(heroRate),
-            code: "RATE_LIMITED",
-            retryable: true,
-            retryAfterSec: heroRate.retryAfterSec,
-            failedScenes: directJobs.map((item) => item.sourceIndex),
-          }, {
+          return NextResponse.json(heroImageRateLimitResponse(heroRate, directJobs.map((item) => item.sourceIndex)), {
             status: 429,
             headers: { "Retry-After": String(heroRate.retryAfterSec) },
           });

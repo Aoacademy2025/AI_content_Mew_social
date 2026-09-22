@@ -65,6 +65,31 @@ assert.doesNotMatch(
 );
 assert.match(avatarRefusedCopy.body, /เลือก Avatar ใหม่|ปิด Avatar/);
 
+// A definitive provider refusal can still have a pending Hero reservation refund.
+// Its copy must not promise either provider billing or a completed Hero refund.
+const avatarRefundPendingCopy = failureViewCopy(
+  classifyFailure(videoJob({
+    currentStep: "avatar",
+    errorProvider: "heygen",
+    errorCode: "HEYGEN_AVATAR_NOT_FOUND",
+    errorMessage: null,
+    reservationRefundPending: true,
+  })),
+  videoJob({
+    currentStep: "avatar",
+    errorProvider: "heygen",
+    errorCode: "HEYGEN_AVATAR_NOT_FOUND",
+    errorMessage: null,
+    reservationRefundPending: true,
+  }),
+  false,
+);
+assert.doesNotMatch(
+  avatarRefundPendingCopy.body,
+  /หยุดก่อนใช้เครดิต HeyGen|คืนนาทีเรนเดอร์ของ Hero ให้แล้ว/,
+  "a pending reservation refund must not be presented as a completed financial outcome",
+);
+
 const invalidKeyMessage = "HeyGen returned HTTP 401: invalid api key";
 const invalidKeyJob = videoJob({
   currentStep: "avatar",

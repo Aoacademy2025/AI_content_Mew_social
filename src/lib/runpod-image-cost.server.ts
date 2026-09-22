@@ -51,7 +51,9 @@ export type RunpodImageCostSnapshot = {
 export type ActiveRunpodImageCostSnapshot = RunpodImageCostSnapshot & {
   providerRoute: "runpod-public" | "runpod-custom";
   costSource: "provider_reported_attempts" | "runpod_billing";
+  totalAttempts: number | null;
   pricedAttempts: number | null;
+  costCoverage: "complete" | "partial" | "unavailable" | "stale";
   lastCostReportedAt: string | null;
 };
 
@@ -339,6 +341,54 @@ export async function getRunpodImageCostSnapshot(input: {
   };
 }
 
+async function hasUncoveredRunpodImageCost(input: {
+  activeRoute: "runpod-public" | "runpod-custom";
+  activeEndpoint: string;
+  windowStart: Date;
+  windowEnd: Date;
+}): Promise<boolean> {
+  const attemptRouteMismatch = [
+    { providerRoute: { not: input.activeRoute } },
+    { providerEndpoint: null },
+    { providerEndpoint: { not: input.activeEndpoint } },
+  ];
+  const jobRouteMismatch = [
+    { providerRoute: null },
+    ...attemptRouteMismatch,
+  ];
+  const [attempt, job, privateBilling] = await Promise.all([
+    prisma.aiGenerationAttempt.findFirst({
+      where: {
+        provider: "runpod",
+        job: { kind: "image", model: "z-image-turbo" },
+        finishedAt: { gte: input.windowStart, lt: input.windowEnd },
+        OR: attemptRouteMismatch,
+      },
+      select: { id: true },
+    }),
+    prisma.aiGenerationJob.findFirst({
+      where: {
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        finishedAt: { gte: input.windowStart, lt: input.windowEnd },
+        OR: jobRouteMismatch,
+      },
+      select: { id: true },
+    }),
+    prisma.runpodBillingBucket.findFirst({
+      where: {
+        bucketStart: { gte: input.windowStart, lt: input.windowEnd },
+        ...(input.activeRoute === "runpod-custom"
+          ? { endpointId: { not: input.activeEndpoint } }
+          : {}),
+      },
+      select: { id: true },
+    }),
+  ]);
+  return Boolean(attempt || job || privateBilling);
+}
+
 /**
  * Reporting-only COGS for the Z-Image route that new production work is using.
  *
@@ -347,6 +397,8 @@ export async function getRunpodImageCostSnapshot(input: {
  * charge was later refunded). The denominator intentionally counts only
  * completed, settled image jobs. The custom route retains its invoice-backed
  * billing snapshot and its independent stale-telemetry admission semantics.
+ * If the same reporting window contains another route/endpoint or an inactive
+ * private invoice bucket, this active-route total is explicitly partial.
  */
 export async function getActiveRunpodImageCostSnapshot(input: {
   now?: Date;
@@ -369,11 +421,28 @@ export async function getActiveRunpodImageCostSnapshot(input: {
       now,
       windowDays,
     });
+    const hasUncoveredCost = await hasUncoveredRunpodImageCost({
+      activeRoute: "runpod-custom",
+      activeEndpoint: config.endpointId,
+      windowStart: new Date(snapshot.windowStart),
+      windowEnd: now,
+    });
+    const activeCoverage = snapshot.status === "stale"
+      ? "stale"
+      : snapshot.status === "insufficient_data"
+        ? "unavailable"
+        : snapshot.lastSuccessfulSyncAt
+          ? "complete"
+          : "unavailable";
     return {
       ...snapshot,
       providerRoute: "runpod-custom",
       costSource: "runpod_billing",
+      totalAttempts: null,
       pricedAttempts: null,
+      costCoverage: hasUncoveredCost && activeCoverage === "complete"
+        ? "partial"
+        : activeCoverage,
       lastCostReportedAt: snapshot.lastSuccessfulSyncAt,
     };
   }
@@ -386,11 +455,19 @@ export async function getActiveRunpodImageCostSnapshot(input: {
     providerReportedCostUsdMicros: { not: null },
     finishedAt: { gte: windowStart, lt: now },
   } as const;
-  const [reported, deliveredImages, latestReport, rates] = await Promise.all([
+  const [reported, totalAttempts, deliveredImages, latestReport, rates, hasUncoveredCost] = await Promise.all([
     prisma.aiGenerationAttempt.aggregate({
       where: attemptWhere,
       _sum: { providerReportedCostUsdMicros: true },
       _count: { _all: true },
+    }),
+    prisma.aiGenerationAttempt.count({
+      where: {
+        provider: "runpod",
+        providerRoute: "runpod-public",
+        providerEndpoint: config.endpointId,
+        finishedAt: { gte: windowStart, lt: now },
+      },
     }),
     prisma.aiGenerationJob.count({
       where: {
@@ -409,8 +486,27 @@ export async function getActiveRunpodImageCostSnapshot(input: {
       select: { finishedAt: true },
     }),
     getCostRates(),
+    hasUncoveredRunpodImageCost({
+      activeRoute: "runpod-public",
+      activeEndpoint: config.endpointId,
+      windowStart: floorToHour(windowStart),
+      windowEnd: now,
+    }),
   ]);
   const billedUsdMicros = reported._sum.providerReportedCostUsdMicros ?? 0;
+  const pricedAttempts = reported._count._all;
+  const activeCoverage = totalAttempts === 0
+    ? deliveredImages === 0 ? "complete" : "unavailable"
+    : pricedAttempts === totalAttempts && billedUsdMicros <= 0
+      ? "unavailable"
+      : pricedAttempts === totalAttempts
+      ? "complete"
+      : pricedAttempts > 0
+        ? "partial"
+        : "unavailable";
+  const costCoverage = hasUncoveredCost && activeCoverage === "complete"
+    ? "partial"
+    : activeCoverage;
   const policy = costPolicy();
   const assessment = assessReportedRunpodImageCost({
     billedUsdMicros,
@@ -430,7 +526,9 @@ export async function getActiveRunpodImageCostSnapshot(input: {
     billedTimeMs: 0,
     deliveredImages,
     bucketCount: 0,
-    pricedAttempts: reported._count._all,
+    totalAttempts,
+    pricedAttempts,
+    costCoverage,
     usdThbRate: rates.fxBahtPerUsd,
     targetBahtPerImage: policy.targetBaht,
     hardLimitBahtPerImage: policy.hardLimitBaht,

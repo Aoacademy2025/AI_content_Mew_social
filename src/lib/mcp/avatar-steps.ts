@@ -145,7 +145,12 @@ export async function generateAvatarVideo(caller: PipelineCaller, avatarId: stri
       : typeof body?.error === "string"
         ? body.error
         : toUserMessage(code);
-    return { kind: "rejected", code, message };
+    return {
+      kind: "rejected",
+      code,
+      message,
+      ...(typeof body?.reason === "string" ? { reason: body.reason } : {}),
+    };
   }
 }
 

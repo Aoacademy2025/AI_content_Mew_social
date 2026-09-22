@@ -17,6 +17,7 @@ export type JobFailureClass = "system" | "byok" | "quota" | "noise";
 // not a bug and not a customer-key fault. Must NOT inflate "ระบบเรา" (system) OR "คีย์ลูกค้า" (byok);
 // it is a pricing/upgrade signal. Classified BEFORE byok so a plan cap never reads as a BYOK error.
 export function quotaReasonFromText(text: string): string | null {
+  if (/ใช้เสียง AI \(สร้างเสียง\/ถอดเสียง\) ครบเพดานรอบนี้แล้ว/i.test(text)) return "ชนเพดานแผน: โควต้าเสียง AI";
   if (/QUOTA_MINUTES|เกินโควต้านาที|เกินนาที/i.test(text)) return "ชนเพดานแผน: โควต้านาที";
   if (/QUOTA_CLIPS|QUOTA_[A-Z]+|เกินโควต้าคลิป|clip quota/i.test(text)) return "ชนเพดานแผน: โควต้าคลิป";
   return null;

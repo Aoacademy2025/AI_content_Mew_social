@@ -22,16 +22,16 @@ import { cn } from "@/lib/utils";
 interface HeroMetrics {
   mrr: number;
   cashCollected: number;
-  variableCogs: number;
-  grossMarginPct: number;
-  aiCostPct: number;
-  netProfit: number;
+  variableCogs: number | null;
+  grossMarginPct: number | null;
+  aiCostPct: number | null;
+  netProfit: number | null;
   infraProrated: number;
 }
 
 interface Breakdown {
   tts: number;
-  image: number;
+  image: number | null;
   video: number;
   infra: number;
   infraProrated: number;
@@ -94,6 +94,9 @@ interface CashByType {
 interface UsageMetrics {
   managedMinutes: number;
   images: { hero1k: number; flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number };
+  imagesDelivered: number;
+  imagesAllowanceFunded: number;
+  imagesUnattributed: number;
   creditsSpent: number;
   creditsGranted: number;
   rendersWeb: number;
@@ -102,7 +105,7 @@ interface UsageMetrics {
 }
 
 interface TopUser { userId: string; cogs: number; minutes: number; images: number }
-interface BreakEven { subs: number; target: number }
+interface BreakEven { subs: number; target: number | null }
 interface TrendRow { date: string; revenue: number; cogs: number }
 interface RunpodImageCost {
   billedUsd: number;
@@ -110,7 +113,9 @@ interface RunpodImageCost {
   deliveredImages: number;
   providerRoute: "runpod-public" | "runpod-custom";
   costSource: "provider_reported_attempts" | "runpod_billing";
+  totalAttempts: number | null;
   pricedAttempts: number | null;
+  costCoverage: "complete" | "partial" | "unavailable" | "stale";
   costBahtPerImage: number | null;
   targetBahtPerImage: number;
   hardLimitBahtPerImage: number;
@@ -118,6 +123,18 @@ interface RunpodImageCost {
   status: "insufficient_data" | "healthy" | "warning" | "hard_stop" | "stale";
   admitted: boolean;
   lastSuccessfulSyncAt: string | null;
+}
+
+interface ImageCost {
+  windowDays: number;
+  windowStart: string;
+  windowEnd: string;
+  status: "actual" | "actual_plus_estimates" | "partial" | "unavailable" | "stale";
+  source: "provider_reported_attempts" | "runpod_billing" | null;
+  actualRunpodBaht: number | null;
+  estimatedOtherBaht: number;
+  totalBaht: number | null;
+  unattributedImages: number;
 }
 
 interface CostsResponse {
@@ -129,6 +146,7 @@ interface CostsResponse {
   usage: UsageMetrics;
   topUsers: TopUser[];
   breakEven: BreakEven;
+  imageCost: ImageCost;
   runpodImageCost: RunpodImageCost | null;
   trend: TrendRow[];
 }
@@ -138,20 +156,22 @@ function fmtBaht(n: number | null | undefined) {
   if (n === null || n === undefined || !Number.isFinite(n)) return "฿-";
   return "฿" + new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 }).format(n);
 }
-function fmtPct(n: number) {
-  if (!Number.isFinite(n)) return "-%";
+function fmtPct(n: number | null | undefined) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "-%";
   return n.toFixed(1) + "%";
 }
 function fmtNum(n: number, digits = 0) {
   if (!Number.isFinite(n)) return "-";
   return new Intl.NumberFormat("th-TH", { maximumFractionDigits: digits }).format(n);
 }
-function marginTone(pct: number) {
+function marginTone(pct: number | null) {
+  if (pct === null) return "text-slate-300 bg-slate-500/12 border-slate-400/20";
   if (pct >= 50) return "text-emerald-300 bg-emerald-500/12 border-emerald-400/20";
   if (pct >= 20) return "text-amber-300 bg-amber-500/12 border-amber-400/20";
   return "text-rose-300 bg-rose-500/12 border-rose-400/20";
 }
-function profitTone(n: number) {
+function profitTone(n: number | null) {
+  if (n === null) return "text-slate-300 bg-slate-500/12 border-slate-400/20";
   if (n > 0) return "text-emerald-300 bg-emerald-500/12 border-emerald-400/20";
   if (n === 0) return "text-amber-300 bg-amber-500/12 border-amber-400/20";
   return "text-rose-300 bg-rose-500/12 border-rose-400/20";
@@ -239,6 +259,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
   const bd = data?.breakdown;
   const u = data?.usage;
   const be = data?.breakEven;
+  const imageCost = data?.imageCost;
   const runpodCost = data?.runpodImageCost;
   const trend = data?.trend ?? [];
   const windowLabel = days === 1 ? "24 ชม." : `${days} วัน`;
@@ -249,13 +270,17 @@ export default function CostMarginPanel({ days }: { days: number }) {
   const providerBars = bd
     ? [
         { label: "Gemini TTS (นาที)", value: bd.tts, color: "bg-violet-500" },
-        { label: "AI Image (GPT/Nano)", value: bd.image, color: "bg-sky-500" },
+        ...(bd.image === null
+          ? []
+          : [{ label: "AI Image (provider + estimate)", value: bd.image, color: "bg-sky-500" }]),
         { label: "AI Video (Seedance)", value: bd.video, color: "bg-cyan-500" },
         { label: "Infra (ต่อเดือน)", value: bd.infraProrated, color: "bg-zinc-500" },
       ].filter((b) => b.value > 0 || b.label.startsWith("Gemini") || b.label.startsWith("Infra"))
     : [];
   const bdMax = Math.max(1, ...providerBars.map((b) => b.value));
-  const costTotalWindow = bd ? bd.tts + bd.image + bd.video + bd.infraProrated : 0;
+  const costTotalWindow = bd && bd.image !== null
+    ? bd.tts + bd.image + bd.video + bd.infraProrated
+    : null;
 
   const subCount = cu ? cu.paying.subMonthly + cu.paying.subAnnual + cu.paying.bundleMonthly : 0;
   const oneTimeCount = cu ? cu.paying.oneTimeMonthly + cu.paying.oneTimeAnnual : 0;
@@ -451,12 +476,12 @@ export default function CostMarginPanel({ days }: { days: number }) {
               </div>
 
               {/* ── Margin KPIs ───────────────────────────────────────────────────── */}
-              {runpodCost && (
+              {imageCost && (
                 <div className={cn(
                   "rounded-lg border p-4",
-                  runpodCost.status === "healthy"
+                  imageCost.status === "actual"
                     ? "border-emerald-400/25 bg-emerald-500/[0.06]"
-                    : runpodCost.status === "warning" || runpodCost.status === "insufficient_data"
+                    : imageCost.status === "actual_plus_estimates"
                       ? "border-amber-400/25 bg-amber-500/[0.06]"
                       : "border-rose-400/25 bg-rose-500/[0.08]",
                 )}>
@@ -466,70 +491,80 @@ export default function CostMarginPanel({ days }: { days: number }) {
                         <span className="inline-flex items-center gap-1">
                           RunPod Image · ต้นทุนเส้นทางที่ใช้งานจริง
                           <MetricHelp label="ต้นทุนเส้นทางที่ใช้งานจริง">
-                            ต้นทุนเฉลี่ยของเส้นทางที่ระบบส่งงานจริงในช่วง {windowLabel} ตัวตั้งรวมต้นทุนที่ RunPod รายงานของทุกครั้งที่ส่งงานให้ผู้ให้บริการ (attempt) รวมการลองใหม่ (retry) และงานที่ระบบคืนเครดิตภายหลัง ตัวหารนับเฉพาะรูปที่ส่งมอบสำเร็จและ settle แล้ว โดย settle หมายถึงระบบยืนยันการหักสิทธิ์หรือเครดิตเสร็จและไม่ได้คืนเครดิต หากเป็น custom endpoint จะใช้ยอดเรียกเก็บที่รวมค่าเริ่มเครื่องและช่วงเครื่องว่างแทน
+                            ต้นทุน P&amp;L ใช้ช่วง 30 วันเสมอ ตัวตั้งรวมต้นทุนของทุกครั้งที่ส่งงานให้ผู้ให้บริการ (attempt) รวมการลองใหม่ (retry) และงานที่ระบบคืนเครดิตภายหลัง ตัวหารนับเฉพาะรูปที่ส่งมอบสำเร็จและ settle แล้ว โดย settle หมายถึงระบบยืนยันการหักสิทธิ์หรือเครดิตเสร็จและไม่ได้คืนเครดิต หากเป็น custom endpoint จะใช้ยอดเรียกเก็บที่รวมค่าเริ่มเครื่องและช่วงเครื่องว่างแทน
                           </MetricHelp>
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-slate-500">
-                        {runpodCost.costSource === "provider_reported_attempts"
-                          ? `Public Z-Image · ส่งผู้ให้บริการ ${fmtNum(runpodCost.pricedAttempts ?? 0)} ครั้งที่มีต้นทุน · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบและยืนยันการหักสิทธิ์`
-                          : `Custom endpoint · รวมค่าเริ่มเครื่อง งานที่ไม่สำเร็จ การลองใหม่ และงานทดสอบระบบ · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ`}
+                        {!runpodCost
+                          ? "ยังอ่านต้นทุน provider ช่วง 30 วันไม่ได้"
+                          : runpodCost.costSource === "provider_reported_attempts"
+                            ? `Public Z-Image · มีต้นทุน ${fmtNum(runpodCost.pricedAttempts ?? 0)}/${fmtNum(runpodCost.totalAttempts ?? 0)} attempts · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ`
+                            : `Custom endpoint · รวมค่าเริ่มเครื่อง งานที่ไม่สำเร็จ การลองใหม่ และงานทดสอบระบบ · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ`}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        ต้นทุนภาพรวม 30 วัน: {fmtBaht(imageCost.totalBaht)}
+                        {imageCost.estimatedOtherBaht > 0 && ` · ส่วนประมาณการ ${fmtBaht(imageCost.estimatedOtherBaht)}`}
                       </div>
                     </div>
                     <div className="flex items-end gap-3">
                       <span className="text-2xl font-bold text-white">
-                        {runpodCost.costBahtPerImage === null
+                        {!runpodCost || runpodCost.costBahtPerImage === null
                           ? "รอข้อมูล"
                           : `฿${fmtNum(runpodCost.costBahtPerImage, 3)}/รูป`}
                       </span>
                       <span className={cn(
                         "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-                        runpodCost.status === "healthy"
+                        imageCost.status === "actual"
                           ? "bg-emerald-500/15 text-emerald-200"
-                          : runpodCost.status === "warning" || runpodCost.status === "insufficient_data"
+                          : imageCost.status === "actual_plus_estimates"
                             ? "bg-amber-500/15 text-amber-200"
                             : "bg-rose-500/15 text-rose-200",
                       )}>
-                        {runpodCost.status === "healthy"
-                          ? "ข้อมูลเพียงพอ"
-                          : runpodCost.status === "insufficient_data"
-                            ? "กำลังเก็บข้อมูล"
-                            : runpodCost.status === "warning"
-                              ? "ต้นทุนสูง"
-                              : runpodCost.status === "stale"
-                                ? "ข้อมูลล้าสมัย"
-                                : "หยุดรับงาน"}
+                        {imageCost.status === "actual"
+                          ? "ต้นทุนจริงครบ"
+                          : imageCost.status === "actual_plus_estimates"
+                            ? "จริง + ประมาณการ"
+                            : imageCost.status === "stale"
+                              ? "ข้อมูลล้าสมัย"
+                              : imageCost.status === "partial"
+                                ? "ข้อมูลไม่ครบ"
+                                : "ยังไม่มีข้อมูล"}
                       </span>
                     </div>
                   </div>
-                  <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 text-xs text-slate-400 sm:grid-cols-3">
-                    <span>เป้าหมาย ≤ ฿{fmtNum(runpodCost.targetBahtPerImage, 2)}</span>
-                    <span>หยุดรับงานเมื่อ &gt; ฿{fmtNum(runpodCost.hardLimitBahtPerImage, 2)}</span>
-                    <span>ต้องมีข้อมูลอย่างน้อย {fmtNum(runpodCost.minimumSample)} รูป</span>
-                  </div>
+                  {runpodCost && (
+                    <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 text-xs text-slate-400 sm:grid-cols-3">
+                      <span>เป้าหมาย ≤ ฿{fmtNum(runpodCost.targetBahtPerImage, 2)}</span>
+                      <span>หยุดรับงานเมื่อ &gt; ฿{fmtNum(runpodCost.hardLimitBahtPerImage, 2)}</span>
+                      <span>ต้องมีข้อมูลอย่างน้อย {fmtNum(runpodCost.minimumSample)} รูป</span>
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <KpiTile label="ต้นทุนผันแปร AI (COGS)" value={fmtBaht(h.variableCogs)} sub="ต่อเดือน (30 วัน) · Gemini TTS + AI image" icon={Zap} tone="text-amber-300 bg-amber-500/12 border-amber-400/20" />
-                <KpiTile label="Gross Margin %" value={fmtPct(h.grossMarginPct)} sub="(MRR - COGS) / MRR" icon={BarChart3} tone={marginTone(h.grossMarginPct)} />
-                <KpiTile label="AI Cost % ของรายได้" value={fmtPct(h.aiCostPct)} sub="COGS / MRR — ยิ่งน้อยยิ่งดี" icon={TrendingDown} tone={h.aiCostPct < 20 ? "text-emerald-300 bg-emerald-500/12 border-emerald-400/20" : h.aiCostPct < 40 ? "text-amber-300 bg-amber-500/12 border-amber-400/20" : "text-rose-300 bg-rose-500/12 border-rose-400/20"} />
-                <KpiTile label="กำไร/ขาดทุน (run-rate)" value={fmtBaht(h.netProfit)} sub="ต่อเดือน: MRR - COGS - Infra · ไม่ใช่เงินสดจริง" icon={Server} tone={profitTone(h.netProfit)} />
+                <KpiTile label="ต้นทุนผันแปร AI (COGS)" value={fmtBaht(h.variableCogs)} sub={h.variableCogs === null ? "ยังคำนวณไม่ได้ เพราะต้นทุนภาพช่วง 30 วันไม่ครบ" : "ต่อเดือน (30 วัน) · Gemini TTS + AI image"} icon={Zap} tone="text-amber-300 bg-amber-500/12 border-amber-400/20" />
+                <KpiTile label="Gross Margin %" value={fmtPct(h.grossMarginPct)} sub={h.grossMarginPct === null ? "รอต้นทุนภาพที่ครบถ้วน" : "(MRR - COGS) / MRR"} icon={BarChart3} tone={marginTone(h.grossMarginPct)} />
+                <KpiTile label="AI Cost % ของรายได้" value={fmtPct(h.aiCostPct)} sub={h.aiCostPct === null ? "รอต้นทุนภาพที่ครบถ้วน" : "COGS / MRR — ยิ่งน้อยยิ่งดี"} icon={TrendingDown} tone={h.aiCostPct === null ? "text-slate-300 bg-slate-500/12 border-slate-400/20" : h.aiCostPct < 20 ? "text-emerald-300 bg-emerald-500/12 border-emerald-400/20" : h.aiCostPct < 40 ? "text-amber-300 bg-amber-500/12 border-amber-400/20" : "text-rose-300 bg-rose-500/12 border-rose-400/20"} />
+                <KpiTile label="กำไร/ขาดทุน (run-rate)" value={fmtBaht(h.netProfit)} sub={h.netProfit === null ? "รอต้นทุนภาพที่ครบถ้วน" : "ต่อเดือน: MRR - COGS - Infra · ไม่ใช่เงินสดจริง"} icon={Server} tone={profitTone(h.netProfit)} />
               </div>
 
               {/* ── Break-even (real payers) ──────────────────────────────────────── */}
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                 <div className="mb-2 flex items-center justify-between">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Break-even (นับจากลูกค้าจ่ายจริง)</h3>
-                  <span className={cn("text-xs font-semibold", be.subs >= be.target ? "text-emerald-300" : "text-amber-300")}>{be.subs}/{be.target} ราย</span>
+                  <span className={cn("text-xs font-semibold", be.target === null ? "text-slate-400" : be.subs >= be.target ? "text-emerald-300" : "text-amber-300")}>{be.subs}/{be.target ?? "-"} ราย</span>
                 </div>
                 <div className="h-3 w-full overflow-hidden rounded-full bg-slate-900">
-                  <div className={cn("h-full rounded-full transition-all", be.subs >= be.target ? "bg-emerald-500" : "bg-amber-500")} style={{ width: `${Math.max(0, Math.min(100, (be.subs / Math.max(1, be.target)) * 100))}%` }} />
+                  <div className={cn("h-full rounded-full transition-all", be.target === null ? "bg-slate-700" : be.subs >= be.target ? "bg-emerald-500" : "bg-amber-500")} style={{ width: be.target === null ? "0%" : `${Math.max(0, Math.min(100, (be.subs / Math.max(1, be.target)) * 100))}%` }} />
                 </div>
                 <p className="mt-2 text-xs text-slate-500">
-                  {be.subs >= be.target
-                    ? `คุ้ม infra แล้ว ✓ (เกินจุดคุ้มทุน +${be.subs - be.target} ราย)`
-                    : `ต้องการอีก ${Math.max(0, be.target - be.subs)} ราย เพื่อ cover infra ฿${fmtNum(bd.infra)}/เดือน`}
+                  {be.target === null
+                    ? "ยังหาจุดคุ้มทุนไม่ได้ เพราะต้นทุนภาพช่วง 30 วันไม่ครบ"
+                    : be.subs >= be.target
+                      ? `คุ้ม infra แล้ว ✓ (เกินจุดคุ้มทุน +${be.subs - be.target} ราย)`
+                      : `ต้องการอีก ${Math.max(0, be.target - be.subs)} ราย เพื่อ cover infra ฿${fmtNum(bd.infra)}/เดือน`}
                 </p>
               </div>
 
@@ -539,6 +574,11 @@ export default function CostMarginPanel({ days }: { days: number }) {
                 <div className="space-y-3">
                   {providerBars.map((b) => <BreakdownBar key={b.label} label={b.label} value={b.value} max={bdMax} color={b.color} />)}
                 </div>
+                {bd.image === null && (
+                  <p className="rounded-md border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    ต้นทุน AI Image ยังไม่ครบ จึงไม่แสดงยอดรวมและอัตรากำไรแบบคาดเดา
+                  </p>
+                )}
                 <div className="flex items-center justify-between border-t border-white/10 pt-2 text-xs">
                   <span className="font-semibold text-slate-300">รวม (COGS + Infra ต่อเดือน)</span>
                   <span className="font-mono font-semibold text-white">{fmtBaht(costTotalWindow)}</span>
@@ -548,7 +588,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
               {/* ── Usage ─────────────────────────────────────────────────────────── */}
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                 <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">การใช้งาน · ช่วง {windowLabel}</h3>
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <div className="space-y-0.5">
                     <div className="text-xs text-slate-500">นาทีที่จัดการ (Managed)</div>
                     <div className="text-lg font-semibold text-white">{fmtNum(u.managedMinutes, 1)} นาที</div>
@@ -562,6 +602,11 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     <div className="text-lg font-semibold text-white">{fmtNum(u.creditsSpent)}<span className="text-sm font-normal text-slate-500"> / {fmtNum(u.creditsGranted)}</span></div>
                   </div>
                   <div className="space-y-0.5">
+                    <div className="text-xs text-slate-500">AI Image ส่งมอบ</div>
+                    <div className="text-lg font-semibold text-white">{fmtNum(u.imagesDelivered)} รูป</div>
+                    <div className="text-[11px] text-slate-500">ใช้สิทธิ์ทดลอง {fmtNum(u.imagesAllowanceFunded)} รูป</div>
+                  </div>
+                  <div className="space-y-0.5">
                     <div className="text-xs text-slate-500">ครีเอเตอร์ active</div>
                     <div className="text-lg font-semibold text-white"><Users className="mr-1 inline h-4 w-4 text-slate-400" />{fmtNum(u.activeCreators)} คน</div>
                   </div>
@@ -572,7 +617,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
               {data.topUsers.length > 0 && (
                 <div className="rounded-lg border border-white/10 bg-white/[0.03]">
                   <div className="px-4 py-3 border-b border-white/10">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Top-cost Users · ช่วง {windowLabel}</h3>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Top-cost Users (ประมาณการ) · ช่วง {windowLabel}</h3>
                   </div>
                   <div className="divide-y divide-white/10">
                     {data.topUsers.map((tu, i) => (
@@ -591,7 +636,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
               {/* ── Daily trend ───────────────────────────────────────────────────── */}
               {trend.length > 0 && (
                 <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
-                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">เทรนด์รายวัน — MRR run-rate vs COGS</h3>
+                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">เทรนด์รายวัน — MRR run-rate vs COGS ประมาณการ</h3>
                   <div className="flex items-end gap-px overflow-x-auto pb-1" style={{ minHeight: 64 }}>
                     {trend.map((row) => {
                       const revH = Math.max(4, (row.revenue / trendMax) * 64);
@@ -609,7 +654,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
                   </div>
                   <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
                     <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-violet-500/50" /> Revenue (MRR daily run-rate)</span>
-                    <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-rose-500/50" /> COGS (variable AI cost)</span>
+                    <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-rose-500/50" /> COGS estimate (รายวัน)</span>
                   </div>
                 </div>
               )}
