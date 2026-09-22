@@ -1,14 +1,13 @@
 // HERO-51: exercise the real internal caller and transcribe route with synthetic media.
 // Provider, auth and persistence boundaries are replaced; no database or network is used.
 import assert from "node:assert/strict";
-import childProcess, { execFileSync } from "node:child_process";
+import childProcess from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
-import { getFfmpegPath } from "../src/lib/ffmpeg-path";
 import {
   INTERNAL_TRANSCRIBE_DEADLINE_HEADER,
   assertTranscribeDeadline,
@@ -56,6 +55,54 @@ function loadRoute(options: {
   new Function("require", "exports", compiled)(boundaryRequire, exports);
   return exports as ReturnType<typeof loadRoute>;
 }
+
+function scheduleSyntheticMediaCommand(
+  args: readonly string[],
+  finish: (error: Error | null, stdout?: string, stderr?: string) => void,
+): boolean {
+  if (args.includes("-vn")) {
+    fs.writeFileSync(String(args.at(-1)), Buffer.from("synthetic mp3"));
+    setImmediate(() => finish(null));
+    return true;
+  }
+  if (args.includes("-show_entries")) {
+    const duration = String(args.at(-1)).endsWith("short.wav") ? "1.000\n" : "180.000\n";
+    setImmediate(() => finish(null, duration));
+    return true;
+  }
+  if (args.length === 2 && args[0] === "-i") {
+    const duration = String(args[1]).endsWith("short.wav") ? "00:00:01.00" : "00:03:00.00";
+    setImmediate(() => finish(
+      new Error("fixture ffmpeg probe has no output target"),
+      "",
+      `Duration: ${duration}`,
+    ));
+    return true;
+  }
+  if (args.some(arg => arg.includes("silencedetect="))) {
+    setImmediate(() => finish(null));
+    return true;
+  }
+  if (args.includes("-c") && args.includes("copy")) {
+    fs.writeFileSync(String(args.at(-1)), Buffer.from("synthetic mp3 slice"));
+    setImmediate(() => finish(null));
+    return true;
+  }
+  return false;
+}
+
+const syntheticMediaExecFile = ((_file: string, args: readonly string[], _options: object, callback: Function) => {
+  let finished = false;
+  const finish = (error: Error | null, stdout = "", stderr = "") => {
+    if (finished) return;
+    finished = true;
+    callback(error, stdout, stderr);
+  };
+  if (!scheduleSyntheticMediaCommand(args, finish)) {
+    throw new Error(`Unexpected local-media subprocess fixture: ${args.join(" ")}`);
+  }
+  return {};
+}) as unknown as typeof childProcess.execFile;
 
 function completedChunk(durationMs = 60_000): Response {
   return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
@@ -105,8 +152,8 @@ async function runRouteCase(firstCompletes: boolean) {
     throw new Error(`Unexpected request: ${url}`);
   };
 
-  const route = loadRoute();
-  const requestedDeadline = Date.now() + 1_500;
+  const route = loadRoute({ execFile: syntheticMediaExecFile });
+  const requestedDeadline = Date.now() + 500;
   const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
     method: "POST",
     headers: { "content-type": "application/json", [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(requestedDeadline) },
@@ -128,16 +175,22 @@ async function runStalledSubprocessCase(stalledStep: "silence" | "slice") {
     const shouldStall = stalledStep === "silence"
       ? args.some(arg => arg.includes("silencedetect="))
       : args.includes("-c") && args.includes("copy");
-    if (!shouldStall) {
-      return (childProcess.execFile as Function)(file, args, options, callback);
-    }
     let finished = false;
-    const finish = (error: Error) => {
+    const finish = (error: Error | null, stdout = "", stderr = "") => {
       if (finished) return;
       finished = true;
-      callback(error, "", "");
+      callback(error, stdout, stderr);
     };
-    const fallback = setTimeout(() => finish(new Error("fixture subprocess did not receive an abort")), 1_800);
+    if (!shouldStall) {
+      // Linux CI spent ~930ms in real extract/probe startup, so the slice case
+      // correctly exhausted its deadline before reaching the intended target.
+      // Keep every prerequisite synthetic; only the selected phase may stall.
+      if (scheduleSyntheticMediaCommand(args, finish)) {
+        return {};
+      }
+      throw new Error(`Unexpected local-media subprocess fixture: ${file} ${args.join(" ")}`);
+    }
+    const fallback = setTimeout(() => finish(new Error("fixture subprocess did not receive an abort")), 1_500);
     const { signal, timeout } = options as { signal?: AbortSignal; timeout?: number };
     subprocessTimeoutMs = timeout ?? 0;
     const abort = () => {
@@ -163,7 +216,7 @@ async function runStalledSubprocessCase(stalledStep: "silence" | "slice") {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(Date.now() + 1_000),
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(Date.now() + 500),
     },
     body: JSON.stringify({
       audioUrl: "/api/renders/voice.wav",
@@ -197,7 +250,7 @@ async function runPublicBoundaryCase() {
     }
     throw new Error(`Unexpected request: ${url}`);
   };
-  const route = loadRoute({ serviceActor: false });
+  const route = loadRoute({ serviceActor: false, execFile: syntheticMediaExecFile });
   const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
     method: "POST",
     headers: {
@@ -215,8 +268,11 @@ async function runPublicBoundaryCase() {
 
 async function verifyPipelineCallerDeadline() {
   let receivedDeadline = "";
+  let markRequestReceived: (() => void) | undefined;
+  const requestReceived = new Promise<void>(resolve => { markRequestReceived = resolve; });
   const server = http.createServer((req, res) => {
     receivedDeadline = String(req.headers[INTERNAL_TRANSCRIBE_DEADLINE_HEADER] ?? "");
+    markRequestReceived?.();
     req.on("aborted", () => res.destroy());
   });
   await new Promise<void>(resolve => server.listen(0, resolve));
@@ -231,10 +287,26 @@ async function verifyPipelineCallerDeadline() {
     deadlineMs,
     signal: controller.signal,
   });
-  setTimeout(() => controller.abort(), 40);
-  await assert.rejects(call, /abort/i);
-  assert.equal(receivedDeadline, String(deadlineMs), "the authenticated caller carries its absolute deadline");
-  await new Promise<void>(resolve => server.close(() => resolve()));
+  call.catch(() => {});
+  let requestTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      requestReceived,
+      new Promise<never>((_resolve, reject) => {
+        requestTimeout = setTimeout(
+          () => reject(new Error("pipeline caller did not reach the fixture server")),
+          2_000,
+        );
+      }),
+    ]);
+    controller.abort();
+    await assert.rejects(call, /abort/i);
+    assert.equal(receivedDeadline, String(deadlineMs), "the authenticated caller carries its absolute deadline");
+  } finally {
+    if (requestTimeout) clearTimeout(requestTimeout);
+    controller.abort();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 }
 
 async function main() {
@@ -256,22 +328,16 @@ async function main() {
   fs.mkdirSync(path.join(directory, "public/renders"), { recursive: true });
   fs.mkdirSync(path.join(directory, "stocks"), { recursive: true });
   fs.symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), "dir");
-  execFileSync(getFfmpegPath(), [
-    "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=180",
-    "-c:a", "pcm_s16le", "-y", path.join(directory, "public/renders/voice.wav"),
-  ]);
-  execFileSync(getFfmpegPath(), [
-    "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=1",
-    "-c:a", "pcm_s16le", "-y", path.join(directory, "public/renders/short.wav"),
-  ]);
+  fs.writeFileSync(path.join(directory, "public/renders/voice.wav"), "synthetic 180s audio fixture");
+  fs.writeFileSync(path.join(directory, "public/renders/short.wav"), "synthetic 1s audio fixture");
   process.chdir(directory);
 
   for (const stalledStep of ["silence", "slice"] as const) {
     const stalled = await runStalledSubprocessCase(stalledStep);
     assert.equal(stalled.response.status, 422, `${stalledStep}: a local-media deadline keeps the existing zero-completion fallback result`);
-    assert(stalled.elapsedMs < 1_450, `${stalledStep}: the stalled subprocess is bounded by the route deadline (elapsed ${stalled.elapsedMs}ms)`);
+    assert(stalled.elapsedMs < 1_000, `${stalledStep}: the stalled subprocess is bounded by the route deadline (elapsed ${stalled.elapsedMs}ms)`);
     assert.equal(stalled.subprocessAborted, 1, `${stalledStep}: the stalled ffmpeg subprocess receives deadline cancellation`);
-    assert(stalled.subprocessTimeoutMs > 0 && stalled.subprocessTimeoutMs <= 1_000,
+    assert(stalled.subprocessTimeoutMs > 0 && stalled.subprocessTimeoutMs <= 500,
       `${stalledStep}: the subprocess also receives the remaining route deadline as a timeout`);
     assert.equal(stalled.providerCalls, 0, `${stalledStep}: provider work never starts after local preprocessing exhausts the deadline`);
     assert.equal(stalled.refunded, 1, `${stalledStep}: a local-media timeout refunds its managed reservation`);
