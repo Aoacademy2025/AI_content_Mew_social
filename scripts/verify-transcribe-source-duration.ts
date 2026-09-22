@@ -61,9 +61,9 @@ async function main() {
       providerCalls++;
       const transcript = {
         fullText: "Test uploaded presenter.",
-        captions: [{ text: "Test uploaded presenter.", startMs: 0, endMs: 72400 }],
+        captions: [{ text: "Test uploaded presenter.", startMs: 0, endMs: 72500 }],
         words: [{ word: "Test", startMs: 0, endMs: 1000 }, { word: "uploaded", startMs: 1000, endMs: 3000 },
-          { word: "presenter.", startMs: 3000, endMs: 72400 }],
+          { word: "presenter.", startMs: 3000, endMs: 72500 }],
       };
       return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(transcript) }] } }] });
     }
