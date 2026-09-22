@@ -8,6 +8,7 @@ import {
   markImageAttemptProgress,
   publicAiGenerationJob,
   recordImageAttemptCost,
+  recordLegacyImageJobCost,
 } from "@/lib/ai-generation-jobs.server";
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
 import {
@@ -125,6 +126,14 @@ export async function GET(
         jobId: job.id,
         sequence: durableAttempt.sequence,
         providerJobId: durableAttempt.providerJobId,
+        providerReportedCostUsdMicros: provider.providerReportedCostUsdMicros,
+        providerReportedCredits: provider.providerReportedCredits,
+      });
+    } else if (!durableAttempt) {
+      await recordLegacyImageJobCost({
+        userId: user.id,
+        jobId: job.id,
+        providerJobId: attemptRef.providerJobId,
         providerReportedCostUsdMicros: provider.providerReportedCostUsdMicros,
         providerReportedCredits: provider.providerReportedCredits,
       });

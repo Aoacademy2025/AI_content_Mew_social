@@ -440,6 +440,46 @@ export async function latestImageGenerationAttempt(
   });
 }
 
+type ReportedImageCost = {
+  providerReportedCostUsdMicros?: number;
+  providerReportedCredits?: number;
+};
+
+function validReportedImageCost(input: ReportedImageCost) {
+  const cost = input.providerReportedCostUsdMicros;
+  const credits = input.providerReportedCredits;
+  return {
+    ...(typeof cost === "number" && Number.isSafeInteger(cost) && cost >= 0 && cost <= 2_147_483_647
+      ? { providerReportedCostUsdMicros: cost } : {}),
+    ...(typeof credits === "number" && Number.isFinite(credits) && credits >= 0
+      ? { providerReportedCredits: credits } : {}),
+  };
+}
+
+/** Legacy jobs have no attempt row: retain only their identified job projection. */
+export async function recordLegacyImageJobCost(input: ReportedImageCost & {
+  userId: string;
+  jobId: string;
+  providerJobId: string;
+}): Promise<void> {
+  const data = validReportedImageCost(input);
+  if (!input.providerJobId || Object.keys(data).length === 0) return;
+  await prisma.$transaction(async (tx) => {
+    const job = await tx.aiGenerationJob.findFirst({
+      where: {
+        id: input.jobId,
+        userId: input.userId,
+        kind: "image",
+        provider: "runpod",
+        providerJobId: input.providerJobId,
+        attempts: { none: {} },
+      },
+    });
+    if (!job || Object.entries(data).every(([key, value]) => job[key as keyof typeof data] === value)) return;
+    await tx.aiGenerationJob.update({ where: { id: job.id }, data });
+  });
+}
+
 /** Provider expense survives failed delivery and refunds; never attribute it to a retry. */
 export async function recordImageAttemptCost(input: {
   userId: string;
@@ -449,14 +489,7 @@ export async function recordImageAttemptCost(input: {
   providerReportedCostUsdMicros?: number;
   providerReportedCredits?: number;
 }): Promise<void> {
-  const cost = input.providerReportedCostUsdMicros;
-  const credits = input.providerReportedCredits;
-  const data = {
-    ...(typeof cost === "number" && Number.isSafeInteger(cost) && cost >= 0 && cost <= 2_147_483_647
-      ? { providerReportedCostUsdMicros: cost } : {}),
-    ...(typeof credits === "number" && Number.isFinite(credits) && credits >= 0
-      ? { providerReportedCredits: credits } : {}),
-  };
+  const data = validReportedImageCost(input);
   if (!input.providerJobId || Object.keys(data).length === 0) return;
   await prisma.$transaction(async (tx) => {
     const attempt = await tx.aiGenerationAttempt.findFirst({
@@ -658,6 +691,8 @@ export async function replaceCanceledImageAttempt(input: {
       where: { id: job.id },
       data: {
         providerJobId: null,
+        providerReportedCostUsdMicros: null,
+        providerReportedCredits: null,
         status: "queued",
         errorCode: null,
         errorMessage: null,

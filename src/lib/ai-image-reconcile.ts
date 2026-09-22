@@ -286,9 +286,6 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
       outputUrl,
       delayTimeMs: snapshot.delayTimeMs,
       executionTimeMs: snapshot.executionTimeMs,
-      providerAttempt: { sequence: attempt.sequence, providerJobId },
-      providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
-      providerReportedCredits: snapshot.providerReportedCredits,
       sceneTitle: sceneTitleForJob(job),
     });
     if (completed?.status !== "completed" || !completed.outputUrl) {

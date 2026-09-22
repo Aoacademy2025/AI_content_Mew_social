@@ -279,6 +279,12 @@ export async function pollImageGenerationAttempt(attempt: ImageGenerationAttempt
   if (attempt.provider === "kie") {
     const snapshot = await kieGetTask(attempt.providerJobId, kieToken());
     if (snapshot.state === "success") {
+      if (!snapshot.resultUrl) return {
+        status: "COMPLETED",
+        error: snapshot.outputError,
+        executionTimeMs: snapshot.executionTimeMs,
+        providerReportedCredits: snapshot.creditsConsumed,
+      };
       const filename = (() => {
         try { return path.basename(new URL(snapshot.resultUrl!).pathname) || "kie-image.png"; }
         catch { return "kie-image.png"; }
