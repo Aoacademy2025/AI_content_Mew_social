@@ -10,6 +10,7 @@
 export type FailureKind =
   | "heygen-quota"
   | "heygen-workspace-unavailable"
+  | "heygen-unlimited-mode-unsupported"
   | "heygen-avatar-rejected"
   | "provider-key"
   | "provider-quota"
@@ -40,6 +41,7 @@ const HERO_IMAGE_TRANSIENT_CODES = new Set([
   "HERO_IMAGE_ASSET_UNAVAILABLE",
 ]);
 const HEYGEN_WORKSPACE_MARKER = /SPACE_ENCRYPTION_DISABLED/i;
+const HEYGEN_UNLIMITED_MODE_REASON = "HEYGEN_UNLIMITED_MODE_UNSUPPORTED";
 const HEYGEN_AVATAR_NOT_FOUND_REASON = "HEYGEN_AVATAR_NOT_FOUND";
 const HEYGEN_AVATAR_NOT_FOUND_MARKER = /avatar look not found|avatar[^\n]{0,80}(?:not found|deleted)/i;
 
@@ -52,6 +54,10 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
     job.errorProvider === "heygen"
     && (job.errorCode === "SPACE_ENCRYPTION_DISABLED" || HEYGEN_WORKSPACE_MARKER.test(job.errorMessage ?? ""))
   ) return "heygen-workspace-unavailable";
+  if (
+    job.errorProvider === "heygen"
+    && job.errorCode === HEYGEN_UNLIMITED_MODE_REASON
+  ) return "heygen-unlimited-mode-unsupported";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
   // HERO-18: a definitive HeyGen refusal that is neither key, credit, nor rate limit —
@@ -171,6 +177,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: "เชื่อมต่อพื้นที่ทำงาน HeyGen ไม่สำเร็จ",
       body: "พื้นที่ทำงาน HeyGen ที่เชื่อมอยู่ยังไม่พร้อมสร้าง Avatar — ให้ผู้ดูแลบัญชีตรวจสอบการตั้งค่าพื้นที่ทำงาน หรือติดต่อ HeyGen แล้วลองใหม่ หรือปิด Avatar เพื่อสร้างวิดีโอต่อ",
+    };
+  }
+  if (kind === "heygen-unlimited-mode-unsupported") {
+    return {
+      heading: "Avatar ที่เลือกใช้โหมด unlimited ไม่ได้",
+      body: "Avatar ที่เลือกไม่รองรับโหมด unlimited ของ HeyGen — กรุณาเลือก Avatar หรือโหมดที่รองรับในบัญชี HeyGen หรือปิด Avatar เพื่อสร้างวิดีโอต่อ",
     };
   }
   if (kind === "provider-key") {

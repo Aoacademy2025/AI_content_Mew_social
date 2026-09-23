@@ -6,6 +6,7 @@ import path from "node:path";
 
 const WORKSPACE_BODY = "พื้นที่ทำงาน HeyGen ที่เชื่อมอยู่ยังไม่พร้อมสร้าง Avatar — ให้ผู้ดูแลบัญชีตรวจสอบการตั้งค่าพื้นที่ทำงาน หรือติดต่อ HeyGen แล้วลองใหม่ หรือปิด Avatar เพื่อสร้างวิดีโอต่อ";
 const AVATAR_MISSING_LEGACY_BODY = "ไม่สามารถใช้ Avatar ที่เลือกในบัญชี HeyGen นี้ได้ กรุณาเลือก Avatar ใหม่หรือลองปิด Avatar แล้วสร้างวิดีโออีกครั้ง";
+const UNLIMITED_MODE_BODY = "Avatar ที่เลือกไม่รองรับโหมด unlimited ของ HeyGen — กรุณาเลือก Avatar หรือโหมดที่รองรับในบัญชี HeyGen หรือปิด Avatar เพื่อสร้างวิดีโอต่อ";
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   assert.equal(actual, expected, label);
@@ -38,6 +39,12 @@ async function main() {
     const avatarMissingResponse = heygenGenerateError.heygenGenerateFailureResponse(404, {
       error: { message: "avatar look not found" },
     });
+    const unlimitedModeResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
+      error: {
+        code: "internal_error",
+        message: "This avatar does not support unlimited mode. Please use a different avatar, or use Avatar IV or Avatar V.",
+      },
+    });
     const otherFatalResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
       error: { message: "avatar request rejected" },
     });
@@ -62,6 +69,8 @@ async function main() {
     assertEqual(avatarMissingResponse.body.error, AVATAR_MISSING_LEGACY_BODY, "HERO-18: legacy route returns owned customer copy");
     assert(!avatarMissingResponse.body.error.includes("avatar look not found"), "HERO-18: legacy route never exposes provider text");
     assertEqual(avatarMissingResponse.body.reason, "HEYGEN_AVATAR_NOT_FOUND", "HERO-18: route keeps an internal durable marker");
+    assertEqual(unlimitedModeResponse.body.reason, "HEYGEN_UNLIMITED_MODE_UNSUPPORTED", "HERO-52: route recognizes the unsupported unlimited-mode response");
+    assert(!JSON.stringify(unlimitedModeResponse.body).includes("This avatar does not support unlimited mode"), "HERO-52: route never exposes unlimited-mode provider text");
     for (const [label, response] of [
       ["avatar", sensitiveAvatarResponse],
       ["workspace", sensitiveWorkspaceResponse],
@@ -129,6 +138,12 @@ async function main() {
 
     const avatarMissing = await persistAvatarFailure(avatarMissingResponse, "heygen-avatar-rejected", "HERO-18 avatar missing");
     assertEqual(avatarMissing.errorCode, "HEYGEN_AVATAR_NOT_FOUND", "HERO-18: internal marker remains durable for V2");
+    const unlimitedMode = await persistAvatarFailure(unlimitedModeResponse, "heygen-unlimited-mode-unsupported", "HERO-52 unlimited mode");
+    assertEqual(unlimitedMode.errorCode, "HEYGEN_UNLIMITED_MODE_UNSUPPORTED", "HERO-52: route reason is durable error code");
+    const unlimitedModeCopy = failureView.failureViewCopy(failureView.classifyFailure(unlimitedMode), unlimitedMode, false);
+    assertEqual(unlimitedModeCopy.heading, "Avatar ที่เลือกใช้โหมด unlimited ไม่ได้", "HERO-52: owned heading reaches the customer view");
+    assertEqual(unlimitedModeCopy.body, UNLIMITED_MODE_BODY, "HERO-52: exact approved guidance reaches the customer view");
+    assert(!/อัปเกรด|เติมเครดิต|paid|payment/i.test(unlimitedModeCopy.body), "HERO-52: guidance neither changes billing nor recommends a paid tier");
     await persistAvatarFailure(otherFatalResponse, "generic", "unrelated fatal HeyGen error");
 
     await prisma.aiGenerationJob.createMany({
