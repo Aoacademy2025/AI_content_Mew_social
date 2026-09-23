@@ -22,6 +22,7 @@ import {
 } from "@/lib/editor-layer-visibility";
 import { scriptTargetDuration } from "@/lib/narration-target";
 import type { TtsProvider } from "@/lib/tts-providers";
+import type { HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
 export type EditorDraftMode = "script" | "upload";
@@ -46,6 +47,7 @@ export interface EditorDefaultDraft {
   bgmVolume: number;
   useAvatar: boolean;
   avatarId: string;
+  avatarEngine: HeyGenAvatarEngine;
   targetClipCount: number;
   avatarMode: EditorDraftAvatarMode;
   avatarIntroSecs: number;
@@ -79,6 +81,7 @@ export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
   bgmVolume: 0.12,
   useAvatar: false,
   avatarId: "",
+  avatarEngine: "avatar_iii",
   targetClipCount: 0,
   avatarMode: "bookend",
   avatarIntroSecs: 5,

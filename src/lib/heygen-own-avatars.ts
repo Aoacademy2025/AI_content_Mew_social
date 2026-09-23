@@ -1,23 +1,18 @@
-// Fetch ONLY the user's OWN HeyGen avatars (the ones they created), fast.
-//
-// Why not /v2/avatars: that returns HeyGen's entire public catalog too (~512KB / ~65s on
-// prod for a real account) — the picker then filtered it client-side but still paid the
-// 65s. The user only wants THEIR avatars. HeyGen exposes those via avatar GROUPS:
-//   GET /v2/avatar_group.list                 → the user's groups (e.g. "Mew", "Emma") ~1s
-//   GET /v2/avatar_group/{group_id}/avatars   → the "looks" inside a group, each with the
-//                                               `id` that is the real generation avatar_id
-// A "look" id (32-hex) is what our render pipeline sends as character.avatar_id — verified
-// against the user's working default + past DONE avatar renders. We fan out the per-group
-// look fetches in parallel, so the whole thing is ~2s. Cached in-memory (5 min) — no durable
-// store needed at this speed, and a live fetch each miss keeps auth errors surfacing.
+// Fetch only completed private HeyGen looks, including the per-look engine list used by
+// both picker eligibility and the final pre-create compatibility check. Production uses
+// the cursor-paginated v3 endpoint. The older group helpers remain as an injected legacy
+// test seam; they are not used by the picker or paid-generation path.
 
 import { HeyGenAuthError } from "./heygen-avatars";
+import { isHeyGenAvatarEngine, type HeyGenAvatarEngine } from "./heygen-avatar-engine";
+import { createHash } from "node:crypto";
 
 const GROUP_LIST_URL = "https://api.heygen.com/v2/avatar_group.list";
 const looksUrl = (groupId: string) =>
   `https://api.heygen.com/v2/avatar_group/${encodeURIComponent(groupId)}/avatars`;
 const FETCH_TIMEOUT_MS = 25_000;
 const TTL_MS = 5 * 60 * 1000;
+const V3_LOOKS_URL = "https://api.heygen.com/v3/avatars/looks";
 
 /** One selectable avatar look — `avatar_id` is generation-ready (character.avatar_id). */
 export interface OwnAvatar {
@@ -25,10 +20,19 @@ export interface OwnAvatar {
   avatar_name: string; // the group name, e.g. "Mew"
   preview_image_url: string;
   group_id: string;
+  supported_api_engines: HeyGenAvatarEngine[];
 }
 
 export interface RawGroup { id: string; name?: string; group_type?: string }
 export interface RawLook { id?: string; image_url?: string; status?: string; name?: string; group_id?: string }
+export interface RawV3Look {
+  id?: unknown;
+  name?: unknown;
+  preview_image_url?: unknown;
+  group_id?: unknown;
+  status?: unknown;
+  supported_api_engines?: unknown;
+}
 
 /**
  * Flatten groups + their looks into selectable avatars. Pure — unit-tested by
@@ -52,17 +56,52 @@ export function flattenOwnAvatars(
         avatar_name: g.name?.trim() || "อวตาร",
         preview_image_url: lk.image_url ?? "",
         group_id: g.id,
+        // Legacy test seam only. Production discovery below uses v3 look metadata.
+        supported_api_engines: ["avatar_iii"],
       });
     }
   }
   return out;
 }
 
+export function parseOwnAvatarLookPage(value: unknown): {
+  avatars: OwnAvatar[];
+  hasMore: boolean;
+  nextToken?: string;
+} {
+  const page = typeof value === "object" && value !== null
+    ? value as Record<string, unknown>
+    : {};
+  const avatars = (Array.isArray(page.data) ? page.data : []).flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const look = item as RawV3Look;
+    if (typeof look.id !== "string" || !look.id || look.status !== "completed") return [];
+    const engines = Array.isArray(look.supported_api_engines)
+      ? look.supported_api_engines.filter(isHeyGenAvatarEngine)
+      : [];
+    return [{
+      avatar_id: look.id,
+      avatar_name: typeof look.name === "string" && look.name.trim() ? look.name.trim() : "อวตาร",
+      preview_image_url: typeof look.preview_image_url === "string" ? look.preview_image_url : "",
+      group_id: typeof look.group_id === "string" ? look.group_id : "",
+      supported_api_engines: engines,
+    }];
+  });
+  return {
+    avatars,
+    hasMore: page.has_more === true,
+    ...(typeof page.next_token === "string" && page.next_token
+      ? { nextToken: page.next_token }
+      : {}),
+  };
+}
+
 type CacheEntry = { at: number; data: OwnAvatar[] };
 const cache = new Map<string, CacheEntry>();
-const cacheKey = (userId: string, heygenKey: string) => `${userId}:${heygenKey.slice(-6)}`;
+const cacheKey = (userId: string, heygenKey: string) =>
+  `${userId}:${createHash("sha256").update(heygenKey).digest("hex")}`;
 
-async function heygenGet(url: string, heygenKey: string): Promise<any> {
+async function heygenGet(url: string, heygenKey: string): Promise<unknown> {
   const res = await fetch(url, {
     headers: { "X-Api-Key": heygenKey, accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -74,19 +113,34 @@ async function heygenGet(url: string, heygenKey: string): Promise<any> {
 
 async function defaultFetchGroups(heygenKey: string): Promise<RawGroup[]> {
   const d = await heygenGet(GROUP_LIST_URL, heygenKey);
-  return (d?.data?.avatar_group_list ?? []) as RawGroup[];
+  const root = typeof d === "object" && d !== null ? d as Record<string, unknown> : {};
+  const data = typeof root.data === "object" && root.data !== null ? root.data as Record<string, unknown> : {};
+  return Array.isArray(data.avatar_group_list) ? data.avatar_group_list as RawGroup[] : [];
 }
 
 async function defaultFetchLooks(groupId: string, heygenKey: string): Promise<RawLook[]> {
   const d = await heygenGet(looksUrl(groupId), heygenKey);
-  return (d?.data?.avatar_list ?? d?.data?.avatars ?? []) as RawLook[];
+  const root = typeof d === "object" && d !== null ? d as Record<string, unknown> : {};
+  const data = typeof root.data === "object" && root.data !== null ? root.data as Record<string, unknown> : {};
+  const looks = Array.isArray(data.avatar_list) ? data.avatar_list : data.avatars;
+  return Array.isArray(looks) ? looks as RawLook[] : [];
+}
+
+async function defaultFetchV3LookPage(
+  heygenKey: string,
+  token?: string,
+): Promise<ReturnType<typeof parseOwnAvatarLookPage>> {
+  const url = new URL(V3_LOOKS_URL);
+  url.searchParams.set("ownership", "private");
+  url.searchParams.set("limit", "50");
+  if (token) url.searchParams.set("token", token);
+  return parseOwnAvatarLookPage(await heygenGet(url.toString(), heygenKey));
 }
 
 /**
- * Get the user's own avatars (looks), fetched from HeyGen and cached in-memory for 5 min.
- * Group-list auth errors propagate (HeyGenAuthError) so a bad key surfaces; a single group's
- * look-fetch failing is tolerated (that group contributes nothing rather than failing all).
- * `opts.fetchGroups`/`fetchLooks`/`now` are test injection points.
+ * Get the user's own completed looks, fetched from HeyGen and cached in-memory for 5 min.
+ * Auth errors propagate so the existing bad-key UI remains authoritative. The optional
+ * group loaders preserve the legacy fixture seam; `fetchPage` drives the production shape.
  */
 export async function getHeyGenOwnAvatars(
   userId: string,
@@ -96,6 +150,7 @@ export async function getHeyGenOwnAvatars(
     refresh?: boolean;
     fetchGroups?: (key: string) => Promise<RawGroup[]>;
     fetchLooks?: (groupId: string, key: string) => Promise<RawLook[]>;
+    fetchPage?: (key: string, token?: string) => Promise<ReturnType<typeof parseOwnAvatarLookPage>>;
   } = {},
 ): Promise<{ avatars: OwnAvatar[] }> {
   const key = cacheKey(userId, heygenKey);
@@ -104,18 +159,29 @@ export async function getHeyGenOwnAvatars(
     const hit = cache.get(key);
     if (hit && now - hit.at < TTL_MS) return { avatars: hit.data };
   }
-  const fetchGroups = opts.fetchGroups ?? defaultFetchGroups;
-  const fetchLooks = opts.fetchLooks ?? defaultFetchLooks;
-
-  const groups = await fetchGroups(heygenKey); // auth errors propagate here
-  const settled = await Promise.allSettled(groups.map((g) => fetchLooks(g.id, heygenKey)));
-  const looksByGroupId: Record<string, RawLook[]> = {};
-  groups.forEach((g, i) => {
-    const r = settled[i];
-    looksByGroupId[g.id] = r.status === "fulfilled" ? r.value : [];
-  });
-
-  const avatars = flattenOwnAvatars(groups, looksByGroupId);
+  let avatars: OwnAvatar[];
+  if (opts.fetchGroups || opts.fetchLooks) {
+    const fetchGroups = opts.fetchGroups ?? defaultFetchGroups;
+    const fetchLooks = opts.fetchLooks ?? defaultFetchLooks;
+    const groups = await fetchGroups(heygenKey);
+    const settled = await Promise.allSettled(groups.map((g) => fetchLooks(g.id, heygenKey)));
+    const looksByGroupId: Record<string, RawLook[]> = {};
+    groups.forEach((g, i) => {
+      const result = settled[i];
+      looksByGroupId[g.id] = result.status === "fulfilled" ? result.value : [];
+    });
+    avatars = flattenOwnAvatars(groups, looksByGroupId);
+  } else {
+    const fetchPage = opts.fetchPage ?? defaultFetchV3LookPage;
+    avatars = [];
+    let token: string | undefined;
+    do {
+      const page = await fetchPage(heygenKey, token);
+      avatars.push(...page.avatars);
+      token = page.hasMore ? page.nextToken : undefined;
+      if (page.hasMore && !token) throw new Error("HeyGen look pagination cursor missing");
+    } while (token);
+  }
   cache.set(key, { at: now, data: avatars });
   return { avatars };
 }

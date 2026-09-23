@@ -539,6 +539,7 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
+    if (specifier === "@/lib/heygen-avatar-engine") return { HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible" };
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
@@ -844,6 +845,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
+    if (specifier === "@/lib/heygen-avatar-engine") return { HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible" };
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -1028,6 +1030,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
+    if (specifier === "@/lib/heygen-avatar-engine") return { HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible" };
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -1202,6 +1205,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
+    if (specifier === "@/lib/heygen-avatar-engine") return { HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible" };
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -2102,6 +2106,14 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/heygen-readiness") {
       return { checkHeygenReadiness: async () => null, toHeygenBlockedResponse: () => ({}) };
     }
+    if (specifier === "@/lib/heygen-own-avatars") return { getHeyGenOwnAvatars: async () => ({ avatars: [] }) };
+    if (specifier === "@/lib/heygen-avatar-engine") {
+      return {
+        HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible",
+        HEYGEN_ENGINE_UNKNOWN_MESSAGE: "unknown",
+        heygenLookEngineCompatibility: () => "unknown",
+      };
+    }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") return { getAvatarPreset: async () => null, resolveAvatarLayout: () => null };
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
@@ -2328,6 +2340,14 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/heygen-readiness") {
       return { checkHeygenReadiness: async () => null, toHeygenBlockedResponse: () => ({}) };
+    }
+    if (specifier === "@/lib/heygen-own-avatars") return { getHeyGenOwnAvatars: async () => ({ avatars: [] }) };
+    if (specifier === "@/lib/heygen-avatar-engine") {
+      return {
+        HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE: "incompatible",
+        HEYGEN_ENGINE_UNKNOWN_MESSAGE: "unknown",
+        heygenLookEngineCompatibility: () => "unknown",
+      };
     }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") {

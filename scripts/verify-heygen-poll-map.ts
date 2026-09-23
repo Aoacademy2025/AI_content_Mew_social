@@ -1,6 +1,6 @@
 // Proof of the HeyGen poll mapping contract (PR-1, the "kapokja hole").
 // Pure logic — no DB. Run: npx tsx scripts/verify-heygen-poll-map.ts
-import { mapHeygenPollResponse } from "../src/lib/heygen-poll";
+import { mapHeygenPollResponse, mapHeygenV3PollResponse } from "../src/lib/heygen-poll";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -48,5 +48,22 @@ assert(hf.status === "failed" && hf.error?.code === "provider_failed" && (hf.err
 
 // 200 with unparseable body (e.g. nginx HTML page) → pending, NOT failed
 assert(mapHeygenPollResponse({ httpStatus: 200, body: null }).status === "pending", "200 + non-JSON body → pending");
+
+const v3Done = mapHeygenV3PollResponse({
+  httpStatus: 200,
+  body: { data: { id: "v3-id", status: "completed", video_url: "https://files.heygen.ai/v3.mp4" } },
+});
+assert(v3Done.status === "completed" && v3Done.videoUrl === "https://files.heygen.ai/v3.mp4", "v3 completed → videoUrl passthrough");
+const v3Failed = mapHeygenV3PollResponse({
+  httpStatus: 200,
+  body: { data: { id: "v3-id", status: "failed", failure_code: "rendering_failed", failure_message: "render failed" } },
+});
+assert(v3Failed.status === "failed" && v3Failed.error?.code === "provider_failed", "v3 failed → terminal provider failure");
+assert(!(v3Failed.errorMsg ?? "").includes("rendering_failed"), "v3 public failure omits raw provider codes");
+const v3Malformed = mapHeygenV3PollResponse({
+  httpStatus: 400,
+  body: { message: "private-look-id and provider diagnostics must stay private" },
+});
+assert(v3Malformed.status === "failed" && !(v3Malformed.errorMsg ?? "").includes("private-look-id"), "v3 HTTP failures expose bounded public copy");
 
 console.log(`\n✅ ALL ${passed} HEYGEN POLL MAP CHECKS PASSED`);

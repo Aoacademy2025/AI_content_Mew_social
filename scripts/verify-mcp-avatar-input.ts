@@ -23,7 +23,12 @@ const noav = resolveAvatarRequest({ avatarMode: "full" }, { heygenKey: "k", heyg
 assert(noav.kind === "error" && noav.payload.error === "missing_avatar", "no avatarId anywhere → missing_avatar");
 
 const useSaved = resolveAvatarRequest({ avatarMode: "bookend" }, withKey);
-assert(useSaved.kind === "ok" && useSaved.avatarId === "saved-av" && useSaved.avatarMode === "bookend", "falls back to user.heygenAvatarId");
+assert(useSaved.kind === "ok" && useSaved.avatarId === "saved-av" && useSaved.avatarMode === "bookend" && useSaved.avatarEngine === "avatar_iii" && useSaved.apiVersion === "v2", "falls back to saved avatar and legacy III/v2 when engine is missing");
+
+const selectedV = resolveAvatarRequest({ avatarMode: "full", avatarEngine: "avatar_v" }, withKey);
+assert(selectedV.kind === "ok" && selectedV.avatarEngine === "avatar_v" && selectedV.apiVersion === "v3", "explicit Avatar V stays pinned to v3");
+const invalidEngine = resolveAvatarRequest({ avatarMode: "full", avatarEngine: "future" }, withKey);
+assert(invalidEngine.kind === "error" && invalidEngine.payload.error === "bad_request", "unknown avatar engine is rejected before queueing");
 
 const override = resolveAvatarRequest({ avatarMode: "full", avatarId: "arg-av" }, withKey);
 assert(override.kind === "ok" && override.avatarId === "arg-av", "arg avatarId overrides saved");

@@ -1,6 +1,7 @@
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
+import { HEYGEN_EXTERNAL_COST_DISCLOSURE, HEYGEN_ENGINE_LABELS, type HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 
 async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
@@ -14,6 +15,7 @@ type McpAvatarOption = {
   preview: string | null;
   isPublic: boolean;
   saved: boolean;
+  supportedEngines: HeyGenAvatarEngine[];
 };
 
 function compactAvatarCatalog(
@@ -21,31 +23,22 @@ function compactAvatarCatalog(
   savedAvatarId: string | null,
   limit: number = MCP_AVATAR_OPTION_LIMIT,
 ) {
-  const unique = [...new Map(avatars.map((avatar) => [avatar.avatarId, avatar])).values()];
+  const unique = [...new Map(
+    avatars.filter((avatar) => !avatar.isPublic).map((avatar) => [avatar.avatarId, avatar]),
+  ).values()];
   const saved = savedAvatarId ? unique.find((avatar) => avatar.avatarId === savedAvatarId) : undefined;
-  // HeyGen's own-avatar group endpoint can omit a still-generation-ready saved
-  // default (notably some Instant Avatar variants). Keep that known-good ID in
-  // the MCP menu even when provider metadata/preview is unavailable.
-  const savedOption = saved ?? (savedAvatarId ? {
-    avatarId: savedAvatarId,
-    name: "Saved avatar (default)",
-    preview: null,
-    isPublic: false,
-  } : undefined);
   const privateAvatars = unique.filter((avatar) => !avatar.isPublic && avatar.avatarId !== savedAvatarId);
-  const publicAvatars = unique.filter((avatar) => avatar.isPublic && avatar.avatarId !== savedAvatarId);
   const options = [
-    ...(savedOption ? [{ ...savedOption, saved: true }] : []),
+    ...(saved ? [{ ...saved, saved: true }] : []),
     ...privateAvatars.map((avatar) => ({ ...avatar, saved: false })),
-    ...publicAvatars.map((avatar) => ({ ...avatar, saved: false })),
   ].slice(0, limit);
 
   return {
     options,
     meta: {
-      totalAvailable: unique.length + (savedAvatarId && !saved ? 1 : 0),
+      totalAvailable: unique.length,
       returned: options.length,
-      truncated: unique.length + (savedAvatarId && !saved ? 1 : 0) > options.length,
+      truncated: unique.length > options.length,
       selection: "saved avatar first, then the user's own avatars",
     },
   };
@@ -82,17 +75,16 @@ export async function getVideoOptions(
     }),
     user.heygenKey
       ? safe(async () => {
-          // The full /api/heygen/avatars endpoint includes HeyGen's entire public
-          // catalog (~1,000+ rows and tens of seconds on real accounts). MCP only
-          // needs the user's generation-ready looks, which is also what editor v2
-          // uses. The compaction below remains a fail-safe for unusually large own
-          // catalogs and duplicate provider rows.
-          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean }[] }>("/api/heygen/my-avatars");
+          // MCP uses the same completed private-look catalog as editor v2. The
+          // compaction below remains a fail-safe for duplicate or unusually large
+          // private catalogs and rejects any accidental public row defensively.
+          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean; supported_api_engines?: HeyGenAvatarEngine[] }[] }>("/api/heygen/my-avatars");
           return (r.avatars ?? []).map((a) => ({
             avatarId: a.avatar_id,
             name: a.avatar_name,
             preview: a.preview_image_url ?? null,
             isPublic: a.is_public === true,
+            supportedEngines: a.supported_api_engines ?? [],
           }));
         })
       : Promise.resolve({ needsKey: true }),
@@ -125,6 +117,11 @@ export async function getVideoOptions(
     },
     savedAvatarId: user.heygenAvatarId ?? null,
     avatarModes: ["none", "full", "bookend", "bookend-both"] as const,
+    avatarEngines: Object.entries(HEYGEN_ENGINE_LABELS).map(([value, label]) => ({ value, label })),
+    avatarBilling: {
+      route: "BYOK",
+      disclosure: `ใช้ HeyGen API key ของคุณ · ${HEYGEN_EXTERNAL_COST_DISCLOSURE}`,
+    },
     voices: {
       gemini: GEMINI_VOICES,
       elevenlabs,

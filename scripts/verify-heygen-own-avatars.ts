@@ -2,6 +2,7 @@
 import {
   flattenOwnAvatars,
   getHeyGenOwnAvatars,
+  parseOwnAvatarLookPage,
   __clearOwnAvatarCache,
   type RawGroup,
   type RawLook,
@@ -36,6 +37,21 @@ assert(!flat.some(a => a.avatar_id === "m2"), "explicit non-completed (training)
 assert(flattenOwnAvatars([], {}).length === 0, "empty groups → empty");
 assert(flattenOwnAvatars([{ id: "gz", name: "Z" }], {}).length === 0, "group with no looks → contributes nothing");
 
+// ── v3 private-look contract: completed-only + explicit per-look engines ──
+const v3 = parseOwnAvatarLookPage({
+  data: [
+    { id: "iv", name: "IV", group_id: "g1", status: "completed", preview_image_url: "iv.jpg", supported_api_engines: ["avatar_iii", "avatar_iv"] },
+    { id: "v", name: "V", group_id: "g2", status: "completed", preview_image_url: "v.jpg", supported_api_engines: ["avatar_iv", "avatar_v", "future_engine"] },
+    { id: "training", name: "Training", status: "processing", supported_api_engines: ["avatar_iv"] },
+  ],
+  has_more: true,
+  next_token: "opaque-next",
+});
+assert(v3.avatars.map((a) => a.avatar_id).join(",") === "iv,v", "v3 keeps only completed private looks");
+assert(v3.avatars[0]?.supported_api_engines.join(",") === "avatar_iii,avatar_iv", "v3 preserves supported III/IV engines");
+assert(v3.avatars[1]?.supported_api_engines.join(",") === "avatar_iv,avatar_v", "v3 drops unknown engine names without guessing");
+assert(v3.nextToken === "opaque-next", "v3 preserves the opaque pagination cursor");
+
 async function main() {
   // ── getHeyGenOwnAvatars: fan-out + cache ──
   __clearOwnAvatarCache();
@@ -66,6 +82,36 @@ async function main() {
     await getHeyGenOwnAvatars("u4", "key-DDDDDD", { fetchGroups: async () => { throw new HeyGenAuthError(401); }, fetchLooks, now: 0 });
   } catch (e) { threwAuth = e instanceof HeyGenAuthError; }
   assert(threwAuth, "group-list HeyGenAuthError propagates (bad/expired key surfaces)");
+
+  // ── production v3 loader follows opaque cursors and never merges key rotations ──
+  __clearOwnAvatarCache();
+  const seenTokens: Array<string | undefined> = [];
+  const paged = await getHeyGenOwnAvatars("u-pages", "key-pages", {
+    fetchPage: async (_key, token) => {
+      seenTokens.push(token);
+      return token === undefined
+        ? parseOwnAvatarLookPage({
+            data: [{ id: "page-1", name: "One", status: "completed", supported_api_engines: ["avatar_iv"] }],
+            has_more: true,
+            next_token: "opaque-page-2",
+          })
+        : parseOwnAvatarLookPage({
+            data: [{ id: "page-2", name: "Two", status: "completed", supported_api_engines: ["avatar_v"] }],
+            has_more: false,
+          });
+    },
+  });
+  assert(seenTokens.length === 2 && seenTokens[1] === "opaque-page-2", "v3 loader follows next_token until has_more is false");
+  assert(paged.avatars.map((avatar) => avatar.avatar_id).join(",") === "page-1,page-2", "v3 loader combines private look pages in order");
+
+  __clearOwnAvatarCache();
+  const rotatedA = await getHeyGenOwnAvatars("u-rotation", "first-key-SAME99", {
+    fetchPage: async () => parseOwnAvatarLookPage({ data: [{ id: "first", status: "completed", supported_api_engines: ["avatar_iii"] }] }),
+  });
+  const rotatedB = await getHeyGenOwnAvatars("u-rotation", "second-key-SAME99", {
+    fetchPage: async () => parseOwnAvatarLookPage({ data: [{ id: "second", status: "completed", supported_api_engines: ["avatar_iv"] }] }),
+  });
+  assert(rotatedA.avatars[0]?.avatar_id === "first" && rotatedB.avatars[0]?.avatar_id === "second", "cache ownership includes the full credential identity across key rotation");
 
   console.log(`\n✅ ${passed} checks passed`);
 }

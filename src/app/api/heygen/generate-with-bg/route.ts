@@ -9,6 +9,20 @@ import { isProviderError, toErrorResponse } from "@/lib/provider-errors";
 import { heygenGenerateFailureResponse } from "@/lib/heygen-generate-error";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
 import { decryptKey } from "@/lib/key-crypto";
+import { HeyGenAuthError } from "@/lib/heygen-avatars";
+import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
+import {
+  HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+  HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+  heygenLookEngineCompatibility,
+  isHeyGenAvatarEngine,
+  resolveHeyGenAvatarEngine,
+} from "@/lib/heygen-avatar-engine";
+import {
+  HeyGenV3RequestError,
+  parseFfmpegDurationMs,
+  submitHeyGenV3Avatar,
+} from "@/lib/heygen-v3-avatar";
 
 // Single source of truth lives in avatar-gen-framing.ts; these consts are kept so the
 // destructuring defaults at line ~116-118 are unchanged and easy to read.
@@ -32,6 +46,99 @@ function toMp3(inputPath: string): Promise<string> {
       else resolve(outPath);
     });
   });
+}
+
+function resolveAvatarAudioPath(localUrl: string): string {
+  const normalized = localUrl.replace(/^\/api\/renders\//, "/renders/");
+  if (!normalized.startsWith("/renders/")) throw new Error("Avatar audio must be a local render");
+  const filename = normalized.slice("/renders/".length);
+  if (!filename || filename !== path.basename(filename)) throw new Error("Avatar audio path is invalid");
+  const base = fs.realpathSync(path.resolve(process.cwd(), "public", "renders"));
+  const candidate = path.resolve(base, filename);
+  if (!candidate.startsWith(`${base}${path.sep}`) || !fs.existsSync(candidate)) {
+    throw new Error("Avatar audio path is invalid");
+  }
+  const resolved = fs.realpathSync(candidate);
+  if (!resolved.startsWith(`${base}${path.sep}`) || !fs.statSync(resolved).isFile()) {
+    throw new Error("Avatar audio path is invalid");
+  }
+  return resolved;
+}
+
+function probeDurationMs(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    execFile(getFfmpegPath(), ["-hide_banner", "-i", filePath], { maxBuffer: 1024 * 1024, timeout: 10_000 }, (_error, _stdout, stderr) => {
+      const durationMs = parseFfmpegDurationMs(stderr ?? "");
+      if (durationMs === null) reject(new Error("Could not read avatar audio duration"));
+      else resolve(durationMs);
+    });
+  });
+}
+
+async function generateV3Avatar(input: {
+  heygenKey: string;
+  audioUrl: string;
+  avatarId: string;
+  engine: "avatar_iv" | "avatar_v";
+  idempotencyKey: string;
+}) {
+  let uploadPath = "";
+  let durationMs = 0;
+  let removeUploadPath = false;
+  try {
+    const sourcePath = resolveAvatarAudioPath(input.audioUrl);
+    const isMp3 = path.extname(sourcePath).toLowerCase() === ".mp3";
+    uploadPath = isMp3 ? sourcePath : await toMp3(sourcePath);
+    removeUploadPath = !isMp3;
+    durationMs = await probeDurationMs(uploadPath);
+  } catch {
+    if (removeUploadPath && uploadPath) try { fs.unlinkSync(uploadPath); } catch {}
+    return NextResponse.json({
+      error: "เตรียมเสียงสำหรับ Avatar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+      code: "fatal",
+      provider: "heygen",
+      providerOperation: "upload",
+      retryable: false,
+    }, { status: 500 });
+  }
+  try {
+    const result = await submitHeyGenV3Avatar({
+      heygenKey: input.heygenKey,
+      avatarId: input.avatarId,
+      engine: input.engine,
+      audioBytes: fs.readFileSync(uploadPath),
+      durationMs,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return NextResponse.json({ videoId: result.videoId, apiVersion: "v3", engine: input.engine });
+  } catch (error) {
+    if (error instanceof HeyGenV3RequestError) {
+      const mapped = heygenGenerateFailureResponse(error.status, {
+        error: error.providerCode ? { code: error.providerCode } : undefined,
+      });
+      return NextResponse.json({
+        ...mapped.body,
+        ...(error.operation === "upload" ? { providerOperation: "upload" } : {}),
+      }, { status: mapped.status });
+    }
+    if (error && typeof error === "object" && "code" in error && "message" in error) {
+      return NextResponse.json({
+        error: String(error.message),
+        code: String(error.code),
+        retryable: false,
+        provider: "heygen",
+      }, { status: 413 });
+    }
+    // A transport failure or malformed successful create response cannot prove
+    // whether HeyGen accepted the paid request. Keep it unclassified so the
+    // durable checkpoint never automatically resubmits it.
+    return NextResponse.json({
+      error: "ระบบ Avatar ทำงานไม่สำเร็จ กรุณาตรวจสอบงานใน HeyGen ก่อนลองใหม่",
+      retryable: false,
+    }, { status: 500 });
+  } finally {
+    if (removeUploadPath) try { fs.unlinkSync(uploadPath); } catch {}
+  }
 }
 
 export const maxDuration = 300;
@@ -110,14 +217,18 @@ async function handleGenerateWithBg(req: Request) {
     bgVideoUrl,
     greenScreen = false,
     removeBg = false,
-    bgColor = "#000000",
     scale = HEYGEN_GEN_SCALE,
     offsetX = HEYGEN_GEN_FRAMING.offsetX,
     offsetY = HEYGEN_GEN_OFFSET_Y,
+    avatarEngine: rawAvatarEngine,
+    idempotencyKey,
   } = body ?? {};
 
   if (!text && !audioUrl) return NextResponse.json({ error: "text or audioUrl required" }, { status: 400 });
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
+  if (rawAvatarEngine !== undefined && !isHeyGenAvatarEngine(rawAvatarEngine)) {
+    return NextResponse.json({ error: "avatarEngine invalid" }, { status: 400 });
+  }
   if (!greenScreen && !removeBg && !bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl, greenScreen, or removeBg required" }, { status: 400 });
 
   // HeyGen ยอมรับ offset เป็นสัดส่วนของเฟรม -1..1 เท่านั้น (บวก = ขวา/ลง; 1.0 = เลื่อนทั้งเฟรม → avatar หลุดเฟรม)
@@ -139,6 +250,55 @@ async function handleGenerateWithBg(req: Request) {
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decryptKey(user.heygenKey);
+  const avatarEngine = resolveHeyGenAvatarEngine(rawAvatarEngine);
+  // Re-resolve the selected private look immediately before provider work. This is
+  // intentionally required for legacy III too: a missing engine field chooses III/v2,
+  // but it does not turn an unknown or unsupported look into a paid guess.
+  let compatibility: ReturnType<typeof heygenLookEngineCompatibility>;
+  try {
+    const own = await getHeyGenOwnAvatars(authUser.id, heygenKey, { refresh: true });
+    compatibility = heygenLookEngineCompatibility(own.avatars, avatarId, avatarEngine);
+  } catch (error) {
+    if (error instanceof HeyGenAuthError) {
+      const mapped = heygenGenerateFailureResponse(error.status, null);
+      return NextResponse.json(mapped.body, { status: mapped.status });
+    }
+    return NextResponse.json({
+      error: "avatar_engine_unknown",
+      message: HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+      code: "fatal",
+      provider: "heygen",
+      providerOperation: "compatibility",
+      retryable: false,
+    }, { status: 422 });
+  }
+  if (compatibility === "unknown") {
+    return NextResponse.json({
+      error: "avatar_engine_unknown",
+      message: HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+    }, { status: 422 });
+  }
+  if (compatibility === "incompatible") {
+    return NextResponse.json({
+      error: "avatar_engine_incompatible",
+      message: HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+    }, { status: 422 });
+  }
+  if (avatarEngine !== "avatar_iii") {
+    if (!audioUrl || text || !greenScreen || bgVideoUrl || removeBg) {
+      return NextResponse.json({ error: "Avatar IV/V requires local audio and green screen" }, { status: 400 });
+    }
+    if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{16,200}$/.test(idempotencyKey)) {
+      return NextResponse.json({ error: "idempotencyKey required for Avatar IV/V" }, { status: 400 });
+    }
+    return generateV3Avatar({
+      heygenKey,
+      audioUrl,
+      avatarId,
+      engine: avatarEngine,
+      idempotencyKey,
+    });
+  }
 
   // Step 1: Background — remove bg / green screen / uploaded video
   let background: Record<string, unknown> | undefined;

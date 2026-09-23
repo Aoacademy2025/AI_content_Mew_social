@@ -35,6 +35,7 @@ import {
 } from "@/lib/quota-error";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
 import { avatarFullDurationViolation } from "@/lib/avatar-duration";
+import { HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE } from "@/lib/heygen-avatar-engine";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 import {
   effectiveManualCutawayPieceCount,
@@ -375,6 +376,9 @@ export function useV2Job(p: V2Project) {
     }
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
+    if (p.mode === "script" && p.useAvatar && p.avatarId && p.avatarEngine === "") {
+      return { ok: false, message: HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE };
+    }
     const fullAvatarDurationViolation = avatarFullDurationViolation({
       mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
       durationSec: estimateClipSecV2(p.mode === "script" ? p.script : ""),
@@ -489,7 +493,7 @@ export function useV2Job(p: V2Project) {
       stockSource: apiStockSource(p.brollSource),
       // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
       ...(p.useAvatar && p.avatarId
-        ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
+        ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarEngine: p.avatarEngine, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
         : {}),
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),

@@ -9,6 +9,7 @@ export interface HeygenAvatar {
   avatar_name: string;      // the avatar (group) name, e.g. "Mew"
   preview_image_url: string;
   group_id?: string;
+  supported_api_engines?: Array<"avatar_iii" | "avatar_iv" | "avatar_v">;
 }
 
 /**

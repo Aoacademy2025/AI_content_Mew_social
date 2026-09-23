@@ -91,6 +91,22 @@ async function main() {
   assert.equal(fresh.kind === "waiting" ? fresh.checkpoint.avatar.introVideoId : null, "hg-intro");
   assert.equal(generateCalls, 1);
 
+  const v3Fresh = checkpoint("intro_generate");
+  v3Fresh.avatar.engine = "avatar_v";
+  v3Fresh.avatar.apiVersion = "v3";
+  v3Fresh.avatar.introIdempotencyKey = "stable-v3-intro";
+  let seenRouting: unknown;
+  const v3Started = await advanceAvatarProvider(v3Fresh, {
+    ...pendingDeps,
+    allowGenerate: true,
+    generate: (async (_avatarId: string, _audioUrl: string, routing: unknown) => {
+      seenRouting = routing;
+      return accepted("hg-v3");
+    }) as unknown as AvatarProviderAdvanceDeps["generate"],
+  });
+  assert.equal(v3Started.kind, "waiting");
+  assert.deepEqual(seenRouting, { engine: "avatar_v", apiVersion: "v3", idempotencyKey: "stable-v3-intro" });
+
   const quotaRejected = await advanceAvatarProvider(checkpoint("intro_generate"), {
     ...pendingDeps,
     allowGenerate: true,

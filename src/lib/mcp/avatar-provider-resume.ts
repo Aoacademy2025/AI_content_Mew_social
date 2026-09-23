@@ -1,4 +1,8 @@
-import type { AvatarProviderCheckpointV1 } from "@/lib/mcp/avatar-provider-checkpoint";
+import {
+  avatarCheckpointRouting,
+  type AvatarProviderCheckpointV1,
+} from "@/lib/mcp/avatar-provider-checkpoint";
+import type { HeyGenAvatarApiVersion, HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 import type { ProviderErrorCode } from "@/lib/provider-errors";
 
 export interface AvatarProviderPollResult {
@@ -32,8 +36,12 @@ export type AvatarCompositeAttemptResult =
 
 export interface AvatarProviderAdvanceDeps {
   now: () => Date;
-  generate: (avatarId: string, audioUrl: string) => Promise<AvatarProviderGenerateResult>;
-  poll: (providerVideoId: string) => Promise<AvatarProviderPollResult>;
+  generate: (
+    avatarId: string,
+    audioUrl: string,
+    routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion; idempotencyKey?: string },
+  ) => Promise<AvatarProviderGenerateResult>;
+  poll: (providerVideoId: string, apiVersion: HeyGenAvatarApiVersion) => Promise<AvatarProviderPollResult>;
   composite: (checkpoint: AvatarProviderCheckpointV1) => Promise<AvatarCompositeAttemptResult>;
   /** Guarded persistence: false means cancellation/another terminal transition won. */
   persist?: (checkpoint: AvatarProviderCheckpointV1) => Promise<boolean>;
@@ -82,7 +90,11 @@ async function generatePhase(
 
   let generated: AvatarProviderGenerateResult;
   try {
-    generated = await deps.generate(checkpoint.avatar.id, audioUrl);
+    const routing = avatarCheckpointRouting(checkpoint);
+    const idempotencyKey = which === "intro"
+      ? checkpoint.avatar.introIdempotencyKey
+      : checkpoint.avatar.tailIdempotencyKey;
+    generated = await deps.generate(checkpoint.avatar.id, audioUrl, { ...routing, idempotencyKey });
   } catch {
     // The external request may have spent credits even when its response was lost. Never retry.
     return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
@@ -159,7 +171,7 @@ async function pollPhase(
 
   let polled: AvatarProviderPollResult;
   try {
-    polled = await deps.poll(providerVideoId);
+    polled = await deps.poll(providerVideoId, avatarCheckpointRouting(checkpoint).apiVersion);
   } catch {
     return { kind: "waiting", checkpoint };
   }

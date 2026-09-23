@@ -6,10 +6,9 @@ import { isPaid } from "@/lib/plan-limits";
 import { HeyGenAuthError } from "@/lib/heygen-avatars";
 import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
 
-// GET /api/heygen/my-avatars — the user's OWN HeyGen avatars only (their avatar groups →
-// looks), fast (~2s) instead of the whole public catalog (~65s via /v2/avatars). Powers the
-// editor v2 avatar picker. Same auth/plan/key contract as /api/heygen/avatars so the client
-// error states (no-key/not-paid/bad-key) are identical.
+// GET /api/heygen/my-avatars — completed private v3 looks with per-look engine support.
+// Powers editor v2 and MCP without exposing HeyGen's public catalog. Same auth/plan/key
+// contract as /api/heygen/avatars so existing client error states remain identical.
 export async function GET() {
   try {
     const authUser = await getCurrentUser();
@@ -40,13 +39,13 @@ export async function GET() {
     const apiKey = decryptKey(user.heygenKey);
     const { avatars } = await getHeyGenOwnAvatars(authUser.id, apiKey);
     return NextResponse.json({ avatars, stale: false }, { status: 200 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof HeyGenAuthError) {
       return NextResponse.json({ error: "Invalid HeyGen API key" }, { status: 401 });
     }
-    console.error("HeyGen my-avatars error:", error?.message ?? error);
+    console.error("HeyGen my-avatars error:", error instanceof Error ? error.message : error);
     return NextResponse.json(
-      { error: "Failed to fetch avatars", details: error?.message },
+      { error: "Failed to fetch avatars" },
       { status: 500 },
     );
   }

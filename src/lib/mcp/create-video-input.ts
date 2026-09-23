@@ -15,6 +15,7 @@ export const createVideoJobInputShape = {
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),
   avatarMode: z.enum(["none", "full", "bookend", "bookend-both"]).optional(),
   avatarId: z.string().optional(),
+  avatarEngine: z.enum(["avatar_iii", "avatar_iv", "avatar_v"]).optional(),
   avatarIntroSecs: z.number().int().min(1).max(30).optional(),
   avatarTailSecs: z.number().int().min(1).max(30).optional(),
   avatarScale: z.number().min(0.1).max(2.5).optional(),

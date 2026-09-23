@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 
 import {
+  avatarCheckpointRouting,
+  avatarProviderIdempotencyKey,
   parseAvatarProviderCheckpoint,
   providerPollDelayMs,
   serializeAvatarProviderCheckpoint,
@@ -34,6 +36,7 @@ const validObject = {
 const valid = JSON.stringify(validObject);
 const parsed = parseAvatarProviderCheckpoint(valid);
 assert.equal(parsed?.avatar.introVideoId, "hg-1");
+assert.deepEqual(avatarCheckpointRouting(parsed!), { engine: "avatar_iii", apiVersion: "v2" }, "missing routing stays legacy III/v2");
 assert.equal(parseAvatarProviderCheckpoint(serializeAvatarProviderCheckpoint(parsed!))?.phase, "intro_wait");
 assert.equal(parseAvatarProviderCheckpoint("{"), null);
 assert.equal(parseAvatarProviderCheckpoint(JSON.stringify({ version: 1 })), null);
@@ -52,6 +55,28 @@ validGenerate.avatar = {
   introVideoId: undefined,
 };
 assert.equal(parseAvatarProviderCheckpoint(JSON.stringify(validGenerate))?.phase, "intro_generate");
+
+const v3Generate = structuredClone(validGenerate) as Record<string, unknown>;
+v3Generate.avatar = {
+  ...(v3Generate.avatar as Record<string, unknown>),
+  engine: "avatar_v",
+  apiVersion: "v3",
+  introIdempotencyKey: "stable-v3-intro-key",
+};
+const parsedV3 = parseAvatarProviderCheckpoint(JSON.stringify(v3Generate));
+assert.deepEqual(parsedV3 && avatarCheckpointRouting(parsedV3), { engine: "avatar_v", apiVersion: "v3" });
+const mismatched = structuredClone(v3Generate) as Record<string, unknown>;
+(mismatched.avatar as Record<string, unknown>).apiVersion = "v2";
+assert.equal(parseAvatarProviderCheckpoint(JSON.stringify(mismatched)), null, "v3 engine cannot resume on a v2 route");
+
+const introKey = avatarProviderIdempotencyKey({ accountId: "u1", jobId: "j1", slot: "intro", engine: "avatar_v", avatarId: "look", audioUrl: "/renders/intro.mp3" });
+const sameIntroKey = avatarProviderIdempotencyKey({ accountId: "u1", jobId: "j1", slot: "intro", engine: "avatar_v", avatarId: "look", audioUrl: "/renders/intro.mp3" });
+const changedBodyKey = avatarProviderIdempotencyKey({ accountId: "u1", jobId: "j1", slot: "intro", engine: "avatar_v", avatarId: "look", audioUrl: "/renders/changed.mp3" });
+const tailKey = avatarProviderIdempotencyKey({ accountId: "u1", jobId: "j1", slot: "tail", engine: "avatar_v", avatarId: "look", audioUrl: "/renders/intro.mp3" });
+assert.equal(introKey, sameIntroKey, "logical create key is stable");
+assert.notEqual(introKey, changedBodyKey, "changed request body gets a different key");
+assert.notEqual(introKey, tailKey, "intro and tail have separate logical create keys");
+assert.equal(introKey.includes("u1") || introKey.includes("j1"), false, "provider key does not expose account/job ids");
 
 assert.equal(providerPollDelayMs(0, 9 * 60_000), 15_000);
 assert.equal(providerPollDelayMs(0, 20 * 60_000), 30_000);

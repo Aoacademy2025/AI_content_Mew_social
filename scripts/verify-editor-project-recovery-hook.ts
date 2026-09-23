@@ -139,6 +139,7 @@ const stateContracts = [
   ["bgmVolume", "setBgmVolume", "setBgmVolumeRaw", "bgmVolume"],
   ["useAvatar", "setUseAvatar", "setUseAvatarRaw", "useAvatar"],
   ["avatarId", "setAvatarId", "setAvatarIdRaw", "avatarId"],
+  ["avatarEngine", "setAvatarEngine", "setAvatarEngineRaw", "avatarEngine"],
   ["targetClipCount", "setTargetClipCount", "setTargetClipCountRaw", "targetClipCount"],
   ["avatarMode", "setAvatarMode", "setAvatarModeRaw", "avatarMode"],
   ["avatarIntroSecs", "setAvatarIntroSecs", "setAvatarIntroSecsRaw", "avatarIntroSecs"],

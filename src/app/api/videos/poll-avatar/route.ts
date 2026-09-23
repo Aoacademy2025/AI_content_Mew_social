@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import { mapHeygenPollResponse } from "@/lib/heygen-poll";
+import { mapHeygenPollResponse, mapHeygenV3PollResponse } from "@/lib/heygen-poll";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { decryptKey } from "@/lib/key-crypto";
 
@@ -25,6 +25,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const videoId: string = body?.videoId ?? "";
     if (!videoId) return NextResponse.json({ error: "videoId required" }, { status: 400 });
+    const apiVersion = body?.apiVersion === "v3" ? "v3" : "v2";
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
@@ -45,16 +46,18 @@ export async function POST(req: Request) {
     let retryAfterHeader: string | null = null;
     try {
       const res = await fetchWithBudget(
-        `https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(videoId)}`,
+        apiVersion === "v3"
+          ? `https://api.heygen.com/v3/videos/${encodeURIComponent(videoId)}`
+          : `https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(videoId)}`,
         { headers: { "X-Api-Key": heygenKey } },
         { provider: "heygen", timeoutMs: 15_000, retries: 1, wallClockMs: 25_000, returnHttpErrors: true },
       );
       httpStatus = res.status;
       retryAfterHeader = res.headers.get("retry-after");
       heygenBody = await res.json().catch(() => null);
-      // PR-4 (ops guardrails) documents: set DEBUG_RENDER=1 to re-enable the
-      // per-poll payload dump when debugging avatar issues. Opt-in — no log flood.
-      if (process.env.DEBUG_RENDER === "1") console.log("[poll-avatar]", httpStatus, JSON.stringify(heygenBody));
+      // Provider bodies can contain private media references. Debug output is bounded
+      // to routing/status metadata and never serializes the response body.
+      if (process.env.DEBUG_RENDER === "1") console.log(`[poll-avatar] api=${apiVersion} http=${httpStatus}`);
     } catch (e) {
       // A caller abort is rethrown by fetchWithBudget untouched — propagate it.
       if (e instanceof Error && e.name === "AbortError") throw e;
@@ -65,9 +68,11 @@ export async function POST(req: Request) {
       console.warn("[poll-avatar] transient HeyGen failure:", e instanceof Error ? e.message : e);
     }
 
-    const payload = mapHeygenPollResponse({ httpStatus, body: heygenBody, retryAfterHeader });
+    const payload = apiVersion === "v3"
+      ? mapHeygenV3PollResponse({ httpStatus, body: heygenBody, retryAfterHeader })
+      : mapHeygenPollResponse({ httpStatus, body: heygenBody, retryAfterHeader });
     if (payload.status === "failed") {
-      console.warn(`[poll-avatar] terminal http=${httpStatus} code=${payload.error?.code ?? "provider"} video=${videoId}`);
+      console.warn(`[poll-avatar] terminal api=${apiVersion} http=${httpStatus} code=${payload.error?.code ?? "provider"}`);
     }
     return NextResponse.json(payload);
   } catch (error) {

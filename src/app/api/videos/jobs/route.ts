@@ -23,6 +23,12 @@ import {
 } from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
+import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
+import {
+  HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+  HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+  heygenLookEngineCompatibility,
+} from "@/lib/heygen-avatar-engine";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
@@ -109,7 +115,7 @@ import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 type Body = {
   mode?: unknown; clipUrl?: unknown;
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; omniVoiceId?: unknown;
-  avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
+  avatarMode?: unknown; avatarId?: unknown; avatarEngine?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
   maxAiImages?: unknown;
@@ -700,6 +706,7 @@ export async function POST(req: Request) {
       {
         avatarMode: avatarModeRaw as "none" | "full" | "bookend" | "bookend-both" | undefined,
         avatarId: str(body.avatarId, 120),
+        avatarEngine: typeof body.avatarEngine === "string" ? body.avatarEngine : undefined,
         avatarIntroSecs: num(body.avatarIntroSecs, 1, 30),
         avatarTailSecs: num(body.avatarTailSecs, 1, 30),
       },
@@ -715,6 +722,28 @@ export async function POST(req: Request) {
     if (heygenReadiness?.kind === "blocked") {
       const blocked = toHeygenBlockedResponse(heygenReadiness);
       return NextResponse.json(blocked.body, { status: blocked.status });
+    }
+    if (avatar.kind === "ok" && user.heygenKey) {
+      let compatibility: ReturnType<typeof heygenLookEngineCompatibility> = "unknown";
+      try {
+        const own = await getHeyGenOwnAvatars(user.id, decryptKey(user.heygenKey), { refresh: true });
+        compatibility = heygenLookEngineCompatibility(own.avatars, avatar.avatarId, avatar.avatarEngine);
+      } catch {
+        // A catalog timeout is a known pre-create refusal. Keep the exact unknown-
+        // capability copy and let the customer retry without parking a reservation.
+      }
+      if (compatibility === "unknown") {
+        return NextResponse.json({
+          error: "avatar_engine_unknown",
+          message: HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+        }, { status: 422 });
+      }
+      if (compatibility === "incompatible") {
+        return NextResponse.json({
+          error: "avatar_engine_incompatible",
+          message: HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+        }, { status: 422 });
+      }
     }
     const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
 
@@ -1016,7 +1045,7 @@ export async function POST(req: Request) {
           ...(omniVoiceId ? { omniVoiceId } : {}),
           ...(voiceBackend ? { voiceBackend } : {}),
           ...(avatar.kind === "ok" && avatarLayout
-            ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
+            ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
           ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),

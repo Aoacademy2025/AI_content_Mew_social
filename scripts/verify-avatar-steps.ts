@@ -1,7 +1,7 @@
 // avatar-steps orchestration against a mock PipelineCaller: correct endpoint calls per mode
 // and burn target = compositeUrl.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-avatar-steps.ts
-import { attemptAvatarComposite, runAvatarComposite, pollAvatar, HEYGEN_FRAMING } from "../src/lib/mcp/avatar-steps";
+import { attemptAvatarComposite, generateAvatarVideo, runAvatarComposite, pollAvatar, pollAvatarOnce, HEYGEN_FRAMING } from "../src/lib/mcp/avatar-steps";
 import { PipelineHttpError, type PipelineCaller } from "../src/lib/mcp/pipeline-client";
 
 let passed = 0;
@@ -34,6 +34,59 @@ function mock(pollSeq: Record<string, string[]>) {
 }
 
 async function main() {
+  // The production HTTP adapter pins engine/idempotency on create and API version on poll.
+  {
+    const { caller, calls } = mock({ "hg-v3": ["processing"] });
+    const generated = await generateAvatarVideo(caller, "private-look", "/renders/intro.mp3", {
+      engine: "avatar_v",
+      apiVersion: "v3",
+      idempotencyKey: "stable-v3-intro-key",
+    });
+    assert(generated.kind === "accepted", "v3 generate adapter accepts the provider video id");
+    const generate = calls.find((call) => call.path === "/api/heygen/generate-with-bg")!;
+    assert(generate.body.avatarEngine === "avatar_v" && generate.body.idempotencyKey === "stable-v3-intro-key", "v3 generate adapter forwards the pinned engine and stable key");
+    assert(generate.opts?.retries === 0, "paid v3 generate adapter disables automatic HTTP retry");
+    await pollAvatarOnce(caller, "hg-v3", "v3");
+    const poll = calls.find((call) => call.path === "/api/videos/poll-avatar")!;
+    assert(poll.body.apiVersion === "v3", "poll adapter forwards the persisted v3 route");
+  }
+
+  {
+    const failureCaller = (body: Record<string, unknown>, status = 503): PipelineCaller => ({
+      post: async () => { throw new PipelineHttpError("POST", "/api/heygen/generate-with-bg", status, body); },
+      patch: async () => ({} as never),
+      get: async () => ({} as never),
+    });
+    const uploadFailed = await generateAvatarVideo(
+      failureCaller({ code: "transient", providerStatus: 503, providerOperation: "upload", userAction: "ลองใหม่" }),
+      "private-look",
+      "/renders/intro.mp3",
+      { engine: "avatar_iv", apiVersion: "v3", idempotencyKey: "stable-upload-key" },
+    );
+    assert(uploadFailed.kind === "rejected" && uploadFailed.code === "transient", "known upload failure is definitive because paid create was not submitted");
+    const createUnknown = await generateAvatarVideo(
+      failureCaller({ code: "transient", providerStatus: 503, userAction: "ลองใหม่" }),
+      "private-look",
+      "/renders/intro.mp3",
+      { engine: "avatar_iv", apiVersion: "v3", idempotencyKey: "stable-create-key" },
+    );
+    assert(createUnknown.kind === "unknown", "ambiguous create transport failure is never classified for automatic resubmission");
+    const compatibilityUnknown = await generateAvatarVideo(
+      failureCaller({
+        error: "avatar_engine_unknown",
+        message: "ยังตรวจสอบรุ่นที่ Avatar นี้รองรับไม่ได้ กรุณาลองใหม่",
+      }, 422),
+      "private-look",
+      "/renders/intro.mp3",
+      { engine: "avatar_iv", apiVersion: "v3", idempotencyKey: "stable-compatibility-key" },
+    );
+    assert(
+      compatibilityUnknown.kind === "rejected"
+        && compatibilityUnknown.message === "ยังตรวจสอบรุ่นที่ Avatar นี้รองรับไม่ได้ กรุณาลองใหม่",
+      "pre-create compatibility refusal preserves the owned customer message",
+    );
+  }
+
   // A durable VideoJob id follows the internal composite request so the route can expose
   // admission-queue vs active-ffmpeg state without trusting an arbitrary user's job.
   {

@@ -158,3 +158,42 @@ export function mapHeygenPollResponse(input: {
     errorMsg: null,
   };
 }
+
+/** v3 GET /v3/videos/{id} mapper. Keeps provider failure diagnostics private. */
+export function mapHeygenV3PollResponse(input: {
+  httpStatus: number;
+  body: unknown;
+  retryAfterHeader?: string | null;
+}): AvatarPollPayload {
+  if (input.httpStatus !== 200) {
+    const mapped = mapHeygenPollResponse(input);
+    return mapped.error?.code === "provider_failed"
+      ? terminalPayload({
+          code: "provider_failed",
+          provider: "heygen",
+          message: "HeyGen ปฏิเสธคำขอตรวจสอบวิดีโอ",
+          userAction: "ตรวจสอบบัญชี HeyGen แล้วลองใหม่",
+          retryable: false,
+        })
+      : mapped;
+  }
+  const body = asRecord(input.body);
+  const data = asRecord(body?.data);
+  const status = typeof data?.status === "string" ? data.status : null;
+  if (!status) return pendingPayload();
+  if (status === "failed") {
+    return terminalPayload({
+      code: "provider_failed",
+      provider: "heygen",
+      message: "HeyGen สร้างวิดีโอไม่สำเร็จ",
+      userAction: "ตรวจสอบ Avatar ที่เลือกและบัญชี HeyGen แล้วลองใหม่",
+      retryable: false,
+    });
+  }
+  return {
+    status,
+    videoUrl: typeof data?.video_url === "string" ? data.video_url : null,
+    thumbnailUrl: typeof data?.thumbnail_url === "string" ? data.thumbnail_url : null,
+    errorMsg: null,
+  };
+}

@@ -62,6 +62,7 @@ import {
   normalizeHeadlineHook,
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
+import type { HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -79,7 +80,7 @@ interface V2Draft {
   projectTitle?: string; narrativeSourceKind?: V2NarrativeSourceKind;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
-  musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
+  musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string; avatarEngine?: HeyGenAvatarEngine;
   /** Project-level default a pinned Brand Revision's Style Pack may carry (ADR 0058) —
    *  consumed once in applyDraft() to pick a default system track; never itself persisted
    *  back out by buildDraft(). */
@@ -706,6 +707,9 @@ export function useV2Project() {
   const [avatarId, setAvatarId, setAvatarIdRaw] = useUserDraftState(
     d.avatarId ?? "", "avatarId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [avatarEngine, setAvatarEngine, setAvatarEngineRaw] = useUserDraftState<HeyGenAvatarEngine | "" | undefined>(
+    d.avatarEngine ?? DEFAULT_PROJECT.avatarEngine, "avatarEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+  );
 
   // ── ขั้นสูง (P6c) ──
   const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
@@ -785,6 +789,7 @@ export function useV2Project() {
       mode, narrativeSourceKind, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+      ...(avatarEngine ? { avatarEngine } : {}),
       musicMoodDefault: musicMoodDefaultHint,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
@@ -837,6 +842,10 @@ export function useV2Project() {
     if (next.bgmVolume !== undefined) setBgmVolumeRaw(next.bgmVolume);
     if (next.useAvatar !== undefined) setUseAvatarRaw(next.useAvatar);
     if (next.avatarId !== undefined) setAvatarIdRaw(next.avatarId);
+    // Missing is meaningful for saved projects created before engine selection existed:
+    // their jobs must continue to take the legacy Avatar III route. New projects carry
+    // EDITOR_DEFAULT_DRAFT.avatarEngine explicitly.
+    setAvatarEngineRaw(next.avatarEngine);
     if (next.targetClipCount !== undefined) setTargetClipCountRaw(next.targetClipCount);
     if (next.avatarMode) setAvatarModeRaw(next.avatarMode);
     if (next.avatarIntroSecs !== undefined) setAvatarIntroSecsRaw(next.avatarIntroSecs);
@@ -1419,6 +1428,7 @@ export function useV2Project() {
     setBgmVolumeRaw(DEFAULT_PROJECT.bgmVolume);
     setUseAvatarRaw(DEFAULT_PROJECT.useAvatar);
     setAvatarIdRaw(accountVideoDefaults.avatarId);
+    setAvatarEngineRaw(DEFAULT_PROJECT.avatarEngine);
     setAvatarInfo(null);
     setTargetClipCountRaw(DEFAULT_PROJECT.targetClipCount);
     setAvatarModeRaw(DEFAULT_PROJECT.avatarMode);
@@ -2423,7 +2433,7 @@ export function useV2Project() {
       latestQueuedSaveRef.current = { projectId: saveProjectId, revision };
     }, 1000);
     return () => { clearTimeout(t); };
-  }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+  }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
@@ -2481,7 +2491,7 @@ export function useV2Project() {
     musicTrackKind, setMusicTrackKind,
     bgmVolume, setBgmVolume,
     useAvatar, setUseAvatar,
-    avatarId, setAvatarId,
+    avatarId, setAvatarId, avatarEngine, setAvatarEngine,
     targetClipCount, setTargetClipCount,
     heroCountTouched, setHeroCountTouched,
     avatarMode, setAvatarMode,

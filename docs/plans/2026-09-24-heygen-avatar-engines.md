@@ -1,7 +1,7 @@
 # HERO-54 — HeyGen Avatar IV/V support
 
 ## Goal and authorization
-Mew approved the proposed work on 2026-09-24 with “ok approve งานทั้งหมดทำยังไงต่อ”, after the explanation that real support requires compatible engine selection, IV/V generation and clear external-cost disclosure, while keeping III where supported. This approval covers implementation, tests, independent review and PR delivery. The separate explicit approval to merge/deploy PR539/540/541 is being executed as its own release; it does not silently deploy this new feature. Existing approval satisfies the development front gate; do not restart the session or re-ask routine implementation choices. Session writes spec/copy/routing; workers own production code.
+Mew approved the proposed work on 2026-09-24 with “ok approve งานทั้งหมดทำยังไงต่อ”, after the explanation that real support requires compatible engine selection, IV/V generation and clear external-cost disclosure, while keeping III where supported. This approval covers implementation, tests, independent review and PR delivery. Mew subsequently authorized real avatar QA with “ให้เจน avatar qa test ได้เลย”; the test account/avatar identity is pending clarification. Paid QA will follow review using a short synthetic narration and the identified account only. The separate explicit approval to merge/deploy PR539/540/541 is being executed as its own release; it does not silently deploy this new feature. Existing approval satisfies the development front gate; do not restart the session or re-ask routine implementation choices. Session writes spec/copy/routing; workers own production code.
 
 Canonical issue: https://linear.app/mew-social/issue/HERO-54
 
@@ -10,7 +10,7 @@ Base: origin/main55eced5bf74557dcabdfae731c7b5198ce6e6a4c (includes the three ap
 Primary-source evidence: docs/research/2026-09-24-heygen-avatar-iv-v-api.md, especially the green-screen appendix. Confirm schemas against linked official docs if a field is uncertain. No unsupported billing rate or avatar eligibility may be invented.
 
 ## Global Constraints
-- No production deploy, config/database mutation, cleanup apply, customer send/closure, paid provider generation/replay, or Stripe/Sentry mutation for this feature. Use disposable fixtures and mocked provider boundaries; a live paid smoke is a separate concrete decision after review.
+- No production deploy, config/database mutation, cleanup apply, customer send/closure, or Stripe/Sentry mutation for this feature. Automated checks use disposable fixtures and mocked provider boundaries. Mew authorized real paid avatar QA after review; it may use only the explicitly identified account/avatar, short synthetic narration and at most one create per selected compatible IV/V engine, with no automatic paid retries. Account/avatar identity is required before paid calls.
 - Preserve HeyGen BYOK. Do not charge HERO credits for HeyGen, share managed keys, change entitlements/refunds/reservations, add automatic paid engine/avatar/output fallback, or claim an exact external price. Existing billing disclosure remains authoritative.
 - Preserve the narration master, bookend/full semantics, 1080x1920 opaque green-screen MP4 and local chromakey/composite behavior. No TTS regeneration, subtitle clock/threshold change, automatic splitting into extra paid jobs, or WebM/alpha redesign.
 - Explicitly pin the chosen engine and API version per new VideoJob/provider checkpoint. Missing fields in existing drafts/jobs/checkpoints mean legacy Avatar III/v2. Never reinterpret an in-flight legacy job as IV/V or resubmit an unknown paid outcome.
@@ -45,7 +45,8 @@ Accepted test seams: mock only HeyGen transport with official-shape fixtures; dr
 | 1 | Official API facts + local integration map | mew-worker / explorer | subagent | — | source-grounded facts, complete constraints |
 | 2 | Complete explicit IV/V vertical slice | mew-worker-heavy | subagent | 1 | RED/GREEN, types/lint/build, independent task review |
 | 3 | Whole-branch correctness and security | mew-reviewer-heavy (two independent) | subagent | 2 | all blockers resolved, exact-head CI |
-| 4 | PR/Linear/report delivery | (session model) | inline | 3 | concrete reviewable result, no live success claim |
+| 4 | Authorized short real-avatar QA | mew-worker-heavy | subagent | 3 | identified account/avatar, bounded calls, inspect media/status and disclose limits |
+| 5 | PR/Linear/report delivery | (session model) | inline | 3, 4 | concrete reviewable result, evidence-based live result |
 
 ## Acceptance Criteria
 - [ ] User can explicitly select a compatible III/IV/V engine for a private look; old projects remain III and incompatible/unknown capabilities are blocked before paid create.
@@ -55,9 +56,14 @@ Accepted test seams: mock only HeyGen transport with official-shape fixtures; dr
 - [ ] Per-account ownership, private catalog, path/auth, idempotency and privacy checks pass; no customer data or secrets emitted.
 - [ ] Existing source/credits/subtitles/compositor semantics are preserved; no schema/dependency addition.
 - [ ] Reviewed PR with canonical Linear issue, passing exact-head CI, red/green evidence, independent correctness/security verdicts, migration deadline and live-smoke limitations.
+- [ ] After the required account/avatar identity is supplied, run the authorized short paid QA through the reviewed provider path, inspect video/audio/status and report exact engine, duration and outcome without secrets or customer media exposure.
 
 ## Out of scope
-Deployment of this new feature, paid real-avatar rendering, numeric account-specific price quotation, OAuth/managed HeyGen billing, alpha/WebM redesign, new webhook platform, automatic paid fallback, and full removal of every legacy v1/v2 caller. The 2026-11-01 legacy sunset is recorded; remaining legacy III/other routes need a distinct retirement decision rather than silent behavior change.
+Deployment of this new feature, paid rendering outside the explicitly authorized bounded QA, numeric account-specific price quotation, OAuth/managed HeyGen billing, alpha/WebM redesign, new webhook platform, automatic paid fallback, and full removal of every legacy v1/v2 caller. The 2026-11-01 legacy sunset is recorded; remaining legacy III/other routes need a distinct retirement decision rather than silent behavior change.
 
 ## Status
 approved:2026-09-24 user approved direction and execution | executed:in progress | delivered:pending
+
+## Paid QA authorization — follow-up
+
+Mew explicitly approved actual avatar generation for QA. Account/avatar identity was requested through a single asynchronous question and is required before dependent calls. Plan a roughly 6–10 second synthetic test narration, one IV create and one V create only if the selected look advertises that engine; no automatic paid retries, avatar substitution or additional segmentation. Use the reviewed local feature path and read/poll/download only its generated test output. Do not deploy the new feature merely to perform QA. Public/Linear/GitHub reports contain sanitized dimensions/duration/engine/status and assessment, not keys, account IDs or provider/media URLs. Actual account-specific charge must not be inferred from public rates.

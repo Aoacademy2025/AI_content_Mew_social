@@ -10,6 +10,7 @@ type MockAvatar = {
   avatar_name: string;
   preview_image_url?: string;
   is_public?: boolean;
+  supported_api_engines?: Array<"avatar_iii" | "avatar_iv" | "avatar_v">;
 };
 
 function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[]; requestedPaths?: string[] } = {}): PipelineCaller {
@@ -22,7 +23,7 @@ function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[]; requestedPat
           userTracks: [{ id: "um1", title: "Cinematic-Dramatic Custom", filename: "user-1.wav" }],
         } as T;
       }
-      if (path === "/api/heygen/my-avatars") return { avatars: opts.avatars ?? [{ avatar_id: "av1", avatar_name: "Host", preview_image_url: "p.jpg" }] } as T;
+      if (path === "/api/heygen/my-avatars") return { avatars: opts.avatars ?? [{ avatar_id: "av1", avatar_name: "Host", preview_image_url: "p.jpg", supported_api_engines: ["avatar_iii", "avatar_iv"] }] } as T;
       if (path === "/api/elevenlabs/voices") {
         if (opts.failVoices) throw new Error("GET /api/elevenlabs/voices → 500: boom");
         return { voices: [{ voice_id: "v1", name: "Rachel" }] } as T;
@@ -49,6 +50,9 @@ async function main() {
   assert(Array.isArray(o.voices.gemini) && o.voices.gemini.length > 0, "gemini voices present (static)");
   assert(Array.isArray(o.voices.elevenlabs) && (o.voices.elevenlabs as any[])[0].voiceId === "v1", "elevenlabs voices mapped");
   assert(JSON.stringify(o.avatarModes) === JSON.stringify(["none", "full", "bookend", "bookend-both"]), "avatarModes enum");
+  assert((o.avatars as any[])[0].supportedEngines.join(",") === "avatar_iii,avatar_iv", "private look exposes supported engines");
+  assert(o.avatarEngines.map((e) => e.value).join(",") === "avatar_iii,avatar_iv,avatar_v", "MCP exposes explicit engine choices");
+  assert(o.avatarBilling.route === "BYOK" && o.avatarBilling.disclosure.includes("ไม่รวมอยู่ในเครดิต HERO"), "MCP discloses external HeyGen billing");
 
   // no-key user → needsKey, not a crash
   const o2 = await getVideoOptions(mock(), { heygenKey: null, elevenlabsKey: null, heygenAvatarId: null, geminiVoiceName: null, elevenlabsVoiceId: null });
@@ -58,8 +62,8 @@ async function main() {
   const o3 = await getVideoOptions(mock({ failVoices: true }), u);
   assert((o3.voices.elevenlabs as any).error && (o3.voices.elevenlabs as any).note?.includes("voiceId"), "failing voices → {error,note} (saved voiceId still usable), whole tool still returns");
 
-  // A real HeyGen account can expose thousands of public avatars and duplicate custom
-  // avatars. MCP tool results must stay small enough for Claude Code/Codex to consume.
+  // Defensive filtering keeps public avatars out even if an upstream route regresses,
+  // and duplicate private looks do not inflate MCP context.
   const manyAvatars: MockAvatar[] = [
     ...Array.from({ length: 10 }, (_, i) => ({
       avatar_id: `custom-${i}`,
@@ -81,10 +85,10 @@ async function main() {
   });
   const compactAvatars = compact.avatars as Array<{ avatarId: string; isPublic?: boolean; saved?: boolean }>;
   assert(compactAvatars.length <= 24, "large HeyGen catalog is bounded for MCP context");
-  assert(compactAvatars[0]?.avatarId === "public-249" && compactAvatars[0]?.saved === true, "saved avatar is first even when it is late in the provider catalog");
+  assert(!compactAvatars.some((avatar) => avatar.isPublic), "MCP excludes public avatars even if upstream returns them");
   assert(new Set(compactAvatars.map((avatar) => avatar.avatarId)).size === compactAvatars.length, "duplicate avatar ids are removed");
-  assert(compactAvatars.filter((avatar) => !avatar.isPublic).length === 10, "all custom avatars are preferred before public examples");
-  assert(compact.avatarsMeta.totalAvailable === 260 && compact.avatarsMeta.truncated === true, "avatar catalog metadata reports unique total and truncation");
+  assert(compactAvatars.length === 10, "all private custom avatars remain selectable");
+  assert(compact.avatarsMeta.totalAvailable === 10 && compact.avatarsMeta.truncated === false, "avatar catalog metadata counts only private unique looks");
   assert(JSON.stringify(compact).length < 20_000, "get_video_options result stays comfortably below MCP client limits");
 
   const missingSaved = await getVideoOptions(mock({ avatars: manyAvatars }), {
@@ -92,13 +96,8 @@ async function main() {
     heygenAvatarId: "saved-not-returned-by-own-catalog",
   });
   const missingSavedAvatars = missingSaved.avatars as Array<{ avatarId: string; saved?: boolean; preview?: string | null }>;
-  assert(
-    missingSavedAvatars[0]?.avatarId === "saved-not-returned-by-own-catalog"
-      && missingSavedAvatars[0]?.saved === true
-      && missingSavedAvatars[0]?.preview === null,
-    "saved default remains the first selectable option when the provider own-avatar endpoint omits it",
-  );
-  assert(missingSaved.avatarsMeta.totalAvailable === 261, "saved fallback is included in catalog totals");
+  assert(!missingSavedAvatars.some((avatar) => avatar.avatarId === "saved-not-returned-by-own-catalog"), "unverified saved fallback is not exposed as a selectable private look");
+  assert(missingSaved.avatarsMeta.totalAvailable === 10, "unverified saved fallback is excluded from catalog totals");
 
   console.log(`\n${passed} assertions passed ✅`);
 }
