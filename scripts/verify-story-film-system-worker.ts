@@ -38,6 +38,11 @@ assert.doesNotMatch(
   /--conditions=react-server/u,
   "the Story Film worker must not select React's RSC export for Remotion",
 );
+assert.match(
+  storyFilmWorkerBlock,
+  /\.\.\.r2MediaRuntimeEnv,/u,
+  "the Story Film worker must take R2/MEDIA config from the ecosystem file, not from a leaked deploy shell",
+);
 assert.equal(
   packageJson.scripts?.["worker:story-film-system"],
   "node --import=./scripts/register-server-only-node.mjs --import tsx scripts/story-film-system-worker.ts",

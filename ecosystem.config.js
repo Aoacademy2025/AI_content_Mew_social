@@ -447,6 +447,10 @@ module.exports = {
         NODE_ENV: "production",
         DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
         STORY_FILM_SYSTEM_POLL_MS: process.env.STORY_FILM_SYSTEM_POLL_MS || "4000",
+        // Story Film media reads/writes go through R2 like `ai-content`. Until now
+        // these values reached the worker only because an old deploy shell had them
+        // exported, so a clean `pm2 delete` + `pm2 start` silently dropped them.
+        ...r2MediaRuntimeEnv,
       },
     },
     {
