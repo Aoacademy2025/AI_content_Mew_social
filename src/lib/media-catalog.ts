@@ -11,6 +11,7 @@ import { prisma } from "@/lib/prisma";
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 const MAX_RETRY_MS = 6 * 60 * 60 * 1000;
+export const LOCAL_EVICTION_CATALOG_BATCH_SIZE = 200;
 
 export type MediaCatalogClaim = {
   id: string;
@@ -130,9 +131,14 @@ export class MediaCatalog {
     });
   }
 
-  async localEvictionInventory() {
+  async localEvictionInventory(identities: readonly MediaIdentity[]) {
+    if (identities.length === 0) return [];
+    if (identities.length > LOCAL_EVICTION_CATALOG_BATCH_SIZE) {
+      throw new Error("local eviction catalog batch is too large");
+    }
     return this.db.mediaObject.findMany({
       where: {
+        objectKey: { in: identities.map(mediaObjectKey) },
         remoteState: "verified",
         localState: "present",
       },

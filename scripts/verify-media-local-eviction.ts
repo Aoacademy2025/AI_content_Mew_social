@@ -88,19 +88,34 @@ async function main(): Promise<void> {
   // HERO-41: a production-shaped scan is overwhelmingly catalog-unverified.
   // Selection must not turn that mix into one SQLite round trip per local file.
   const scanRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-scan-"));
-  const scanFiles = Array.from({ length: 100 }, (_, index) => {
+  const scanFiles = Array.from({ length: 450 }, (_, index) => {
     const name = `scan-${String(index).padStart(3, "0")}.mp4`;
     return { name, file: writeOldRender(name, `scan-${index}`, scanRoot) };
   });
   for (const { name, file } of scanFiles.slice(0, 5)) {
     await catalogRender(prisma, name, file);
   }
+  await prisma.mediaObject.createMany({
+    data: Array.from({ length: 501 }, (_, index) => ({
+      area: "renders",
+      filename: `unrelated-${String(index).padStart(3, "0")}.mp4`,
+      objectKey: `media/v1/renders/unrelated-${String(index).padStart(3, "0")}.mp4`,
+      contentType: "video/mp4",
+      sizeBytes: 1n,
+      sha256: "a".repeat(64),
+      remoteState: "verified",
+      localState: "present",
+      localMtimeMs: BigInt(now.getTime()),
+    })),
+  });
   const scanPlan = await getMediaCleanupPlan({
     cwd: scanRoot,
     now,
     includeStocks: true,
   });
   let catalogReadOperations = 0;
+  let maxCatalogBatchRequested = 0;
+  let catalogRowsReturned = 0;
   const countedCatalog = new Proxy(catalog, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
@@ -110,10 +125,82 @@ async function main(): Promise<void> {
       ) {
         return (...args: unknown[]) => {
           catalogReadOperations++;
+          if (property === "localEvictionInventory") {
+            maxCatalogBatchRequested = Math.max(
+              maxCatalogBatchRequested,
+              Array.isArray(args[0]) ? args[0].length : -1,
+            );
+          }
+          const result = Reflect.apply(value, target, args);
+          return Promise.resolve(result).then((rows) => {
+            if (property === "localEvictionInventory" && Array.isArray(rows)) {
+              catalogRowsReturned += rows.length;
+            }
+            return rows;
+          });
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const singleCandidatePlan = {
+    ...scanPlan,
+    candidates: scanPlan.candidates.slice(0, 1),
+  };
+  const deadlineRemote = new FakeVerifier();
+  const deadlineCatalog = new Proxy(catalog, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "localEvictionInventory") {
+        return async (...args: unknown[]) => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
           return Reflect.apply(value, target, args);
         };
       }
       return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const deadlineReport = await runLocalMediaEviction(singleCandidatePlan, {
+    mode: "dry-run",
+    now,
+    catalog: deadlineCatalog,
+    remote: deadlineRemote,
+    maxObjects: 1,
+    maxBytes: 1024,
+    yieldDeadlineAt: Date.now() + 10,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "0",
+      MEDIA_R2_DELETE: "0",
+    },
+  });
+  let becameBusy = false;
+  const busyRemote = new FakeVerifier();
+  const busyCatalog = new Proxy(catalog, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "localEvictionInventory") {
+        return async (...args: unknown[]) => {
+          const rows = await Reflect.apply(value, target, args);
+          becameBusy = true;
+          return rows;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const busyReport = await runLocalMediaEviction(singleCandidatePlan, {
+    mode: "dry-run",
+    now,
+    catalog: busyCatalog,
+    remote: busyRemote,
+    maxObjects: 1,
+    maxBytes: 1024,
+    shouldYield: () => becameBusy,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "0",
+      MEDIA_R2_DELETE: "0",
     },
   });
   const scanRemote = new FakeVerifier();
@@ -130,14 +217,31 @@ async function main(): Promise<void> {
       MEDIA_R2_DELETE: "0",
     },
   });
-  assert.equal(scanReport.scanned, 100);
-  assert.equal(scanReport.skipped.catalog_unverified, 95);
+  assert.equal(scanReport.scanned, 450);
+  assert.equal(scanReport.skipped.catalog_unverified, 445);
   assert.equal(scanReport.skipped.limit, 3);
   assert.equal(scanReport.eligible.count, 2);
   assert.equal(scanRemote.calls, 2, "only selected replicas reach remote verification");
-  assert.ok(
-    catalogReadOperations <= 3,
-    `catalog selection must use bounded reads, received ${catalogReadOperations}`,
+  assert.deepEqual(
+    {
+      deadlineReason: deadlineReport.deferredReason ?? null,
+      deadlineRemoteCalls: deadlineRemote.calls,
+      busyReason: busyReport.deferredReason ?? null,
+      busyRemoteCalls: busyRemote.calls,
+      catalogReadOperations,
+      maxCatalogBatchRequested,
+      catalogRowsReturned,
+    },
+    {
+      deadlineReason: "runtime_budget",
+      deadlineRemoteCalls: 0,
+      busyReason: "customer_media_active",
+      busyRemoteCalls: 0,
+      catalogReadOperations: 3,
+      maxCatalogBatchRequested: 200,
+      catalogRowsReturned: 5,
+    },
+    "catalog reads must stay plan-bounded and yield after awaited query boundaries",
   );
 
   // The inventory is only a selection snapshot. Every selected row must still
@@ -170,8 +274,8 @@ async function main(): Promise<void> {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (property === "localEvictionInventory") {
-        return async () => {
-          const inventory = await Reflect.apply(value, target, []);
+        return async (...args: unknown[]) => {
+          const inventory = await Reflect.apply(value, target, args);
           inventoryRead = true;
           await prisma.mediaObject.update({
             where: { objectKey: `media/v1/renders/${raceNames.changedSha}` },
@@ -513,21 +617,18 @@ async function main(): Promise<void> {
   // never strand an object mid-quarantine.
   const evictionPlan = await getMediaCleanupPlan({ cwd: yieldRoot, now, includeStocks: true });
   assert.equal(evictionPlan.candidates.length, yieldNames.length, "yield fixtures must be the only candidates");
-  let gateCalls = 0;
+  const evictionVerifier = new FakeVerifier();
   const deferredDuringEviction = await runLocalMediaEviction(evictionPlan, {
     mode: "apply",
     now,
     catalog,
-    remote: new FakeVerifier(),
+    remote: evictionVerifier,
     maxObjects: 10,
     maxBytes: 1024 * 1024,
     env: yieldEnv,
     yieldEveryItems: 1,
     yieldMinIntervalMs: 0,
-    shouldYield: () => {
-      gateCalls += 1;
-      return gateCalls > yieldNames.length;
-    },
+    shouldYield: () => evictionVerifier.calls > yieldNames.length,
   });
   assert.equal(deferredDuringEviction.deferredReason, "customer_media_active");
   assert.equal(
