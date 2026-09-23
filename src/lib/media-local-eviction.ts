@@ -1,6 +1,9 @@
 import { unlink, rmdir } from "node:fs/promises";
 import path from "node:path";
-import { MediaCatalog } from "@/lib/media-catalog";
+import {
+  LOCAL_EVICTION_CATALOG_BATCH_SIZE,
+  MediaCatalog,
+} from "@/lib/media-catalog";
 import {
   getMediaCleanupPlan,
   type MediaCleanupPlan,
@@ -63,7 +66,7 @@ export type LocalEvictionReport = {
 
 export type LocalEvictionCatalog = Pick<
   MediaCatalog,
-  "inspect" | "markLocalEvicted" | "markLocalPresent"
+  "inspect" | "localEvictionInventory" | "markLocalEvicted" | "markLocalPresent"
 >;
 
 export type LocalEvictionOptions = {
@@ -385,44 +388,70 @@ export async function runLocalMediaEviction(
   });
 
   const selected: VerifiedLocalReplica[] = [];
-  for (const record of plan.candidates) {
-    const scanYield = await shouldYield();
-    if (scanYield) {
-      report.deferredReason = scanYield;
+  for (
+    let offset = 0;
+    offset < plan.candidates.length;
+    offset += LOCAL_EVICTION_CATALOG_BATCH_SIZE
+  ) {
+    const batch = plan.candidates.slice(
+      offset,
+      offset + LOCAL_EVICTION_CATALOG_BATCH_SIZE,
+    );
+    const beforeQueryYield = await shouldYield({ force: true });
+    if (beforeQueryYield) {
+      report.deferredReason = beforeQueryYield;
       return report;
     }
-    const identity = identityForRecord(record);
-    const row = identity ? await catalog.inspect(identity) : null;
-    const replica = verifiedLocalReplica(record, row);
-    if (!replica) {
-      report.skipped.catalog_unverified++;
-      continue;
+    const identities = batch
+      .map(identityForRecord)
+      .filter((identity): identity is MediaIdentity => identity !== null);
+    const inventory = await catalog.localEvictionInventory(identities);
+    const afterQueryYield = await shouldYield({ force: true });
+    if (afterQueryYield) {
+      report.deferredReason = afterQueryYield;
+      return report;
     }
-    if (
-      selected.length >= maxObjects ||
-      report.eligible.sizeBytes + record.sizeBytes > maxBytes
-    ) {
-      report.skipped.limit++;
-      continue;
-    }
-    try {
-      const remoteMatches = await remote.verifyReplica({
-        identity: replica.remoteIdentity,
-        expectedSizeBytes: record.sizeBytes,
-        expectedSha256: replica.sha256,
-      });
-      if (!remoteMatches) {
-        report.skipped.remote_unverified++;
+    const catalogByKey = new Map(
+        inventory.map((row) => [`${row.area}/${row.filename}`, row]),
+    );
+    for (const record of batch) {
+      const scanYield = await shouldYield();
+      if (scanYield) {
+        report.deferredReason = scanYield;
+        return report;
+      }
+      const row = catalogByKey.get(record.key) ?? null;
+      const replica = verifiedLocalReplica(record, row);
+      if (!replica) {
+        report.skipped.catalog_unverified++;
         continue;
       }
-    } catch {
-      report.skipped.remote_unverified++;
-      report.errors++;
-      continue;
+      if (
+        selected.length >= maxObjects ||
+        report.eligible.sizeBytes + record.sizeBytes > maxBytes
+      ) {
+        report.skipped.limit++;
+        continue;
+      }
+      try {
+        const remoteMatches = await remote.verifyReplica({
+          identity: replica.remoteIdentity,
+          expectedSizeBytes: record.sizeBytes,
+          expectedSha256: replica.sha256,
+        });
+        if (!remoteMatches) {
+          report.skipped.remote_unverified++;
+          continue;
+        }
+      } catch {
+        report.skipped.remote_unverified++;
+        report.errors++;
+        continue;
+      }
+      selected.push(replica);
+      report.eligible.count++;
+      report.eligible.sizeBytes += record.sizeBytes;
     }
-    selected.push(replica);
-    report.eligible.count++;
-    report.eligible.sizeBytes += record.sizeBytes;
   }
 
   if (mode === "dry-run" || report.errors > 0) return report;

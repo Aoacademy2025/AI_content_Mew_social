@@ -35,7 +35,7 @@ export type YieldGateOptions = {
   now?: () => number;
 };
 
-export type YieldGate = () => Promise<YieldReason | null>;
+export type YieldGate = (options?: { force?: boolean }) => Promise<YieldReason | null>;
 
 export function createYieldGate(
   check: YieldCheck | undefined,
@@ -52,7 +52,9 @@ export function createYieldGate(
   let lastCheckedAt = Number.NEGATIVE_INFINITY;
   let latched: YieldReason | null = null;
 
-  return async function shouldYield(): Promise<YieldReason | null> {
+  return async function shouldYield(
+    gateOptions: { force?: boolean } = {},
+  ): Promise<YieldReason | null> {
     if (latched) return latched;
 
     const at = now();
@@ -63,8 +65,8 @@ export function createYieldGate(
     if (!check) return null;
 
     seen += 1;
-    if (seen % everyItems !== 0) return null;
-    if (at - lastCheckedAt < minIntervalMs) return null;
+    if (!gateOptions.force && seen % everyItems !== 0) return null;
+    if (!gateOptions.force && at - lastCheckedAt < minIntervalMs) return null;
     lastCheckedAt = at;
     latched = (await check()) ? "customer_media_active" : null;
     return latched;
