@@ -323,6 +323,9 @@ jobs:
       - name: Verify Sentry privacy and sampling configuration
         run: npm run verify:sentry-config
 
+      - name: Verify bounded content-free editor diagnostics (HERO-46)
+        run: npm run verify:editor-diagnostics-privacy && npm run verify:editor-diagnostics-behavior && npm run verify:editor-script-loop
+
       - name: Verify third-party frontend noise is dropped at capture and insights
         run: npm run verify:frontend-error-noise
 

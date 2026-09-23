@@ -1,6 +1,10 @@
 import type { Breadcrumb, ErrorEvent } from "@sentry/nextjs";
 import type * as Sentry from "@sentry/nextjs";
 import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
+import {
+  consumeEditorDiagnostics,
+  EDITOR_DIAGNOSTICS_CONTEXT_KEY,
+} from "@/lib/editor-diagnostics";
 
 type SentryDataCollection = NonNullable<
   Parameters<typeof Sentry.init>[0]["dataCollection"]
@@ -161,6 +165,9 @@ export function beforeSendSentryEvent(event: ErrorEvent): ErrorEvent | null {
   if (isThirdPartyBrowserNoise(event)) return null;
   if (isClerkSessionKeepAliveNetworkNoise(event)) return null;
 
+  const editorDiagnostics = consumeEditorDiagnostics(event);
+  if (event.contexts) delete event.contexts[EDITOR_DIAGNOSTICS_CONTEXT_KEY];
+
   delete event.user;
 
   if (event.message) event.message = sanitizeSentryText(event.message);
@@ -188,6 +195,12 @@ export function beforeSendSentryEvent(event: ErrorEvent): ErrorEvent | null {
   }
   if (event.contexts) {
     event.contexts = sanitizeValue(event.contexts) as ErrorEvent["contexts"];
+  }
+  if (editorDiagnostics) {
+    event.contexts = {
+      ...event.contexts,
+      [EDITOR_DIAGNOSTICS_CONTEXT_KEY]: editorDiagnostics,
+    };
   }
   if (event.tags) {
     event.tags = sanitizeValue(event.tags) as ErrorEvent["tags"];

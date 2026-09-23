@@ -20,6 +20,8 @@
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
     "verify:admin-insights-range": "tsx scripts/verify-admin-insights-range.mts",
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
+    "verify:editor-diagnostics-privacy": "tsx scripts/verify-editor-diagnostics-privacy.ts",
+    "verify:editor-diagnostics-behavior": "tsx scripts/verify-editor-diagnostics-behavior.tsx",
     "verify:frontend-error-noise": "tsx scripts/verify-frontend-error-noise.ts",
     "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",

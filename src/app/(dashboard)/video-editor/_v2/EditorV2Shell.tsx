@@ -73,6 +73,7 @@ import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
 import { fetchMe } from "@/lib/use-me";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
+import { useEditorDiagnostics } from "./useEditorDiagnostics";
 
 // Which submit path a missing-key error interrupted, so the retry (after saving a key,
 // or after switching to Gemini) re-runs exactly that path — mirrors v1's
@@ -101,6 +102,33 @@ export function EditorV2Shell() {
     resumeExportEditSnapshot,
     markPreviewMissing,
   } = useV2Job(p);
+  const recoveryConflict = p.recovery.status === "conflict" ? p.recovery : null;
+  const localRevision = recoveryConflict?.local?.revision;
+  const serverRevision = recoveryConflict?.server?.revision;
+  const editorDiagnostics = useEditorDiagnostics({
+    phase: job.phase === "done"
+      ? "post"
+      : job.phase === "rendering" || job.phase === "submitting"
+        ? "rendering"
+        : "setup",
+    lifecycle: recoveryConflict
+      ? "recovery-conflict"
+      : p.projectInitialization === "ready"
+        ? "ready"
+        : p.projectInitialization === "empty" || p.projectInitialization === "creating-project"
+          ? "new"
+          : "loading",
+    recoveryValidity: recoveryConflict
+      ? recoveryConflict.local?.trusted && recoveryConflict.server?.trusted ? "valid" : "unknown"
+      : p.recovery.status === "none" ? "none" : "unknown",
+    recoveryVersion: recoveryConflict ? "unknown" : p.recovery.status === "none" ? "none" : "unknown",
+    revisionRelation: typeof localRevision === "number" && typeof serverRevision === "number"
+      ? localRevision === serverRevision
+        ? "same"
+        : localRevision < serverRevision ? "older" : "newer"
+      : "unknown",
+    saveState: p.saveStatus,
+  });
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -470,6 +498,7 @@ export function EditorV2Shell() {
   } : null;
   return (
     <div
+      {...editorDiagnostics}
       className={`${v2FontClass} flex h-screen flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
