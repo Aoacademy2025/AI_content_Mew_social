@@ -6,6 +6,7 @@ import type {
   AvatarCompositeAttemptResult,
   AvatarCompositeFailureCode,
   AvatarProviderGenerateResult,
+  AvatarProviderUploadResult,
 } from "@/lib/mcp/avatar-provider-resume";
 import {
   heygenApiVersionForEngine,
@@ -38,7 +39,7 @@ export function clampSecs(v: unknown, fallback: number): number {
   return Math.min(30, Math.max(1, n));
 }
 
-type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarEngine?: string; avatarIntroSecs?: number; avatarTailSecs?: number; avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number };
+type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarEngine?: unknown; avatarIntroSecs?: number; avatarTailSecs?: number; avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number };
 type AvatarUser = { heygenKey: string | null; heygenAvatarId: string | null };
 type ErrPayload = { error: string; message: string };
 
@@ -129,7 +130,7 @@ function record(value: unknown): Record<string, unknown> | null {
 export async function generateAvatarVideo(
   caller: PipelineCaller,
   avatarId: string,
-  audioUrl: string,
+  audioInput: string,
   routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion; idempotencyKey?: string } = {
     engine: "avatar_iii",
     apiVersion: "v2",
@@ -137,7 +138,8 @@ export async function generateAvatarVideo(
 ): Promise<AvatarProviderGenerateResult> {
   try {
     const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
-      audioUrl, avatarId, avatarEngine: routing.engine, greenScreen: true,
+      ...(routing.apiVersion === "v3" ? { audioAssetId: audioInput } : { audioUrl: audioInput }),
+      avatarId, avatarEngine: routing.engine, greenScreen: true,
       ...(routing.idempotencyKey ? { idempotencyKey: routing.idempotencyKey } : {}),
       scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
     }, { retries: 0 });
@@ -169,6 +171,49 @@ export async function generateAvatarVideo(
       : typeof body?.error === "string"
         ? body.error
         : toUserMessage(code);
+    return {
+      kind: "rejected",
+      code,
+      message,
+      ...(typeof body?.reason === "string" ? { reason: body.reason } : {}),
+    };
+  }
+}
+
+export async function uploadAvatarAudio(
+  caller: PipelineCaller,
+  avatarId: string,
+  audioUrl: string,
+  routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion },
+): Promise<AvatarProviderUploadResult> {
+  try {
+    const result = await caller.post<{ audioAssetId: string }>("/api/heygen/generate-with-bg", {
+      audioUrl,
+      avatarId,
+      avatarEngine: routing.engine,
+      greenScreen: true,
+      scale: HEYGEN_FRAMING.scale,
+      offsetX: HEYGEN_FRAMING.offsetX,
+      offsetY: HEYGEN_FRAMING.offsetY,
+    }, { retries: 0 });
+    return result.audioAssetId
+      ? { kind: "accepted", audioAssetId: result.audioAssetId }
+      : { kind: "rejected", code: "fatal", message: "HeyGen upload returned no audio asset ID" };
+  } catch (error) {
+    if (!(error instanceof PipelineHttpError)) {
+      return { kind: "rejected", code: "transient", message: toUserMessage("transient") };
+    }
+    const body = record(error.body);
+    const rawCode = body?.code;
+    const providerStatus = typeof body?.providerStatus === "number" ? body.providerStatus : error.status;
+    const code = isProviderErrorCode(rawCode) ? rawCode : classifyHttpStatus(providerStatus);
+    const message = typeof body?.userAction === "string"
+      ? body.userAction
+      : typeof body?.message === "string"
+        ? body.message
+        : typeof body?.error === "string"
+          ? body.error
+          : toUserMessage(code);
     return {
       kind: "rejected",
       code,

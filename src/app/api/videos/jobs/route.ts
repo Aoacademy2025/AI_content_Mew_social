@@ -706,7 +706,7 @@ export async function POST(req: Request) {
       {
         avatarMode: avatarModeRaw as "none" | "full" | "bookend" | "bookend-both" | undefined,
         avatarId: str(body.avatarId, 120),
-        avatarEngine: typeof body.avatarEngine === "string" ? body.avatarEngine : undefined,
+        avatarEngine: body.avatarEngine,
         avatarIntroSecs: num(body.avatarIntroSecs, 1, 30),
         avatarTailSecs: num(body.avatarTailSecs, 1, 30),
       },

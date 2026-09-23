@@ -248,7 +248,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const selectedAvatarLook = avatarLib.avatars.find((avatar) => avatar.avatar_id === p.avatarId);
-  const supportedAvatarEngines = selectedAvatarLook?.supported_api_engines ?? [];
+  const supportedAvatarEngines = selectedAvatarLook?.supported_api_engines;
   const displayedAvatarEngine = p.avatarEngine === "" ? null : p.avatarEngine ?? "avatar_iii";
   const step2TelemetryKeyRef = useRef("");
   useEffect(() => {
@@ -958,7 +958,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 <span style={{ fontSize: 11, color: color.textFaint }}>รุ่นการสร้าง Avatar</span>
                 <div className="flex flex-wrap gap-2">
                   {HEYGEN_AVATAR_ENGINES.map((engine) => {
-                    const supported = supportedAvatarEngines.includes(engine);
+                    const supported = supportedAvatarEngines?.includes(engine) === true;
                     return (
                       <button
                         type="button"
@@ -978,12 +978,12 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   })}
                 </div>
                 <span style={{ fontSize: 10.5, color: color.textFaintest }}>เลือกรุ่นที่ Avatar นี้รองรับ</span>
-                {avatarLib.loaded && p.avatarId && !selectedAvatarLook && (
+                {avatarLib.loaded && p.avatarId && (!selectedAvatarLook || !supportedAvatarEngines) && (
                   <span role="alert" style={{ fontSize: 10.5, color: color.warning }}>
                     {HEYGEN_ENGINE_UNKNOWN_MESSAGE}
                   </span>
                 )}
-                {selectedAvatarLook && (displayedAvatarEngine === null || !supportedAvatarEngines.includes(displayedAvatarEngine)) && (
+                {selectedAvatarLook && supportedAvatarEngines && (displayedAvatarEngine === null || !supportedAvatarEngines.includes(displayedAvatarEngine)) && (
                   <span role="alert" style={{ fontSize: 10.5, color: color.warning }}>
                     {HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE}
                   </span>

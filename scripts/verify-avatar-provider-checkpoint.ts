@@ -62,9 +62,11 @@ v3Generate.avatar = {
   engine: "avatar_v",
   apiVersion: "v3",
   introIdempotencyKey: "stable-v3-intro-key",
+  introAudioAssetId: "persisted-v3-intro-asset",
 };
 const parsedV3 = parseAvatarProviderCheckpoint(JSON.stringify(v3Generate));
 assert.deepEqual(parsedV3 && avatarCheckpointRouting(parsedV3), { engine: "avatar_v", apiVersion: "v3" });
+assert.equal(parsedV3?.avatar.introAudioAssetId, "persisted-v3-intro-asset", "v3 checkpoint preserves the uploaded asset identity");
 const mismatched = structuredClone(v3Generate) as Record<string, unknown>;
 (mismatched.avatar as Record<string, unknown>).apiVersion = "v2";
 assert.equal(parseAvatarProviderCheckpoint(JSON.stringify(mismatched)), null, "v3 engine cannot resume on a v2 route");

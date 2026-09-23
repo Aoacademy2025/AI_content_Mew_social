@@ -63,6 +63,7 @@ import {
   generateAvatarVideo,
   pollAvatarOnce,
   prepareAvatarAudio,
+  uploadAvatarAudio,
 } from "@/lib/mcp/avatar-steps";
 import {
   parseAvatarProviderCheckpoint,
@@ -1118,6 +1119,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     ) => advanceAvatarProvider(checkpoint, {
       now: () => new Date(),
       allowGenerate,
+      upload: (avatarId, audioUrl, routing) => uploadAvatarAudio(caller, avatarId, audioUrl, routing),
       generate: (avatarId, audioUrl, routing) => generateAvatarVideo(caller, avatarId, audioUrl, routing),
       poll: (providerVideoId, apiVersion) => pollAvatarOnce(caller, providerVideoId, apiVersion),
       composite: async (value) => {
@@ -3031,18 +3033,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       return; // status is already 'canceled'; don't overwrite with failed
     }
     const settlementReason = `video_${phaseName || "unknown"}_failed`;
+    const unknownAvatarProviderOutcome = e instanceof AvatarProviderFailureError
+      && e.failure.outcome === "unknown";
     let financialSettlementPending = false;
-    try {
-      await refundSettledVideoImageBatch({
-        userId,
-        videoJobId: jobId,
-        reason: settlementReason,
-      });
-    } catch (settlementError) {
-      financialSettlementPending = true;
-      console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);
+    if (!unknownAvatarProviderOutcome) {
+      try {
+        await refundSettledVideoImageBatch({
+          userId,
+          videoJobId: jobId,
+          reason: settlementReason,
+        });
+      } catch (settlementError) {
+        financialSettlementPending = true;
+        console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);
+      }
     }
-    if (renderReservationStages.has(phaseName)) {
+    if (!unknownAvatarProviderOutcome && renderReservationStages.has(phaseName)) {
       const result = await refundVideoJobTerminalRenderReservations({
         videoJobId: jobId,
         userId,

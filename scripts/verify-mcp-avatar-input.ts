@@ -29,6 +29,13 @@ const selectedV = resolveAvatarRequest({ avatarMode: "full", avatarEngine: "avat
 assert(selectedV.kind === "ok" && selectedV.avatarEngine === "avatar_v" && selectedV.apiVersion === "v3", "explicit Avatar V stays pinned to v3");
 const invalidEngine = resolveAvatarRequest({ avatarMode: "full", avatarEngine: "future" }, withKey);
 assert(invalidEngine.kind === "error" && invalidEngine.payload.error === "bad_request", "unknown avatar engine is rejected before queueing");
+const malformedWebEngine = resolveAvatarRequest({
+  avatarMode: "full",
+  avatarEngine: 123,
+}, withKey);
+assert(malformedWebEngine.kind === "error" && malformedWebEngine.payload.error === "bad_request", "present malformed web engine is rejected instead of becoming legacy III");
+const absentWebEngine = resolveAvatarRequest({ avatarMode: "full" }, withKey);
+assert(absentWebEngine.kind === "ok" && absentWebEngine.avatarEngine === "avatar_iii", "genuinely absent web engine retains legacy III");
 
 const override = resolveAvatarRequest({ avatarMode: "full", avatarId: "arg-av" }, withKey);
 assert(override.kind === "ok" && override.avatarId === "arg-av", "arg avatarId overrides saved");

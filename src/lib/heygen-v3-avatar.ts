@@ -1,4 +1,5 @@
 import type { HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
+import { readFileSync, statSync } from "node:fs";
 
 export const HEYGEN_V3_MAX_AUDIO_BYTES = 32 * 1024 * 1024;
 export const HEYGEN_V3_MAX_AUDIO_DURATION_MS = 600_000;
@@ -28,6 +29,13 @@ export class HeyGenV3RequestError extends Error {
   }
 }
 
+export class HeyGenV3AudioValidationError extends Error {
+  constructor(public readonly code: "avatar_audio_too_long" | "avatar_audio_too_large", message: string) {
+    super(message);
+    this.name = "HeyGenV3AudioValidationError";
+  }
+}
+
 export function validateHeyGenV3Audio(input: { durationMs: number; sizeBytes: number }): {
   code: "avatar_audio_too_long" | "avatar_audio_too_large";
   message: string;
@@ -39,6 +47,12 @@ export function validateHeyGenV3Audio(input: { durationMs: number; sizeBytes: nu
     return { code: "avatar_audio_too_large", message: TOO_LARGE_MESSAGE };
   }
   return null;
+}
+
+export function readHeyGenV3AudioFile(filePath: string, durationMs: number): Uint8Array {
+  const violation = validateHeyGenV3Audio({ durationMs, sizeBytes: statSync(filePath).size });
+  if (violation) throw new HeyGenV3AudioValidationError(violation.code, violation.message);
+  return readFileSync(filePath);
 }
 
 export function buildHeyGenV3VideoRequest(input: {
@@ -55,6 +69,7 @@ export function buildHeyGenV3VideoRequest(input: {
     aspect_ratio: "9:16" as const,
     output_format: "mp4" as const,
     background: { type: "color" as const, value: "#00FF00" },
+    remove_background: true,
     fit: "contain" as const,
   };
 }
@@ -75,20 +90,17 @@ function providerCode(value: unknown): string | undefined {
       : undefined;
 }
 
-export async function submitHeyGenV3Avatar(input: {
+export async function uploadHeyGenV3Audio(input: {
   heygenKey: string;
-  avatarId: string;
-  engine: V3Engine;
   audioBytes: Uint8Array;
   durationMs: number;
-  idempotencyKey: string;
   fetcher?: typeof fetch;
-}): Promise<{ videoId: string; audioAssetId: string }> {
+}): Promise<{ audioAssetId: string }> {
   const violation = validateHeyGenV3Audio({
     durationMs: input.durationMs,
     sizeBytes: input.audioBytes.byteLength,
   });
-  if (violation) throw Object.assign(new Error(violation.message), violation);
+  if (violation) throw new HeyGenV3AudioValidationError(violation.code, violation.message);
 
   const fetcher = input.fetcher ?? fetch;
   const form = new FormData();
@@ -112,7 +124,18 @@ export async function submitHeyGenV3Avatar(input: {
   if (!upload.ok || typeof assetId !== "string" || !assetId) {
     throw new HeyGenV3RequestError("upload", upload.status, providerCode(uploadBody));
   }
+  return { audioAssetId: assetId };
+}
 
+export async function createHeyGenV3Avatar(input: {
+  heygenKey: string;
+  avatarId: string;
+  engine: V3Engine;
+  audioAssetId: string;
+  idempotencyKey: string;
+  fetcher?: typeof fetch;
+}): Promise<{ videoId: string }> {
+  const fetcher = input.fetcher ?? fetch;
   const create = await fetcher("https://api.heygen.com/v3/videos", {
     method: "POST",
     headers: {
@@ -123,7 +146,7 @@ export async function submitHeyGenV3Avatar(input: {
     body: JSON.stringify(buildHeyGenV3VideoRequest({
       avatarId: input.avatarId,
       engine: input.engine,
-      audioAssetId: assetId,
+      audioAssetId: input.audioAssetId,
     })),
     signal: AbortSignal.timeout(60_000),
   });
@@ -136,5 +159,5 @@ export async function submitHeyGenV3Avatar(input: {
   // A successful create response without its provider ID may already have spent the
   // account's credits. Leave it unclassified so the caller parks it for manual recovery.
   if (typeof videoId !== "string" || !videoId) throw new Error("HeyGen v3 create outcome unknown");
-  return { videoId, audioAssetId: assetId };
+  return { videoId };
 }

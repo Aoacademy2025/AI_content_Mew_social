@@ -182,6 +182,7 @@ export function mapHeygenV3PollResponse(input: {
   const status = typeof data?.status === "string" ? data.status : null;
   if (!status) return pendingPayload();
   if (status === "failed") {
+    if (data?.failure_code === "insufficient_credit") return insufficientCreditPayload();
     return terminalPayload({
       code: "provider_failed",
       provider: "heygen",

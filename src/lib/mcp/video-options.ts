@@ -15,7 +15,7 @@ type McpAvatarOption = {
   preview: string | null;
   isPublic: boolean;
   saved: boolean;
-  supportedEngines: HeyGenAvatarEngine[];
+  supportedEngines?: HeyGenAvatarEngine[];
 };
 
 function compactAvatarCatalog(
@@ -84,7 +84,7 @@ export async function getVideoOptions(
             name: a.avatar_name,
             preview: a.preview_image_url ?? null,
             isPublic: a.is_public === true,
-            supportedEngines: a.supported_api_engines ?? [],
+            ...(a.supported_api_engines ? { supportedEngines: a.supported_api_engines } : {}),
           }));
         })
       : Promise.resolve({ needsKey: true }),

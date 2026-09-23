@@ -60,6 +60,13 @@ const v3Failed = mapHeygenV3PollResponse({
 });
 assert(v3Failed.status === "failed" && v3Failed.error?.code === "provider_failed", "v3 failed → terminal provider failure");
 assert(!(v3Failed.errorMsg ?? "").includes("rendering_failed"), "v3 public failure omits raw provider codes");
+const v3Quota = mapHeygenV3PollResponse({
+  httpStatus: 200,
+  body: { data: { id: "v3-id", status: "failed", failure_code: "insufficient_credit", failure_message: "private provider balance detail" } },
+});
+assert(v3Quota.error?.code === "insufficient_credit", "v3 insufficient_credit preserves the bounded quota class");
+assert(v3Quota.error?.message === "เครดิต HeyGen ไม่เพียงพอ" && v3Quota.error?.userAction === "เติมเครดิตในบัญชี HeyGen หรือปิด Avatar แล้วลองใหม่", "v3 quota uses the existing owned copy");
+assert(!(v3Quota.errorMsg ?? "").includes("private provider balance detail"), "v3 quota omits raw provider diagnostics");
 const v3Malformed = mapHeygenV3PollResponse({
   httpStatus: 400,
   body: { message: "private-look-id and provider diagnostics must stay private" },

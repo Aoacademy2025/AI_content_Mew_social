@@ -13,6 +13,8 @@ const looksUrl = (groupId: string) =>
 const FETCH_TIMEOUT_MS = 25_000;
 const TTL_MS = 5 * 60 * 1000;
 const V3_LOOKS_URL = "https://api.heygen.com/v3/avatars/looks";
+const MAX_V3_LOOK_PAGES = 100;
+const MAX_V3_LOOKS = 5_000;
 
 /** One selectable avatar look — `avatar_id` is generation-ready (character.avatar_id). */
 export interface OwnAvatar {
@@ -20,7 +22,7 @@ export interface OwnAvatar {
   avatar_name: string; // the group name, e.g. "Mew"
   preview_image_url: string;
   group_id: string;
-  supported_api_engines: HeyGenAvatarEngine[];
+  supported_api_engines?: HeyGenAvatarEngine[];
 }
 
 export interface RawGroup { id: string; name?: string; group_type?: string }
@@ -76,15 +78,19 @@ export function parseOwnAvatarLookPage(value: unknown): {
     if (typeof item !== "object" || item === null) return [];
     const look = item as RawV3Look;
     if (typeof look.id !== "string" || !look.id || look.status !== "completed") return [];
-    const engines = Array.isArray(look.supported_api_engines)
-      ? look.supported_api_engines.filter(isHeyGenAvatarEngine)
-      : [];
+    const advertisedEngines = look.supported_api_engines;
+    const knownEngines = Array.isArray(advertisedEngines) && advertisedEngines.every((engine) => typeof engine === "string")
+      ? advertisedEngines.filter(isHeyGenAvatarEngine)
+      : undefined;
+    const engines = knownEngines && (advertisedEngines as string[]).length > 0 && knownEngines.length === 0
+      ? undefined
+      : knownEngines;
     return [{
       avatar_id: look.id,
       avatar_name: typeof look.name === "string" && look.name.trim() ? look.name.trim() : "อวตาร",
       preview_image_url: typeof look.preview_image_url === "string" ? look.preview_image_url : "",
       group_id: typeof look.group_id === "string" ? look.group_id : "",
-      supported_api_engines: engines,
+      ...(engines ? { supported_api_engines: engines } : {}),
     }];
   });
   return {
@@ -96,7 +102,7 @@ export function parseOwnAvatarLookPage(value: unknown): {
   };
 }
 
-type CacheEntry = { at: number; data: OwnAvatar[] };
+type CacheEntry = { userId: string; at: number; data: OwnAvatar[] };
 const cache = new Map<string, CacheEntry>();
 const cacheKey = (userId: string, heygenKey: string) =>
   `${userId}:${createHash("sha256").update(heygenKey).digest("hex")}`;
@@ -107,7 +113,7 @@ async function heygenGet(url: string, heygenKey: string): Promise<unknown> {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (res.status === 401 || res.status === 403) throw new HeyGenAuthError(res.status);
-  if (!res.ok) throw new Error(`HeyGen ${res.status} for ${url}`);
+  if (!res.ok) throw new Error(`HeyGen look request failed (${res.status})`);
   return res.json();
 }
 
@@ -155,6 +161,11 @@ export async function getHeyGenOwnAvatars(
 ): Promise<{ avatars: OwnAvatar[] }> {
   const key = cacheKey(userId, heygenKey);
   const now = opts.now ?? Date.now();
+  for (const [cachedKey, entry] of cache) {
+    if (now - entry.at >= TTL_MS || (entry.userId === userId && cachedKey !== key)) {
+      cache.delete(cachedKey);
+    }
+  }
   if (!opts.refresh) {
     const hit = cache.get(key);
     if (hit && now - hit.at < TTL_MS) return { avatars: hit.data };
@@ -175,18 +186,31 @@ export async function getHeyGenOwnAvatars(
     const fetchPage = opts.fetchPage ?? defaultFetchV3LookPage;
     avatars = [];
     let token: string | undefined;
+    let pages = 0;
+    const seenTokens = new Set<string>();
     do {
+      if (++pages > MAX_V3_LOOK_PAGES) throw new Error("HeyGen look pagination limit exceeded");
       const page = await fetchPage(heygenKey, token);
+      if (avatars.length + page.avatars.length > MAX_V3_LOOKS) {
+        throw new Error("HeyGen look catalog limit exceeded");
+      }
       avatars.push(...page.avatars);
       token = page.hasMore ? page.nextToken : undefined;
       if (page.hasMore && !token) throw new Error("HeyGen look pagination cursor missing");
+      if (token && seenTokens.has(token)) throw new Error("HeyGen look pagination cursor repeated");
+      if (token) seenTokens.add(token);
     } while (token);
   }
-  cache.set(key, { at: now, data: avatars });
+  cache.set(key, { userId, at: now, data: avatars });
   return { avatars };
 }
 
 /** Test/ops hook — drop all cached own-avatar lists. */
 export function __clearOwnAvatarCache(): void {
   cache.clear();
+}
+
+/** Test/ops hook — ensure expired and superseded credential entries do not accumulate. */
+export function __ownAvatarCacheSize(): number {
+  return cache.size;
 }

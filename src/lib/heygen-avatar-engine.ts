@@ -31,11 +31,11 @@ export function heygenApiVersionForEngine(engine: HeyGenAvatarEngine): HeyGenAva
 }
 
 export function heygenLookEngineCompatibility(
-  looks: readonly { avatar_id: string; supported_api_engines: readonly HeyGenAvatarEngine[] }[],
+  looks: readonly { avatar_id: string; supported_api_engines?: readonly HeyGenAvatarEngine[] }[],
   avatarId: string,
   engine: HeyGenAvatarEngine,
 ): "compatible" | "unknown" | "incompatible" {
   const look = looks.find((candidate) => candidate.avatar_id === avatarId);
-  if (!look) return "unknown";
+  if (!look || !look.supported_api_engines) return "unknown";
   return look.supported_api_engines.includes(engine) ? "compatible" : "incompatible";
 }

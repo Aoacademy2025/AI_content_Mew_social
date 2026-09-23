@@ -51,6 +51,8 @@ async function main() {
   assert(Array.isArray(o.voices.elevenlabs) && (o.voices.elevenlabs as any[])[0].voiceId === "v1", "elevenlabs voices mapped");
   assert(JSON.stringify(o.avatarModes) === JSON.stringify(["none", "full", "bookend", "bookend-both"]), "avatarModes enum");
   assert((o.avatars as any[])[0].supportedEngines.join(",") === "avatar_iii,avatar_iv", "private look exposes supported engines");
+  const unknownCapabilities = await getVideoOptions(mock({ avatars: [{ avatar_id: "unknown-capabilities", avatar_name: "Unknown" }] }), u);
+  assert(!("supportedEngines" in (unknownCapabilities.avatars as any[])[0]), "MCP preserves unknown capability metadata instead of publishing a known-empty list");
   assert(o.avatarEngines.map((e) => e.value).join(",") === "avatar_iii,avatar_iv,avatar_v", "MCP exposes explicit engine choices");
   assert(o.avatarBilling.route === "BYOK" && o.avatarBilling.disclosure.includes("ไม่รวมอยู่ในเครดิต HERO"), "MCP discloses external HeyGen billing");
 

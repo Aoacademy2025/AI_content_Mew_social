@@ -63,7 +63,7 @@ HeyGen's current endpoint comparison marks v1/v2 operational through **2026-10-3
 
 ### Confirmed standalone v3 shape
 
-The current opaque green-screen path can remain opaque MP4; it does **not** require alpha WebM or background removal. The documented `type: "avatar"` v3 schema accepts `audio_asset_id`, `engine`, `aspect_ratio`, `resolution`, `background`, `fit`, `remove_background`, and `output_format`. The following is the closest documented request contract for the stated output (identifiers are placeholders):
+The current opaque green-screen path can remain opaque MP4 and does **not** require alpha WebM. It does require `remove_background: true`: a color background alone paints only exposed canvas and can leave the source room behind the subject. The documented `type: "avatar"` v3 schema accepts `audio_asset_id`, `engine`, `aspect_ratio`, `resolution`, `background`, `fit`, `remove_background`, and `output_format`. The following is the documented request shape verified by the bounded owner-account QA (identifiers are placeholders):
 
 ```json
 {
@@ -74,7 +74,9 @@ The current opaque green-screen path can remain opaque MP4; it does **not** requ
   "aspect_ratio": "9:16",
   "resolution": "1080p",
   "output_format": "mp4",
-  "background": { "type": "color", "value": "#00FF00" }
+  "background": { "type": "color", "value": "#00FF00" },
+  "remove_background": true,
+  "fit": "contain"
 }
 ```
 
@@ -84,7 +86,9 @@ Replace the engine object with `{"type":"avatar_v"}` only when that look adverti
 
 ### Matting and alpha are separate from green screen
 
-The v3 request has `remove_background` (boolean). It removes the avatar background only for video avatars trained with matting enabled. `output_format: "webm"` is the alpha path: it applies removal automatically and rejects a `background` object. Therefore the opaque green request should omit `remove_background` (or leave it null/false), set `output_format: "mp4"`, and retain the color background. There is no published `matting` property in the closed standalone v3 create-video request schema; `v2 character.matting=true` has no documented one-to-one v3 request-field equivalent. Published v3 material treats matting as a prerequisite of removal/WebM, not as an enablement flag for an opaque color-background render. [Create Video schema](https://developers.heygen.com/reference/create-video) · [Transparent Background Videos](https://developers.heygen.com/transparent-background-videos) (accessed 2026-09-24)
+The v3 request has `remove_background` (boolean). It removes the avatar background only for video avatars trained with matting enabled. `output_format: "webm"` is the alpha path: it applies removal automatically and rejects a `background` object. For HERO's opaque chromakey path, set `remove_background: true`, `output_format: "mp4"`, and retain the green color background. There is no published `matting` property in the look/group response or closed standalone v3 create-video request schema; `v2 character.matting=true` has no documented one-to-one v3 request-field equivalent. Engine support alone therefore does not prove matting eligibility. [Create Video schema](https://developers.heygen.com/reference/create-video) · [Transparent Background Videos](https://developers.heygen.com/transparent-background-videos) (accessed 2026-09-24)
+
+Bounded live QA on 2026-09-24 confirmed the distinction for one private look advertising III/IV/V: the IV request with only a green background retained the source room, while the otherwise identical controlled request with `remove_background: true` produced an isolated subject on a full green 1080×1920 MP4 canvas and passed a simple chromakey check. This verifies the parameter for that look; it does not establish matting eligibility for every look or final application integration.
 
 ### Canvas, scale, and position
 
@@ -100,4 +104,4 @@ The documented `supported_api_engines` values are `avatar_iii`, `avatar_iv`, and
 
 ## HERO-54 scope ruling
 
-The approved implementation plan governs product choices where this general research note discusses alternatives: preserve opaque green MP4 and local chromakey, keep absent legacy engine fields on III/v2, require explicit compatible IV/V selection, reject audio above 600 seconds without automatic splitting, and retain current HERO accounting. No alpha/WebM conversion, webhook platform, account-specific price quotation, or silent engine upgrade is included. Live provider success and actual account charges remain unverified until separately authorized paid testing.
+The approved implementation plan governs product choices where this general research note discusses alternatives: preserve opaque green MP4 and local chromakey, keep absent legacy engine fields on III/v2, require explicit compatible IV/V selection, reject audio above 600 seconds without automatic splitting, and retain current HERO accounting. No alpha/WebM conversion, webhook platform, account-specific price quotation, or silent engine upgrade is included. The bounded paid QA above is evidence for one IV look and request parameter; it is not evidence for Avatar V, other looks, final application integration, or an account-specific price.

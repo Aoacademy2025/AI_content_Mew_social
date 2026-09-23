@@ -63,6 +63,8 @@ export interface AvatarProviderCheckpointV1 {
     layout: { scale: number; offsetX: number; offsetY: number };
     introAudioUrl?: string;
     tailAudioUrl?: string;
+    introAudioAssetId?: string;
+    tailAudioAssetId?: string;
     introVideoId?: string;
     tailVideoId?: string;
     introVideoUrl?: string;
@@ -162,6 +164,8 @@ function isAvatar(value: unknown): value is AvatarProviderCheckpointV1["avatar"]
     && isLayout(value.layout)
     && isOptionalString(value.introAudioUrl)
     && isOptionalString(value.tailAudioUrl)
+    && isOptionalString(value.introAudioAssetId)
+    && isOptionalString(value.tailAudioAssetId)
     && isOptionalString(value.introVideoId)
     && isOptionalString(value.tailVideoId)
     && isOptionalString(value.introVideoUrl)

@@ -18,6 +18,10 @@ export type AvatarProviderGenerateResult =
   | { kind: "rejected"; code: ProviderErrorCode; message: string; reason?: string }
   | { kind: "unknown"; message?: string };
 
+export type AvatarProviderUploadResult =
+  | { kind: "accepted"; audioAssetId: string }
+  | { kind: "rejected"; code: ProviderErrorCode; message: string; reason?: string };
+
 export type AvatarCompositeFailureCode =
   | "COMPOSITE_TIMEOUT"
   | "COMPOSITE_STALLED"
@@ -36,6 +40,11 @@ export type AvatarCompositeAttemptResult =
 
 export interface AvatarProviderAdvanceDeps {
   now: () => Date;
+  upload?: (
+    avatarId: string,
+    audioUrl: string,
+    routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion },
+  ) => Promise<AvatarProviderUploadResult>;
   generate: (
     avatarId: string,
     audioUrl: string,
@@ -88,13 +97,74 @@ async function generatePhase(
   const audioUrl = which === "intro" ? checkpoint.avatar.introAudioUrl : checkpoint.avatar.tailAudioUrl;
   if (!audioUrl) return { kind: "failed", message: `avatar checkpoint missing ${which} audio` };
 
+  const routing = avatarCheckpointRouting(checkpoint);
+  let createInput = audioUrl;
+  if (routing.apiVersion === "v3") {
+    try {
+      const storedAssetId = which === "intro"
+        ? checkpoint.avatar.introAudioAssetId
+        : checkpoint.avatar.tailAudioAssetId;
+      if (storedAssetId) {
+        createInput = storedAssetId;
+      } else {
+        if (!deps.upload) {
+          return {
+            kind: "failed",
+            message: "avatar audio upload is unavailable",
+            code: "fatal",
+            provider: "heygen",
+            outcome: "definitive",
+          };
+        }
+        let uploaded: AvatarProviderUploadResult;
+        try {
+          uploaded = await deps.upload(checkpoint.avatar.id, audioUrl, routing);
+        } catch {
+          return {
+            kind: "failed",
+            message: "เตรียมเสียงสำหรับ Avatar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+            code: "transient",
+            provider: "heygen",
+            outcome: "definitive",
+          };
+        }
+        if (uploaded.kind === "rejected") {
+          return {
+            kind: "failed",
+            message: uploaded.message,
+            code: uploaded.code,
+            ...(uploaded.reason ? { reason: uploaded.reason } : {}),
+            provider: "heygen",
+            outcome: "definitive",
+          };
+        }
+        const assetCheckpoint = withAvatar(
+          checkpoint,
+          which === "intro"
+            ? { introAudioAssetId: uploaded.audioAssetId }
+            : { tailAudioAssetId: uploaded.audioAssetId },
+          checkpoint.phase,
+        );
+        if (!await persist(assetCheckpoint, deps)) return { kind: "failed", message: GUARD_REJECTED };
+        checkpoint = assetCheckpoint;
+        createInput = uploaded.audioAssetId;
+      }
+    } catch {
+      return {
+        kind: "failed",
+        message: "เตรียมเสียงสำหรับ Avatar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+        code: "transient",
+        provider: "heygen",
+        outcome: "definitive",
+      };
+    }
+  }
+  const idempotencyKey = which === "intro"
+    ? checkpoint.avatar.introIdempotencyKey
+    : checkpoint.avatar.tailIdempotencyKey;
   let generated: AvatarProviderGenerateResult;
   try {
-    const routing = avatarCheckpointRouting(checkpoint);
-    const idempotencyKey = which === "intro"
-      ? checkpoint.avatar.introIdempotencyKey
-      : checkpoint.avatar.tailIdempotencyKey;
-    generated = await deps.generate(checkpoint.avatar.id, audioUrl, { ...routing, idempotencyKey });
+    generated = await deps.generate(checkpoint.avatar.id, createInput, { ...routing, idempotencyKey });
   } catch {
     // The external request may have spent credits even when its response was lost. Never retry.
     return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
@@ -113,7 +183,9 @@ async function generatePhase(
     return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
   }
   const providerVideoId = generated.providerVideoId;
-  if (!providerVideoId) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME };
+  if (!providerVideoId) {
+    return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
+  }
 
   const waiting = which === "intro"
     ? withAvatar(checkpoint, { introVideoId: providerVideoId }, "intro_wait")
@@ -233,7 +305,7 @@ export async function advanceAvatarProvider(
       if (checkpoint.avatar.introVideoId) {
         return pollPhase({ ...checkpoint, phase: "intro_wait" }, "intro", deps);
       }
-      if (!deps.allowGenerate) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME };
+      if (!deps.allowGenerate) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
       return generatePhase(checkpoint, "intro", deps);
     case "intro_wait":
       return pollPhase(checkpoint, "intro", deps);
@@ -241,7 +313,7 @@ export async function advanceAvatarProvider(
       if (checkpoint.avatar.tailVideoId) {
         return pollPhase({ ...checkpoint, phase: "tail_wait" }, "tail", deps);
       }
-      if (!deps.allowGenerate) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME };
+      if (!deps.allowGenerate) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
       return generatePhase(checkpoint, "tail", deps);
     case "tail_wait":
       return pollPhase(checkpoint, "tail", deps);
