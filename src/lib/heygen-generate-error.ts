@@ -9,12 +9,23 @@ const UNLIMITED_MODE_UNSUPPORTED = /this avatar does not support unlimited mode\
 const UNLIMITED_MODE_REASON = "HEYGEN_UNLIMITED_MODE_UNSUPPORTED";
 const UNLIMITED_MODE_ACTION = "Avatar ที่เลือกไม่รองรับโหมด unlimited ของ HeyGen — กรุณาเลือก Avatar หรือโหมดที่รองรับในบัญชี HeyGen หรือปิด Avatar เพื่อสร้างวิดีโอต่อ";
 
+function providerErrorObject(body: unknown): Record<string, unknown> | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const error = (body as Record<string, unknown>).error;
+  return error && typeof error === "object" && !Array.isArray(error)
+    ? error as Record<string, unknown>
+    : null;
+}
+
 /** Parse the provider's generate response before it crosses the pipeline boundary. */
 export function heygenGenerateFailureResponse(status: number, body: unknown) {
   const serialized = JSON.stringify(body);
+  const error = providerErrorObject(body);
   const reason = serialized.includes(WORKSPACE_REASON)
     ? WORKSPACE_REASON
-    : serialized.includes('"code":"internal_error"') && UNLIMITED_MODE_UNSUPPORTED.test(serialized)
+    : error?.code === "internal_error"
+      && typeof error.message === "string"
+      && UNLIMITED_MODE_UNSUPPORTED.test(error.message)
       ? UNLIMITED_MODE_REASON
     : AVATAR_NOT_FOUND.test(serialized)
       ? AVATAR_NOT_FOUND_REASON

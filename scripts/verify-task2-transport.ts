@@ -45,6 +45,23 @@ async function main() {
         message: "This avatar does not support unlimited mode. Please use a different avatar, or use Avatar IV or Avatar V.",
       },
     });
+    const unlimitedModeFalsePositives = [
+      ["metadata", heygenGenerateError.heygenGenerateFailureResponse(400, {
+        metadata: { code: "internal_error", message: "This avatar does not support unlimited mode." },
+        error: { message: "avatar request rejected" },
+      })],
+      ["split fields", heygenGenerateError.heygenGenerateFailureResponse(400, {
+        error: { code: "internal_error", message: "avatar request rejected" },
+        metadata: { message: "This avatar does not support unlimited mode." },
+      })],
+      ["nested message", heygenGenerateError.heygenGenerateFailureResponse(400, {
+        error: { code: "internal_error", detail: { message: "This avatar does not support unlimited mode." } },
+      })],
+      ["malformed error", heygenGenerateError.heygenGenerateFailureResponse(400, {
+        error: "This avatar does not support unlimited mode.",
+        metadata: { code: "internal_error" },
+      })],
+    ] as const;
     const otherFatalResponse = heygenGenerateError.heygenGenerateFailureResponse(400, {
       error: { message: "avatar request rejected" },
     });
@@ -71,6 +88,10 @@ async function main() {
     assertEqual(avatarMissingResponse.body.reason, "HEYGEN_AVATAR_NOT_FOUND", "HERO-18: route keeps an internal durable marker");
     assertEqual(unlimitedModeResponse.body.reason, "HEYGEN_UNLIMITED_MODE_UNSUPPORTED", "HERO-52: route recognizes the unsupported unlimited-mode response");
     assert(!JSON.stringify(unlimitedModeResponse.body).includes("This avatar does not support unlimited mode"), "HERO-52: route never exposes unlimited-mode provider text");
+    for (const [label, response] of unlimitedModeFalsePositives) {
+      assertEqual(response.body.reason, undefined, `HERO-52: ${label} fields stay a generic failure`);
+      assert(!JSON.stringify(response.body).includes("This avatar does not support unlimited mode"), `HERO-52: ${label} fields do not expose provider text`);
+    }
     for (const [label, response] of [
       ["avatar", sensitiveAvatarResponse],
       ["workspace", sensitiveWorkspaceResponse],
@@ -144,6 +165,9 @@ async function main() {
     assertEqual(unlimitedModeCopy.heading, "Avatar ที่เลือกใช้โหมด unlimited ไม่ได้", "HERO-52: owned heading reaches the customer view");
     assertEqual(unlimitedModeCopy.body, UNLIMITED_MODE_BODY, "HERO-52: exact approved guidance reaches the customer view");
     assert(!/อัปเกรด|เติมเครดิต|paid|payment/i.test(unlimitedModeCopy.body), "HERO-52: guidance neither changes billing nor recommends a paid tier");
+    for (const [label, response] of unlimitedModeFalsePositives) {
+      await persistAvatarFailure(response, "generic", `HERO-52 ${label} false positive`);
+    }
     await persistAvatarFailure(otherFatalResponse, "generic", "unrelated fatal HeyGen error");
 
     await prisma.aiGenerationJob.createMany({
