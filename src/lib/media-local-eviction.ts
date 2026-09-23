@@ -63,7 +63,7 @@ export type LocalEvictionReport = {
 
 export type LocalEvictionCatalog = Pick<
   MediaCatalog,
-  "inspect" | "markLocalEvicted" | "markLocalPresent"
+  "inspect" | "localEvictionInventory" | "markLocalEvicted" | "markLocalPresent"
 >;
 
 export type LocalEvictionOptions = {
@@ -385,14 +385,20 @@ export async function runLocalMediaEviction(
   });
 
   const selected: VerifiedLocalReplica[] = [];
+  let catalogByKey: Map<string, CatalogInspection> | null = null;
   for (const record of plan.candidates) {
     const scanYield = await shouldYield();
     if (scanYield) {
       report.deferredReason = scanYield;
       return report;
     }
-    const identity = identityForRecord(record);
-    const row = identity ? await catalog.inspect(identity) : null;
+    if (!catalogByKey) {
+      const inventory = await catalog.localEvictionInventory();
+      catalogByKey = new Map(
+        inventory.map((row) => [`${row.area}/${row.filename}`, row]),
+      );
+    }
+    const row = catalogByKey.get(record.key) ?? null;
     const replica = verifiedLocalReplica(record, row);
     if (!replica) {
       report.skipped.catalog_unverified++;

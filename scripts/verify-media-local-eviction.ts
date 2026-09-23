@@ -85,6 +85,170 @@ async function main(): Promise<void> {
   ]);
   const catalog = new MediaCatalog(prisma);
 
+  // HERO-41: a production-shaped scan is overwhelmingly catalog-unverified.
+  // Selection must not turn that mix into one SQLite round trip per local file.
+  const scanRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-scan-"));
+  const scanFiles = Array.from({ length: 100 }, (_, index) => {
+    const name = `scan-${String(index).padStart(3, "0")}.mp4`;
+    return { name, file: writeOldRender(name, `scan-${index}`, scanRoot) };
+  });
+  for (const { name, file } of scanFiles.slice(0, 5)) {
+    await catalogRender(prisma, name, file);
+  }
+  const scanPlan = await getMediaCleanupPlan({
+    cwd: scanRoot,
+    now,
+    includeStocks: true,
+  });
+  let catalogReadOperations = 0;
+  const countedCatalog = new Proxy(catalog, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (
+        (property === "inspect" || property === "localEvictionInventory") &&
+        typeof value === "function"
+      ) {
+        return (...args: unknown[]) => {
+          catalogReadOperations++;
+          return Reflect.apply(value, target, args);
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const scanRemote = new FakeVerifier();
+  const scanReport = await runLocalMediaEviction(scanPlan, {
+    mode: "dry-run",
+    now,
+    catalog: countedCatalog,
+    remote: scanRemote,
+    maxObjects: 2,
+    maxBytes: 1024,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "0",
+      MEDIA_R2_DELETE: "0",
+    },
+  });
+  assert.equal(scanReport.scanned, 100);
+  assert.equal(scanReport.skipped.catalog_unverified, 95);
+  assert.equal(scanReport.skipped.limit, 3);
+  assert.equal(scanReport.eligible.count, 2);
+  assert.equal(scanRemote.calls, 2, "only selected replicas reach remote verification");
+  assert.ok(
+    catalogReadOperations <= 3,
+    `catalog selection must use bounded reads, received ${catalogReadOperations}`,
+  );
+
+  // The inventory is only a selection snapshot. Every selected row must still
+  // survive the existing per-object compare-and-set inspection before quarantine.
+  const raceRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-race-"));
+  const raceNames = {
+    changedSha: "race-changed-sha.mp4",
+    missingRemote: "race-missing-remote.mp4",
+    deletedRow: "race-deleted-row.mp4",
+    newlyVerified: "race-newly-verified.mp4",
+  };
+  const raceFiles = new Map(
+    Object.values(raceNames).map((name) => [name, writeOldRender(name, name, raceRoot)]),
+  );
+  for (const name of Object.values(raceNames)) {
+    await catalogRender(prisma, name, raceFiles.get(name)!);
+  }
+  const missingRemoteFile = raceFiles.get(raceNames.missingRemote)!;
+  await prisma.mediaObject.update({
+    where: { objectKey: `media/v1/renders/${raceNames.missingRemote}` },
+    data: { remoteFilename: `sha256-${missingRemoteFile.sha256}.mp4` },
+  });
+  await prisma.mediaObject.update({
+    where: { objectKey: `media/v1/renders/${raceNames.newlyVerified}` },
+    data: { remoteState: "failed" },
+  });
+  const racePlan = await getMediaCleanupPlan({ cwd: raceRoot, now, includeStocks: true });
+  let inventoryRead = false;
+  const racingCatalog = new Proxy(catalog, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "localEvictionInventory") {
+        return async () => {
+          const inventory = await Reflect.apply(value, target, []);
+          inventoryRead = true;
+          await prisma.mediaObject.update({
+            where: { objectKey: `media/v1/renders/${raceNames.changedSha}` },
+            data: { sha256: "b".repeat(64) },
+          });
+          await prisma.mediaObject.update({
+            where: { objectKey: `media/v1/renders/${raceNames.missingRemote}` },
+            data: { remoteFilename: null },
+          });
+          await prisma.mediaObject.delete({
+            where: { objectKey: `media/v1/renders/${raceNames.deletedRow}` },
+          });
+          await prisma.mediaObject.update({
+            where: { objectKey: `media/v1/renders/${raceNames.newlyVerified}` },
+            data: { remoteState: "verified" },
+          });
+          return inventory;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const raceRemote = new FakeVerifier();
+  const raceReport = await runLocalMediaEviction(racePlan, {
+    mode: "apply",
+    now,
+    catalog: racingCatalog,
+    remote: raceRemote,
+    maxObjects: 10,
+    maxBytes: 1024 * 1024,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "1",
+      MEDIA_R2_DELETE: "0",
+    },
+  });
+  assert.equal(inventoryRead, true);
+  assert.equal(raceReport.evicted.count, 0);
+  assert.equal(raceReport.skipped.changed, 3);
+  assert.equal(raceReport.skipped.catalog_unverified, 1);
+  assert.equal(raceReport.errors, 0);
+  assert.equal(raceRemote.calls, 3, "only rows present in the snapshot receive preflight verification");
+  for (const file of raceFiles.values()) {
+    assert.equal(existsSync(file.absolutePath), true, "catalog races must preserve every local file");
+  }
+
+  const casRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-cas-"));
+  const casName = "race-after-quarantine.mp4";
+  const casFile = writeOldRender(casName, "restore-after-catalog-race", casRoot);
+  await catalogRender(prisma, casName, casFile);
+  const casPlan = await getMediaCleanupPlan({ cwd: casRoot, now, includeStocks: true });
+  const casCatalog = new Proxy(catalog, {
+    get(target, property) {
+      if (property === "markLocalEvicted") return async () => false;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const casReport = await runLocalMediaEviction(casPlan, {
+    mode: "apply",
+    now,
+    catalog: casCatalog,
+    remote: new FakeVerifier(),
+    maxObjects: 1,
+    maxBytes: 1024,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "1",
+      MEDIA_R2_DELETE: "0",
+    },
+  });
+  assert.equal(casReport.evicted.count, 0);
+  assert.equal(casReport.skipped.catalog_changed, 1);
+  assert.equal(casReport.errors, 0);
+  assert.equal(existsSync(casFile.absolutePath), true, "CAS loss after quarantine must restore the file");
+  assert.equal(readFileSync(casFile.absolutePath, "utf8"), "restore-after-catalog-race");
+
   assert(
     verifiedLocalReplica(
       {

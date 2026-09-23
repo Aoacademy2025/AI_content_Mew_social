@@ -130,6 +130,28 @@ export class MediaCatalog {
     });
   }
 
+  async localEvictionInventory() {
+    return this.db.mediaObject.findMany({
+      where: {
+        remoteState: "verified",
+        localState: "present",
+      },
+      select: {
+        area: true,
+        filename: true,
+        remoteState: true,
+        localState: true,
+        sizeBytes: true,
+        sha256: true,
+        remoteFilename: true,
+        localMtimeMs: true,
+        lastVerifiedAt: true,
+        nextRetryAt: true,
+        lastErrorCode: true,
+      },
+    });
+  }
+
   async inspectVerifiedRemoteOnly(
     identity: MediaIdentity,
   ): Promise<{ localMtimeMs: number } | null> {
