@@ -99,20 +99,25 @@ export function slowTransactionSourceFromStack(stack: string): string {
   return "unknown";
 }
 
-function slowTransactionSource(): string {
-  return slowTransactionSourceFromStack(new Error().stack ?? "");
+type TransactionFn = (...args: unknown[]) => Promise<unknown>;
+
+function slowTransactionSource(stackBoundary: TransactionFn): string {
+  const error = new Error();
+  // Next bundles this wrapper into the route that first initializes the shared
+  // client. Remove that frame so source names the later transaction caller.
+  Error.captureStackTrace(error, stackBoundary);
+  return slowTransactionSourceFromStack(error.stack ?? "");
 }
 
 if (isNewClient && slowTransactionMs > 0) {
-  type TransactionFn = (...args: unknown[]) => Promise<unknown>;
   const runTransaction = prisma.$transaction.bind(prisma) as TransactionFn;
   let sequence = 0;
 
-  (prisma as unknown as { $transaction: TransactionFn }).$transaction = async (
+  const instrumentedTransaction: TransactionFn = async (
     ...args: unknown[]
   ) => {
     const id = (sequence += 1);
-    const source = slowTransactionSource();
+    const source = slowTransactionSource(instrumentedTransaction);
     const startedAt = Date.now();
     try {
       return await runTransaction(...args);
@@ -125,6 +130,7 @@ if (isNewClient && slowTransactionMs > 0) {
       }
     }
   };
+  (prisma as unknown as { $transaction: TransactionFn }).$transaction = instrumentedTransaction;
 }
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
