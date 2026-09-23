@@ -1,0 +1,443 @@
+// HERO-51: exercise the real internal caller and transcribe route with synthetic media.
+// Provider, auth and persistence boundaries are replaced; no database or network is used.
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import fs from "node:fs";
+import http from "node:http";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+import ts from "typescript";
+import {
+  INTERNAL_TRANSCRIBE_DEADLINE_HEADER,
+  assertTranscribeDeadline,
+  deriveInternalTranscribeDeadline,
+} from "../src/lib/transcribe-deadline";
+
+const root = process.cwd();
+const nativeRequire = createRequire(path.join(root, "package.json"));
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bounded-transcribe-"));
+const originalFetch = globalThis.fetch;
+const originalEnv = { ...process.env };
+let reserved = 0;
+let refunded = 0;
+
+function loadRoute(options: {
+  serviceActor?: boolean;
+  execFile?: typeof childProcess.execFile;
+} = {}): { POST(request: Request): Promise<Response> } {
+  const source = fs.readFileSync(path.join(root, "src/app/api/videos/transcribe/route.ts"), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText;
+  const exports = {};
+  const boundaryRequire = (name: string): unknown => {
+    if (name === "@/lib/clerk-auth") return { getCurrentUser: async () => ({ id: "fixture-user" }) };
+    if (name === "@/lib/mcp/service-actor") return {
+      isServiceActorRequest: async () => options.serviceActor ?? true,
+    };
+    if (name === "child_process" && options.execFile) return { ...childProcess, execFile: options.execFile };
+    if (name === "@/lib/prisma") return {
+      prisma: { user: { findUnique: async () => ({ id: "fixture-user", plan: "PRO", ttsProvider: "gemini" }) } },
+    };
+    if (name === "@/lib/gemini-key") return {
+      resolveGeminiKey: () => ({ key: "fixture-key", mode: "managed" }), KeyRequiredError: class extends Error {},
+    };
+    if (name === "@/lib/ai-spend-limits") return {
+      reserveAiAudioMinutes: async () => { reserved += 1; return { allowed: true }; },
+      refundAiAudioMinutes: async () => { refunded += 1; },
+    };
+    if (name === "@/lib/mcp/video-job-funding") return { walletFundingForCurrentRequest: async () => ({ allowed: false }) };
+    if (name === "@/lib/api-error") return { apiError: ({ error }: { error: unknown }) => { throw error; } };
+    if (name === "@/lib/gemini") return { geminiGenerateText: () => { throw new Error("Unexpected merge request"); } };
+    return nativeRequire(name.startsWith("@/") ? path.join(root, "src", name.slice(2)) : name);
+  };
+  new Function("require", "exports", compiled)(boundaryRequire, exports);
+  return exports as ReturnType<typeof loadRoute>;
+}
+
+function scheduleSyntheticMediaCommand(
+  args: readonly string[],
+  finish: (error: Error | null, stdout?: string, stderr?: string) => void,
+): boolean {
+  if (args.includes("-vn")) {
+    fs.writeFileSync(String(args.at(-1)), Buffer.from("synthetic mp3"));
+    setImmediate(() => finish(null));
+    return true;
+  }
+  if (args.includes("-show_entries")) {
+    const duration = String(args.at(-1)).endsWith("short.wav") ? "1.000\n" : "180.000\n";
+    setImmediate(() => finish(null, duration));
+    return true;
+  }
+  if (args.length === 2 && args[0] === "-i") {
+    const duration = String(args[1]).endsWith("short.wav") ? "00:00:01.00" : "00:03:00.00";
+    setImmediate(() => finish(
+      new Error("fixture ffmpeg probe has no output target"),
+      "",
+      `Duration: ${duration}`,
+    ));
+    return true;
+  }
+  if (args.some(arg => arg.includes("silencedetect="))) {
+    setImmediate(() => finish(null));
+    return true;
+  }
+  if (args.includes("-c") && args.includes("copy")) {
+    fs.writeFileSync(String(args.at(-1)), Buffer.from("synthetic mp3 slice"));
+    setImmediate(() => finish(null));
+    return true;
+  }
+  return false;
+}
+
+const syntheticMediaExecFile = ((_file: string, args: readonly string[], _options: object, callback: Function) => {
+  let finished = false;
+  const finish = (error: Error | null, stdout = "", stderr = "") => {
+    if (finished) return;
+    finished = true;
+    callback(error, stdout, stderr);
+  };
+  if (!scheduleSyntheticMediaCommand(args, finish)) {
+    throw new Error(`Unexpected local-media subprocess fixture: ${args.join(" ")}`);
+  }
+  return {};
+}) as unknown as typeof childProcess.execFile;
+
+function completedChunk(durationMs = 60_000): Response {
+  return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+    fullText: "one two",
+    captions: [{ text: "one two", startMs: 0, endMs: durationMs - 100 }],
+    words: [
+      { word: "one", startMs: 0, endMs: Math.floor(durationMs / 2) },
+      { word: "two", startMs: Math.floor(durationMs / 2), endMs: durationMs - 100 },
+    ],
+  }) }] } }] });
+}
+
+async function runRouteCase(firstCompletes: boolean) {
+  let uploads = 0;
+  let generations = 0;
+  let aborted = 0;
+  let lateRejectSettled = false;
+  const deleted: Array<{ url: string; bounded: boolean }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (init?.method === "DELETE") {
+      deleted.push({ url, bounded: init.signal instanceof AbortSignal });
+      return Response.json({});
+    }
+    if (url.endsWith("/upload/v1beta/files")) {
+      uploads += 1;
+      return Response.json({ file: { uri: `https://example.invalid/file-${uploads}`, name: `files/${uploads}` } });
+    }
+    if (url.includes(":generateContent")) {
+      generations += 1;
+      if (firstCompletes && generations === 1) return completedChunk();
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const fallback = setTimeout(() => reject(new Error("fixture provider did not receive an abort")), 2_000);
+        const fail = () => {
+          clearTimeout(fallback);
+          aborted += 1;
+          setTimeout(() => {
+            lateRejectSettled = true;
+            reject(new DOMException("deadline", "AbortError"));
+          }, 10);
+        };
+        if (signal?.aborted) fail();
+        else signal?.addEventListener("abort", fail, { once: true });
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  const route = loadRoute({ execFile: syntheticMediaExecFile });
+  const requestedDeadline = Date.now() + 500;
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: { "content-type": "application/json", [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(requestedDeadline) },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/voice.wav",
+      script: "one two three four five six",
+      scriptPrompt: "one two three four five six",
+    }),
+  }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return { response, uploads, generations, aborted, lateRejectSettled, deleted };
+}
+
+async function runStalledSubprocessCase(stalledStep: "silence" | "slice") {
+  let subprocessAborted = 0;
+  let subprocessTimeoutMs = 0;
+  let providerCalls = 0;
+  const stalledExecFile = ((file: string, args: readonly string[], options: object, callback: Function) => {
+    const shouldStall = stalledStep === "silence"
+      ? args.some(arg => arg.includes("silencedetect="))
+      : args.includes("-c") && args.includes("copy");
+    let finished = false;
+    const finish = (error: Error | null, stdout = "", stderr = "") => {
+      if (finished) return;
+      finished = true;
+      callback(error, stdout, stderr);
+    };
+    if (!shouldStall) {
+      // Linux CI spent ~930ms in real extract/probe startup, so the slice case
+      // correctly exhausted its deadline before reaching the intended target.
+      // Keep every prerequisite synthetic; only the selected phase may stall.
+      if (scheduleSyntheticMediaCommand(args, finish)) {
+        return {};
+      }
+      throw new Error(`Unexpected local-media subprocess fixture: ${file} ${args.join(" ")}`);
+    }
+    const fallback = setTimeout(() => finish(new Error("fixture subprocess did not receive an abort")), 1_500);
+    const { signal, timeout } = options as { signal?: AbortSignal; timeout?: number };
+    subprocessTimeoutMs = timeout ?? 0;
+    const abort = () => {
+      clearTimeout(fallback);
+      subprocessAborted += 1;
+      const error = new Error("fixture subprocess aborted");
+      error.name = "AbortError";
+      finish(error);
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    return {};
+  }) as unknown as typeof childProcess.execFile;
+
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    throw new Error("provider work must not begin after stalled local media analysis");
+  };
+  const route = loadRoute({ execFile: stalledExecFile });
+  const refundedBefore = refunded;
+  const startedAt = Date.now();
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(Date.now() + 500),
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/voice.wav",
+      script: "one two three four five six",
+      scriptPrompt: "one two three four five six",
+    }),
+  }));
+  return {
+    response,
+    elapsedMs: Date.now() - startedAt,
+    subprocessAborted,
+    subprocessTimeoutMs,
+    providerCalls,
+    refunded: refunded - refundedBefore,
+  };
+}
+
+async function runLateSuccessfulSliceCase() {
+  let slicePath = "";
+  let providerCalls = 0;
+  let requestedDeadline = 0;
+  const lateSuccessExecFile = ((file: string, args: readonly string[], _options: object, callback: Function) => {
+    if (!(args.includes("-c") && args.includes("copy"))) {
+      if (scheduleSyntheticMediaCommand(args, (error, stdout = "", stderr = "") => {
+        callback(error, stdout, stderr);
+      })) return {};
+      throw new Error(`Unexpected local-media subprocess fixture: ${file} ${args.join(" ")}`);
+    }
+    slicePath = String(args.at(-1));
+    fs.writeFileSync(slicePath, Buffer.from("completed slice at deadline"));
+    setImmediate(() => {
+      const realNow = Date.now;
+      Date.now = () => requestedDeadline + 1;
+      try {
+        callback(null, "", "");
+      } finally {
+        Date.now = realNow;
+      }
+    });
+    return {};
+  }) as unknown as typeof childProcess.execFile;
+
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    throw new Error("provider work must not begin after a late local-media completion");
+  };
+  const route = loadRoute({ execFile: lateSuccessExecFile });
+  const refundedBefore = refunded;
+  requestedDeadline = Date.now() + 10_000;
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: String(requestedDeadline),
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/voice.wav",
+      script: "one two three four five six",
+      scriptPrompt: "one two three four five six",
+    }),
+  }));
+  return {
+    response,
+    slicePath,
+    providerCalls,
+    refunded: refunded - refundedBefore,
+  };
+}
+
+async function runPublicBoundaryCase() {
+  let aborted = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (init?.method === "DELETE") return Response.json({});
+    if (url.endsWith("/upload/v1beta/files")) {
+      return Response.json({ file: { uri: "https://example.invalid/public-file", name: "files/public" } });
+    }
+    if (url.includes(":generateContent")) {
+      const signal = init?.signal;
+      signal?.addEventListener("abort", () => { aborted += 1; }, { once: true });
+      await new Promise(resolve => setTimeout(resolve, 40));
+      return completedChunk(1_000);
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  const route = loadRoute({ serviceActor: false, execFile: syntheticMediaExecFile });
+  const response = await route.POST(new Request("http://localhost/api/videos/transcribe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [INTERNAL_TRANSCRIBE_DEADLINE_HEADER]: "1",
+    },
+    body: JSON.stringify({
+      audioUrl: "/api/renders/short.wav",
+      script: "one two",
+      scriptPrompt: "one two",
+    }),
+  }));
+  return { response, aborted };
+}
+
+async function verifyPipelineCallerDeadline() {
+  let receivedDeadline = "";
+  let markRequestReceived: (() => void) | undefined;
+  const requestReceived = new Promise<void>(resolve => { markRequestReceived = resolve; });
+  const server = http.createServer((req, res) => {
+    receivedDeadline = String(req.headers[INTERNAL_TRANSCRIBE_DEADLINE_HEADER] ?? "");
+    markRequestReceived?.();
+    req.on("aborted", () => res.destroy());
+  });
+  await new Promise<void>(resolve => server.listen(0, resolve));
+  const port = (server.address() as { port: number }).port;
+  process.env.MCP_INTERNAL_BASE_URL = `http://127.0.0.1:${port}`;
+  process.env.MCP_SERVICE_SECRET = "fixture-service-secret-fixture-service-secret";
+  const { pipelineCaller } = await import(`../src/lib/mcp/pipeline-client.ts?bounded=${Date.now()}`);
+  const controller = new AbortController();
+  const deadlineMs = Date.now() + 250;
+  const call = pipelineCaller("fixture-user").post("/slow", {}, {
+    retries: 0,
+    deadlineMs,
+    signal: controller.signal,
+  });
+  call.catch(() => {});
+  let requestTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      requestReceived,
+      new Promise<never>((_resolve, reject) => {
+        requestTimeout = setTimeout(
+          () => reject(new Error("pipeline caller did not reach the fixture server")),
+          2_000,
+        );
+      }),
+    ]);
+    controller.abort();
+    await assert.rejects(call, /abort/i);
+    assert.equal(receivedDeadline, String(deadlineMs), "the authenticated caller carries its absolute deadline");
+  } finally {
+    if (requestTimeout) clearTimeout(requestTimeout);
+    controller.abort();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
+async function main() {
+  assert.equal(
+    deriveInternalTranscribeDeadline({ isServiceActor: false, requestedDeadlineMs: Date.now() + 10_000, nowMs: 100 }),
+    null,
+    "a public caller cannot activate the internal deadline mode",
+  );
+  assert.equal(
+    deriveInternalTranscribeDeadline({ isServiceActor: true, requestedDeadlineMs: 999_999, nowMs: 1_000 }),
+    179_000,
+    "the route clamps the trusted deadline to 178s, reserving 2s of the 180s outer budget",
+  );
+  const expired = deriveInternalTranscribeDeadline({
+    isServiceActor: true, requestedDeadlineMs: 999, nowMs: 1_000,
+  });
+  assert.equal(expired, 999, "an expired trusted deadline stays expired instead of disabling bounded mode");
+  assert.throws(() => assertTranscribeDeadline(expired, 1_000), /deadline_exceeded/);
+  fs.mkdirSync(path.join(directory, "public/renders"), { recursive: true });
+  fs.mkdirSync(path.join(directory, "stocks"), { recursive: true });
+  fs.symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.writeFileSync(path.join(directory, "public/renders/voice.wav"), "synthetic 180s audio fixture");
+  fs.writeFileSync(path.join(directory, "public/renders/short.wav"), "synthetic 1s audio fixture");
+  process.chdir(directory);
+
+  for (const stalledStep of ["silence", "slice"] as const) {
+    const stalled = await runStalledSubprocessCase(stalledStep);
+    assert.equal(stalled.response.status, 422, `${stalledStep}: a local-media deadline keeps the existing zero-completion fallback result`);
+    assert(stalled.elapsedMs < 1_000, `${stalledStep}: the stalled subprocess is bounded by the route deadline (elapsed ${stalled.elapsedMs}ms)`);
+    assert.equal(stalled.subprocessAborted, 1, `${stalledStep}: the stalled ffmpeg subprocess receives deadline cancellation`);
+    assert(stalled.subprocessTimeoutMs > 0 && stalled.subprocessTimeoutMs <= 500,
+      `${stalledStep}: the subprocess also receives the remaining route deadline as a timeout`);
+    assert.equal(stalled.providerCalls, 0, `${stalledStep}: provider work never starts after local preprocessing exhausts the deadline`);
+    assert.equal(stalled.refunded, 1, `${stalledStep}: a local-media timeout refunds its managed reservation`);
+    assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], `${stalledStep}: cancellation leaves no temporary media`);
+  }
+
+  const lateSlice = await runLateSuccessfulSliceCase();
+  assert.equal(lateSlice.response.status, 422, "a slice finishing just after deadline keeps the zero-completion fallback");
+  assert(lateSlice.slicePath, "the late-success fixture wrote a real slice output");
+  assert.equal(fs.existsSync(lateSlice.slicePath), false, "a successful slice callback after deadline removes its output");
+  assert.equal(lateSlice.providerCalls, 0, "late local success starts no provider work");
+  assert.equal(lateSlice.refunded, 1, "late local success refunds its unusable managed reservation");
+  assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "late local success leaves no temporary media");
+
+  const refundedBeforePartial = refunded;
+  const partial = await runRouteCase(true);
+  assert.equal(partial.response.status, 200, "one completed chunk is returned before the deadline");
+  const body = await partial.response.json() as { words: unknown[]; warnings?: Array<{ code: string }> };
+  assert(body.words.length > 0, "validated words from the completed chunk survive");
+  assert(body.warnings?.some(warning => warning.code === "transcribe_incomplete"), "the missing span is explicit");
+  assert.equal(partial.generations, 2, "the stalled second chunk is the last provider attempt");
+  assert.equal(partial.uploads, 2, "the third chunk and retry never start");
+  assert.equal(partial.aborted, 1, "the in-flight provider request is aborted at the route deadline");
+  assert.equal(partial.lateRejectSettled, true, "a late abort rejection is observed and contained");
+  assert(partial.deleted.some(item => item.url.endsWith("/files/2") && item.bounded),
+    "the upload whose generation timed out is deleted within a bounded cleanup margin");
+  assert.equal(refunded, refundedBeforePartial, "submitted managed work remains accounted after a usable partial response");
+  assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "temporary transcription files are cleaned");
+
+  const empty = await runRouteCase(false);
+  assert.equal(empty.response.status, 422, "zero completed chunks keeps the existing no-transcript fallback result");
+  assert.equal(empty.generations, 1, "zero-completion timeout starts no retry or later chunk");
+  assert.equal(refunded, 4, "an unusable zero-completion request refunds its managed reservation");
+  assert.equal(reserved, 5, "each internal route request reserves once before provider work");
+  assert.deepEqual(fs.readdirSync(path.join(directory, "stocks")), [], "zero-completion cleanup also removes temporary files");
+
+  const publicRequest = await runPublicBoundaryCase();
+  assert.equal(publicRequest.response.status, 200, "an actual public route request cannot activate deadline mode");
+  assert.equal(publicRequest.aborted, 0, "an untrusted expired deadline header cannot cancel public transcription");
+  assert.equal(reserved, 6, "the public route still follows ordinary accounting");
+  await verifyPipelineCallerDeadline();
+  console.log("bounded transcribe: caller cancellation, route salvage, no-later-work, cleanup and settlement PASS");
+}
+
+main().finally(() => {
+  globalThis.fetch = originalFetch;
+  process.chdir(root);
+  for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+  Object.assign(process.env, originalEnv);
+  fs.rmSync(directory, { recursive: true, force: true });
+}).catch(error => { console.error(error); process.exitCode = 1; });

@@ -46,18 +46,30 @@ async function main() {
       let input = ''; process.stdin.on('data', c => input += c);
       process.stdin.on('end', () => {
         const r = JSON.parse(input);
-        if (process.env.ACOUSTIC_TEST_HANG === '1') { setInterval(() => {}, 1000); return; }
+        if (process.env.ACOUSTIC_TEST_HANG === '1') {
+          process.stderr.write('HERO_ACOUSTIC_PHASE=emissions\\nPRIVATE_SCRIPT=never-persist\\n');
+          setInterval(() => {}, 1000); return;
+        }
         fs.appendFileSync('calls.txt', '1');
         console.log(JSON.stringify({ version: '${ACOUSTIC_CLOCK_VERSION}', modelRevision: '${ACOUSTIC_MODEL_REVISION}',
           audioHash: r.audioHash, textHash: crypto.createHash('sha256').update(r.text).digest('hex'),
           audioDurationMs: 5000, characters: [...r.text].map((c,i) => ({ startChar:i, endChar:i+1,
-            startMs:200+i*100, endMs:300+i*100, confidence:.99, diagnostic:'PRIVATE_MARKER' })) }));
+            startMs:200+i*100, endMs:300+i*100, confidence:.99, diagnostic:'PRIVATE_MARKER' })),
+          diagnostics: { phaseTimingsMs: { lockWait: 11, modelLoad: 22, audioDecode: 33,
+            emissions: 44, alignment: 55, privatePhase: 999 }, audioLengthBucket: 'lt_30s',
+            timeoutPhase: 'PRIVATE_SCRIPT' } }));
       });
     `);
     const args = { audioUrl: "/api/renders/voice.wav", text: "แมว", audioDurationMs: 5000, mode: "shadow" as const, budgetMs: 2000 };
     const first = await runAcousticSubtitleWorker(args);
     assert(first.clock);
     assert.equal(first.evidence.cacheHit, false);
+    assert.deepEqual(first.evidence.phaseTimingsMs, {
+      lockWait: 11, modelLoad: 22, audioDecode: 33, emissions: 44, alignment: 55,
+    }, "only bounded numeric timings for fixed phases leave the worker");
+    assert.equal(first.evidence.audioLengthBucket, "lt_30s");
+    assert.equal(first.evidence.timeoutPhase, undefined, "a child cannot claim a timeout on a successful result");
+    assert(!JSON.stringify(first.evidence).includes("PRIVATE_SCRIPT"), "raw child diagnostics never enter evidence");
     const shadow = selectAcousticSubtitleClock({ text: args.text, maxCardChars: 30, existingTimingSource: "tts_segment_timing", result: first });
     assert.equal(shadow.evidence.status, "aligned");
     assert.equal(shadow.replacement, undefined, "shadow cannot alter render timing");
@@ -85,6 +97,9 @@ async function main() {
     const timeout = await runAcousticSubtitleWorker({ ...args, text: "ปลา", budgetMs: 100 });
     assert.equal(timeout.clock, undefined);
     assert.equal(timeout.evidence.status, "timeout", "hung process is killed and becomes a fallback result");
+    assert.equal(timeout.evidence.timeoutPhase, "emissions", "the last fixed phase identifies where timeout occurred");
+    assert.equal(timeout.evidence.audioLengthBucket, "lt_30s", "audio duration is reported only as a coarse bucket");
+    assert(!JSON.stringify(timeout.evidence).includes("never-persist"), "stderr content is never persisted as diagnostics");
     assert.equal(selectAcousticSubtitleClock({ text: "ปลา", maxCardChars: 30, existingTimingSource: "forced_alignment", result: timeout }).replacement, undefined);
     delete process.env.ACOUSTIC_TEST_HANG;
     const mismatch = await runAcousticSubtitleWorker({ ...args, audioDurationMs: 8000 });

@@ -7,6 +7,7 @@ import { buildPartialAlignmentClock } from "@/lib/mcp/partial-alignment";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
+import { SUBTITLE_VERIFY_RESPONSE_MARGIN_MS } from "@/lib/transcribe-deadline";
 import { prisma } from "@/lib/prisma";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
 import {
@@ -592,7 +593,7 @@ function startDeltaStats(
  * renders from this word timing (`forced_alignment`); on any other outcome the caller keeps
  * the provider's deterministic clock and this result is persisted as the reason why.
  */
-async function alignNarrationOnce(args: {
+export async function alignNarrationOnce(args: {
   caller: PipelineCaller;
   audioUrl: string;
   narrationText: string;
@@ -603,6 +604,12 @@ async function alignNarrationOnce(args: {
 }): Promise<SubtitleAlignmentAttempt> {
   const startedAt = Date.now();
   const ttsCaptions = args.ttsCaptions;
+  const controller = new AbortController();
+  const routeWorkMs = Math.max(
+    1,
+    args.budgetMs - Math.min(SUBTITLE_VERIFY_RESPONSE_MARGIN_MS, Math.max(0, args.budgetMs - 1)),
+  );
+  const routeDeadlineMs = startedAt + routeWorkMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const request = args.caller.post<{
@@ -615,19 +622,22 @@ async function alignNarrationOnce(args: {
       audioUrl: args.audioUrl,
       scriptPrompt: args.narrationText.slice(0, 800),
       script: args.narrationText,
-    }, { retries: 0 });
-    // The caller exposes no cancellation seam: an over-budget request is abandoned, not
-    // aborted, so its eventual rejection must be swallowed here or it crashes the worker.
+    }, { retries: 0, signal: controller.signal, deadlineMs: routeDeadlineMs });
+    // Keep the late-rejection guard even with cooperative abort: a custom caller or proxy may
+    // settle after the outer race. That must never become an unhandled worker rejection.
     request.catch(() => {});
     const response = await Promise.race([
       request,
       new Promise<typeof SUBTITLE_VERIFY_TIMED_OUT>((resolve) => {
-        timer = setTimeout(() => resolve(SUBTITLE_VERIFY_TIMED_OUT), args.budgetMs);
+        timer = setTimeout(() => {
+          resolve(SUBTITLE_VERIFY_TIMED_OUT);
+          controller.abort();
+        }, args.budgetMs);
       }),
     ]);
     if (response === SUBTITLE_VERIFY_TIMED_OUT) {
       console.warn(
-        `[mcp-worker] subtitle alignment exceeded ${args.budgetMs}ms — abandoned, rendering on the provider clock`,
+        `[mcp-worker] subtitle alignment exceeded ${args.budgetMs}ms — aborted, rendering on the provider clock`,
       );
       return { status: "timeout", durationMs: Date.now() - startedAt, ttsCaptions };
     }
@@ -2392,7 +2402,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // Measure the remote alignment against the acoustic clock before either
         // renders. Report only — the selection above does not read it.
         ...(subtitleTimingSource === "forced_alignment" ? { existingWords: capRes.words } : {}) });
-      verification.acoustic = selection.evidence;
+      const persistedAcousticEvidence = { ...selection.evidence };
+      delete persistedAcousticEvidence.phaseTimingsMs;
+      delete persistedAcousticEvidence.timeoutPhase;
+      delete persistedAcousticEvidence.audioLengthBucket;
+      verification.acoustic = persistedAcousticEvidence;
       if (selection.replacement) {
         capRes = selection.replacement;
         // Interpolated spans must retain warning provenance through checkpoints
@@ -2401,9 +2415,29 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         if (selection.evidence.status === "aligned") {
           subtitleTimingSource = "forced_alignment";
           verification = { status: "aligned", method: "ctc", ttsCaptions,
-            durationMs: selection.evidence.durationMs, acoustic: selection.evidence };
+            durationMs: selection.evidence.durationMs, acoustic: persistedAcousticEvidence };
         }
       }
+      try {
+        console.info("[subtitle-acoustic-phase] " + JSON.stringify({
+          status: selection.evidence.status,
+          mode: acousticMode,
+          ...(selection.evidence.audioLengthBucket
+            ? { audioLengthBucket: selection.evidence.audioLengthBucket } : {}),
+          ...(selection.evidence.timeoutPhase ? { timeoutPhase: selection.evidence.timeoutPhase } : {}),
+          ...(selection.evidence.phaseTimingsMs?.lockWait !== undefined
+            ? { lockWaitMs: selection.evidence.phaseTimingsMs.lockWait } : {}),
+          ...(selection.evidence.phaseTimingsMs?.modelLoad !== undefined
+            ? { modelLoadMs: selection.evidence.phaseTimingsMs.modelLoad } : {}),
+          ...(selection.evidence.phaseTimingsMs?.audioDecode !== undefined
+            ? { audioDecodeMs: selection.evidence.phaseTimingsMs.audioDecode } : {}),
+          ...(selection.evidence.phaseTimingsMs?.emissions !== undefined
+            ? { emissionsMs: selection.evidence.phaseTimingsMs.emissions } : {}),
+          ...(selection.evidence.phaseTimingsMs?.alignment !== undefined
+            ? { alignmentMs: selection.evidence.phaseTimingsMs.alignment } : {}),
+          modelRevision: selection.evidence.modelRevision,
+        }));
+      } catch { /* diagnostics must never affect rendering */ }
       emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
         step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
         properties: { jobId, provider, mode: acousticMode, applied: selection.evidence.applied,

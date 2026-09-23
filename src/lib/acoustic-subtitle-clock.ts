@@ -17,6 +17,9 @@ export type AcousticClock = {
   verifiedWordCount: number;
   totalWordCount: number;
 };
+export const ACOUSTIC_PHASES = ["lockWait", "modelLoad", "audioDecode", "emissions", "alignment"] as const;
+export type AcousticPhase = (typeof ACOUSTIC_PHASES)[number];
+export type AcousticAudioLengthBucket = "lt_30s" | "30_119s" | "120_239s" | "240_360s";
 export type AcousticEvidence = {
   status: "aligned" | "partial" | "unavailable" | "timeout" | "skipped";
   version: string;
@@ -35,6 +38,10 @@ export type AcousticEvidence = {
    * a clock is measured before it is trusted, never used as a gate. */
   disagreementMaxMs?: number;
   disagreementMedianMs?: number;
+  /** Content-free worker diagnostics. Keys and values are whitelisted at the process boundary. */
+  phaseTimingsMs?: Partial<Record<AcousticPhase, number>>;
+  timeoutPhase?: AcousticPhase | "startup";
+  audioLengthBucket?: AcousticAudioLengthBucket;
 };
 
 /** Preserve reliable acoustic islands. Missing words get a bounded, explicitly

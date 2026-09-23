@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from engine import source_tokens, viterbi
+from engine import audio_length_bucket, source_tokens, viterbi
 
 class CtcPathTests(unittest.TestCase):
     def test_repeated_labels_need_blank(self):
@@ -24,6 +24,12 @@ class CtcPathTests(unittest.TestCase):
     def test_impossible_path_is_not_timing(self):
         with self.assertRaises(ValueError):
             viterbi(np.log(np.array([[.9, .05, .05]])), [0, 0], blank=2, delimiter=1)
+
+    def test_audio_length_bucket_is_coarse_and_bounded(self):
+        self.assertEqual(audio_length_bucket(29_999), "lt_30s")
+        self.assertEqual(audio_length_bucket(30_000), "30_119s")
+        self.assertEqual(audio_length_bucket(120_000), "120_239s")
+        self.assertEqual(audio_length_bucket(240_000), "240_360s")
 
 if __name__ == '__main__':
     unittest.main()

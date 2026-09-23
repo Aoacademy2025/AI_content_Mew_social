@@ -33,6 +33,18 @@ import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
+import { isServiceActorRequest } from "@/lib/mcp/service-actor";
+import {
+  INTERNAL_TRANSCRIBE_DEADLINE_HEADER,
+  SUBTITLE_VERIFY_RESPONSE_MARGIN_MS,
+  assertTranscribeDeadline,
+  deriveInternalTranscribeDeadline,
+  fetchWithinTranscribeDeadline,
+  isTranscribeDeadlineExceeded,
+  sleepWithinTranscribeDeadline,
+  TranscribeDeadlineExceededError,
+  transcribeDeadlineExecOptions,
+} from "@/lib/transcribe-deadline";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import {
   SUBTITLE_SPEECH_TAIL_TOLERANCE_MS,
@@ -50,11 +62,23 @@ const INCOMPLETE_TRANSCRIBE_GAP_MS = SUBTITLE_SPEECH_TAIL_TOLERANCE_MS;
 // SSRF-safe fetch of a user-supplied external URL: validate the host, then follow redirects
 // MANUALLY re-validating each hop, so a safe initial URL can't 302 into a private/internal
 // target. Bounded to maxHops.
-async function safeFetchFollow(url: string, init: RequestInit = {}, maxHops = 3): Promise<Response> {
+async function safeFetchFollow(
+  url: string,
+  init: RequestInit = {},
+  maxHops = 3,
+  deadlineMs: number | null = null,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
   let current = url;
   for (let hop = 0; hop <= maxHops; hop++) {
     await assertSafeFetchUrl(current);
-    const res = await fetch(current, { ...init, redirect: "manual" });
+    const res = deadlineMs === null
+      ? await fetch(current, { ...init, redirect: "manual" })
+      : await fetchWithinTranscribeDeadline(current, { ...init, redirect: "manual" }, {
+          deadlineMs,
+          maxDurationMs: 120_000,
+          parentSignal,
+        });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) return res;
@@ -422,20 +446,55 @@ function getFfprobePath(): string {
   return path.join(ffmpegDir, `ffmpeg${ext}`);
 }
 
-function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: string): Promise<void> {
+type BoundedLocalMediaWork = { deadlineMs: number | null; parentSignal?: AbortSignal };
+
+function localMediaExecOptions(maxBuffer: number | undefined, bounded: BoundedLocalMediaWork) {
+  return {
+    ...(maxBuffer === undefined ? {} : { maxBuffer }),
+    ...transcribeDeadlineExecOptions(bounded.deadlineMs, bounded.parentSignal),
+  };
+}
+
+function localMediaDeadlineError(error: unknown, deadlineMs: number | null): Error | null {
+  try {
+    assertTranscribeDeadline(deadlineMs);
+  } catch (deadlineError) {
+    return deadlineError instanceof Error ? deadlineError : new TranscribeDeadlineExceededError();
+  }
+  return isTranscribeDeadlineExceeded(error, deadlineMs) ? new TranscribeDeadlineExceededError() : null;
+}
+
+function extractAudioMp3(
+  ffmpegPath: string,
+  inputPath: string,
+  outputPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
+): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(ffmpegPath, [
       "-y", "-i", inputPath,
       "-vn", "-acodec", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1",
       outputPath,
-    ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) reject(new Error(`ffmpeg audio extract failed: ${err.message}\n${stderr?.slice(-300)}`));
-      else resolve();
+    ], localMediaExecOptions(10 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      if (err) {
+        reject(localMediaDeadlineError(err, bounded.deadlineMs)
+          ?? new Error(`ffmpeg audio extract failed: ${err.message}\n${stderr?.slice(-300)}`));
+        return;
+      }
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
 
-function getAudioDurationMs(audioPath: string): Promise<number> {
+function getAudioDurationMs(
+  audioPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = getFfprobePath();
     if (!fs.existsSync(probe)) return reject(new Error("ffprobe/ffmpeg not found"));
@@ -444,22 +503,34 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
       execFile(probe, [
         "-v", "error", "-show_entries", "format=duration",
         "-of", "csv=p=0", audioPath,
-      ], (err, stdout) => {
-        if (err) return reject(err);
+      ], localMediaExecOptions(undefined, bounded), (err, stdout) => {
+        if (err) return reject(localMediaDeadlineError(err, bounded.deadlineMs) ?? err);
         const sec = parseFloat(stdout.trim());
         if (!Number.isFinite(sec)) return reject(new Error("Could not parse duration"));
-        resolve(Math.max(1, Math.round(sec * 1000)));
+        try {
+          assertTranscribeDeadline(bounded.deadlineMs);
+          resolve(Math.max(1, Math.round(sec * 1000)));
+        } catch (error) {
+          reject(error);
+        }
       });
       return;
     }
 
     // FFmpeg prints container metadata before its expected no-output error;
     // do not decode the whole uploaded video just to read its duration.
-    execFile(probe, ["-i", audioPath], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+    execFile(probe, ["-i", audioPath], localMediaExecOptions(5 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      const deadlineError = localMediaDeadlineError(err, bounded.deadlineMs);
+      if (deadlineError) return reject(deadlineError);
       const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
       if (!m) return reject(new Error("Could not parse duration from ffmpeg"));
       const ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) * 1000 + parseInt(m[4], 10) * 10;
-      resolve(Math.max(1, ms));
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve(Math.max(1, ms));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
@@ -479,14 +550,22 @@ function detectSilenceAnalysis(
   ffmpegPath: string,
   mp3Path: string,
   totalDurationMs: number,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<ReturnType<typeof parseTranscriptionSilenceAnalysis>> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(ffmpegPath, [
       "-i", mp3Path,
       "-af", "silencedetect=noise=-30dB:d=0.3",
       "-f", "null", "-",
-    ], { maxBuffer: 20 * 1024 * 1024 }, (_err, _stdout, stderr) => {
-      resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
+    ], localMediaExecOptions(20 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      const deadlineError = localMediaDeadlineError(err, bounded.deadlineMs);
+      if (deadlineError) return reject(deadlineError);
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }
@@ -498,6 +577,7 @@ function sliceAudio(
   startMs: number,
   endMs: number,
   outPath: string,
+  bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const startSec = (startMs / 1000).toFixed(3);
@@ -508,14 +588,20 @@ function sliceAudio(
       // opening — later chunks then showed the first chunk's subtitles.
       "-y", "-ss", startSec, "-t", durSec, "-i", mp3Path,
       "-c", "copy", outPath,
-    ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) return reject(new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
-      try {
-        const buf = fs.readFileSync(outPath);
+    ], localMediaExecOptions(10 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+      if (err) {
         try { fs.unlinkSync(outPath); } catch {}
+        return reject(localMediaDeadlineError(err, bounded.deadlineMs)
+          ?? new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
+      }
+      try {
+        assertTranscribeDeadline(bounded.deadlineMs);
+        const buf = fs.readFileSync(outPath);
         resolve(buf);
       } catch (readErr) {
         reject(readErr instanceof Error ? readErr : new Error(String(readErr)));
+      } finally {
+        try { fs.unlinkSync(outPath); } catch {}
       }
     });
   });
@@ -530,6 +616,7 @@ async function geminiTranscribeChunk(
   geminiKey: string,
   script: string,
   chunkDurationMs: number,
+  bounded: { deadlineMs: number | null; parentSignal?: AbortSignal } = { deadlineMs: null },
 ): Promise<{
   words: { word: string; start: number; end: number }[];
   segments: { text: string; start: number; end: number }[];
@@ -549,7 +636,7 @@ async function geminiTranscribeChunk(
   // Upload audio to Gemini File API — avoids sending large base64 inline which causes
   // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
   console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
-  const uploadRes = await fetch(
+  const uploadRes = await fetchWithinTranscribeDeadline(
     // Auth via the x-goog-api-key header only — no ?key= query param (keeps the key out of
     // URLs/logs).
     `https://generativelanguage.googleapis.com/upload/v1beta/files`,
@@ -563,12 +650,12 @@ async function geminiTranscribeChunk(
         "X-Goog-Upload-Header-Content-Length": String(audioBytes),
         "X-Goog-Upload-Header-Content-Type": "audio/mp3",
       },
-      signal: AbortSignal.timeout(120_000),
       // new Uint8Array view (byte-identical) — the helper's `audioBuffer: Buffer`
       // param widens to Buffer<ArrayBufferLike>, which isn't directly a BodyInit;
       // a Uint8Array always is. (Inline readFileSync was Buffer<ArrayBuffer>.)
       body: new Uint8Array(audioBuffer),
-    }
+    },
+    { deadlineMs: bounded.deadlineMs, maxDurationMs: 120_000, parentSignal: bounded.parentSignal },
   );
   if (!uploadRes.ok) {
     const errBody = await uploadRes.text().catch(() => "");
@@ -675,53 +762,60 @@ ${script.trim().slice(0, 2000)}` : ""}
   let usedTranscribeModel = "";
   const MAX_PER_MODEL = 3;  // 3 retries per model × 3 models = 9 total attempts
 
-  outerTranscribe:
-  for (const model of TRANSCRIBE_MODELS) {
-    for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
-      geminiRes = await fetch(
-        // Auth via the x-goog-api-key header only — no ?key= query param.
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": geminiKey,
+  try {
+    outerTranscribe:
+    for (const model of TRANSCRIBE_MODELS) {
+      for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
+        geminiRes = await fetchWithinTranscribeDeadline(
+          // Auth via the x-goog-api-key header only — no ?key= query param.
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": geminiKey,
+            },
+            body: transcribeBody,
           },
-          signal: AbortSignal.timeout(600_000),
-          body: transcribeBody,
+          { deadlineMs: bounded.deadlineMs, maxDurationMs: 600_000, parentSignal: bounded.parentSignal },
+        );
+        if (geminiRes.ok) {
+          usedTranscribeModel = model;
+          console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
+          break outerTranscribe;
         }
-      );
-      if (geminiRes.ok) {
-        usedTranscribeModel = model;
-        console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
-        break outerTranscribe;
-      }
-      lastTranscribeErr = await geminiRes.text().catch(() => "");
+        lastTranscribeErr = await geminiRes.text().catch(() => "");
 
-      // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
-      if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
-        console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
-        break;
-      }
+        // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
+        if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
+          console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
+          break;
+        }
 
-      // Retryable transient — exponential backoff within same model
-      if (attempt < MAX_PER_MODEL) {
-        const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
-        console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
-        await new Promise(r => setTimeout(r, delayMs));
-      } else {
-        console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+        // Retryable transient — exponential backoff within same model
+        if (attempt < MAX_PER_MODEL) {
+          const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
+          console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
+          await sleepWithinTranscribeDeadline(delayMs, bounded.deadlineMs);
+        } else {
+          console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+        }
       }
     }
-  }
-
-  // Clean up uploaded file from Gemini (best-effort)
-  if (fileName) {
-    // Auth via the x-goog-api-key header only — no ?key= query param.
-    fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, {
-      method: "DELETE",
-      headers: { "x-goog-api-key": geminiKey },
-    }).catch(() => {});
+  } finally {
+    // Cleanup is the only provider operation allowed after the work deadline. It
+    // is detached so response settlement does not wait, but capped inside the
+    // reserved response margin so it cannot become unbounded background work.
+    if (fileName) {
+      const cleanupInit = {
+        method: "DELETE",
+        headers: { "x-goog-api-key": geminiKey },
+        ...(bounded.deadlineMs === null ? {} : {
+          signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, SUBTITLE_VERIFY_RESPONSE_MARGIN_MS))),
+        }),
+      } satisfies RequestInit;
+      void fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, cleanupInit).catch(() => {});
+    }
   }
 
   if (!geminiRes || !geminiRes.ok) {
@@ -852,6 +946,7 @@ export async function POST(req: Request) {
   let reservationUserId: string | null = null;
   let managedAiAudioReservedMinutes = 0;
   let transcriptionCompleted = false;
+  let mp3PathForCleanup: string | null = null;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
@@ -860,6 +955,13 @@ export async function POST(req: Request) {
     reservationUserId = authUser.id;
 
     const { audioUrl, scriptPrompt, script } = await req.json();
+    const requestedDeadlineMs = Number(req.headers.get(INTERNAL_TRANSCRIBE_DEADLINE_HEADER));
+    const internalDeadlineMs = deriveInternalTranscribeDeadline({
+      isServiceActor: Number.isFinite(requestedDeadlineMs) && requestedDeadlineMs > 0
+        ? await isServiceActorRequest()
+        : false,
+      requestedDeadlineMs,
+    });
     if (!audioUrl) {
       return NextResponse.json({ error: "audioUrl is required" }, { status: 400 });
     }
@@ -911,7 +1013,7 @@ export async function POST(req: Request) {
           return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
         let audioRes: Response;
         try {
-          audioRes = await safeFetchFollow(audioUrl);
+          audioRes = await safeFetchFollow(audioUrl, {}, 3, internalDeadlineMs, req.signal);
         } catch {
           return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
         }
@@ -925,8 +1027,12 @@ export async function POST(req: Request) {
     // Extract audio as mp3 (mono 16kHz) for Gemini processing
     const ffmpeg = getFfmpegPath();
     const mp3Path = path.join(tmpDir, `transcribe-audio-${ts}.mp3`);
+    mp3PathForCleanup = mp3Path;
     try {
-      await extractAudioMp3(ffmpeg, inputPath, mp3Path);
+      await extractAudioMp3(ffmpeg, inputPath, mp3Path, {
+        deadlineMs: internalDeadlineMs,
+        ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
+      });
     } catch (e) {
       console.error("[transcribe] ffmpeg extract failed:", e);
       if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
@@ -936,9 +1042,13 @@ export async function POST(req: Request) {
     try {
       // The uploaded media owns the render clock. MP3 encoder padding can add
       // several frames and make a presenter-only timeline exceed its source.
-      sourceAudioDurationMs = await getAudioDurationMs(inputPath);
+      sourceAudioDurationMs = await getAudioDurationMs(inputPath, {
+        deadlineMs: internalDeadlineMs,
+        ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
+      });
       console.log(`[transcribe] source audio duration ${sourceAudioDurationMs}ms`);
     } catch (e) {
+      if (isTranscribeDeadlineExceeded(e, internalDeadlineMs)) throw e;
       console.warn("[transcribe] failed to read source media duration:", e);
     }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
@@ -969,6 +1079,10 @@ export async function POST(req: Request) {
     const pushWarning = (code: TranscribeWarningCode, fromMs?: number, toMs?: number) => {
       mergeTranscribeWarning(warnings, code, fromMs, toMs);
     };
+    const boundedTranscribe = {
+      deadlineMs: internalDeadlineMs,
+      ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
+    };
 
     if (useGeminiTranscribe) {
       // AI-audio ceiling (managed): transcribe spends server Gemini on the input
@@ -994,8 +1108,11 @@ export async function POST(req: Request) {
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
         const silenceAnalysis = sourceAudioDurationMs > 0
-          ? await detectSilenceAnalysis(ffmpeg, mp3Path, sourceAudioDurationMs)
-              .catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }))
+          ? await detectSilenceAnalysis(ffmpeg, mp3Path, sourceAudioDurationMs, boundedTranscribe)
+              .catch((error) => {
+                if (isTranscribeDeadlineExceeded(error, internalDeadlineMs)) throw error;
+                return { cutPointsMs: [], trailingSilenceStartMs: null };
+              })
           : { cutPointsMs: [], trailingSilenceStartMs: null };
         const trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
         if (sourceAudioDurationMs > 0) {
@@ -1009,8 +1126,11 @@ export async function POST(req: Request) {
           if (cuts.length >= 1) {
             const bounds = [0, ...cuts, sourceAudioDurationMs];
             for (let i = 0; i < bounds.length - 1; i++) {
+              assertTranscribeDeadline(internalDeadlineMs);
               const startMs = bounds[i], endMs = bounds[i + 1];
-              const buf = await sliceAudio(ffmpeg, mp3Path, startMs, endMs, `${mp3Path}.chunk${i}.mp3`);
+              const buf = await sliceAudio(
+                ffmpeg, mp3Path, startMs, endMs, `${mp3Path}.chunk${i}.mp3`, boundedTranscribe,
+              );
               chunkPlan.push({ buffer: buf, startMs, durationMs: endMs - startMs });
             }
             console.log(`[transcribe] chunked ${(sourceAudioDurationMs/1000).toFixed(1)}s audio into ${chunkPlan.length} chunks at silence`);
@@ -1059,6 +1179,7 @@ export async function POST(req: Request) {
             fullText += (fullText ? " " : "") + sanitized.fullText;
           };
           for (const ch of chunkPlan) {
+            assertTranscribeDeadline(internalDeadlineMs);
             // Give each chunk only its proportional slice of the script (±12% margin)
             // as the spelling reference. Passing the FULL script made Gemini anchor to
             // the script's opening and re-emit the clip's intro for every chunk (the
@@ -1079,7 +1200,7 @@ export async function POST(req: Request) {
             // cannot recover a background VideoJob because its HTTP client correctly
             // treats all 4xx as terminal (auth/quota must never be blindly retried).
             const quality = await runTranscriptionQualityRetries(
-              () => geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs),
+              () => geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs, boundedTranscribe),
               referenceDurationMs,
               3,
               ({ nextAttempt, tailGapMs }) => {
@@ -1101,6 +1222,7 @@ export async function POST(req: Request) {
                 try {
                   const recoveryBounds = [0, ...recoveryCuts, ch.durationMs];
                   for (let recoveryIndex = 0; recoveryIndex < recoveryBounds.length - 1; recoveryIndex++) {
+                    assertTranscribeDeadline(internalDeadlineMs);
                     const recoveryStartMs = recoveryBounds[recoveryIndex];
                     const recoveryEndMs = recoveryBounds[recoveryIndex + 1];
                     const recoveryDurationMs = recoveryEndMs - recoveryStartMs;
@@ -1110,6 +1232,7 @@ export async function POST(req: Request) {
                       recoveryStartMs,
                       recoveryEndMs,
                       `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.mp3`,
+                      boundedTranscribe,
                     );
                     const scriptStart = Math.max(0, recoveryStartMs / ch.durationMs - 0.12);
                     const scriptEnd = Math.min(1, recoveryEndMs / ch.durationMs + 0.12);
@@ -1127,7 +1250,7 @@ export async function POST(req: Request) {
                       trailingSilenceStartMs,
                     });
                     const recoveryQuality = await runTranscriptionQualityRetries(
-                      () => geminiTranscribeChunk(recoveryBuffer, geminiKey, recoveryScript, recoveryDurationMs),
+                      () => geminiTranscribeChunk(recoveryBuffer, geminiKey, recoveryScript, recoveryDurationMs, boundedTranscribe),
                       recoveryReferenceMs,
                       3,
                       ({ nextAttempt, tailGapMs }) => {
@@ -1151,6 +1274,7 @@ export async function POST(req: Request) {
                         try {
                           const fineRecoveryBounds = [0, ...fineRecoveryCuts, recoveryDurationMs];
                           for (let fineIndex = 0; fineIndex < fineRecoveryBounds.length - 1; fineIndex++) {
+                            assertTranscribeDeadline(internalDeadlineMs);
                             const fineStartMs = fineRecoveryBounds[fineIndex];
                             const fineEndMs = fineRecoveryBounds[fineIndex + 1];
                             const fineDurationMs = fineEndMs - fineStartMs;
@@ -1160,6 +1284,7 @@ export async function POST(req: Request) {
                               fineStartMs,
                               fineEndMs,
                               `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.fine${fineIndex + 1}.mp3`,
+                              boundedTranscribe,
                             );
                             const fineScriptStart = Math.max(0, fineStartMs / recoveryDurationMs - 0.12);
                             const fineScriptEnd = Math.min(1, fineEndMs / recoveryDurationMs + 0.12);
@@ -1177,7 +1302,7 @@ export async function POST(req: Request) {
                               trailingSilenceStartMs,
                             });
                             const fineQuality = await runTranscriptionQualityRetries(
-                              () => geminiTranscribeChunk(fineBuffer, geminiKey, fineScript, fineDurationMs),
+                              () => geminiTranscribeChunk(fineBuffer, geminiKey, fineScript, fineDurationMs, boundedTranscribe),
                               fineReferenceMs,
                               3,
                               ({ nextAttempt, tailGapMs }) => {
@@ -1263,7 +1388,7 @@ export async function POST(req: Request) {
           // ≤110s audio still gets the same bounded semantic recovery: production
           // also saw incomplete/desynced responses at 103-105s.
           const quality = await runTranscriptionQualityRetries(
-            () => geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs),
+            () => geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs, boundedTranscribe),
             speechCoverage?.spokenEndMs ?? sourceAudioDurationMs,
             3,
             ({ nextAttempt, tailGapMs }) => {
@@ -1302,22 +1427,34 @@ export async function POST(req: Request) {
           }
         }
       } catch (e: unknown) {
-        console.error("[transcribe] Gemini transcribe error:", e);
-        const status = (e as { status?: number })?.status;
-        const body = (e as { body?: string })?.body;
-        if (status === 401) {
-          if (process.env.MANAGED_GEMINI === "1") {
-            return NextResponse.json({ error: "ระบบ AI ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน" }, { status: 503 });
+        if (isTranscribeDeadlineExceeded(e, internalDeadlineMs)) {
+          const completedEndMs = Math.max(
+            geminiDirectCaptions.at(-1)?.endMs ?? 0,
+            (segments.at(-1)?.end ?? 0) * 1_000,
+            (words.at(-1)?.end ?? 0) * 1_000,
+          );
+          pushWarning("transcribe_incomplete", completedEndMs, sourceAudioDurationMs);
+          console.warn(
+            `[transcribe] internal deadline reached after ${Math.round(completedEndMs)}ms — returning validated completed chunks`,
+          );
+        } else {
+          console.error("[transcribe] Gemini transcribe error:", e);
+          const status = (e as { status?: number })?.status;
+          const body = (e as { body?: string })?.body;
+          if (status === 401) {
+            if (process.env.MANAGED_GEMINI === "1") {
+              return NextResponse.json({ error: "ระบบ AI ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน" }, { status: 503 });
+            }
+            return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
           }
-          return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
+          const info = getGeminiErrorInfo(body ?? e, status ?? 503);
+          return NextResponse.json({
+            error: info.userMessage,
+            retryable: info.retryable,
+            provider: "gemini",
+            reason: info.kind,
+          }, { status: info.status });
         }
-        const info = getGeminiErrorInfo(body ?? e, status ?? 503);
-        return NextResponse.json({
-          error: info.userMessage,
-          retryable: info.retryable,
-          provider: "gemini",
-          reason: info.kind,
-        }, { status: info.status });
       }
     } else {
       try { fs.unlinkSync(mp3Path); } catch {}
@@ -1501,7 +1638,9 @@ ${segList}
 Total audio: ${audioDur.toFixed(2)}s`;
 
         let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = segmentCaptions;
-        const skipLlmMerge = false;
+        // Internal verification consumes the measured word clock only. Its deadline must
+        // never launch this optional presentation-only regrouping provider call.
+        const skipLlmMerge = internalDeadlineMs !== null;
         if (!skipLlmMerge) {
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
@@ -1915,6 +2054,9 @@ Total audio: ${audioDur.toFixed(2)}s`;
   } catch (error) {
     return apiError({ route: "videos/transcribe", error, notifyUser: true });
   } finally {
+    if (mp3PathForCleanup) {
+      try { fs.unlinkSync(mp3PathForCleanup); } catch {}
+    }
     if (reservationUserId && managedAiAudioReservedMinutes > 0 && !transcriptionCompleted) {
       await refundAiAudioMinutes(reservationUserId, managedAiAudioReservedMinutes).catch((error) => {
         console.error("[transcribe] failed to refund managed AI-audio reservation:", error);

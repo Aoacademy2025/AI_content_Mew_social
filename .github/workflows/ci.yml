@@ -78,6 +78,9 @@ jobs:
       - name: Verify upload transcription keeps real word timing
         run: npm run verify:transcribe-alignment
 
+      - name: Verify bounded subtitle transcription salvages completed chunks (HERO-51)
+        run: npm run verify:bounded-subtitle-verification
+
       - name: Verify subtitle card invariants
         run: npm run verify:subtitle-invariant
 
