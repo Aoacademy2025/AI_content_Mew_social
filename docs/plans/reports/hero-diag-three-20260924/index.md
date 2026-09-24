@@ -2,6 +2,8 @@
 
 Date: 2026-09-24 (Asia/Bangkok). Status: deployed and smoke-verified at `fdc4b984` (14:38 Bangkok); parent issue outcomes remain open. See [release follow-up](release-followup.md).
 
+Latest approved evidence pass (19:39 Bangkok): [natural observations and VPS acoustic matrix](observation-followup.md). Cleanup safe busy-yield is now observed; the bounded acoustic matrix completes with three long-case emissions timeouts. Parent outcomes remain open.
+
 | Task | Deliverable | Independent task review | Parent issue outcome |
 | --- | --- | --- | --- |
 | SQLite — HERO-10 | [PR #543](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/543), issue head `9aec6657`; [evidence](task-1.md) | [Clear](task-1-review.md) | New diagnostic separates before-callback and callback time; actual lock holder still unknown. |
