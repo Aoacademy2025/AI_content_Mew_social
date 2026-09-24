@@ -39,7 +39,7 @@ async function main() {
   assert.ok(address && typeof address === "object");
   const browser = await puppeteer.launch({
     executablePath: process.env.CHROME_BIN || (process.platform === "darwin"
-      ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : puppeteer.executablePath()),
+      ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : await puppeteer.executablePath()),
     headless: true, args: ["--no-sandbox"],
   });
   try {
