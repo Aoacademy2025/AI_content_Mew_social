@@ -45,6 +45,8 @@ The preview persists the chosen captions, words and `verification.acoustic`. Exp
 ```sh
 npm run verify:acoustic-subtitle-clock
 python scripts/subtitle-alignment/test_engine.py
+python scripts/subtitle-alignment/test_prepare_long_fixtures.py
+python scripts/subtitle-alignment/test_long_benchmark.py
 npm run verify:subtitle-audio-sync
 npx tsx scripts/subtitle-alignment/benchmark.ts /private/path/corpus.json /private/path/clocks-and-references /private/path/report.json
 ```
@@ -52,6 +54,26 @@ npx tsx scripts/subtitle-alignment/benchmark.ts /private/path/corpus.json /priva
 The benchmark manifest is an array of `{id, text, timing}` (private). Per ID, `<id>-clock.json` contains the engine's numeric result and `<id>-references.json` contains `{boundaries:[{startChar,baselineMs,referenceMs,labelSource}]}`. `labelSource` distinguishes `human-reviewed` from an automatic screening reference. Keep manifests/media/ASR transcripts outside git and restrict their directory to the operator. Reports contain numeric evidence only; the harness always identifies qualification as pending because load and final-export verification are external to it.
 
 Python algorithm tests use NumPy without loading a model. Node integration tests exercise real process termination/cache behavior with a local stub, and the actual orchestrator tests verify off/shadow/apply/partial/export behavior. Neither substitutes for the actual-audio benchmark.
+
+### Bounded long-audio experiment
+
+`long_benchmark.py` invokes this package's real `engine.py`, forces Hugging Face and Transformers offline, applies a per-process deadline, samples child RSS, and records phase timings plus output duration, coverage, monotonicity and known-boundary drift. It never downloads a model. Prepare the exact pinned revision separately with the command above, then point `HF_HOME` at that immutable cache.
+
+On macOS, an installed Thai `Kanya` voice can create a noncustomer fixture set with one short case and approximately 120, 200, 270 and 300-second cases:
+
+```sh
+python scripts/subtitle-alignment/prepare_long_fixtures.py /private/path/hero-acoustic-fixtures
+HF_HOME=/private/path/hf-cache \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+/private/path/venv/bin/python scripts/subtitle-alignment/long_benchmark.py \
+  /private/path/hero-acoustic-fixtures/manifest.json \
+  /private/path/report.json \
+  --python /private/path/venv/bin/python \
+  --cache-dir /private/path/worker-cache \
+  --deadline-ms 60000 --threads 2
+```
+
+For another offline source, supply a JSON array of `{id,audioPath,text,expectedDurationMs,boundaries:[{startChar,referenceMs}]}`. Keep the manifest and media outside git. The generated repeated-speech boundaries can detect cumulative timestamp drift, but synthetic speech is not human-reviewed Thai timing evidence. A successful run is operational evidence only; it does not qualify a clock for production or justify changing the existing 60-second production budget. Evaluate alternate chunking only after this real-engine loop reproduces a failing long-input mechanism.
 
 ## Activation and rollback
 
