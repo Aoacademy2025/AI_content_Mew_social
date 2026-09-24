@@ -250,8 +250,8 @@ async function main(): Promise<void> {
     const { report } = fixed;
     const evictionMs = fixed.elapsedMs;
     assert.deepEqual(
-      report,
-      preFixSimulation.report,
+      { ...report, applyCosts: undefined },
+      { ...preFixSimulation.report, applyCosts: undefined },
       "safe-boundary activity checks must not change the cleanup result on an idle fixture",
     );
     assert.equal(report.scanned, fileCount);
@@ -259,6 +259,12 @@ async function main(): Promise<void> {
     assert.equal(report.skipped.limit, verifiedCount - evictionCount);
     assert.equal(report.evicted.count, evictionCount);
     assert.equal(report.errors, 0);
+    assert.equal(report.applyCosts.graphRebuild.count, evictionCount);
+    assert.equal(report.applyCosts.localSha256.count, evictionCount);
+    assert.equal(report.applyCosts.localSha256.sizeBytes, evictionCount * bytes.length);
+    assert.equal(report.applyCosts.catalog.count, evictionCount * 2);
+    assert.equal(report.applyCosts.remote.count, evictionCount);
+    assert.equal(report.applyCosts.otherApply.count, evictionCount);
     assert.equal(fixed.timings["remote.verifyReplica"]?.calls, evictionCount * 2);
     assert.equal(fixed.timings["catalog.markLocalEvicted"]?.calls, evictionCount);
     assert.equal(preFixSimulation.timings["activity.selection"]?.calls, selectionActivityChecks);
@@ -280,6 +286,7 @@ async function main(): Promise<void> {
       rssBeforeMiB: Math.round(rssBefore / 1024 / 1024),
       rssAfterMiB: Math.round(process.memoryUsage().rss / 1024 / 1024),
       operations: {
+        cleanupReportApplyCosts: report.applyCosts,
         missingLocalReconciliation: roundTimings(reconcileTimings),
         evictionSelectionDryRun: roundTimings(selectionTimings),
         preFixDefaultPollingSimulation: roundTimings(preFixSimulation.timings),

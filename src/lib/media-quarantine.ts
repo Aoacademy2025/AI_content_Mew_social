@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import type { MediaCleanupPlan, MediaKey, MediaManifestRecord } from "./media-cleanup";
 import type { MediaGraph, MediaGraphError } from "./media-reference-graph";
 import type { MediaReference } from "./media-retention";
@@ -37,6 +38,8 @@ export type ApplyMediaCleanupOptions = {
   runIdFactory?: (now: Date, reviewedManifestSha256: string) => string;
   beforeRollbackMove?: (record: MediaManifestRecord) => Promise<void>;
   writeManifest?: (manifestPath: string, manifest: QuarantineManifest) => Promise<void>;
+  monotonicNow?: () => number;
+  onGraphRebuild?: (elapsedMs: number) => void;
 };
 
 export type QuarantineManifest = {
@@ -412,6 +415,7 @@ export async function quarantineMediaCleanupPlan(
   }
 
   const now = options.now ?? new Date();
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   if (!Number.isFinite(now.getTime())) throw new Error("invalid cleanup clock");
   const cwd = plan.workspaceRoot;
   for (const record of plan.candidates) await canonicalRecordPath(record, cwd);
@@ -440,14 +444,23 @@ export async function quarantineMediaCleanupPlan(
   try {
     for (const batch of batches(plan.candidates, options.batchSize)) {
       const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+      const graphStartedAt = monotonicNow();
       const graph = await buildMediaReferenceGraph(now, {
-        workspaceRoot: cwd,
-        ignoreQuarantineRunIds: new Set([runId]),
-        inFlightQuarantinedMedia: new Map(moved.map(({ record }) => [
-          record.key,
-          { mtimeMs: record.mtimeMs },
-        ])),
-      });
+          workspaceRoot: cwd,
+          ignoreQuarantineRunIds: new Set([runId]),
+          inFlightQuarantinedMedia: new Map(moved.map(({ record }) => [
+            record.key,
+            { mtimeMs: record.mtimeMs },
+          ])),
+        })
+        .finally(() => {
+          const elapsedMs = monotonicNow() - graphStartedAt;
+          try {
+            options.onGraphRebuild?.(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : 0);
+          } catch {
+            // Diagnostics must never change cleanup or rollback behavior.
+          }
+        });
       assertGraphComplete(graph);
 
       for (const record of batch) {
