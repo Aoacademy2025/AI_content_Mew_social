@@ -24,6 +24,7 @@ import {
 import { useId, useMemo, useRef, useState } from "react";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
+import { EditorPanelLayout } from "./EditorPanelLayout";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
@@ -199,9 +200,10 @@ export function PostPhase({
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
         </div>
       )}
-      <div className="flex min-h-0 flex-1">
-        {/* ── ซ้าย 266px: การ์ดซับ ── */}
-        <aside className="flex min-h-0 w-[266px] shrink-0 flex-col" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+      <div className="flex min-h-0 flex-1 overflow-x-auto">
+        <EditorPanelLayout>
+        {/* ── ซ้าย: การ์ดซับ ── */}
+        <aside className="flex min-h-0 shrink-0 flex-col" style={{ width: "var(--editor-left-width)", borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <div className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2 pt-3">
             <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
             <div className="flex items-center gap-1">
@@ -448,8 +450,8 @@ export function PostPhase({
           </div>
         </main>
 
-        {/* ── ขวา 330px: พาดหัว / ซับ / โลโก้ ── */}
-        <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+        {/* ── ขวา: พาดหัว / ซับ / โลโก้ ── */}
+        <aside className="flex shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ width: "var(--editor-right-width)", borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <div
             data-editor-function-tabs="true"
             className="sticky top-0 z-20 -mx-4 -mt-4 px-4 pb-2 pt-4"
@@ -798,6 +800,7 @@ export function PostPhase({
           )}
         </aside>
 
+        </EditorPanelLayout>
         {brollEditEnabled && ed.selectedWindow != null && (
           <BrollWindowInspector
             ed={ed}
