@@ -88,13 +88,12 @@ export function sqliteBusyTimeoutSecondsFromEnv(env: EnvLike = process.env): num
 }
 
 /**
- * Log any transaction that stays open at least this long, in ms.
+ * Log any Prisma transaction call that lasts at least this long, in ms.
  *
- * SQLite holds the write lock from a transaction's first write until it
- * commits, so a single long transaction is what makes unrelated requests wait.
- * Production shows writers giving up after the 20 s socket timeout while the
- * box is almost idle, and the holder is not identifiable from the logs. This
- * threshold is high enough that a healthy transaction never logs.
+ * The elapsed call can include time before an interactive callback starts,
+ * time inside the callback, and Prisma finalization. None of those durations
+ * identifies a SQLite lock holder. This threshold is high enough that a
+ * healthy transaction never logs.
  *
  * Env: `PRISMA_SLOW_TX_MS`; 0 disables the timer entirely.
  */

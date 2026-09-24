@@ -77,14 +77,21 @@ budget are accepted.
 The marker has this deliberately narrow shape:
 
 ```text
-[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location>
+[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=interactive beforeCallbackMs=<milliseconds> callbackMs=<milliseconds> callbackEntered=<0|1>
+[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=batch
 ```
 
-`elapsed` starts before Prisma waits for the transaction, so it can include
-queue time and is not a write-lock hold duration. `source` identifies the
-transaction invocation, not a proven lock holder. Group source values during a
-slow window, compare them with same-timestamp timeout failures, and treat a
-repeated source as an investigation candidate only.
+`elapsed` is the total Prisma call time. For interactive transactions,
+`beforeCallbackMs` is wall time from invocation until Prisma enters the
+callback, while `callbackMs` is wall time executing that callback.
+`callbackEntered=0` means Prisma returned or rejected before entry. Array
+transactions have no callback boundary and remain total-only. Pre-callback
+time can include connection scheduling or SQLite transaction acquisition, and
+callback time can include database waits during callback queries; neither is a
+write-lock hold duration. `source` identifies the invocation, not a proven lock
+holder. Group source values during a slow window, compare them with
+same-timestamp timeout failures, and treat a repeated source as an
+investigation candidate only.
 
 The logger keeps `src/...:line` or `scripts/...:line` when that source frame is
 available. In a Next production bundle it reduces
