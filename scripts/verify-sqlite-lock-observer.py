@@ -198,6 +198,45 @@ def main() -> None:
             "invalid PID class mapping",
         )
 
+        race_root = base / "identity-race"
+        race_root.mkdir()
+        race_db = race_root / "fixture.db"
+        replacement_db = race_root / "replacement.db"
+        wal_header = bytearray(20)
+        wal_header[:16] = b"SQLite format 3\x00"
+        wal_header[18:20] = b"\x02\x02"
+        race_db.write_bytes(wal_header)
+        replacement_db.write_bytes(wal_header)
+        Path(f"{race_db}-shm").touch()
+        race_proc = race_root / "proc"
+        race_proc.mkdir()
+        os.mkfifo(race_proc / "locks")
+        original_inode = race_db.stat().st_ino
+
+        def replace_during_final_snapshot() -> None:
+            with (race_proc / "locks").open("w", encoding="ascii") as output:
+                time.sleep(0.03)
+                os.replace(replacement_db, race_db)
+                output.write("")
+
+        replacement = threading.Thread(target=replace_during_final_snapshot)
+        replacement.start()
+        identity_changed = run_observer(race_db, race_proc, duration="0.01")
+        replacement.join(timeout=1)
+        assert not replacement.is_alive()
+        assert race_db.stat().st_ino != original_inode
+        assert identity_changed.returncode == 2
+        assert identity_changed.stdout == ""
+        assert identity_changed.stderr == "sqlite-lock-observer: database lock target identity changed\n"
+
+        repeated_target = f"1: POSIX ADVISORY WRITE 4321 {shm_device}:{shm_inode} 120 120\n"
+        (proc_root / "locks").write_text(repeated_target * 1_001, encoding="ascii")
+        overflow = run_observer(db, proc_root)
+        assert overflow.returncode == 2
+        assert overflow.stdout == ""
+        assert overflow.stderr == "sqlite-lock-observer: observation event limit exceeded\n"
+        (proc_root / "locks").write_text(lock_text, encoding="ascii")
+
         def interrupt_locks() -> None:
             time.sleep(0.10)
             (proc_root / "locks").write_text("", encoding="ascii")

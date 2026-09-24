@@ -239,11 +239,17 @@ def snapshot(
     targets: dict[FileIdentity, str],
     classes: dict[int, ProcessClass],
 ) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
     try:
-        lines = (proc_root / "locks").read_text(encoding="ascii").splitlines()
+        with (proc_root / "locks").open(encoding="ascii") as locks:
+            for line in locks:
+                parsed = lock_events(line.rstrip("\n"), targets, proc_root, classes)
+                if len(events) + len(parsed) > MAX_EVENTS:
+                    raise ObserverError("observation event limit exceeded")
+                events.extend(parsed)
     except (OSError, UnicodeError) as error:
         raise ObserverError("proc locks unavailable") from error
-    return [event for line in lines for event in lock_events(line, targets, proc_root, classes)]
+    return events
 
 
 def observe(args: argparse.Namespace) -> list[dict[str, object]]:
@@ -279,8 +285,11 @@ def observe(args: argparse.Namespace) -> list[dict[str, object]]:
         observed_utc = datetime.now(timezone.utc)
         elapsed_ms = round((observed_monotonic - started_monotonic) * 1_000)
         utc_text = observed_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        sampled_events = snapshot(proc_root, targets, classes)
+        if file_identity(database) != database_identity or file_identity(shm) != shm_identity:
+            raise ObserverError("database lock target identity changed")
         current: dict[tuple[object, ...], dict[str, object]] = {}
-        for event in snapshot(proc_root, targets, classes):
+        for event in sampled_events:
             key = (
                 event["pid"],
                 event["pidStartTicks"],
@@ -298,6 +307,8 @@ def observe(args: argparse.Namespace) -> list[dict[str, object]]:
         for key, event in current.items():
             interval_record = active.get(key)
             if interval_record is None:
+                if len(records) + len(active) >= MAX_EVENTS:
+                    raise ObserverError("observation event limit exceeded")
                 active[key] = {
                     **event,
                     "firstObservedAtUtc": utc_text,
