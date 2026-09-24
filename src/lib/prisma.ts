@@ -82,20 +82,20 @@ const slowTransactionMs = slowTransactionThresholdMsFromEnv();
 
 export function slowTransactionSourceFromStack(stack: string): string {
   for (const line of stack.split("\n").slice(1)) {
-    const location = line.match(/(.+):(\d+):\d+\)?$/);
+    const location = line.match(/(.+):(\d+):(\d+)\)?$/);
     if (!location) continue;
 
     const file = location[1];
     const nextAppStart = file.lastIndexOf("/.next/server/app/");
     if (nextAppStart >= 0) {
-      return `${file.slice(nextAppStart + "/.next/server/".length)}:${location[2]}`;
+      return `${file.slice(nextAppStart + "/.next/server/".length)}:${location[2]}:${location[3]}`;
     }
 
     const sourceStart = Math.max(file.lastIndexOf("/src/"), file.lastIndexOf("/scripts/"));
     if (sourceStart < 0) continue;
 
     const source = file.slice(sourceStart + 1);
-    if (source !== "src/lib/prisma.ts") return `${source}:${location[2]}`;
+    if (source !== "src/lib/prisma.ts") return `${source}:${location[2]}:${location[3]}`;
   }
 
   return "unknown";

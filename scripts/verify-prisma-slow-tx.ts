@@ -154,8 +154,8 @@ async function verifyBundledCallerPhases(
       `the real bundled callers must record delayed callback entry: ${JSON.stringify(diagnostics)}`,
     );
     const sources = diagnostics.map((diagnostic) => diagnostic.source).sort();
-    assert.match(sources[0] ?? "", /^app\/api\/fixture-balance-a\/route\.js:\d+$/);
-    assert.match(sources[1] ?? "", /^app\/api\/fixture-balance-b\/route\.js:\d+$/);
+    assert.match(sources[0] ?? "", /^app\/api\/fixture-balance-a\/route\.js:\d+:\d+$/);
+    assert.match(sources[1] ?? "", /^app\/api\/fixture-balance-b\/route\.js:\d+:\d+$/);
     assert.equal(
       await installer.prisma.creditBalance.count({
         where: { userId: { in: ["slow-tx-caller-a", "slow-tx-caller-b"] } },
@@ -221,8 +221,8 @@ async function main() {
         "    at wrappedTransaction (/var/www/ai-content/.next/server/chunks/891.js:1:10)",
         "    at handler (/var/www/ai-content/.next/server/app/api/videos/route.js:1:42)",
       ].join("\n")),
-      "app/api/videos/route.js:1",
-      "a bundled Next route remains useful provenance without its absolute path",
+      "app/api/videos/route.js:1:42",
+      "a bundled Next route keeps the generated column without its absolute path",
     );
 
     // A transaction that finishes well inside the threshold stays silent, so
@@ -250,7 +250,7 @@ async function main() {
       slowCallback.beforeCallbackMs! < THRESHOLD_MS,
       "an immediately entered callback must not be reported as pre-entry delay",
     );
-    assert.match(slowCallback.source, /^(?:scripts\/verify-prisma-slow-tx\.ts:\d+|unknown)$/);
+    assert.match(slowCallback.source, /^(?:scripts\/verify-prisma-slow-tx\.ts:\d+:\d+|unknown)$/);
     const reported = slowCallback.totalMs;
     assert(
       reported >= heldMs,
