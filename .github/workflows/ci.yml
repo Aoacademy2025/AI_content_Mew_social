@@ -32,6 +32,9 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Verify isolated webpack compiler config
+        run: npm run verify:build-worker-config
+
       - name: Verify narration comparison and regeneration disclosure
         run: npm run verify:narration-comparison && npm run verify:render-receipt
 

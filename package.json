@@ -64,6 +64,7 @@
     "verify:upload-proxy-limit": "tsx scripts/verify-upload-proxy-body-limit.ts",
     "verify:upload-streaming": "tsx scripts/verify-upload-request-streaming.ts && tsx scripts/verify-upload-auth-feedback.ts",
     "verify:deploy-health-rollback": "tsx scripts/verify-deploy-health-rollback.ts",
+    "verify:build-worker-config": "tsx scripts/verify-build-worker-config.ts",
     "ops:render-drain": "tsx scripts/set-render-deploy-drain.ts",
     "ops:check-render-queues": "tsx scripts/check-empty-render-queues.ts",
     "ops:audit-subtitle-releases": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/audit-subtitle-releases.ts",

@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
     ],
   },
   experimental: {
+    // A custom webpack hook disables Next's default build worker. Opt back in so
+    // each serial compiler runs in a disposable process instead of accumulating
+    // its heap in the long-lived build process.
+    webpackBuildWorker: true,
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
     cpus: 1,
