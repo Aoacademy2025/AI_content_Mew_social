@@ -405,6 +405,7 @@ async function main(): Promise<void> {
   assert.equal(dryRun.eligible.count, 1);
   assert.equal(existsSync(successFile.absolutePath), true);
 
+  let operationClock = 0;
   const applied = await runLocalMediaEviction(successPlan, {
     mode: "apply",
     now,
@@ -412,6 +413,7 @@ async function main(): Promise<void> {
     remote: successRemote,
     maxObjects: 1,
     maxBytes: 1024,
+    monotonicNow: () => operationClock += 5,
     env: {
       MEDIA_READ_MODE: "r2-local",
       MEDIA_LOCAL_EVICTION: "1",
@@ -420,6 +422,17 @@ async function main(): Promise<void> {
   });
   assert.equal(applied.evicted.count, 1);
   assert.equal(applied.errors, 0);
+  assert.deepEqual(applied.applyCosts, {
+    graphRebuild: { count: 1, totalMs: 5 },
+    localSha256: {
+      count: 1,
+      sizeBytes: Buffer.byteLength("verified-r2-copy"),
+      totalMs: 5,
+    },
+    catalog: { count: 2, totalMs: 10 },
+    remote: { count: 1, totalMs: 5 },
+    otherApply: { count: 1, totalMs: 30 },
+  }, "the cleanup report exposes only aggregate numeric apply costs");
   assert.equal(existsSync(successFile.absolutePath), false);
   assert.equal((await catalog.inspect({
     area: "renders",

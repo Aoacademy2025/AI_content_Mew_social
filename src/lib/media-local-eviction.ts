@@ -1,5 +1,6 @@
 import { unlink, rmdir } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   LOCAL_EVICTION_CATALOG_BATCH_SIZE,
   MediaCatalog,
@@ -60,8 +61,17 @@ export type LocalEvictionReport = {
   evicted: { count: number; sizeBytes: number };
   skipped: Record<LocalEvictionSkipReason, number>;
   errors: number;
+  applyCosts: LocalEvictionApplyCosts;
   /** Set when the run stopped early rather than finishing the pass (HERO-41). */
   deferredReason?: YieldReason;
+};
+
+export type LocalEvictionApplyCosts = {
+  graphRebuild: { count: number; totalMs: number };
+  localSha256: { count: number; sizeBytes: number; totalMs: number };
+  catalog: { count: number; totalMs: number };
+  remote: { count: number; totalMs: number };
+  otherApply: { count: number; totalMs: number };
 };
 
 export type LocalEvictionCatalog = Pick<
@@ -86,6 +96,7 @@ export type LocalEvictionOptions = {
   yieldMinIntervalMs?: number;
   /** Epoch ms after which the run stops even on a completely idle box. */
   yieldDeadlineAt?: number;
+  monotonicNow?: () => number;
 };
 
 function emptySkips(): Record<LocalEvictionSkipReason, number> {
@@ -99,6 +110,44 @@ function emptySkips(): Record<LocalEvictionSkipReason, number> {
     restore_failed: 0,
     operation_failed: 0,
   };
+}
+
+function emptyApplyCosts(): LocalEvictionApplyCosts {
+  return {
+    graphRebuild: { count: 0, totalMs: 0 },
+    localSha256: { count: 0, sizeBytes: 0, totalMs: 0 },
+    catalog: { count: 0, totalMs: 0 },
+    remote: { count: 0, totalMs: 0 },
+    otherApply: { count: 0, totalMs: 0 },
+  };
+}
+
+function elapsedMs(monotonicNow: () => number, startedAt: number): number {
+  const elapsed = monotonicNow() - startedAt;
+  return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : 0;
+}
+
+async function measureApplyCost<T>(
+  cost: { count: number; totalMs: number; sizeBytes?: number },
+  monotonicNow: () => number,
+  run: () => Promise<T>,
+  sizeBytes = 0,
+): Promise<T> {
+  const startedAt = monotonicNow();
+  try {
+    return await run();
+  } finally {
+    cost.count++;
+    cost.totalMs += elapsedMs(monotonicNow, startedAt);
+    if (cost.sizeBytes !== undefined) cost.sizeBytes += sizeBytes;
+  }
+}
+
+function knownApplyMs(costs: LocalEvictionApplyCosts): number {
+  return costs.graphRebuild.totalMs +
+    costs.localSha256.totalMs +
+    costs.catalog.totalMs +
+    costs.remote.totalMs;
 }
 
 function identityForRecord(record: MediaManifestRecord): MediaIdentity | null {
@@ -236,23 +285,44 @@ async function evictOne(
   replica: VerifiedLocalReplica,
   catalog: LocalEvictionCatalog,
   remote: RemoteMediaReplicaVerifier,
+  costs: LocalEvictionApplyCosts,
+  monotonicNow: () => number,
 ): Promise<{ status: "evicted" | LocalEvictionSkipReason; error: boolean }> {
-  const currentRow = await catalog.inspect(replica.identity);
+  const applyStartedAt = monotonicNow();
+  const knownStartedAt = knownApplyMs(costs);
+  const finish = (result: { status: "evicted" | LocalEvictionSkipReason; error: boolean }) => {
+    const totalMs = elapsedMs(monotonicNow, applyStartedAt);
+    const attributedMs = knownApplyMs(costs) - knownStartedAt;
+    costs.otherApply.count++;
+    costs.otherApply.totalMs += Math.max(0, totalMs - attributedMs);
+    return result;
+  };
+
+  const currentRow = await measureApplyCost(
+    costs.catalog,
+    monotonicNow,
+    () => catalog.inspect(replica.identity),
+  );
   const currentReplica = verifiedLocalReplica(replica.record, currentRow);
   if (
     !currentReplica ||
     currentReplica.sha256 !== replica.sha256 ||
     currentReplica.remoteIdentity.filename !== replica.remoteIdentity.filename
   ) {
-    return { status: "changed", error: false };
+    return finish({ status: "changed", error: false });
   }
 
   const one = singleRecordPlan(plan, replica.record);
   const quarantined = await quarantineMediaCleanupPlan(one, one.manifestSha256, {
     batchSize: 1,
+    monotonicNow,
+    onGraphRebuild: (totalMs) => {
+      costs.graphRebuild.count++;
+      costs.graphRebuild.totalMs += totalMs;
+    },
   });
   if (quarantined.quarantined.count !== 1) {
-    return { status: "quarantine_skipped", error: false };
+    return finish({ status: "quarantine_skipped", error: false });
   }
 
   const stagedPath = quarantinePath(plan.workspaceRoot, quarantined.runId, replica);
@@ -262,7 +332,12 @@ async function evictOne(
     if (
       stagedStat.size !== replica.record.sizeBytes ||
       stagedStat.mtimeMs !== replica.record.mtimeMs ||
-      await sha256MediaFile(stagedPath) !== replica.sha256
+      await measureApplyCost(
+        costs.localSha256,
+        monotonicNow,
+        () => sha256MediaFile(stagedPath),
+        replica.record.sizeBytes,
+      ) !== replica.sha256
     ) {
       const restored = await restoreAfterFailure(
         plan,
@@ -271,17 +346,19 @@ async function evictOne(
         catalog,
         false,
       );
-      return {
+      return finish({
         status: restored ? "changed" : "restore_failed",
         error: !restored,
-      };
+      });
     }
 
-    const remoteMatches = await remote.verifyReplica({
-      identity: replica.remoteIdentity,
-      expectedSizeBytes: replica.record.sizeBytes,
-      expectedSha256: replica.sha256,
-    });
+    const remoteMatches = await measureApplyCost(costs.remote, monotonicNow, () =>
+      remote.verifyReplica({
+        identity: replica.remoteIdentity,
+        expectedSizeBytes: replica.record.sizeBytes,
+        expectedSha256: replica.sha256,
+      })
+    );
     if (!remoteMatches) {
       const restored = await restoreAfterFailure(
         plan,
@@ -290,19 +367,21 @@ async function evictOne(
         catalog,
         false,
       );
-      return {
+      return finish({
         status: restored ? "remote_unverified" : "restore_failed",
         error: !restored,
-      };
+      });
     }
 
-    catalogWasEvicted = await catalog.markLocalEvicted({
-      identity: replica.identity,
-      sizeBytes: replica.record.sizeBytes,
-      localMtimeMs: replica.record.mtimeMs,
-      sha256: replica.sha256,
-      remoteFilename: replica.remoteFilename,
-    });
+    catalogWasEvicted = await measureApplyCost(costs.catalog, monotonicNow, () =>
+      catalog.markLocalEvicted({
+        identity: replica.identity,
+        sizeBytes: replica.record.sizeBytes,
+        localMtimeMs: replica.record.mtimeMs,
+        sha256: replica.sha256,
+        remoteFilename: replica.remoteFilename,
+      })
+    );
     if (!catalogWasEvicted) {
       const restored = await restoreAfterFailure(
         plan,
@@ -311,10 +390,10 @@ async function evictOne(
         catalog,
         false,
       );
-      return {
+      return finish({
         status: restored ? "catalog_changed" : "restore_failed",
         error: !restored,
-      };
+      });
     }
 
     await unlink(stagedPath);
@@ -323,7 +402,7 @@ async function evictOne(
       quarantined.runId,
       replica.identity.area,
     );
-    return { status: "evicted", error: false };
+    return finish({ status: "evicted", error: false });
   } catch {
     const restored = await restoreAfterFailure(
       plan,
@@ -332,10 +411,10 @@ async function evictOne(
       catalog,
       catalogWasEvicted,
     );
-    return {
+    return finish({
       status: restored ? "operation_failed" : "restore_failed",
       error: true,
-    };
+    });
   }
 }
 
@@ -370,6 +449,7 @@ export async function runLocalMediaEviction(
   );
   const catalog = options.catalog ?? new MediaCatalog();
   const remote = options.remote ?? createR2MediaStorageFromEnv(env, "read");
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const report: LocalEvictionReport = {
     mode,
     generatedAt: (options.now ?? new Date()).toISOString(),
@@ -379,6 +459,7 @@ export async function runLocalMediaEviction(
     evicted: { count: 0, sizeBytes: 0 },
     skipped: emptySkips(),
     errors: 0,
+    applyCosts: emptyApplyCosts(),
   };
 
   const shouldYield = createYieldGate(options.shouldYield, {
@@ -462,7 +543,14 @@ export async function runLocalMediaEviction(
       report.deferredReason = applyYield;
       return report;
     }
-    const result = await evictOne(plan, replica, catalog, remote);
+    const result = await evictOne(
+      plan,
+      replica,
+      catalog,
+      remote,
+      report.applyCosts,
+      monotonicNow,
+    );
     if (result.status === "evicted") {
       report.evicted.count++;
       report.evicted.sizeBytes += replica.record.sizeBytes;
