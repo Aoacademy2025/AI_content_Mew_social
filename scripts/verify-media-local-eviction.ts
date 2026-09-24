@@ -353,6 +353,72 @@ async function main(): Promise<void> {
   assert.equal(existsSync(casFile.absolutePath), true, "CAS loss after quarantine must restore the file");
   assert.equal(readFileSync(casFile.absolutePath, "utf8"), "restore-after-catalog-race");
 
+  const recoveryRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-recovery-cost-"));
+  const recoveryName = "restore-after-post-cas-failure.mp4";
+  const recoveryFile = writeOldRender(recoveryName, "restore-and-retime-catalog", recoveryRoot);
+  await catalogRender(prisma, recoveryName, recoveryFile);
+  const recoveryPlan = await getMediaCleanupPlan({
+    cwd: recoveryRoot,
+    now,
+    includeStocks: true,
+  });
+  let recoveryClock = 0;
+  const recoveryCatalog = new Proxy(catalog, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (["inspect", "markLocalEvicted", "markLocalPresent"].includes(String(property))) {
+        return async (...args: unknown[]) => {
+          const result = await Reflect.apply(value, target, args);
+          recoveryClock += 5;
+          return result;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const recoveryReport = await runLocalMediaEviction(recoveryPlan, {
+    mode: "apply",
+    now,
+    catalog: recoveryCatalog,
+    remote: {
+      verifyReplica: async () => {
+        recoveryClock += 5;
+        return true;
+      },
+    },
+    unlinkFile: async () => {
+      recoveryClock += 5;
+      throw new Error("fixture post-CAS failure");
+    },
+    monotonicNow: () => recoveryClock,
+    maxObjects: 1,
+    maxBytes: 1024,
+    env: {
+      MEDIA_READ_MODE: "r2-local",
+      MEDIA_LOCAL_EVICTION: "1",
+      MEDIA_R2_DELETE: "0",
+    },
+  });
+  assert.equal(recoveryReport.evicted.count, 0);
+  assert.equal(recoveryReport.skipped.operation_failed, 1);
+  assert.equal(recoveryReport.errors, 1);
+  assert.equal(existsSync(recoveryFile.absolutePath), true, "post-CAS failure restores the file");
+  assert.equal((await catalog.inspect({
+    area: "renders",
+    filename: recoveryName,
+  }))?.localState, "present", "post-CAS failure restores catalog state");
+  assert.deepEqual(recoveryReport.applyCosts, {
+    graphRebuild: { count: 1, totalMs: 0 },
+    localSha256: {
+      count: 1,
+      sizeBytes: Buffer.byteLength("restore-and-retime-catalog"),
+      totalMs: 0,
+    },
+    catalog: { count: 3, totalMs: 15 },
+    remote: { count: 1, totalMs: 5 },
+    otherApply: { count: 1, totalMs: 5 },
+  }, "recovery catalog work is attributed to catalog rather than residual apply time");
+
   assert(
     verifiedLocalReplica(
       {

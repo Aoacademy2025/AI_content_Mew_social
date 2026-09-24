@@ -97,6 +97,7 @@ export type LocalEvictionOptions = {
   /** Epoch ms after which the run stops even on a completely idle box. */
   yieldDeadlineAt?: number;
   monotonicNow?: () => number;
+  unlinkFile?: (filePath: string) => Promise<void>;
 };
 
 function emptySkips(): Record<LocalEvictionSkipReason, number> {
@@ -258,6 +259,8 @@ async function restoreAfterFailure(
   replica: VerifiedLocalReplica,
   catalog: LocalEvictionCatalog,
   catalogWasEvicted: boolean,
+  costs: LocalEvictionApplyCosts,
+  monotonicNow: () => number,
 ): Promise<boolean> {
   try {
     const restored = await restoreQuarantineRun(runId, {
@@ -266,13 +269,15 @@ async function restoreAfterFailure(
     if (restored.restored.count !== 1 || restored.errors.count !== 0) return false;
     await cleanupEmptyRun(plan.workspaceRoot, runId, replica.identity.area);
     if (catalogWasEvicted) {
-      return catalog.markLocalPresent({
-        identity: replica.identity,
-        sizeBytes: replica.record.sizeBytes,
-        localMtimeMs: replica.record.mtimeMs,
-        sha256: replica.sha256,
-        remoteFilename: replica.remoteFilename,
-      });
+      return measureApplyCost(costs.catalog, monotonicNow, () =>
+        catalog.markLocalPresent({
+          identity: replica.identity,
+          sizeBytes: replica.record.sizeBytes,
+          localMtimeMs: replica.record.mtimeMs,
+          sha256: replica.sha256,
+          remoteFilename: replica.remoteFilename,
+        })
+      );
     }
     return true;
   } catch {
@@ -287,6 +292,7 @@ async function evictOne(
   remote: RemoteMediaReplicaVerifier,
   costs: LocalEvictionApplyCosts,
   monotonicNow: () => number,
+  unlinkFile: (filePath: string) => Promise<void>,
 ): Promise<{ status: "evicted" | LocalEvictionSkipReason; error: boolean }> {
   const applyStartedAt = monotonicNow();
   const knownStartedAt = knownApplyMs(costs);
@@ -345,6 +351,8 @@ async function evictOne(
         replica,
         catalog,
         false,
+        costs,
+        monotonicNow,
       );
       return finish({
         status: restored ? "changed" : "restore_failed",
@@ -366,6 +374,8 @@ async function evictOne(
         replica,
         catalog,
         false,
+        costs,
+        monotonicNow,
       );
       return finish({
         status: restored ? "remote_unverified" : "restore_failed",
@@ -389,6 +399,8 @@ async function evictOne(
         replica,
         catalog,
         false,
+        costs,
+        monotonicNow,
       );
       return finish({
         status: restored ? "catalog_changed" : "restore_failed",
@@ -396,7 +408,7 @@ async function evictOne(
       });
     }
 
-    await unlink(stagedPath);
+    await unlinkFile(stagedPath);
     await cleanupEmptyRun(
       plan.workspaceRoot,
       quarantined.runId,
@@ -410,6 +422,8 @@ async function evictOne(
       replica,
       catalog,
       catalogWasEvicted,
+      costs,
+      monotonicNow,
     );
     return finish({
       status: restored ? "operation_failed" : "restore_failed",
@@ -550,6 +564,7 @@ export async function runLocalMediaEviction(
       remote,
       report.applyCosts,
       monotonicNow,
+      options.unlinkFile ?? unlink,
     );
     if (result.status === "evicted") {
       report.evicted.count++;
