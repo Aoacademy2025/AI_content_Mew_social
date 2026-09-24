@@ -69,10 +69,12 @@ if (isNewClient) {
     .catch((e) => console.warn("[prisma] could not set cache_size:", e));
 }
 
-// HERO-10. This measures elapsed time around Prisma's transaction call, which
-// includes time waiting to start; it is not a SQLite write-lock duration. The
-// source below narrows investigation to the transaction invocation without
-// claiming that invocation is the lock holder.
+// HERO-10. This measures elapsed time around Prisma's transaction call. For an
+// interactive transaction it also separates time before Prisma invokes the
+// callback from time executing the callback. Neither phase is a SQLite
+// write-lock duration: the callback can itself wait on its first write, and a
+// pre-callback delay can be connection-pool scheduling. The source narrows
+// investigation to the invocation without claiming that it is the lock holder.
 //
 // Log-only, and the timer is a Date.now() pair around a call that already
 // awaits the database. Set PRISMA_SLOW_TX_MS=0 to remove it entirely.
@@ -100,6 +102,7 @@ export function slowTransactionSourceFromStack(stack: string): string {
 }
 
 type TransactionFn = (...args: unknown[]) => Promise<unknown>;
+type TransactionCallback = (...args: unknown[]) => Promise<unknown>;
 
 function slowTransactionSource(stackBoundary: TransactionFn): string {
   const error = new Error();
@@ -119,14 +122,36 @@ if (isNewClient && slowTransactionMs > 0) {
     const id = (sequence += 1);
     const source = slowTransactionSource(instrumentedTransaction);
     const startedAt = Date.now();
+    const callback = typeof args[0] === "function"
+      ? args[0] as TransactionCallback
+      : undefined;
+    let callbackStartedAt: number | undefined;
+    let callbackMs = 0;
+    const transactionArgs = callback
+      ? [async function (this: unknown, ...callbackArgs: unknown[]) {
+          callbackStartedAt = Date.now();
+          try {
+            return await Reflect.apply(callback, this, callbackArgs);
+          } finally {
+            callbackMs = Date.now() - callbackStartedAt;
+          }
+        }, ...args.slice(1)]
+      : args;
     try {
-      return await runTransaction(...args);
+      return await runTransaction(...transactionArgs);
     } finally {
       const elapsedMs = Date.now() - startedAt;
       if (elapsedMs >= slowTransactionMs) {
-        // No arguments, SQL, model names or row data — only a static source
-        // location and elapsed call time for correlation with timestamped logs.
-        console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms source=${source}`);
+        // No arguments, SQL, model names or row data — only static provenance
+        // and numeric phase durations for correlation with timestamped logs.
+        const phases = callback
+          ? `kind=interactive beforeCallbackMs=${callbackStartedAt === undefined ? elapsedMs : callbackStartedAt - startedAt} callbackMs=${callbackMs} callbackEntered=${callbackStartedAt === undefined ? 0 : 1}`
+          : "kind=batch";
+        try {
+          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms source=${source} ${phases}`);
+        } catch {
+          // Diagnostics must never change transaction results or exceptions.
+        }
       }
     }
   };
