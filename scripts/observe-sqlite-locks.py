@@ -57,6 +57,11 @@ class ObserverError(Exception):
     pass
 
 
+class FixedErrorArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise ObserverError("invalid command line")
+
+
 @dataclass(frozen=True)
 class FileIdentity:
     major: int
@@ -328,7 +333,7 @@ def observe(args: argparse.Namespace) -> list[dict[str, object]]:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Observe SQLite WAL locks without reading SQL or process command lines.")
+    result = FixedErrorArgumentParser(description="Observe SQLite WAL locks without reading SQL or process command lines.")
     result.add_argument("--db", required=True)
     result.add_argument("--duration-seconds", required=True, type=float)
     result.add_argument("--interval-ms", type=int, default=100)

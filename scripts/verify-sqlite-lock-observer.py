@@ -56,6 +56,30 @@ def run_observer(
     )
 
 
+def run_raw(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(OBSERVER), *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+
+
+def assert_private_cli_failure(
+    result: subprocess.CompletedProcess[str],
+    sentinel: str,
+    expected_error: str,
+) -> None:
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"sqlite-lock-observer: {expected_error}\n"
+    assert sentinel not in result.stdout
+    assert sentinel not in result.stderr
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="hero-lock-observer-") as temp:
         base = Path(temp)
@@ -129,6 +153,50 @@ def main() -> None:
         assert records[-1]["observedElapsedMs"] >= 50
         assert "private-fixture-name" not in observed.stdout
         assert str(base) not in observed.stdout
+
+        invalid_duration = "PRIVATE_DURATION_SENTINEL"
+        assert_private_cli_failure(
+            run_raw("--db", str(db), "--duration-seconds", invalid_duration),
+            invalid_duration,
+            "invalid command line",
+        )
+        invalid_interval = "PRIVATE_INTERVAL_SENTINEL"
+        assert_private_cli_failure(
+            run_raw(
+                "--db", str(db),
+                "--duration-seconds", "1",
+                "--interval-ms", invalid_interval,
+            ),
+            invalid_interval,
+            "invalid command line",
+        )
+        unknown_argument = "--PRIVATE_UNKNOWN_SENTINEL"
+        assert_private_cli_failure(
+            run_raw(
+                "--db", str(db),
+                "--duration-seconds", "1",
+                unknown_argument,
+            ),
+            unknown_argument,
+            "invalid command line",
+        )
+        missing_required = "PRIVATE_MISSING_SENTINEL"
+        assert_private_cli_failure(
+            run_raw("--pid-class", missing_required),
+            missing_required,
+            "invalid command line",
+        )
+        invalid_class = "4321=PRIVATE_CLASS_SENTINEL"
+        assert_private_cli_failure(
+            run_raw(
+                "--db", str(db),
+                "--duration-seconds", "1",
+                "--proc-root", str(proc_root),
+                "--pid-class", invalid_class,
+            ),
+            invalid_class,
+            "invalid PID class mapping",
+        )
 
         def interrupt_locks() -> None:
             time.sleep(0.10)
