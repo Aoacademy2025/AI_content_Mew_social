@@ -1,5 +1,7 @@
 # Approved discriminating probes — 2026-09-24
 
+Historical pre-deployment snapshot. Mew subsequently authorized merge/deploy; all three PRs are now shipped. See [verified release and measured build memory](probes-release.md) for current delivery status.
+
 Production remains `fdc4b984a64592a15f35821023d7dbdb8655f2f9` with build ID `cTfjlkCjs4AUifjFCUJRI`. The three new diagnostic PRs have not been merged or deployed. No cleanup was manually triggered, customer media processed, provider called, or production tuning changed.
 
 ## SQLite
