@@ -1,6 +1,6 @@
 # HERO-10 / HERO-41 / HERO-51 — approved follow-up delivery
 
-Date: 2026-09-24 (Asia/Bangkok). Status: delivered — all three PRs ready for review; no merge/deploy.
+Date: 2026-09-24 (Asia/Bangkok). Status: deployed and smoke-verified at `fdc4b984` (14:38 Bangkok); parent issue outcomes remain open. See [release follow-up](release-followup.md).
 
 | Task | Deliverable | Independent task review | Parent issue outcome |
 | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ CI for PR543 passed14m12s ([run](https://github.com/Aoacademy2025/AI_content_Mew
 - HERO-41: verify natural busy yield after an authorized release, and investigate remaining production per-phase costs. Local benchmark cannot account for 90 minutes or certify elimination of shared-lock starvation.
 - HERO-51: run the same noncustomer harness on deployment-equivalent hardware/load before choosing an acoustic performance change. No customer media was copied or processed; the original long-output timing complaint remains open.
 
-No merge, deployment, production cleanup, provider replay, customer reply, financial mutation or parent-issue Done transition occurred. No new support-ticket correlation or Sentry-clearance claim. The three canonical Linear issues remain the tracking links.
+The original implementation sign-off preceded merge/deploy; the release follow-up above records subsequent authorized actions. No production cleanup was manually triggered, and no provider replay, customer reply, financial mutation or parent-issue Done transition occurred. No new support-ticket correlation or Sentry-clearance claim. The three canonical Linear issues remain the tracking links.
 
 ## Review records and advisories
 
