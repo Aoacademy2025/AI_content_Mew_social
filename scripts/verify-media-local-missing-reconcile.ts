@@ -152,6 +152,33 @@ async function main(): Promise<void> {
     "present",
   );
 
+  await createVerifiedPresent("0-yield-a.mp4");
+  await createVerifiedPresent("0-yield-b.mp4");
+  const deferred = await reconcileMissingVerifiedLocalMedia({
+    mode: "apply",
+    cwd: root,
+    catalog,
+    remote: new FakeVerifier(),
+    quarantinedKeys: new Set(["renders/quarantined.mp4"]),
+    maxObjects: 2,
+    maxBytes: 1024,
+    env: rolloutEnv,
+    shouldYield: async () =>
+      (await catalog.inspect({ area: "renders", filename: "0-yield-a.mp4" }))?.localState ===
+        "evicted",
+  });
+  assert.equal(deferred.deferredReason, "customer_media_active");
+  assert.equal(
+    deferred.reconciled.count,
+    1,
+    "the completed catalog transition stays committed while the next candidate is deferred",
+  );
+  assert.equal(
+    (await catalog.inspect({ area: "renders", filename: "0-yield-b.mp4" }))?.localState,
+    "present",
+    "yielding at the object boundary must leave the next catalog row untouched",
+  );
+
   await assert.rejects(
     reconcileMissingVerifiedLocalMedia({
       mode: "apply",

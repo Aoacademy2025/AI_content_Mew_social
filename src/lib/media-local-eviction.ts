@@ -457,6 +457,11 @@ export async function runLocalMediaEviction(
   if (mode === "dry-run" || report.errors > 0) return report;
 
   for (const replica of selected) {
+    const applyYield = await shouldYield({ force: true });
+    if (applyYield) {
+      report.deferredReason = applyYield;
+      return report;
+    }
     const result = await evictOne(plan, replica, catalog, remote);
     if (result.status === "evicted") {
       report.evicted.count++;
@@ -464,11 +469,6 @@ export async function runLocalMediaEviction(
     } else {
       report.skipped[result.status]++;
       if (result.error) report.errors++;
-    }
-    const applyYield = await shouldYield();
-    if (applyYield) {
-      report.deferredReason = applyYield;
-      return report;
     }
   }
   return report;

@@ -294,6 +294,11 @@ export async function reconcileMissingVerifiedLocalMedia(
   if (mode === "dry-run" || report.errors > 0) return report;
 
   for (const candidate of selected) {
+    const applyYield = await shouldYield({ force: true });
+    if (applyYield) {
+      report.deferredReason = applyYield;
+      return report;
+    }
     const absolutePath = path.join(
       roots[candidate.identity.area],
       candidate.identity.filename,
@@ -315,11 +320,6 @@ export async function reconcileMissingVerifiedLocalMedia(
     }
     report.reconciled.count++;
     report.reconciled.sizeBytes += candidate.sizeBytes;
-    const applyYield = await shouldYield();
-    if (applyYield) {
-      report.deferredReason = applyYield;
-      return report;
-    }
   }
   return report;
 }

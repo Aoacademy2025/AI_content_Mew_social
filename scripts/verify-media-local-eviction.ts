@@ -613,8 +613,8 @@ async function main(): Promise<void> {
     "yielding must stop the scan early rather than finish it and discard the work",
   );
 
-  // The apply phase yields only AFTER a whole object is evicted, so a yield can
-  // never strand an object mid-quarantine.
+  // The apply phase checks only BETWEEN whole objects, so work that appears
+  // during one eviction cannot strand it mid-quarantine or start the next one.
   const evictionPlan = await getMediaCleanupPlan({ cwd: yieldRoot, now, includeStocks: true });
   assert.equal(evictionPlan.candidates.length, yieldNames.length, "yield fixtures must be the only candidates");
   const evictionVerifier = new FakeVerifier();
@@ -626,8 +626,6 @@ async function main(): Promise<void> {
     maxObjects: 10,
     maxBytes: 1024 * 1024,
     env: yieldEnv,
-    yieldEveryItems: 1,
-    yieldMinIntervalMs: 0,
     shouldYield: () => evictionVerifier.calls > yieldNames.length,
   });
   assert.equal(deferredDuringEviction.deferredReason, "customer_media_active");
