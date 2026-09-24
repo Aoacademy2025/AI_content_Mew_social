@@ -25,7 +25,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
   open: boolean;
   onClose: () => void;
   selectedId: string;
-  onSelect: (avatarId: string) => void;
+  onSelect: (avatar: HeygenAvatar) => void;
   avatars: HeygenAvatar[];
   loading: boolean;
   error: HeygenAvatarsError | null;
@@ -45,7 +45,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
 
   if (!open) return null;
 
-  const pick = (id: string) => { onSelect(id); onClose(); };
+  const pick = (avatar: HeygenAvatar) => { onSelect(avatar); onClose(); };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: "rgba(6,6,12,.62)" }} onClick={onClose}>
@@ -116,7 +116,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
   );
 }
 
-function AvatarGrid({ looks, selectedId, onPick }: { looks: HeygenAvatar[]; selectedId: string; onPick: (id: string) => void }) {
+function AvatarGrid({ looks, selectedId, onPick }: { looks: HeygenAvatar[]; selectedId: string; onPick: (avatar: HeygenAvatar) => void }) {
   return (
     <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
       {looks.map((a) => {
@@ -124,7 +124,7 @@ function AvatarGrid({ looks, selectedId, onPick }: { looks: HeygenAvatar[]; sele
         return (
           <button
             key={a.avatar_id}
-            onClick={() => onPick(a.avatar_id)}
+            onClick={() => onPick(a)}
             aria-label={`เลือก ${a.avatar_name}`}
             className="relative flex items-center justify-center overflow-hidden"
             style={{

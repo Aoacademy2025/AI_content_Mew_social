@@ -91,6 +91,73 @@ async function main() {
   assert.equal(fresh.kind === "waiting" ? fresh.checkpoint.avatar.introVideoId : null, "hg-intro");
   assert.equal(generateCalls, 1);
 
+  const v3Fresh = checkpoint("intro_generate");
+  v3Fresh.avatar.engine = "avatar_v";
+  v3Fresh.avatar.apiVersion = "v3";
+  v3Fresh.avatar.introIdempotencyKey = "stable-v3-intro";
+  const v3Order: string[] = [];
+  let seenRouting: unknown;
+  const v3Started = await advanceAvatarProvider(v3Fresh, {
+    ...pendingDeps,
+    allowGenerate: true,
+    upload: async (_avatarId, audioUrl, routing) => {
+      v3Order.push("upload");
+      assert.equal(audioUrl, "/api/renders/intro.mp3");
+      assert.deepEqual(routing, { engine: "avatar_v", apiVersion: "v3" });
+      return { kind: "accepted", audioAssetId: "persisted-v3-intro-asset" };
+    },
+    persist: async (value) => {
+      v3Order.push(value.avatar.introAudioAssetId ? "persist:asset" : `persist:${value.phase}`);
+      return true;
+    },
+    generate: (async (_avatarId: string, audioAssetId: string, routing: unknown) => {
+      v3Order.push("create");
+      assert.equal(audioAssetId, "persisted-v3-intro-asset", "paid create receives only the persisted asset identity");
+      seenRouting = routing;
+      return accepted("hg-v3");
+    }) as unknown as AvatarProviderAdvanceDeps["generate"],
+  });
+  assert.equal(v3Started.kind, "waiting");
+  assert.deepEqual(seenRouting, { engine: "avatar_v", apiVersion: "v3", idempotencyKey: "stable-v3-intro" });
+  assert.deepEqual(v3Order, ["upload", "persist:asset", "create", "persist:asset"], "upload asset is durably persisted before paid create");
+  assert.equal(v3Started.kind === "waiting" ? v3Started.checkpoint.avatar.introAudioAssetId : null, "persisted-v3-intro-asset");
+
+  let blockedCreateCalls = 0;
+  const persistenceLost = await advanceAvatarProvider(v3Fresh, {
+    ...pendingDeps,
+    allowGenerate: true,
+    upload: async () => ({ kind: "accepted", audioAssetId: "unpersisted-asset" }),
+    persist: async () => false,
+    generate: async () => { blockedCreateCalls += 1; return accepted("must-not-create"); },
+  });
+  assert.equal(persistenceLost.kind, "failed");
+  assert.equal(blockedCreateCalls, 0, "losing the asset checkpoint guard prevents paid create");
+
+  const persistenceErrored = await advanceAvatarProvider(v3Fresh, {
+    ...pendingDeps,
+    allowGenerate: true,
+    upload: async () => ({ kind: "accepted", audioAssetId: "unpersisted-asset" }),
+    persist: async () => { throw new Error("database unavailable"); },
+    generate: async () => { blockedCreateCalls += 1; return accepted("must-not-create"); },
+  });
+  assert.equal(persistenceErrored.kind === "failed" ? persistenceErrored.outcome : null, "definitive", "checkpoint write failure remains a known pre-create failure");
+  assert.equal(blockedCreateCalls, 0, "checkpoint write failure prevents paid create");
+
+  const restartWithAsset = checkpoint("intro_generate");
+  restartWithAsset.avatar.engine = "avatar_v";
+  restartWithAsset.avatar.apiVersion = "v3";
+  restartWithAsset.avatar.introIdempotencyKey = "stable-v3-intro";
+  restartWithAsset.avatar.introAudioAssetId = "persisted-v3-intro-asset";
+  let restartExternalCalls = 0;
+  const parkedRestart = await advanceAvatarProvider(restartWithAsset, {
+    ...pendingDeps,
+    upload: async () => { restartExternalCalls += 1; return { kind: "accepted", audioAssetId: "duplicate" }; },
+    generate: async () => { restartExternalCalls += 1; return accepted("duplicate"); },
+  });
+  assert.equal(parkedRestart.kind, "failed");
+  assert.equal(parkedRestart.kind === "failed" ? parkedRestart.outcome : null, "unknown");
+  assert.equal(restartExternalCalls, 0, "restart after persisted asset never uploads or resubmits the paid create");
+
   const quotaRejected = await advanceAvatarProvider(checkpoint("intro_generate"), {
     ...pendingDeps,
     allowGenerate: true,
@@ -140,11 +207,19 @@ async function main() {
   generateCalls = 0;
   compositeCalls = 0;
   const both = checkpoint("intro_wait", "bookend-both");
+  both.avatar.engine = "avatar_iv";
+  both.avatar.apiVersion = "v3";
+  both.avatar.introIdempotencyKey = "stable-v3-intro";
+  both.avatar.tailIdempotencyKey = "stable-v3-tail";
   const tailStarted = await advanceAvatarProvider(both, {
     ...pendingDeps,
-    generate: async (_avatarId, audioUrl) => {
-      generateCalls++;
+    upload: async (_avatarId, audioUrl) => {
       assert.equal(audioUrl, "/api/renders/tail.mp3");
+      return { kind: "accepted", audioAssetId: "persisted-v3-tail-asset" };
+    },
+    generate: async (_avatarId, audioAssetId) => {
+      generateCalls++;
+      assert.equal(audioAssetId, "persisted-v3-tail-asset");
       return accepted("hg-tail");
     },
     poll: async (id) => {
@@ -155,6 +230,7 @@ async function main() {
   assert.equal(tailStarted.kind, "waiting");
   assert.equal(tailStarted.kind === "waiting" ? tailStarted.checkpoint.phase : null, "tail_wait");
   assert.equal(tailStarted.kind === "waiting" ? tailStarted.checkpoint.avatar.tailVideoId : null, "hg-tail");
+  assert.equal(tailStarted.kind === "waiting" ? tailStarted.checkpoint.avatar.tailAudioAssetId : null, "persisted-v3-tail-asset");
   assert.equal(generateCalls, 1);
 
   const tailWaiting = tailStarted.kind === "waiting" ? tailStarted.checkpoint : null;

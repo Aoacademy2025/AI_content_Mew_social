@@ -2,7 +2,9 @@
 import {
   flattenOwnAvatars,
   getHeyGenOwnAvatars,
+  parseOwnAvatarLookPage,
   __clearOwnAvatarCache,
+  __ownAvatarCacheSize,
   type RawGroup,
   type RawLook,
 } from "../src/lib/heygen-own-avatars";
@@ -36,6 +38,31 @@ assert(!flat.some(a => a.avatar_id === "m2"), "explicit non-completed (training)
 assert(flattenOwnAvatars([], {}).length === 0, "empty groups → empty");
 assert(flattenOwnAvatars([{ id: "gz", name: "Z" }], {}).length === 0, "group with no looks → contributes nothing");
 
+// ── v3 private-look contract: completed-only + explicit per-look engines ──
+const v3 = parseOwnAvatarLookPage({
+  data: [
+    { id: "iv", name: "IV", group_id: "g1", status: "completed", preview_image_url: "iv.jpg", supported_api_engines: ["avatar_iii", "avatar_iv"] },
+    { id: "v", name: "V", group_id: "g2", status: "completed", preview_image_url: "v.jpg", supported_api_engines: ["avatar_iv", "avatar_v", "future_engine"] },
+    { id: "missing", name: "Missing", status: "completed" },
+    { id: "wrong", name: "Wrong", status: "completed", supported_api_engines: "avatar_iv" },
+    { id: "future", name: "Future", status: "completed", supported_api_engines: ["future_engine"] },
+    { id: "mixed-type", name: "Mixed type", status: "completed", supported_api_engines: ["avatar_iv", 4] },
+    { id: "empty", name: "Empty", status: "completed", supported_api_engines: [] },
+    { id: "training", name: "Training", status: "processing", supported_api_engines: ["avatar_iv"] },
+  ],
+  has_more: true,
+  next_token: "opaque-next",
+});
+assert(v3.avatars.map((a) => a.avatar_id).join(",") === "iv,v,missing,wrong,future,mixed-type,empty", "v3 keeps only completed private looks");
+assert(v3.avatars[0]?.supported_api_engines.join(",") === "avatar_iii,avatar_iv", "v3 preserves supported III/IV engines");
+assert(v3.avatars[1]?.supported_api_engines?.join(",") === "avatar_iv,avatar_v", "a known advertised engine stays positive evidence alongside future string values");
+assert(v3.avatars[2]?.supported_api_engines === undefined, "missing capability metadata remains unknown");
+assert(v3.avatars[3]?.supported_api_engines === undefined, "malformed capability metadata remains unknown");
+assert(v3.avatars[4]?.supported_api_engines === undefined, "wholly unrecognised capability metadata remains unknown");
+assert(v3.avatars[5]?.supported_api_engines === undefined, "mixed non-string capability metadata remains unknown");
+assert(v3.avatars[6]?.supported_api_engines?.length === 0, "a valid empty capability list is known incompatible evidence");
+assert(v3.nextToken === "opaque-next", "v3 preserves the opaque pagination cursor");
+
 async function main() {
   // ── getHeyGenOwnAvatars: fan-out + cache ──
   __clearOwnAvatarCache();
@@ -66,6 +93,86 @@ async function main() {
     await getHeyGenOwnAvatars("u4", "key-DDDDDD", { fetchGroups: async () => { throw new HeyGenAuthError(401); }, fetchLooks, now: 0 });
   } catch (e) { threwAuth = e instanceof HeyGenAuthError; }
   assert(threwAuth, "group-list HeyGenAuthError propagates (bad/expired key surfaces)");
+
+  // ── production v3 loader follows opaque cursors and never merges key rotations ──
+  __clearOwnAvatarCache();
+  const seenTokens: Array<string | undefined> = [];
+  const paged = await getHeyGenOwnAvatars("u-pages", "key-pages", {
+    fetchPage: async (_key, token) => {
+      seenTokens.push(token);
+      return token === undefined
+        ? parseOwnAvatarLookPage({
+            data: [{ id: "page-1", name: "One", status: "completed", supported_api_engines: ["avatar_iv"] }],
+            has_more: true,
+            next_token: "opaque-page-2",
+          })
+        : parseOwnAvatarLookPage({
+            data: [{ id: "page-2", name: "Two", status: "completed", supported_api_engines: ["avatar_v"] }],
+            has_more: false,
+          });
+    },
+  });
+  assert(seenTokens.length === 2 && seenTokens[1] === "opaque-page-2", "v3 loader follows next_token until has_more is false");
+  assert(paged.avatars.map((avatar) => avatar.avatar_id).join(",") === "page-1,page-2", "v3 loader combines private look pages in order");
+
+  __clearOwnAvatarCache();
+  let cycleCalls = 0;
+  let cycleRejected = false;
+  try {
+    await getHeyGenOwnAvatars("u-cycle", "key-cycle", {
+      fetchPage: async () => {
+        cycleCalls += 1;
+        return { avatars: [], hasMore: true, nextToken: "same-token" };
+      },
+    });
+  } catch { cycleRejected = true; }
+  assert(cycleRejected && cycleCalls === 2, "v3 loader fails closed on a repeated opaque cursor");
+
+  __clearOwnAvatarCache();
+  let pageLimitCalls = 0;
+  let pageLimitRejected = false;
+  try {
+    await getHeyGenOwnAvatars("u-page-limit", "key-page-limit", {
+      fetchPage: async () => {
+        pageLimitCalls += 1;
+        return { avatars: [], hasMore: true, nextToken: `page-${pageLimitCalls}` };
+      },
+    });
+  } catch { pageLimitRejected = true; }
+  assert(pageLimitRejected && pageLimitCalls === 100, "v3 loader bounds unique-cursor pagination work");
+
+  __clearOwnAvatarCache();
+  let catalogLimitRejected = false;
+  try {
+    await getHeyGenOwnAvatars("u-catalog-limit", "key-catalog-limit", {
+      fetchPage: async () => ({
+        avatars: Array.from({ length: 5_001 }, (_, i) => ({
+          avatar_id: `look-${i}`,
+          avatar_name: `Look ${i}`,
+          preview_image_url: "",
+          group_id: "",
+          supported_api_engines: ["avatar_iv"],
+        })),
+        hasMore: false,
+      }),
+    });
+  } catch { catalogLimitRejected = true; }
+  assert(catalogLimitRejected, "v3 loader fails closed when accumulated looks exceed the catalog cap");
+
+  __clearOwnAvatarCache();
+  const rotatedA = await getHeyGenOwnAvatars("u-rotation", "first-key-SAME99", {
+    fetchPage: async () => parseOwnAvatarLookPage({ data: [{ id: "first", status: "completed", supported_api_engines: ["avatar_iii"] }] }),
+  });
+  const rotatedB = await getHeyGenOwnAvatars("u-rotation", "second-key-SAME99", {
+    fetchPage: async () => parseOwnAvatarLookPage({ data: [{ id: "second", status: "completed", supported_api_engines: ["avatar_iv"] }] }),
+  });
+  assert(rotatedA.avatars[0]?.avatar_id === "first" && rotatedB.avatars[0]?.avatar_id === "second", "cache ownership includes the full credential identity across key rotation");
+  assert(__ownAvatarCacheSize() === 1, "credential rotation evicts the superseded cache entry");
+
+  __clearOwnAvatarCache();
+  await getHeyGenOwnAvatars("expired-a", "key-a", { now: 0, fetchPage: async () => ({ avatars: [], hasMore: false }) });
+  await getHeyGenOwnAvatars("fresh-b", "key-b", { now: 300_001, fetchPage: async () => ({ avatars: [], hasMore: false }) });
+  assert(__ownAvatarCacheSize() === 1, "expired cache entries are evicted during normal catalog access");
 
   console.log(`\n✅ ${passed} checks passed`);
 }

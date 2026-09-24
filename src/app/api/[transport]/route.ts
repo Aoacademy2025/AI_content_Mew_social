@@ -27,6 +27,12 @@ import {
 import { checkAiAudioCeiling } from "@/lib/ai-spend-limits";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
+import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
+import {
+  HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+  HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+  heygenLookEngineCompatibility,
+} from "@/lib/heygen-avatar-engine";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
@@ -207,7 +213,7 @@ const handler = createMcpHandler(
           const keyBlock = elevenBlock ?? stockPreflight.block;
           if (keyBlock) return { error: "invalid_key", missingKey: keyBlock.key, message: keyBlock.message };
           const avatar = resolveAvatarRequest(
-            { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,
+            { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarEngine: args.avatarEngine, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,
               avatarScale: args.avatarScale, avatarOffsetX: args.avatarOffsetX, avatarOffsetY: args.avatarOffsetY },
             u,
           );
@@ -217,6 +223,22 @@ const handler = createMcpHandler(
             : null;
           if (heygenReadiness?.kind === "blocked") {
             return toHeygenBlockedResponse(heygenReadiness).body;
+          }
+          if (avatar.kind === "ok" && u.heygenKey) {
+            let compatibility: ReturnType<typeof heygenLookEngineCompatibility> = "unknown";
+            try {
+              const own = await getHeyGenOwnAvatars(p.userId, decryptKey(u.heygenKey), { refresh: true });
+              compatibility = heygenLookEngineCompatibility(own.avatars, avatar.avatarId, avatar.avatarEngine);
+            } catch {
+              // Capability must be fresh and explicit. A catalog timeout therefore
+              // refuses this pre-create request with the owned retry copy.
+            }
+            if (compatibility === "unknown") {
+              return { error: "avatar_engine_unknown", message: HEYGEN_ENGINE_UNKNOWN_MESSAGE };
+            }
+            if (compatibility === "incompatible") {
+              return { error: "avatar_engine_incompatible", message: HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE };
+            }
           }
           const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
@@ -242,7 +264,7 @@ const handler = createMcpHandler(
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
                 ...(avatar.kind === "ok" && avatarLayout
-                  ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
+                  ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                       avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
                   : {}),
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),

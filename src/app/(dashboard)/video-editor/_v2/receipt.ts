@@ -20,6 +20,12 @@ import {
   estimatePresetCredits,
   reusableAutoMixAiSlotCount,
 } from "./estimate";
+import {
+  HEYGEN_ENGINE_LABELS,
+  HEYGEN_EXTERNAL_COST_DISCLOSURE,
+  resolveHeyGenAvatarEngine,
+  type HeyGenAvatarEngine,
+} from "@/lib/heygen-avatar-engine";
 
 export interface ReceiptInput {
   /** Estimated clip length in seconds (estimateClipSecV2(script)). */
@@ -41,6 +47,7 @@ export interface ReceiptInput {
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
   hasAvatar: boolean;
+  avatarEngine?: HeyGenAvatarEngine;
   /** True when estSec is an actual uploaded-media duration, not a script estimate. */
   exactDuration?: boolean;
   /** Hero AI Image blocks before generation; AutoMix may keep its stock fallback. */
@@ -223,10 +230,16 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
 
   // 5) Avatar line — HeyGen billed via the user's own key (no extra credits/minutes).
   if (hasAvatar) {
+    const engineLabel = HEYGEN_ENGINE_LABELS[resolveHeyGenAvatarEngine(input.avatarEngine)].replace(" (เดิม)", "");
     lines.push({
       key: "avatar",
       kind: "info",
-      text: "อวตาร HeyGen: คิดค่าใช้จ่ายผ่านคีย์ HeyGen ของคุณ (ไม่หักเครดิต/นาทีเพิ่ม)",
+      text: `HeyGen · ${engineLabel} · ใช้ HeyGen API key ของคุณ`,
+    });
+    lines.push({
+      key: "avatar-cost",
+      kind: "info",
+      text: HEYGEN_EXTERNAL_COST_DISCLOSURE,
     });
   }
 

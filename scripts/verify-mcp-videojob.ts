@@ -120,6 +120,18 @@ async function main() {
     "existing non-editor callers remain compatible with a nullable fingerprint",
   );
 
+  const engineJob = await createVideoJob(u.id, {
+    script: "pinned avatar engine",
+    avatarMode: "bookend-both",
+    avatarId: "private-look-v",
+    avatarEngine: "avatar_v",
+  });
+  const engineRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: engineJob.id } });
+  assert(
+    JSON.parse(engineRow.inputJson).avatarEngine === "avatar_v",
+    "VideoJob input durably preserves the selected avatar engine",
+  );
+
   // --- durable provider wait lifecycle ---
   await prisma.videoJob.deleteMany();
   const checkpoint: AvatarProviderCheckpointV1 = {

@@ -85,9 +85,10 @@ check("H: no overflow when quota unknown", !has(h, "overflow"));
 check("H: overflowMinutes = 0 when quota unknown", h.overflowMinutes === 0);
 
 // ── I. avatar line shows when hasAvatar ──
-const i = R({ hasAvatar: true });
+const i = R({ hasAvatar: true, avatarEngine: "avatar_iv" });
 check("I: avatar line shown", has(i, "avatar"));
-check("I: avatar copy exact", text(i, "avatar") === "อวตาร HeyGen: คิดค่าใช้จ่ายผ่านคีย์ HeyGen ของคุณ (ไม่หักเครดิต/นาทีเพิ่ม)", text(i, "avatar"));
+check("I: selected engine named", text(i, "avatar") === "HeyGen · Avatar IV · ใช้ HeyGen API key ของคุณ", text(i, "avatar"));
+check("I: external cost copy exact", text(i, "avatar-cost") === "HeyGen คิดค่าบริการแยกตามบัญชีและระยะเวลาที่สร้าง ไม่รวมอยู่ในเครดิต HERO กรุณาตรวจสอบอัตราในบัญชี HeyGen ก่อนยืนยัน", text(i, "avatar-cost"));
 
 // ── J. insufficient never fires when !usesAi even at 0 balance ──
 const j = R({ usesAi: false, creditBalance: 0 });

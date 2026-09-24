@@ -728,6 +728,105 @@ async function main() {
     "reserved balance disclosure includes only in-flight AI/render reservations",
   );
 
+  // HERO-54: exercise the real orchestrator catch. An unknown paid-create outcome
+  // retains the reservation for reconciliation; a definitive provider failure settles
+  // the same reservation once even though both inner and outer settlement paths run.
+  {
+    const { runOrchestrator } = await import("../src/lib/mcp/orchestrator");
+    const neverCaller = {
+      post: async () => { throw new Error("provider call must not run while resuming generate intent"); },
+      get: async () => { throw new Error("provider call must not run while resuming generate intent"); },
+      patch: async () => { throw new Error("provider call must not run while resuming generate intent"); },
+    };
+    const seedCase = async (kind: "unknown" | "definitive") => {
+      const userId = `orchestrator-${kind}-user`;
+      const videoJobId = `orchestrator-${kind}-job`;
+      const renderJobId = `orchestrator-${kind}-render`;
+      await prisma.user.create({
+        data: {
+          id: userId,
+          name: kind,
+          email: `${kind}-orchestrator@example.com`,
+          plan: "PRO",
+          usagePeriodStartedAt: new Date(),
+        },
+      });
+      await prisma.creditBalance.create({ data: { userId, purchased: 6 } });
+      const started = kind === "unknown"
+        ? new Date(Date.now() - 60_000)
+        : new Date(Date.now() - 120_000);
+      const deadline = kind === "unknown"
+        ? new Date(Date.now() + 60 * 60_000)
+        : new Date(Date.now() - 60_000);
+      const checkpoint = {
+        version: 1,
+        provider: "heygen",
+        phase: "intro_generate",
+        providerStartedAt: started.toISOString(),
+        providerDeadlineAt: deadline.toISOString(),
+        baseUrl: "/api/renders/base.mp4",
+        voiceUrl: "/api/renders/voice.mp3",
+        audioDurationMs: 8_000,
+        captions: [{ text: "ทดสอบ", startMs: 0, endMs: 900 }],
+        words: [],
+        fullText: "ทดสอบ",
+        baseConfig: {},
+        avatar: {
+          mode: "full",
+          id: "private-look",
+          engine: "avatar_iv",
+          apiVersion: "v3",
+          introIdempotencyKey: `stable-${kind}-intro-key`,
+          introSecs: 5,
+          tailSecs: 5,
+          layout: { scale: 1, offsetX: 0, offsetY: 0 },
+          introAudioUrl: "/api/renders/intro.mp3",
+          introAudioAssetId: `asset-${kind}`,
+        },
+      };
+      await prisma.videoJob.create({
+        data: {
+          id: videoJobId,
+          userId,
+          status: "processing",
+          currentStep: "avatar",
+          inputJson: JSON.stringify({ script: "ทดสอบ", avatarMode: "full", avatarId: "private-look", avatarEngine: "avatar_iv" }),
+          providerCheckpointJson: JSON.stringify(checkpoint),
+        },
+      });
+      await prisma.renderJob.create({
+        data: {
+          id: renderJobId,
+          userId,
+          parentJobId: videoJobId,
+          type: "RENDER",
+          status: "DONE",
+          payload: "{}",
+          reservedQuota: true,
+          creditsSpent: 4,
+          creditsFromGranted: 0,
+        },
+      });
+      await runOrchestrator(videoJobId, userId, {
+        caller: neverCaller as never,
+        sleep: async () => {},
+        recordTelemetryEvent: async () => ({}),
+      });
+      return { userId, videoJobId, renderJobId };
+    };
+
+    const unknown = await seedCase("unknown");
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: unknown.videoJobId } })).status, "failed");
+    assert.equal((await prisma.renderJob.findUniqueOrThrow({ where: { id: unknown.renderJobId } })).reservedQuota, true, "unknown paid outcome retains the render reservation");
+    assert.equal((await getBalance(unknown.userId)).total, 6, "unknown paid outcome leaves the balance and ledger unchanged");
+    assert.equal(await prisma.creditLedger.count({ where: { userId: unknown.userId } }), 0, "unknown paid outcome writes no refund ledger entry");
+
+    const definitive = await seedCase("definitive");
+    assert.equal((await prisma.renderJob.findUniqueOrThrow({ where: { id: definitive.renderJobId } })).reservedQuota, false, "definitive failure releases the reservation");
+    assert.equal((await getBalance(definitive.userId)).total, 10, "definitive failure restores the exact reserved credits");
+    assert.equal(await prisma.creditLedger.count({ where: { userId: definitive.userId, action: { startsWith: `render-refund:${definitive.renderJobId}:` } } }), 1, "definitive inner and outer settlement writes exactly one refund ledger entry");
+  }
+
   await prisma.$disconnect();
   console.log("ALL PASS");
 }

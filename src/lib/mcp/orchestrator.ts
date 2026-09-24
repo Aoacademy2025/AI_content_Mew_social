@@ -63,10 +63,12 @@ import {
   generateAvatarVideo,
   pollAvatarOnce,
   prepareAvatarAudio,
+  uploadAvatarAudio,
 } from "@/lib/mcp/avatar-steps";
 import {
   parseAvatarProviderCheckpoint,
   providerPollDelayMs,
+  avatarProviderIdempotencyKey,
   type AvatarProviderCheckpointV1,
 } from "@/lib/mcp/avatar-provider-checkpoint";
 import {
@@ -205,7 +207,7 @@ interface CreateInput {
   omniVoiceId?: string;
   /** Backend pinned by the accepting server; never selected by a browser. */
   voiceBackend?: "runpod" | "hostinger";
-  avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
+  avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v"; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
@@ -1117,8 +1119,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     ) => advanceAvatarProvider(checkpoint, {
       now: () => new Date(),
       allowGenerate,
-      generate: (avatarId, audioUrl) => generateAvatarVideo(caller, avatarId, audioUrl),
-      poll: (providerVideoId) => pollAvatarOnce(caller, providerVideoId),
+      upload: (avatarId, audioUrl, routing) => uploadAvatarAudio(caller, avatarId, audioUrl, routing),
+      generate: (avatarId, audioUrl, routing) => generateAvatarVideo(caller, avatarId, audioUrl, routing),
+      poll: (providerVideoId, apiVersion) => pollAvatarOnce(caller, providerVideoId, apiVersion),
       composite: async (value) => {
         const introVideoUrl = value.avatar.introVideoUrl;
         if (!introVideoUrl) throw new Error("avatar checkpoint missing intro video URL");
@@ -1215,6 +1218,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             audioDurationMs: checkpoint.audioDurationMs,
             speechCoverage: checkpoint.speechCoverage,
             avatarModel: checkpoint.avatar.id,
+            avatarEngine: checkpoint.avatar.engine ?? "avatar_iii",
             avatarVideoUrl,
             avatarMode: checkpoint.avatar.mode,
             avatarIntroSecs: checkpoint.avatar.introSecs,
@@ -2834,6 +2838,32 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         avatar: {
           mode: input.avatarMode,
           id: input.avatarId,
+          engine: input.avatarEngine ?? "avatar_iii",
+          apiVersion: input.avatarEngine === "avatar_iv" || input.avatarEngine === "avatar_v" ? "v3" : "v2",
+          ...(input.avatarEngine === "avatar_iv" || input.avatarEngine === "avatar_v"
+            ? {
+                introIdempotencyKey: avatarProviderIdempotencyKey({
+                  accountId: userId,
+                  jobId,
+                  slot: "intro",
+                  engine: input.avatarEngine,
+                  avatarId: input.avatarId,
+                  audioUrl: preparedAudio.introAudioUrl,
+                }),
+                ...(preparedAudio.tailAudioUrl
+                  ? {
+                      tailIdempotencyKey: avatarProviderIdempotencyKey({
+                        accountId: userId,
+                        jobId,
+                        slot: "tail",
+                        engine: input.avatarEngine,
+                        avatarId: input.avatarId,
+                        audioUrl: preparedAudio.tailAudioUrl,
+                      }),
+                    }
+                  : {}),
+              }
+            : {}),
           introSecs,
           tailSecs,
           layout: {
@@ -3003,18 +3033,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       return; // status is already 'canceled'; don't overwrite with failed
     }
     const settlementReason = `video_${phaseName || "unknown"}_failed`;
+    const unknownAvatarProviderOutcome = e instanceof AvatarProviderFailureError
+      && e.failure.outcome === "unknown";
     let financialSettlementPending = false;
-    try {
-      await refundSettledVideoImageBatch({
-        userId,
-        videoJobId: jobId,
-        reason: settlementReason,
-      });
-    } catch (settlementError) {
-      financialSettlementPending = true;
-      console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);
+    if (!unknownAvatarProviderOutcome) {
+      try {
+        await refundSettledVideoImageBatch({
+          userId,
+          videoJobId: jobId,
+          reason: settlementReason,
+        });
+      } catch (settlementError) {
+        financialSettlementPending = true;
+        console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);
+      }
     }
-    if (renderReservationStages.has(phaseName)) {
+    if (!unknownAvatarProviderOutcome && renderReservationStages.has(phaseName)) {
       const result = await refundVideoJobTerminalRenderReservations({
         videoJobId: jobId,
         userId,

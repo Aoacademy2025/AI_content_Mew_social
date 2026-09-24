@@ -386,6 +386,8 @@ export interface VideoJobPreviewData {
   /** Acoustic end-of-speech evidence used by the subtitle release gate. */
   speechCoverage?: SubtitleSpeechCoverage;
   avatarModel?: string;
+  /** Explicit HeyGen engine selected for this generation. Missing means legacy III. */
+  avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v";
   avatarVideoUrl?: string | null;
   /** ข้อมูลสำหรับ re-composite อวตารจากจอแต่งซับ (spec 07-03 ข้อ 1) — งานเก่าไม่มี = ซ่อนปุ่มปรับ */
   avatarMode?: string | null;

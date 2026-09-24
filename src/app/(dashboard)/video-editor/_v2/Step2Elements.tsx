@@ -54,6 +54,12 @@ import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
 import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 import {
+  HEYGEN_AVATAR_ENGINES,
+  HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
+  HEYGEN_ENGINE_LABELS,
+  HEYGEN_ENGINE_UNKNOWN_MESSAGE,
+} from "@/lib/heygen-avatar-engine";
+import {
   cutawayPieceLimit,
   effectiveManualCutawayPieceCount,
   estimatedCutawayPieceCount,
@@ -241,6 +247,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const selectedAvatarLook = avatarLib.avatars.find((avatar) => avatar.avatar_id === p.avatarId);
+  const supportedAvatarEngines = selectedAvatarLook?.supported_api_engines;
+  const displayedAvatarEngine = p.avatarEngine === "" ? null : p.avatarEngine ?? "avatar_iii";
   const step2TelemetryKeyRef = useRef("");
   useEffect(() => {
     if (p.mode !== "upload" || !hasUploadDuration || p.targetClipCount <= 0) return;
@@ -919,7 +928,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 <span style={{ fontSize: 11, color: color.textFaint }}>หรือวาง Avatar ID เอง</span>
                 <input
                   value={p.avatarId}
-                  onChange={(e) => p.setAvatarId(e.target.value)}
+                  onChange={(e) => {
+                    if (e.target.value !== p.avatarId) p.setAvatarEngine("");
+                    p.setAvatarId(e.target.value);
+                  }}
                   placeholder="วาง HeyGen Avatar ID"
                   className="w-full max-w-[280px]"
                   style={{
@@ -942,6 +954,41 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               >
                 {savingDefault === "avatar" ? "กำลังบันทึก…" : "บันทึกอวตารนี้เป็นค่าเริ่มต้น"}
               </button>
+              <div className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>รุ่นการสร้าง Avatar</span>
+                <div className="flex flex-wrap gap-2">
+                  {HEYGEN_AVATAR_ENGINES.map((engine) => {
+                    const supported = supportedAvatarEngines?.includes(engine) === true;
+                    return (
+                      <button
+                        type="button"
+                        key={engine}
+                        disabled={!supported}
+                        onClick={() => p.setAvatarEngine(engine)}
+                        className="rounded-lg px-3 py-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-40"
+                        style={{
+                          color: displayedAvatarEngine === engine ? color.primary300 : color.textSecondary,
+                          background: displayedAvatarEngine === engine ? color.selectedBg : "rgba(255,255,255,.04)",
+                          border: `1px solid ${displayedAvatarEngine === engine ? color.selectedBorder : color.cardBorder}`,
+                        }}
+                      >
+                        {HEYGEN_ENGINE_LABELS[engine]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 10.5, color: color.textFaintest }}>เลือกรุ่นที่ Avatar นี้รองรับ</span>
+                {avatarLib.loaded && p.avatarId && (!selectedAvatarLook || !supportedAvatarEngines) && (
+                  <span role="alert" style={{ fontSize: 10.5, color: color.warning }}>
+                    {HEYGEN_ENGINE_UNKNOWN_MESSAGE}
+                  </span>
+                )}
+                {selectedAvatarLook && supportedAvatarEngines && (displayedAvatarEngine === null || !supportedAvatarEngines.includes(displayedAvatarEngine)) && (
+                  <span role="alert" style={{ fontSize: 10.5, color: color.warning }}>
+                    {HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE}
+                  </span>
+                )}
+              </div>
             </div>
           )}
           {!p.useAvatar && (
@@ -1010,7 +1057,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             open={avatarPickerOpen}
             onClose={() => setAvatarPickerOpen(false)}
             selectedId={p.avatarId}
-            onSelect={(id) => p.setAvatarId(id)}
+            onSelect={(avatar) => {
+              p.setAvatarId(avatar.avatar_id);
+              if (!p.avatarEngine || !avatar.supported_api_engines?.includes(p.avatarEngine)) p.setAvatarEngine("");
+            }}
             avatars={avatarLib.avatars}
             loading={avatarLib.loading}
             error={avatarLib.error}

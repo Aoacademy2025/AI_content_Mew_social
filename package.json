@@ -54,6 +54,7 @@
     "verify:task2-transport": "node --conditions=react-server --import tsx scripts/verify-task2-transport.ts",
     "verify:cost-margin": "tsx scripts/verify-cost-margin.ts",
     "verify:heygen-readiness": "tsx scripts/verify-heygen-readiness.ts",
+    "verify:heygen-avatar-engines": "tsx scripts/verify-heygen-own-avatars.ts && tsx scripts/verify-heygen-v3-avatar.ts && tsx scripts/verify-heygen-poll-map.ts && node --conditions=react-server --import tsx scripts/verify-mcp-avatar-input.ts",
     "verify:customer-error-copy": "tsx scripts/verify-customer-error-copy.ts",
     "verify:quota-error-shape": "tsx scripts/verify-quota-error-shape.ts",
     "verify:reported-account-entrypoints": "node --conditions=react-server --import tsx scripts/verify-reported-account-entrypoints.ts",

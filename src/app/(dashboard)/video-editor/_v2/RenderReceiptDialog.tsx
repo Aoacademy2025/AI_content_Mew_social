@@ -144,6 +144,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
       reservedCredits: credits?.reserved ?? 0,
       minuteCreditRate: creditCostFor("minute"),
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
+      avatarEngine: p.avatarEngine || "avatar_iii",
       exactDuration,
       insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
       targetClipCount: quotedTargetClipCount,
@@ -157,14 +158,14 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
       // the exact post-TTS gate stays the authority.
       plan: p.plan,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration, p.plan],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.avatarEngine, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration, p.plan],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
   // the exact "Hero credits ไม่พอ" line above; reuse that decision instead of
   // re-deriving a second insufficiency check that could drift from it.
   const disclosedLines = CREDITS_LIVE_CLIENT ? model.lines : model.lines.filter((line) =>
-    ["minutes", "ai", "allowance-insufficient", "avatar", "duration-over-plan"].includes(line.key));
+    ["minutes", "ai", "allowance-insufficient", "avatar", "avatar-cost", "duration-over-plan"].includes(line.key));
   const insufficientCredits = disclosedLines.some((l) => l.key === "insufficient" || l.key === "allowance-insufficient");
 
   if (!open) return null;

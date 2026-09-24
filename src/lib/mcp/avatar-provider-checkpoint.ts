@@ -6,6 +6,13 @@ import {
   parseSubtitleSpeechCoverage,
   type SubtitleSpeechCoverage,
 } from "@/lib/subtitle-speech-coverage";
+import {
+  heygenApiVersionForEngine,
+  isHeyGenAvatarEngine,
+  resolveHeyGenAvatarEngine,
+  type HeyGenAvatarApiVersion,
+  type HeyGenAvatarEngine,
+} from "@/lib/heygen-avatar-engine";
 
 export const AVATAR_PROVIDER_CHECKPOINT_VERSION = 1 as const;
 
@@ -47,11 +54,17 @@ export interface AvatarProviderCheckpointV1 {
   avatar: {
     mode: "full" | "bookend" | "bookend-both";
     id: string;
+    engine?: HeyGenAvatarEngine;
+    apiVersion?: HeyGenAvatarApiVersion;
+    introIdempotencyKey?: string;
+    tailIdempotencyKey?: string;
     introSecs: number;
     tailSecs: number;
     layout: { scale: number; offsetX: number; offsetY: number };
     introAudioUrl?: string;
     tailAudioUrl?: string;
+    introAudioAssetId?: string;
+    tailAudioAssetId?: string;
     introVideoId?: string;
     tailVideoId?: string;
     introVideoUrl?: string;
@@ -134,6 +147,15 @@ function isLayout(value: unknown): value is AvatarProviderCheckpointV1["avatar"]
 function isAvatar(value: unknown): value is AvatarProviderCheckpointV1["avatar"] {
   if (!isRecord(value)) return false;
   if (value.mode !== "full" && value.mode !== "bookend" && value.mode !== "bookend-both") return false;
+  const engine = resolveHeyGenAvatarEngine(value.engine);
+  const apiVersion = value.apiVersion ?? "v2";
+  if ((value.engine !== undefined && !isHeyGenAvatarEngine(value.engine))
+    || (apiVersion !== "v2" && apiVersion !== "v3")
+    || heygenApiVersionForEngine(engine) !== apiVersion
+    || (apiVersion === "v3" && !isNonEmptyString(value.introIdempotencyKey))
+    || (apiVersion === "v3" && value.mode === "bookend-both" && !isNonEmptyString(value.tailIdempotencyKey))) {
+    return false;
+  }
   return isNonEmptyString(value.id)
     && isFiniteNumber(value.introSecs)
     && value.introSecs > 0
@@ -142,10 +164,41 @@ function isAvatar(value: unknown): value is AvatarProviderCheckpointV1["avatar"]
     && isLayout(value.layout)
     && isOptionalString(value.introAudioUrl)
     && isOptionalString(value.tailAudioUrl)
+    && isOptionalString(value.introAudioAssetId)
+    && isOptionalString(value.tailAudioAssetId)
     && isOptionalString(value.introVideoId)
     && isOptionalString(value.tailVideoId)
     && isOptionalString(value.introVideoUrl)
     && isOptionalString(value.tailVideoUrl);
+}
+
+export function avatarCheckpointRouting(checkpoint: AvatarProviderCheckpointV1): {
+  engine: HeyGenAvatarEngine;
+  apiVersion: HeyGenAvatarApiVersion;
+} {
+  const engine = resolveHeyGenAvatarEngine(checkpoint.avatar.engine);
+  return { engine, apiVersion: heygenApiVersionForEngine(engine) };
+}
+
+export function avatarProviderIdempotencyKey(input: {
+  accountId: string;
+  jobId: string;
+  slot: "intro" | "tail";
+  engine: HeyGenAvatarEngine;
+  avatarId: string;
+  audioUrl: string;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      "hero-heygen-v3-create-v1",
+      input.accountId,
+      input.jobId,
+      input.slot,
+      input.engine,
+      input.avatarId,
+      input.audioUrl,
+    ]))
+    .digest("hex");
 }
 
 function phaseRequirementsHold(checkpoint: AvatarProviderCheckpointV1): boolean {

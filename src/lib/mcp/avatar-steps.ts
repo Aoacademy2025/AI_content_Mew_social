@@ -6,7 +6,15 @@ import type {
   AvatarCompositeAttemptResult,
   AvatarCompositeFailureCode,
   AvatarProviderGenerateResult,
+  AvatarProviderUploadResult,
 } from "@/lib/mcp/avatar-provider-resume";
+import {
+  heygenApiVersionForEngine,
+  isHeyGenAvatarEngine,
+  resolveHeyGenAvatarEngine,
+  type HeyGenAvatarApiVersion,
+  type HeyGenAvatarEngine,
+} from "@/lib/heygen-avatar-engine";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
@@ -31,14 +39,14 @@ export function clampSecs(v: unknown, fallback: number): number {
   return Math.min(30, Math.max(1, n));
 }
 
-type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number; avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number };
+type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarEngine?: unknown; avatarIntroSecs?: number; avatarTailSecs?: number; avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number };
 type AvatarUser = { heygenKey: string | null; heygenAvatarId: string | null };
 type ErrPayload = { error: string; message: string };
 
 export type AvatarResolution =
   | { kind: "none" }
   | { kind: "error"; payload: ErrPayload }
-  | { kind: "ok"; avatarMode: "full" | "bookend" | "bookend-both"; avatarId: string; introSecs: number; tailSecs: number; scale: number; offsetX: number; offsetY: number };
+  | { kind: "ok"; avatarMode: "full" | "bookend" | "bookend-both"; avatarId: string; avatarEngine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion; introSecs: number; tailSecs: number; scale: number; offsetX: number; offsetY: number };
 
 export function resolveAvatarRequest(args: AvatarArgs, user: AvatarUser): AvatarResolution {
   const mode = args.avatarMode ?? "none";
@@ -48,8 +56,12 @@ export function resolveAvatarRequest(args: AvatarArgs, user: AvatarUser): Avatar
   if (!user.heygenKey) return { kind: "error", payload: missingKeyError("heygen") };
   const avatarId = args.avatarId ?? user.heygenAvatarId ?? "";
   if (!avatarId) return { kind: "error", payload: missingAvatarError() };
+  if (args.avatarEngine !== undefined && !isHeyGenAvatarEngine(args.avatarEngine)) {
+    return { kind: "error", payload: { error: "bad_request", message: "avatarEngine ไม่ถูกต้อง" } };
+  }
+  const avatarEngine = resolveHeyGenAvatarEngine(args.avatarEngine);
   const { scale, offsetX, offsetY } = clampLayer(args.avatarScale ?? 1, args.avatarOffsetX ?? 0, args.avatarOffsetY ?? 0);
-  return { kind: "ok", avatarMode: mode, avatarId, introSecs: clampSecs(args.avatarIntroSecs, 5), tailSecs: clampSecs(args.avatarTailSecs, 5), scale, offsetX, offsetY };
+  return { kind: "ok", avatarMode: mode, avatarId, avatarEngine, apiVersion: heygenApiVersionForEngine(avatarEngine), introSecs: clampSecs(args.avatarIntroSecs, 5), tailSecs: clampSecs(args.avatarTailSecs, 5), scale, offsetX, offsetY };
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +90,9 @@ function normalizePollErrorCode(code: string | undefined): ProviderErrorCode | u
 export async function pollAvatarOnce(
   caller: PipelineCaller,
   heygenVideoId: string,
+  apiVersion: HeyGenAvatarApiVersion = "v2",
 ): Promise<AvatarPollOnce> {
-  const result = await caller.post<AvatarPollEndpointPayload>("/api/videos/poll-avatar", { videoId: heygenVideoId });
+  const result = await caller.post<AvatarPollEndpointPayload>("/api/videos/poll-avatar", { videoId: heygenVideoId, apiVersion });
   const errorCode = normalizePollErrorCode(result.error?.code ?? result.errorCode);
   return {
     status: result.status,
@@ -114,10 +127,20 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export async function generateAvatarVideo(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<AvatarProviderGenerateResult> {
+export async function generateAvatarVideo(
+  caller: PipelineCaller,
+  avatarId: string,
+  audioInput: string,
+  routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion; idempotencyKey?: string } = {
+    engine: "avatar_iii",
+    apiVersion: "v2",
+  },
+): Promise<AvatarProviderGenerateResult> {
   try {
     const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
-      audioUrl, avatarId, greenScreen: true,
+      ...(routing.apiVersion === "v3" ? { audioAssetId: audioInput } : { audioUrl: audioInput }),
+      avatarId, avatarEngine: routing.engine, greenScreen: true,
+      ...(routing.idempotencyKey ? { idempotencyKey: routing.idempotencyKey } : {}),
       scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
     }, { retries: 0 });
     return g.videoId
@@ -127,6 +150,7 @@ export async function generateAvatarVideo(caller: PipelineCaller, avatarId: stri
     if (!(error instanceof PipelineHttpError)) return { kind: "unknown" };
     const body = record(error.body);
     const rawCode = body?.code;
+    const failedBeforeCreate = body?.providerOperation === "upload";
     // A code in the body is the provider route's own verdict on the UPSTREAM response.
     const definitive = isProviderErrorCode(rawCode) ? rawCode : null;
     // `fatal` (e.g. HeyGen 404 "avatar look not found") is definitive, yet our route
@@ -139,12 +163,57 @@ export async function generateAvatarVideo(caller: PipelineCaller, avatarId: stri
     const providerStatus = typeof body?.providerStatus === "number" ? body.providerStatus : error.status;
     const code = definitive ?? classifyHttpStatus(providerStatus);
     // A transport/5xx response cannot prove whether the paid generate was accepted.
-    if (code === "transient" || (!definitive && providerStatus >= 500)) return { kind: "unknown" };
+    if ((code === "transient" && !failedBeforeCreate) || (!definitive && providerStatus >= 500)) return { kind: "unknown" };
     const message = typeof body?.userAction === "string"
       ? body.userAction
+      : typeof body?.message === "string"
+        ? body.message
       : typeof body?.error === "string"
         ? body.error
         : toUserMessage(code);
+    return {
+      kind: "rejected",
+      code,
+      message,
+      ...(typeof body?.reason === "string" ? { reason: body.reason } : {}),
+    };
+  }
+}
+
+export async function uploadAvatarAudio(
+  caller: PipelineCaller,
+  avatarId: string,
+  audioUrl: string,
+  routing: { engine: HeyGenAvatarEngine; apiVersion: HeyGenAvatarApiVersion },
+): Promise<AvatarProviderUploadResult> {
+  try {
+    const result = await caller.post<{ audioAssetId: string }>("/api/heygen/generate-with-bg", {
+      audioUrl,
+      avatarId,
+      avatarEngine: routing.engine,
+      greenScreen: true,
+      scale: HEYGEN_FRAMING.scale,
+      offsetX: HEYGEN_FRAMING.offsetX,
+      offsetY: HEYGEN_FRAMING.offsetY,
+    }, { retries: 0 });
+    return result.audioAssetId
+      ? { kind: "accepted", audioAssetId: result.audioAssetId }
+      : { kind: "rejected", code: "fatal", message: "HeyGen upload returned no audio asset ID" };
+  } catch (error) {
+    if (!(error instanceof PipelineHttpError)) {
+      return { kind: "rejected", code: "transient", message: toUserMessage("transient") };
+    }
+    const body = record(error.body);
+    const rawCode = body?.code;
+    const providerStatus = typeof body?.providerStatus === "number" ? body.providerStatus : error.status;
+    const code = isProviderErrorCode(rawCode) ? rawCode : classifyHttpStatus(providerStatus);
+    const message = typeof body?.userAction === "string"
+      ? body.userAction
+      : typeof body?.message === "string"
+        ? body.message
+        : typeof body?.error === "string"
+          ? body.error
+          : toUserMessage(code);
     return {
       kind: "rejected",
       code,
