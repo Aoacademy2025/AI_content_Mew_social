@@ -89,6 +89,133 @@ class BuildMemorySamplerTest(unittest.TestCase):
             self.assertEqual(sample["tree"]["pss_kib"], 160)
             self.assertEqual(sample["tree"]["private_kib"], 130)
 
+    def test_explicit_node_heap_before_entrypoint_overrides_environment(self) -> None:
+        cases = (
+            (
+                b"/usr/bin/node\0--max-old-space-size=2048\0"
+                b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0"
+                b"--max-old-space-size=8192\0",
+                b"NODE_OPTIONS=--max-old-space-size=4096\0",
+                2048,
+            ),
+            (
+                b"/usr/bin/node\0--max-old-space-size\0"
+                b"3072\0"
+                b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0"
+                b"--max-old-space-size\0"
+                b"8192\0",
+                b"NODE_OPTIONS=--max-old-space-size 4096\0",
+                3072,
+            ),
+            (
+                b"/usr/bin/node\0--max_old_space_size=3584\0"
+                b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0",
+                b"NODE_OPTIONS=--max-old-space-size=4096\0",
+                3584,
+            ),
+        )
+
+        for cmdline, environ, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                proc = Path(temporary)
+                fixture = ProcFixture(proc)
+                fixture.add_process(100, 1, 1000)
+                fixture.add_process(
+                    101,
+                    100,
+                    1001,
+                    cmdline=cmdline,
+                    environ=(
+                        environ
+                        + b"__NEXT_PRIVATE_CPU_PROFILE=/private/build-webpack-client.cpuprofile\0"
+                    ),
+                )
+
+                sample = build_memory_sampler.collect_sample(
+                    proc, build_memory_sampler.ProcessIdentity(100, 1000), "webpack"
+                )
+                child = next(process for process in sample["processes"] if process["pid"] == 101)
+
+                self.assertEqual(child["effective_max_old_space_size_mib"], expected)
+
+    def test_node_options_accepts_the_node_supported_underscore_heap_form(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            fixture = ProcFixture(proc)
+            fixture.add_process(100, 1, 1000)
+            fixture.add_process(
+                101,
+                100,
+                1001,
+                cmdline=(
+                    b"/usr/bin/node\0"
+                    b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0"
+                ),
+                environ=(
+                    b"NODE_OPTIONS=--max_old_space_size 4096\0"
+                    b"__NEXT_PRIVATE_CPU_PROFILE=/private/build-webpack-server.cpuprofile\0"
+                ),
+            )
+
+            sample = build_memory_sampler.collect_sample(
+                proc, build_memory_sampler.ProcessIdentity(100, 1000), "webpack"
+            )
+            child = next(process for process in sample["processes"] if process["pid"] == 101)
+
+            self.assertEqual(child["effective_max_old_space_size_mib"], 4096)
+
+    def test_unsupported_explicit_node_heap_does_not_fall_back_to_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            fixture = ProcFixture(proc)
+            fixture.add_process(100, 1, 1000)
+            fixture.add_process(
+                101,
+                100,
+                1001,
+                cmdline=(
+                    b"/usr/bin/node\0--max-old-space-size=unsupported\0"
+                    b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0"
+                ),
+                environ=(
+                    b"NODE_OPTIONS=--max-old-space-size=4096\0"
+                    b"__NEXT_PRIVATE_CPU_PROFILE=/private/build-webpack-server.cpuprofile\0"
+                ),
+            )
+
+            sample = build_memory_sampler.collect_sample(
+                proc, build_memory_sampler.ProcessIdentity(100, 1000), "webpack"
+            )
+            child = next(process for process in sample["processes"] if process["pid"] == 101)
+
+            self.assertIsNone(child["effective_max_old_space_size_mib"])
+
+    def test_node_heap_after_an_unknown_script_entrypoint_is_not_effective(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            fixture = ProcFixture(proc)
+            fixture.add_process(100, 1, 1000)
+            fixture.add_process(
+                101,
+                100,
+                1001,
+                cmdline=(
+                    b"/usr/bin/node\0/app/other.js\0--max-old-space-size=2048\0"
+                    b"/app/node_modules/next/dist/compiled/jest-worker/processChild.js\0"
+                ),
+                environ=(
+                    b"NODE_OPTIONS=--max-old-space-size=4096\0"
+                    b"__NEXT_PRIVATE_CPU_PROFILE=/private/build-webpack-server.cpuprofile\0"
+                ),
+            )
+
+            sample = build_memory_sampler.collect_sample(
+                proc, build_memory_sampler.ProcessIdentity(100, 1000), "webpack"
+            )
+            child = next(process for process in sample["processes"] if process["pid"] == 101)
+
+            self.assertIsNone(child["effective_max_old_space_size_mib"])
+
     def test_root_pid_reuse_during_proc_reads_stops_the_sample(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             proc = Path(temporary)
@@ -142,6 +269,32 @@ class BuildMemorySamplerTest(unittest.TestCase):
             self.assertEqual(child["status"], "pid_reused_during_sample")
             self.assertIsNone(child["memory_kib"])
             self.assertIsNone(sample["tree"]["pss_kib"])
+
+    def test_root_pid_reuse_during_a_later_child_read_invalidates_the_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            fixture = ProcFixture(proc)
+            fixture.add_process(100, 1, 1000)
+            fixture.add_process(101, 100, 1001)
+            command_path = proc / "101" / "cmdline"
+            command_path.unlink()
+            os.mkfifo(command_path)
+
+            def replace_root_while_reading_child() -> None:
+                with command_path.open("wb") as command:
+                    (proc / "100" / "stat").write_text(stat_line(100, 1, 9000))
+                    command.write(b"/usr/bin/node\0worker.js\0")
+
+            replacement = threading.Thread(target=replace_root_while_reading_child)
+            replacement.start()
+            try:
+                with self.assertRaises(build_memory_sampler.RootPidReused):
+                    build_memory_sampler.collect_sample(
+                        proc, build_memory_sampler.ProcessIdentity(100, 1000), "unknown"
+                    )
+            finally:
+                replacement.join(timeout=2)
+            self.assertFalse(replacement.is_alive())
 
     def test_root_pid_reuse_stops_and_an_exited_child_is_not_recorded_as_zero(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

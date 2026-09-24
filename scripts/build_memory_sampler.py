@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -224,7 +225,46 @@ def _role(arguments: List[str], is_root: bool) -> str:
     return "unclassified"
 
 
-def _compiler_details(proc_root: Path, pid: int) -> Tuple[Optional[str], Optional[int]]:
+def _heap_option(
+    tokens: List[str], *, reject_plain_arguments: bool = False
+) -> Tuple[bool, Optional[int]]:
+    supported = {"--max-old-space-size", "--max_old_space_size"}
+    canonical = "--max-old-space-size"
+    found = False
+    heap: Optional[int] = None
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, separator, inline_value = token.partition("=")
+        normalized = name.replace("_", "-")
+        if normalized == canonical:
+            found = True
+            if name not in supported:
+                return True, None
+            if separator:
+                value = inline_value
+                index += 1
+            else:
+                index += 1
+                if index >= len(tokens):
+                    return True, None
+                value = tokens[index]
+                index += 1
+            if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+                return True, None
+            heap = int(value)
+            continue
+        if token.replace("_", "-").startswith(canonical):
+            return True, None
+        if reject_plain_arguments and not token.startswith("-"):
+            return True, None
+        index += 1
+    return found, heap
+
+
+def _compiler_details(
+    proc_root: Path, pid: int, arguments: List[str]
+) -> Tuple[Optional[str], Optional[int]]:
     try:
         entries = _read_limited(proc_root / str(pid) / "environ").split(b"\0")
     except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
@@ -239,9 +279,34 @@ def _compiler_details(proc_root: Path, pid: int) -> Tuple[Optional[str], Optiona
     target_match = re.search(
         rb"build-webpack-(server|edge-server|client)(?:[-.]|$)", profile
     )
-    heap_matches = re.findall(rb"--max-old-space-size(?:=|\s+)(\d+)", node_options)
     target = target_match.group(1).decode("ascii") if target_match else None
-    heap = int(heap_matches[-1]) if heap_matches else None
+    try:
+        environment_tokens = shlex.split(node_options.decode("utf-8"))
+        _environment_has_heap, environment_heap = _heap_option(environment_tokens)
+    except (UnicodeDecodeError, ValueError):
+        environment_heap = None
+    entrypoint = next(
+        (
+            index
+            for index, argument in enumerate(arguments[1:], 1)
+            if Path(argument).name == "processChild.js"
+        ),
+        None,
+    )
+    command_tokens = arguments[1:entrypoint] if entrypoint is not None else []
+    if "--" in command_tokens:
+        end_options = command_tokens.index("--")
+        if end_options != len(command_tokens) - 1:
+            command_has_heap, command_heap = True, None
+        else:
+            command_has_heap, command_heap = _heap_option(
+                command_tokens[:end_options], reject_plain_arguments=True
+            )
+    else:
+        command_has_heap, command_heap = _heap_option(
+            command_tokens, reject_plain_arguments=True
+        )
+    heap = command_heap if command_has_heap else environment_heap
     return target, heap
 
 
@@ -301,7 +366,7 @@ def collect_sample(proc_root: Path, root: ProcessIdentity, stage: str) -> Dict[s
         compiler_target = None
         heap_mib = None
         if role == "webpack-compiler":
-            compiler_target, heap_mib = _compiler_details(proc_root, pid)
+            compiler_target, heap_mib = _compiler_details(proc_root, pid, arguments)
         memory = _memory(proc_root, pid)
         status = "ok" if memory is not None else "exited_during_sample"
         try:
@@ -330,6 +395,13 @@ def collect_sample(proc_root: Path, root: ProcessIdentity, stage: str) -> Dict[s
                 "memory_kib": memory,
             }
         )
+
+    try:
+        final_root = _read_stat(proc_root, root.pid)
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, OSError):
+        raise RootProcessExited()
+    if final_root.starttime_ticks != root.starttime_ticks:
+        raise RootPidReused()
 
     totals = {
         name: 0

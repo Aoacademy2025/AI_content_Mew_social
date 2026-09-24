@@ -60,6 +60,8 @@ The final `summary` record reports why sampling stopped, tree RSS/PSS/private/sw
 - host impact: `summary.host.mem_available_drop_kib`
 - heap truth: `effective_max_old_space_size_mib` on `webpack-compiler` rows
 
+The heap field applies Node's supported hyphen or underscore flag before the `processChild.js` entrypoint; that command-line value overrides `NODE_OPTIONS`. Flags passed to the worker script are ignored. An ambiguous or unsupported explicit heap form records `null` rather than claiming an effective limit.
+
 A child that exits between `/proc` reads is retained with `status: exited_during_sample` and `memory_kib: null`; a reused child PID is `pid_reused_during_sample`. Neither becomes a zero-memory observation. That sample's tree totals are also `null`, and peak calculations skip it. The sampler stops if the root exits, its PID is reused, duration expires, or the output limit is reached. This tool does not use cgroup `memory.peak`.
 
 ## Synthetic check
