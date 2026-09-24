@@ -46,6 +46,13 @@ def _median(values: list[int]) -> int | None:
     return round(statistics.median(values)) if values else None
 
 
+def is_aligned_result(summary: dict) -> bool:
+    return all(summary.get(key) is True for key in (
+        "identityValid", "monotonic", "durationWithinTolerance",
+        "eligibleSpansComplete", "boundariesComplete",
+    ))
+
+
 def validate_result(case: dict, result: dict) -> dict:
     """Return content-free timing invariants for one successful engine result."""
     text = case["text"]
@@ -55,11 +62,16 @@ def validate_result(case: dict, result: dict) -> dict:
     valid_characters = isinstance(characters, list) and bool(characters)
     monotonic = valid_characters
     matched: dict[int, int] = {}
+    emitted_spans: list[tuple[int, int]] = []
     previous_char = previous_ms = -1
     if valid_characters:
         for character in characters:
             try:
                 span = (character["startChar"], character["endChar"])
+                if not all(isinstance(value, int) for value in span):
+                    monotonic = False
+                    break
+                emitted_spans.append(span)
                 monotonic = monotonic and span in eligible
                 monotonic = monotonic and character["startChar"] >= previous_char
                 monotonic = monotonic and character["startMs"] >= previous_ms
@@ -82,17 +94,26 @@ def validate_result(case: dict, result: dict) -> dict:
     expected_duration = case.get("expectedDurationMs")
     duration_delta = result.get("audioDurationMs") - expected_duration if isinstance(expected_duration, int) else None
     expected_boundaries = len(case.get("boundaries", []))
+    emitted_eligible = [span for span in emitted_spans if span in eligible]
+    unique_emitted_eligible = set(emitted_eligible)
     return {
         "identityValid": valid_identity,
         "monotonic": bool(monotonic),
         "characterCount": len(characters) if isinstance(characters, list) else 0,
         "eligibleCharacterCount": len(eligible),
-        "coveragePermille": round(1000 * len(characters) / len(eligible)) if eligible and isinstance(characters, list) else 0,
+        "emittedSpanCount": len(emitted_spans),
+        "emittedEligibleSpanCount": len(emitted_eligible),
+        "uniqueEmittedEligibleSpanCount": len(unique_emitted_eligible),
+        "missingEligibleSpanCount": len(eligible - unique_emitted_eligible),
+        "duplicateEligibleSpanCount": len(emitted_eligible) - len(unique_emitted_eligible),
+        "unexpectedSpanCount": len(emitted_spans) - len(emitted_eligible),
+        "eligibleSpansComplete": emitted_spans == sorted(eligible),
+        "coveragePermille": round(1000 * len(unique_emitted_eligible) / len(eligible)) if eligible else 0,
         "durationDeltaMs": duration_delta,
         "durationWithinTolerance": duration_delta is None or abs(duration_delta) <= 250,
         "boundaryCount": len(boundary_errors),
         "boundaryExpectedCount": expected_boundaries,
-        "boundariesComplete": len(boundary_errors) == expected_boundaries,
+        "boundariesComplete": expected_boundaries > 0 and len(boundary_errors) == expected_boundaries,
         "boundaryAbsoluteMedianMs": _median(absolute_errors),
         "boundaryAbsoluteMaxMs": max(absolute_errors, default=None),
         "boundaryDriftMedianMs": _median([abs(value) for value in boundary_drift]),
@@ -209,9 +230,7 @@ def run_case(case: dict, python: Path, engine: Path, deadline_ms: int, threads: 
             phase: round(value) for phase, value in phase_timings.items()
             if phase in PHASES and isinstance(value, (int, float)) and 0 <= value <= 600_000
         }
-    row["status"] = "aligned" if (
-        summary["identityValid"] and summary["monotonic"] and summary["durationWithinTolerance"]
-    ) else "invalid"
+    row["status"] = "aligned" if is_aligned_result(summary) else "invalid"
     return row
 
 
