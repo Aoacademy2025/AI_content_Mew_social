@@ -93,10 +93,10 @@ holder. Group source values during a slow window, compare them with
 same-timestamp timeout failures, and treat a repeated source as an
 investigation candidate only.
 
-The logger keeps `src/...:line` or `scripts/...:line` when that source frame is
+The logger keeps `src/...:line:column` or `scripts/...:line:column` when that source frame is
 available. In a Next production bundle it reduces
-`.next/server/app/.../route.js:line` to `app/.../route.js:line`; map that route
-back to `src/app/.../route.ts` at the deployed Git revision. Unknown or chunk
+`.next/server/app/.../route.js:line:column` to `app/.../route.js:line:column`; map that exact
+generated location through the source map from the deployed Git revision. Unknown or chunk
 frames stay `unknown` rather than logging an absolute path, function arguments,
 SQL, model names, or row data. An `unknown` source means the release did not
 provide a stable application frame and requires another discriminating probe;
