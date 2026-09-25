@@ -486,6 +486,7 @@ export function useV2Job(p: V2Project) {
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       voiceProvider: p.voiceEngine,
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
+      ...(p.voiceEngine === "gemini" && p.geminiVoiceStyle && p.geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle: p.geminiVoiceStyle } : {}),
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
       ...bgmInput,

@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GEMINI_VOICE_STYLES } from "@/lib/gemini-voice-styles";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
   ...(typeof GEMINI_VOICES)[number]["id"][],
+];
+
+const GEMINI_VOICE_STYLE_IDS = GEMINI_VOICE_STYLES.map((style) => style.id) as [
+  (typeof GEMINI_VOICE_STYLES)[number]["id"],
+  ...(typeof GEMINI_VOICE_STYLES)[number]["id"][],
 ];
 
 /** Public create_video_job input contract shared by MCP registration and tests. */
@@ -13,6 +19,7 @@ export const createVideoJobInputShape = {
   voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
   voiceId: z.string().optional(),
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),
+  geminiVoiceStyle: z.enum(GEMINI_VOICE_STYLE_IDS).optional(),
   avatarMode: z.enum(["none", "full", "bookend", "bookend-both"]).optional(),
   avatarId: z.string().optional(),
   avatarEngine: z.enum(["avatar_iii", "avatar_iv", "avatar_v"]).optional(),

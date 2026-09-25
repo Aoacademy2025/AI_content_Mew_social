@@ -6,11 +6,17 @@ import { parseRetryDelayMs } from "@/lib/gemini-errors";
 // dispatcher.
 const geminiTtsDispatcher = new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 });
 
+export const GEMINI_TTS_38_MODEL = "gemini-3.8-flash-tts";
+
 const MODEL_CHAIN = [
   "gemini-2.5-flash-preview-tts",
   "gemini-3.1-flash-tts-preview",
   "gemini-2.5-pro-preview-tts",
 ];
+// NOTE (price): 3.8-flash-tts audio is $9/1M tokens through 2026-12-31, then
+// $18/1M from 2027-01-01 — above 2.5-flash ($10/1M). Revisit chain order
+// before the promo ends. Callers select 3.8 via `preferFirst`, never by
+// editing this chain, so the default stays byte-identical for everyone else.
 const MAX_ATTEMPTS = 3;
 
 export const GEMINI_TTS_NO_AUDIO = "__NO_AUDIO__";
@@ -35,6 +41,7 @@ export async function callGeminiTts(
   modelLock?: string,
   deadline?: number,
   dependencies: GeminiTtsDependencies = {},
+  preferFirst?: string,
 ): Promise<GeminiTtsCallResult> {
   const requestBody = JSON.stringify({
     contents: [{ parts: [{ text }] }],
@@ -52,7 +59,12 @@ export async function callGeminiTts(
   const sleep = dependencies.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
   const now = dependencies.now ?? Date.now;
   const random = dependencies.random ?? Math.random;
-  const models = modelLock ? [modelLock] : MODEL_CHAIN;
+  // Beta rollout (e.g. 3.8): try the preferred model first, then the standard
+  // chain without duplicating it. modelLock still pins the whole clip when set.
+  const baseChain = preferFirst
+    ? [preferFirst, ...MODEL_CHAIN.filter((m) => m !== preferFirst)]
+    : MODEL_CHAIN;
+  const models = modelLock ? [modelLock] : baseChain;
   let lastErrBody = "";
   let lastStatus = 500;
 

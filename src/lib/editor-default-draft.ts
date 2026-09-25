@@ -40,6 +40,8 @@ export interface EditorDefaultDraft {
   scriptTargetDurationSec?: number | null;
   voiceEngine: TtsProvider;
   geminiVoiceName: string;
+  /** Speaking-emotion preset id (neutral = today's behavior). */
+  geminiVoiceStyle: string;
   voiceId: string;
   omniVoiceId: string;
   musicTrack: string | null;
@@ -74,6 +76,7 @@ export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
   clipDurationSec: 0,
   voiceEngine: "gemini",
   geminiVoiceName: "Aoede",
+  geminiVoiceStyle: "neutral",
   voiceId: "",
   omniVoiceId: "voice_01",
   musicTrack: "",

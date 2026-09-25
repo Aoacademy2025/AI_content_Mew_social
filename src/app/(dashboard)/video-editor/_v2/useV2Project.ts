@@ -6,6 +6,7 @@ import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAcces
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
+import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import type { MusicMood } from "@/lib/style-pack-catalog";
 import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
@@ -79,7 +80,7 @@ interface V2Draft {
   scriptTargetDurationSec?: number | null;
   projectTitle?: string; narrativeSourceKind?: V2NarrativeSourceKind;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
-  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
+  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; geminiVoiceStyle?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string; avatarEngine?: HeyGenAvatarEngine;
   /** Project-level default a pinned Brand Revision's Style Pack may carry (ADR 0058) —
    *  consumed once in applyDraft() to pick a default system track; never itself persisted
@@ -632,6 +633,11 @@ export function useV2Project() {
   const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(
     d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [geminiVoiceStyle, setGeminiVoiceStyle, setGeminiVoiceStyleRaw] = useUserDraftState(
+    d.geminiVoiceStyle ?? "neutral", "geminiVoiceStyle", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+  );
+  // 3.8 + style beta flag (server-computed, never persisted in the draft).
+  const [tts38Beta, setTts38Beta] = useState(false);
   const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(
     d.voiceId ?? "", "voiceId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -786,7 +792,7 @@ export function useV2Project() {
 
   function buildDraft(): V2Draft {
     return {
-      mode, narrativeSourceKind, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
+      mode, narrativeSourceKind, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       ...(avatarEngine ? { avatarEngine } : {}),
@@ -814,6 +820,7 @@ export function useV2Project() {
     if (next.brollSource) setBrollSourceRaw(next.brollSource);
     if (next.voiceEngine) setVoiceEngineRaw(parseTtsProvider(next.voiceEngine));
     if (next.geminiVoiceName !== undefined) setGeminiVoiceNameRaw(next.geminiVoiceName);
+    if (next.geminiVoiceStyle !== undefined) setGeminiVoiceStyleRaw(resolveGeminiVoiceStyle(next.geminiVoiceStyle).id);
     if (next.voiceId !== undefined) setVoiceIdRaw(next.voiceId);
     if (next.omniVoiceId !== undefined) setOmniVoiceIdRaw(next.omniVoiceId);
     if (next.musicTrack !== undefined) setMusicTrackRaw(next.musicTrack);
@@ -2080,6 +2087,7 @@ export function useV2Project() {
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
     authenticatedFetch("/api/user/video-settings").then(r => r.json()).then(s => {
+      if (s.tts38Beta === true) setTts38Beta(true);
       if (!accountDraftDefaultsAllowedRef.current) return;
       const hadDraft = Object.keys(draftRef.current).length > 0;
       if (!hadDraft) {
@@ -2433,7 +2441,7 @@ export function useV2Project() {
       latestQueuedSaveRef.current = { projectId: saveProjectId, revision };
     }, 1000);
     return () => { clearTimeout(t); };
-  }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
+  }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
@@ -2485,6 +2493,8 @@ export function useV2Project() {
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,
+    geminiVoiceStyle, setGeminiVoiceStyle,
+    tts38Beta,
     voiceId, setVoiceId,
     omniVoiceId, setOmniVoiceId,
     musicTrack, setMusicTrack,

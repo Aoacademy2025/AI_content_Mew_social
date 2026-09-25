@@ -19,6 +19,7 @@ type PreviewResponse = {
 export function VoicePreviewButton({
   provider,
   geminiVoiceName,
+  geminiVoiceStyle = "neutral",
   voiceId,
   omniVoiceId = "voice_01",
   omniPreviewUrl,
@@ -27,6 +28,7 @@ export function VoicePreviewButton({
 }: {
   provider: TtsProvider;
   geminiVoiceName: string;
+  geminiVoiceStyle?: string;
   voiceId: string;
   omniVoiceId?: string;
   omniPreviewUrl?: string;
@@ -39,7 +41,7 @@ export function VoicePreviewButton({
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
   const voiceKey = provider === "gemini"
-    ? geminiVoiceName
+    ? (geminiVoiceStyle === "neutral" ? geminiVoiceName : `${geminiVoiceName}:${geminiVoiceStyle}`)
     : provider === "omnivoice"
       ? omniVoiceId
       : voiceId.trim();
@@ -111,7 +113,7 @@ export function VoicePreviewButton({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(provider === "gemini"
-          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName }
+          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }
           : { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey, languageCode: "th" }),
       });
       const data = await res.json().catch(() => ({} as PreviewResponse)) as PreviewResponse;

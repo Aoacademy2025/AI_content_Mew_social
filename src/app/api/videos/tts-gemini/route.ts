@@ -18,7 +18,10 @@ import {
   callGeminiTts,
   geminiNoAudioFailure,
   GEMINI_TTS_NO_AUDIO,
+  GEMINI_TTS_38_MODEL,
 } from "@/lib/gemini-tts-provider.server";
+import { resolveGeminiVoiceStyle, applyVoiceStyle } from "@/lib/gemini-voice-styles";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   splitScriptForTts,
@@ -208,9 +211,20 @@ export async function POST(req: Request) {
     // Get user's Gemini key (managed or BYOK)
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, plan: true },
+      select: { geminiKey: true, plan: true, email: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    // 3.8 + style beta: internal cohort (duckyhero + @aoacademy.co) until
+    // GEMINI_TTS_38_PUBLIC=1. Everyone else gets byte-identical behavior:
+    // standard chain + style ignored. Server-enforced — UI hiding alone is not
+    // the gate.
+    const tts38Beta = isInternalAiBetaEnabledFor(
+      { email: user.email },
+      process.env.GEMINI_TTS_38_PUBLIC === "1",
+    );
+    const voiceStyle = tts38Beta ? resolveGeminiVoiceStyle(body?.style).id : "neutral";
+    const preferFirst = tts38Beta ? GEMINI_TTS_38_MODEL : undefined;
     let apiKey: string;
     let geminiMode: "managed" | "byok";
     try {
@@ -264,7 +278,9 @@ export async function POST(req: Request) {
       const cache = getVoicePreviewCachePath({
         provider: "gemini",
         userId: authUser.id,
-        voiceKey: selectedVoice,
+        // Style rides in the hashed key only when styled, so existing neutral
+        // previews keep hitting their cache byte-identically.
+        voiceKey: voiceStyle === "neutral" ? selectedVoice : `${selectedVoice}:${voiceStyle}`,
         text: previewText,
         ext: "wav",
       });
@@ -281,7 +297,10 @@ export async function POST(req: Request) {
       const previewReserve = await reserveAiAudioMinutes(authUser.id, previewEstMin, { enforce: enforceAi });
       if (!previewReserve.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: previewReserve.message }, { status: 429 });
       markReserved(previewEstMin);
-      const r = await callGeminiTts(apiKey, previewText, selectedVoice);
+      // Style prefix travels on the TTS call only; timing/estimate math below
+      // keeps using the original text.
+      const styledPreviewText = applyVoiceStyle(previewText, voiceStyle);
+      const r = await callGeminiTts(apiKey, styledPreviewText, selectedVoice, undefined, undefined, {}, preferFirst);
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
       await settleReconcile(pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000);
@@ -337,7 +356,9 @@ export async function POST(req: Request) {
     let failOpen = "";
 
     for (let i = 0; i < chunks.length; i++) {
-      const r = await callGeminiTts(apiKey, chunks[i].text, selectedVoice, modelLock, chunks.length > 1 ? deadline : undefined);
+      // Style direction goes on EVERY segment call (each is an independent API
+      // call); durations/chars below still measure the original chunk text.
+      const r = await callGeminiTts(apiKey, applyVoiceStyle(chunks[i].text, voiceStyle), selectedVoice, modelLock, chunks.length > 1 ? deadline : undefined, {}, preferFirst);
       if (!r.ok) {
         // A 1-chunk clip has no fallback that differs from what just failed —
         // surface the mapped error exactly like the old single-call route.
@@ -373,7 +394,7 @@ export async function POST(req: Request) {
         }
         console.warn(`[tts-gemini] guard round ${round}: segments off cps median: [${outliers.join(", ")}] — retrying those`);
         for (const idx of outliers) {
-          const r = await callGeminiTts(apiKey, chunks[idx].text, selectedVoice, modelLock, deadline);
+          const r = await callGeminiTts(apiKey, applyVoiceStyle(chunks[idx].text, voiceStyle), selectedVoice, modelLock, deadline, {}, preferFirst);
           if (r.ok && r.sampleRate === sampleRate) {
             pcms[idx] = r.pcm;
             durations[idx] = Math.round(pcmDurationMs(r.pcm.length, sampleRate));
@@ -388,7 +409,7 @@ export async function POST(req: Request) {
     // exactly the pre-PR-B behavior. Users never lose TTS to this feature. ----
     if (!pcms) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
-      const r = await callGeminiTts(apiKey, fullText, selectedVoice);
+      const r = await callGeminiTts(apiKey, applyVoiceStyle(fullText, voiceStyle), selectedVoice, undefined, undefined, {}, preferFirst);
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
       // Write the WAV FIRST, then reserve render minutes — same MON-6 ordering as

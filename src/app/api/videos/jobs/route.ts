@@ -50,6 +50,7 @@ import {
   videoJobOperationKind,
 } from "@/lib/video-job-idempotency";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
+import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import {
   checkOmniVoiceReady,
   isOmniVoiceUserAllowed,
@@ -114,7 +115,7 @@ import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 
 type Body = {
   mode?: unknown; clipUrl?: unknown;
-  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; omniVoiceId?: unknown;
+  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; geminiVoiceStyle?: unknown; omniVoiceId?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarEngine?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
@@ -558,6 +559,14 @@ export async function POST(req: Request) {
           : undefined;
     const voiceId = str(body.voiceId, 120);
     const geminiVoiceName = str(body.geminiVoiceName, 60);
+    // Style preset: beta-gated here AND re-gated in tts-gemini (fail-closed both
+    // layers). Non-beta callers silently get neutral — today's behavior.
+    const geminiVoiceStyle = isInternalAiBetaEnabledFor(
+      user,
+      process.env.GEMINI_TTS_38_PUBLIC === "1",
+    )
+      ? resolveGeminiVoiceStyle(typeof body.geminiVoiceStyle === "string" ? body.geminiVoiceStyle : undefined).id
+      : "neutral";
     const omniVoiceId = str(body.omniVoiceId, 64);
     let voiceBackend: OmniVoiceBackend | undefined;
     let requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
@@ -1042,6 +1051,7 @@ export async function POST(req: Request) {
           ...(voiceProvider ? { voiceProvider } : {}),
           ...(voiceId ? { voiceId } : {}),
           ...(geminiVoiceName ? { geminiVoiceName } : {}),
+          ...(geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle } : {}),
           ...(omniVoiceId ? { omniVoiceId } : {}),
           ...(voiceBackend ? { voiceBackend } : {}),
           ...(avatar.kind === "ok" && avatarLayout
