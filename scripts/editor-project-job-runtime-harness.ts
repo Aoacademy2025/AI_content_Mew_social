@@ -11,6 +11,7 @@ import * as avatarDurationModule from "../src/lib/avatar-duration";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as firstClipPathModule from "../src/lib/first-clip-path";
+import * as geminiVoiceStylesModule from "../src/lib/gemini-voice-styles";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
 // HERO-42: the real module, not a hand-written stand-in — it is pure and has no
 // React or server dependency, so the harness exercises the actual source mapping.
@@ -2509,6 +2510,9 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
+    // Pure module (voice style id/direction helpers, no deps) — run the real
+    // normalizer so exact-replay sees production style coercion.
+    if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
