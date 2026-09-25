@@ -21,6 +21,7 @@ import {
   GEMINI_TTS_38_MODEL,
 } from "@/lib/gemini-tts-provider.server";
 import { resolveGeminiVoiceStyle, applyVoiceStyle } from "@/lib/gemini-voice-styles";
+import { withTailFade } from "@/lib/pcm-tail-fade";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
@@ -225,6 +226,11 @@ export async function POST(req: Request) {
     );
     const voiceStyle = tts38Beta ? resolveGeminiVoiceStyle(body?.style).id : "neutral";
     const preferFirst = tts38Beta ? GEMINI_TTS_38_MODEL : undefined;
+    // Styled calls pin to 2.5-flash: only that model treats the English
+    // direction prefix as direction (3.x reads it aloud; no TTS model accepts
+    // systemInstruction). Neutral keeps the 3.8-first chain. modelLock wins
+    // over preferFirst when set, so the pin holds for the whole clip.
+    const styledModelLock = voiceStyle !== "neutral" ? "gemini-2.5-flash-preview-tts" : undefined;
     let apiKey: string;
     let geminiMode: "managed" | "byok";
     try {
@@ -283,6 +289,9 @@ export async function POST(req: Request) {
         voiceKey: voiceStyle === "neutral" ? selectedVoice : `${selectedVoice}:${voiceStyle}`,
         text: previewText,
         ext: "wav",
+        // v2: pre-fix cache files hold the old bytes (spoken English prefix, no
+        // tail fade) under identical hashes — force a one-time regen.
+        cacheVersion: "v2",
       });
       const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
       if (cached) return NextResponse.json({ ...cached, preview: true });
@@ -297,12 +306,18 @@ export async function POST(req: Request) {
       const previewReserve = await reserveAiAudioMinutes(authUser.id, previewEstMin, { enforce: enforceAi });
       if (!previewReserve.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: previewReserve.message }, { status: 429 });
       markReserved(previewEstMin);
-      // Style prefix travels on the TTS call only; timing/estimate math below
-      // keeps using the original text.
+      // Styled preview rides the pinned 2.5-flash model (prefix honored as
+      // direction there); estimate/reconcile below use the original text. A
+      // styled failure falls back to neutral rather than erroring the user —
+      // tone is beta polish, voice is the product.
       const styledPreviewText = applyVoiceStyle(previewText, voiceStyle);
-      const r = await callGeminiTts(apiKey, styledPreviewText, selectedVoice, undefined, undefined, {}, preferFirst);
+      let r = await callGeminiTts(apiKey, styledPreviewText, selectedVoice, styledModelLock, undefined, {}, preferFirst);
+      if (!r.ok && styledModelLock) {
+        console.warn(`[tts-gemini] styled preview failed (${r.status}) — falling back to neutral`);
+        r = await callGeminiTts(apiKey, previewText, selectedVoice, undefined, undefined, {}, preferFirst);
+      }
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
-      fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
+      fs.writeFileSync(cache.filePath, wavFromPcm(withTailFade(r.pcm, r.sampleRate), r.sampleRate));
       await settleReconcile(pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000);
       return NextResponse.json({
         voiceUrl: cache.voiceUrl,
@@ -352,7 +367,9 @@ export async function POST(req: Request) {
     let pcms: Buffer[] | null = [];
     const durations: number[] = [];
     let sampleRate = 0;
-    let modelLock: string | undefined;
+    // Styled clips start locked to 2.5-flash (see styledModelLock above);
+    // neutral clips lock to whatever serves segment 0 as before.
+    let modelLock: string | undefined = styledModelLock;
     let failOpen = "";
 
     for (let i = 0; i < chunks.length; i++) {
@@ -409,14 +426,18 @@ export async function POST(req: Request) {
     // exactly the pre-PR-B behavior. Users never lose TTS to this feature. ----
     if (!pcms) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
-      const r = await callGeminiTts(apiKey, applyVoiceStyle(fullText, voiceStyle), selectedVoice, undefined, undefined, {}, preferFirst);
+      let r = await callGeminiTts(apiKey, applyVoiceStyle(fullText, voiceStyle), selectedVoice, styledModelLock, undefined, {}, preferFirst);
+      if (!r.ok && styledModelLock) {
+        console.warn(`[tts-gemini] styled fail-open failed (${r.status}) — falling back to neutral`);
+        r = await callGeminiTts(apiKey, fullText, selectedVoice, undefined, undefined, {}, preferFirst);
+      }
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
       // Write the WAV FIRST, then reserve render minutes — same MON-6 ordering as
       // the success path: a failed disk write can't leak render minutes because the
       // reserve never runs, and the still-un-settled AI-audio reserve is refunded by
       // the outer catch on a throw.
-      const { voiceUrl, filePath } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
+      const { voiceUrl, filePath } = saveWav(wavFromPcm(withTailFade(r.pcm, r.sampleRate), r.sampleRate));
       // Reserve minutes AFTER the WAV exists (managed users only).
       // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
       // instead — skip here so the same video isn't charged twice (TTS + render).
@@ -452,7 +473,7 @@ export async function POST(req: Request) {
     // can't leak render minutes to the outer catch (MON-6). The AI-audio reserve is
     // still un-settled at this point, so a throw here refunds it via the catch. On a
     // quota-minutes loss we unlink the just-written WAV so nothing is orphaned.
-    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
+    const { voiceUrl, filePath } = saveWav(wavFromPcm(withTailFade(Buffer.concat(pcms), sampleRate), sampleRate));
     // Reserve minutes AFTER the WAV exists (managed users only).
     // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
     // instead — skip here so the same video isn't charged twice (TTS + render).
