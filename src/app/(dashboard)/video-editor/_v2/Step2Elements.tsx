@@ -14,6 +14,7 @@ import {
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
 import {
   BROLL_REGION_OPTIONS,
   type BrollRegionPreference,
@@ -728,7 +729,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </span>
             {p.voiceEngine !== "omnivoice" && (
               <span className="w-[132px] shrink-0 self-center max-[360px]:col-span-2 max-[360px]:w-full">
-                <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
+                <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} geminiVoiceStyle={p.geminiVoiceStyle} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
               </span>
             )}
           </Card>
@@ -752,6 +753,22 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     </option>
                   ))}
                 </select>
+                {p.tts38Beta ? (
+                  <>
+                    <span style={{ fontSize: 12, color: color.textSecondary }}>น้ำเสียง</span>
+                    <GeminiVoiceStyleSelect
+                      value={p.geminiVoiceStyle}
+                      onChange={p.setGeminiVoiceStyle}
+                      label=""
+                      selectClassName="min-h-11 w-full max-w-[280px]"
+                      selectStyle={{
+                        padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                        background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                        color: color.text, fontFamily: font.body,
+                      }}
+                    />
+                  </>
+                ) : null}
               </label>
             ) : p.voiceEngine === "omnivoice" ? (
               <div className="flex flex-col gap-1.5">

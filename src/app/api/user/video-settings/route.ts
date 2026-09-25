@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { validateVideoSettingsPatch } from "@/lib/video-settings";
 import { parseTtsProvider } from "@/lib/tts-providers";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 // GET /api/user/video-settings — get saved avatar & voice IDs for current user
 export async function GET() {
@@ -13,7 +14,7 @@ export async function GET() {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true },
+      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true, email: true },
     });
 
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -23,6 +24,11 @@ export async function GET() {
       elevenlabsVoiceId: user.elevenlabsVoiceId ?? "",
       ttsProvider: parseTtsProvider(user.ttsProvider),
       geminiVoiceName: user.geminiVoiceName ?? "Aoede",
+      // 3.8 + style beta flag for the voice pickers (additive — old clients ignore it).
+      tts38Beta: isInternalAiBetaEnabledFor(
+        { email: user.email },
+        process.env.GEMINI_TTS_38_PUBLIC === "1",
+      ),
     });
   } catch (error) {
     return apiError({ route: "GET /api/user/video-settings", error });

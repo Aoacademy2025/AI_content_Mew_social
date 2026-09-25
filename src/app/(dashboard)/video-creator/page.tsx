@@ -13,6 +13,7 @@ import {
   Music2, Upload, X, Check,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
@@ -373,6 +374,9 @@ export default function ShortVideoPage() {
   const [voiceId, setVoiceId] = useState("");
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  // Speaking-emotion preset (beta-gated UI below; default neutral = today's behavior).
+  const [geminiVoiceStyle, setGeminiVoiceStyle] = useState("neutral");
+  const [tts38Beta, setTts38Beta] = useState(false);
   const [running, setRunning] = useState(false);
   // Bumped after a render or burn completes so QuotaStatus re-fetches the updated balance
   const [quotaRefresh, setQuotaRefresh] = useState(0);
@@ -545,6 +549,7 @@ export default function ShortVideoPage() {
       if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+      if (d.tts38Beta === true) setTts38Beta(true);
     }).catch(() => {});
 
     // Cancel active render job when tab closes/refreshes
@@ -935,7 +940,7 @@ export default function ShortVideoPage() {
       const ttsRes = await fetch("/api/videos/tts-gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanScript, voiceName: geminiVoiceName }),
+        body: JSON.stringify({ text: cleanScript, voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
         signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
@@ -2929,6 +2934,22 @@ export default function ShortVideoPage() {
                         </select>
                         <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
                       </div>
+                      {/* Gemini: speaking-emotion preset (internal beta only) */}
+                      {tts38Beta && (
+                        <>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">น้ำเสียง</p>
+                          <div className="relative">
+                            <GeminiVoiceStyleSelect
+                              value={geminiVoiceStyle}
+                              onChange={setGeminiVoiceStyle}
+                              label=""
+                              selectClassName="w-full h-10 px-3 pr-8 rounded-lg text-sm text-white font-medium appearance-none cursor-pointer"
+                              selectStyle={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)", outline: "none" }}
+                            />
+                            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
+                          </div>
+                        </>
+                      )}
                       {/* Selected voice info + preview */}
                       {(() => {
                         const v = GEMINI_VOICES.find(x => x.id === geminiVoiceName);
@@ -2947,7 +2968,7 @@ export default function ShortVideoPage() {
                                   const res = await fetch("/api/videos/tts-gemini", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceName: geminiVoiceName }),
+                                    body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
                                   });
                                   const data = await res.json();
                                   if (res.ok) {

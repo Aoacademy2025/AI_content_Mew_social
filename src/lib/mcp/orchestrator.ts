@@ -214,6 +214,8 @@ interface CreateInput {
   subtitlePosition?: "top" | "middle" | "bottom";
   /** Per-job Gemini voice override (Editor v2) — falls back to user.geminiVoiceName. */
   geminiVoiceName?: string;
+  /** Per-job Gemini voice style preset id — validated + beta-gated at the web route. */
+  geminiVoiceStyle?: string;
   /**
    * B-roll source override (Editor v2): "both" (stock, default) | "kie-image" | "auto-mix".
    * Validated + admin-gated at the web route; MCP never sends it → DEFAULT_STOCK_SOURCE.
@@ -2221,7 +2223,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     } else {
       tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
         "/api/videos/tts-gemini",
-        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
+        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede", ...(input.geminiVoiceStyle ? { style: input.geminiVoiceStyle } : {}) },
       );
     }
     const prepareGeneratedTts = async (
