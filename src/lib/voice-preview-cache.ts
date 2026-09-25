@@ -20,18 +20,26 @@ export function getVoicePreviewCachePath({
   voiceKey,
   text,
   ext,
+  cacheVersion,
 }: {
   provider: VoicePreviewProvider;
   userId: string;
   voiceKey: string;
   text: string;
   ext: "mp3" | "wav";
+  // Optional bust: appended to the hash input ONLY when provided, so existing
+  // callers stay byte-identical. Bump when the bytes behind an identical key
+  // change (new voice model semantics, post-processing, ...).
+  cacheVersion?: string;
 }) {
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
+  const hashInput = cacheVersion
+    ? [provider, userId, voiceKey, text, cacheVersion]
+    : [provider, userId, voiceKey, text];
   const hash = crypto
     .createHash("sha256")
-    .update([provider, userId, voiceKey, text].join("\n"))
+    .update(hashInput.join("\n"))
     .digest("hex")
     .slice(0, 24);
   const filename = `voice-preview-${provider}-${hash}.${ext}`;

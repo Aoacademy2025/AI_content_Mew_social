@@ -1,10 +1,13 @@
 // Gemini voice style presets (speaking emotion).
 //
-// Applied as an inline direction prefix ("Speak cheerfully: ...") — the same
-// steerable-prompt pattern Gemini TTS documents. Each render segment is an
-// independent API call, so the prefix must travel on EVERY segment call, not
-// just the first one. Timing math always uses the ORIGINAL text; the prefix
-// never enters subtitle arithmetic.
+// Applied as an inline direction prefix ("Speak cheerfully: ..."). ONLY
+// gemini-2.5-flash-preview-tts honors the prefix as direction — the 3.x TTS
+// models read it aloud (English before Thai) and reject systemInstruction, so
+// callers MUST pin styled calls to 2.5-flash (see tts-gemini route) and never
+// send a prefix to 3.x. Each render segment is an independent API call, so the
+// prefix must travel on EVERY segment call, not just the first one. Timing
+// math always uses the ORIGINAL text; the prefix never enters subtitle
+// arithmetic.
 //
 // Gating lives with the callers (tts-gemini route / orchestrator) behind the
 // internal beta cohort — this module is pure and dependency-free so policy
@@ -28,7 +31,9 @@ export function resolveGeminiVoiceStyle(style: unknown): typeof GEMINI_VOICE_STY
   return found ?? GEMINI_VOICE_STYLES[0];
 }
 
-/** Prefix the direction for the TTS call. Neutral returns text unchanged. */
+/** Prefix the direction for the TTS call. Neutral returns text unchanged.
+ * Only for calls pinned to gemini-2.5-flash-preview-tts — 3.x TTS models read
+ * the prefix aloud. */
 export function applyVoiceStyle(text: string, style: unknown): string {
   const direction = resolveGeminiVoiceStyle(style).direction;
   return direction ? `${direction}${text}` : text;
