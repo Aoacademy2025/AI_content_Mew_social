@@ -21,7 +21,7 @@ import {
   GEMINI_TTS_38_MODEL,
 } from "@/lib/gemini-tts-provider.server";
 import { resolveGeminiVoiceStyle, applyVoiceStyle } from "@/lib/gemini-voice-styles";
-import { withTailFade } from "@/lib/pcm-tail-fade";
+import { finalizeTtsPcm } from "@/lib/pcm-tail-fade";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
@@ -317,11 +317,14 @@ export async function POST(req: Request) {
         r = await callGeminiTts(apiKey, previewText, selectedVoice, undefined, undefined, {}, preferFirst);
       }
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
-      fs.writeFileSync(cache.filePath, wavFromPcm(withTailFade(r.pcm, r.sampleRate), r.sampleRate));
-      await settleReconcile(pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000);
+      // Finalize (trim 3.8 tail glitch + fade) BEFORE measuring: durations
+      // must describe the bytes actually written, or subtitles drift.
+      const finalPreviewPcm = finalizeTtsPcm(r.pcm, r.sampleRate);
+      fs.writeFileSync(cache.filePath, wavFromPcm(finalPreviewPcm, r.sampleRate));
+      await settleReconcile(pcmDurationMs(finalPreviewPcm.length, r.sampleRate) / 60_000);
       return NextResponse.json({
         voiceUrl: cache.voiceUrl,
-        audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
+        audioDurationMs: Math.round(pcmDurationMs(finalPreviewPcm.length, r.sampleRate)),
         preview: true,
         cached: false,
       });
@@ -391,8 +394,11 @@ export async function POST(req: Request) {
         pcms = null;
         break;
       }
-      pcms.push(r.pcm);
-      durations.push(Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)));
+      // Finalize per segment (the glitch rides each API call): the concat
+      // below joins already-clean audio and durations match written bytes.
+      const finalSeg = finalizeTtsPcm(r.pcm, r.sampleRate);
+      pcms.push(finalSeg);
+      durations.push(Math.round(pcmDurationMs(finalSeg.length, r.sampleRate)));
       const spoken = chunks[i].text.replace(/\s+/g, "").length;
       console.log(`[tts-gemini] seg ${i + 1}/${chunks.length}: ${durations[i]}ms, ${spoken} chars, ${(spoken / Math.max(durations[i], 1) * 1000).toFixed(1)} cps`);
     }
@@ -413,8 +419,9 @@ export async function POST(req: Request) {
         for (const idx of outliers) {
           const r = await callGeminiTts(apiKey, applyVoiceStyle(chunks[idx].text, voiceStyle), selectedVoice, modelLock, deadline, {}, preferFirst);
           if (r.ok && r.sampleRate === sampleRate) {
-            pcms[idx] = r.pcm;
-            durations[idx] = Math.round(pcmDurationMs(r.pcm.length, sampleRate));
+            const finalGuard = finalizeTtsPcm(r.pcm, sampleRate);
+            pcms[idx] = finalGuard;
+            durations[idx] = Math.round(pcmDurationMs(finalGuard.length, sampleRate));
             console.log(`[tts-gemini] guard: seg ${idx + 1} regenerated → ${durations[idx]}ms`);
           }
         }
@@ -432,12 +439,13 @@ export async function POST(req: Request) {
         r = await callGeminiTts(apiKey, fullText, selectedVoice, undefined, undefined, {}, preferFirst);
       }
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
-      const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
+      const finalFailOpen = finalizeTtsPcm(r.pcm, r.sampleRate);
+      const failOpenDurationMs = Math.round(pcmDurationMs(finalFailOpen.length, r.sampleRate));
       // Write the WAV FIRST, then reserve render minutes — same MON-6 ordering as
       // the success path: a failed disk write can't leak render minutes because the
       // reserve never runs, and the still-un-settled AI-audio reserve is refunded by
       // the outer catch on a throw.
-      const { voiceUrl, filePath } = saveWav(wavFromPcm(withTailFade(r.pcm, r.sampleRate), r.sampleRate));
+      const { voiceUrl, filePath } = saveWav(wavFromPcm(finalFailOpen, r.sampleRate));
       // Reserve minutes AFTER the WAV exists (managed users only).
       // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
       // instead — skip here so the same video isn't charged twice (TTS + render).
@@ -473,7 +481,7 @@ export async function POST(req: Request) {
     // can't leak render minutes to the outer catch (MON-6). The AI-audio reserve is
     // still un-settled at this point, so a throw here refunds it via the catch. On a
     // quota-minutes loss we unlink the just-written WAV so nothing is orphaned.
-    const { voiceUrl, filePath } = saveWav(wavFromPcm(withTailFade(Buffer.concat(pcms), sampleRate), sampleRate));
+    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     // Reserve minutes AFTER the WAV exists (managed users only).
     // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
     // instead — skip here so the same video isn't charged twice (TTS + render).
