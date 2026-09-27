@@ -115,11 +115,11 @@ async function verifyBundledCallerPhases(
     const require = createRequire(import.meta.url);
     const installer = require(installerPath) as { prisma: PrismaClient };
     const firstCaller = require(firstCallerPath) as {
-      readBalance(userId: string): Promise<{ total: number }>;
+      materializeWallet(userId: string): Promise<{ total: number }>;
       runSlowCallback<T>(delayMs: number, result: T): Promise<T>;
     };
     const secondCaller = require(secondCallerPath) as {
-      readBalance(userId: string): Promise<{ total: number }>;
+      materializeWallet(userId: string): Promise<{ total: number }>;
     };
     await installer.prisma.user.createMany({
       data: [
@@ -139,8 +139,8 @@ async function verifyBundledCallerPhases(
 
     warnings.length = 0;
     const balances = Promise.all([
-      firstCaller.readBalance("slow-tx-caller-a"),
-      secondCaller.readBalance("slow-tx-caller-b"),
+      firstCaller.materializeWallet("slow-tx-caller-a"),
+      secondCaller.materializeWallet("slow-tx-caller-b"),
     ]);
     await new Promise((resolve) => setTimeout(resolve, heldMs));
     lock.stdin.end("ROLLBACK;\n.quit\n");
@@ -161,7 +161,7 @@ async function verifyBundledCallerPhases(
         where: { userId: { in: ["slow-tx-caller-a", "slow-tx-caller-b"] } },
       }),
       2,
-      "both real balance callers must materialize their zero balance after contention",
+      "both bundled write callers must materialize their zero balance after contention",
     );
 
     warnings.length = 0;

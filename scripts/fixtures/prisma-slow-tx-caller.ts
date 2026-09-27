@@ -1,8 +1,14 @@
-import { getBalance } from "../../src/lib/credits";
 import { prisma } from "../../src/lib/prisma";
 
-export async function readBalance(userId: string) {
-  return getBalance(userId, new Date("2026-09-23T00:00:00.000Z"));
+export async function materializeWallet(userId: string) {
+  return prisma.$transaction(async (tx) => {
+    const wallet = await tx.creditBalance.upsert({
+      where: { userId },
+      create: { userId },
+      update: {},
+    });
+    return { total: wallet.granted + wallet.purchased };
+  });
 }
 
 export async function runSlowCallback<T>(delayMs: number, result: T): Promise<T> {
