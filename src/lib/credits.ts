@@ -58,8 +58,8 @@ export { MONTHLY_GRANT };
 // ── Balance helpers ───────────────────────────────────────────────────────────
 
 /**
- * Returns the current credit balance for a user, upserting an empty row if one
- * doesn't exist yet (so callers never have to worry about null).
+ * Returns the current credit balance for a user. A missing wallet reads as zero
+ * without creating an empty row. Expired promotional credits are still cleared.
  */
 export type PromotionalCreditDebit = { grantId: string; amount: number };
 export type CreditDebit = {
@@ -217,9 +217,8 @@ export async function getBalance(
   userId: string,
   now: Date = new Date(),
 ): Promise<{ granted: number; promotional: number; purchased: number; total: number }> {
-  // The normal balance path is read-only. Previously the unconditional upsert
-  // below made every balance poll compete for SQLite's single writer lock even
-  // when the wallet already existed and no promotional grant had expired.
+  // The normal balance path is read-only, including a new user's first poll.
+  // Creating an empty wallet here makes a GET compete for SQLite's writer lock.
   type BalanceSnapshot = {
     granted: number | bigint;
     purchased: number | bigint;
@@ -228,8 +227,8 @@ export async function getBalance(
   };
   const [snapshot] = await withTransientSqliteRetry(() => prisma.$queryRaw<BalanceSnapshot[]>(Prisma.sql`
     SELECT
-      cb."granted" AS "granted",
-      cb."purchased" AS "purchased",
+      COALESCE(cb."granted", 0) AS "granted",
+      COALESCE(cb."purchased", 0) AS "purchased",
       COALESCE((
         SELECT SUM(pg."remainingAmount")
         FROM "PromotionalCreditGrant" pg
@@ -244,8 +243,8 @@ export async function getBalance(
           AND expired."expiresAt" <= ${now}
           AND expired."remainingAmount" > 0
       ) AS "hasExpired"
-    FROM "CreditBalance" cb
-    WHERE cb."userId" = ${userId}
+    FROM (SELECT ${userId} AS "userId") requested
+    LEFT JOIN "CreditBalance" cb ON cb."userId" = requested."userId"
     LIMIT 1
   `));
   if (snapshot && Number(snapshot.hasExpired) === 0) {
