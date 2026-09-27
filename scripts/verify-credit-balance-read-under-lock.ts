@@ -2,18 +2,18 @@
 // A wallet read must not compete with an unrelated writer for SQLite's single write lock.
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import { PrismaClient } from "@prisma/client";
-import { prisma } from "../src/lib/prisma";
-import { getBalance } from "../src/lib/credits";
 
 const url = process.env.DATABASE_URL ?? "";
 assert.match(url, /\/test-[^/?]+\.db\?/, "use a throwaway test-*.db file");
 assert.match(url, /socket_timeout=1(?:&|$)/, "use a throwaway DB with socket_timeout=1");
-const holder = new PrismaClient({ datasourceUrl: url });
 const existingId = "hero10-existing-wallet";
 const missingId = "hero10-missing-wallet";
 
 async function main() {
+  const { PrismaClient } = await import("@prisma/client");
+  const { prisma } = await import("../src/lib/prisma");
+  const { getBalance } = await import("../src/lib/credits");
+  const holder = new PrismaClient({ datasourceUrl: url });
   await prisma.$queryRawUnsafe("PRAGMA journal_mode=WAL");
   await prisma.creditBalance.deleteMany({ where: { userId: { in: [existingId, missingId] } } });
   await prisma.creditBalance.create({ data: { userId: existingId, purchased: 7 } });
