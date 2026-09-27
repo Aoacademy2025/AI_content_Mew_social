@@ -32,12 +32,14 @@ async function main() {
   assert(creditCostFor("video-seedance-5s") === 10, 'creditCostFor("video-seedance-5s") === 10');
   assert(creditCostFor("unknown-action-xyz") === 0, 'creditCostFor("unknown-action-xyz") === 0 (unknown → 0)');
 
-  // ── getBalance creates row on miss ─────────────────────────────────────────
+  // ── First balance read remains read-only for a missing wallet ──────────────
   const userId = "user-credit-test-1";
   const bal0 = await getBalance(userId);
   assert(bal0.granted === 0, "getBalance: new user → granted = 0");
   assert(bal0.purchased === 0, "getBalance: new user → purchased = 0");
   assert(bal0.total === 0, "getBalance: new user → total = 0");
+  assert(await prisma.creditBalance.count({ where: { userId } }) === 0,
+    "getBalance: new user read does not create an empty wallet");
 
   // ── grantCredits "grant" → granted bucket ─────────────────────────────────
   await grantCredits(userId, 50, "grant", "monthly-reset");
