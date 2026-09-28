@@ -31,6 +31,7 @@ import {
 import { stylePack, type StylePack } from "@/lib/style-pack-catalog";
 import { STYLE_PACK_UNAVAILABLE_MESSAGE } from "@/lib/style-pack-apply";
 import { stylePackSnapshotOf, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
+import { assignDistinctShotScales, shotScaleForAction } from "@/lib/scene-brief-diversity";
 import {
   brandLanguageSchema,
   parseProjectLook,
@@ -966,6 +967,24 @@ export type ResolvedProjectVisualPrompt = {
   compiled: CompiledBrandVisualPrompt;
 };
 
+function shotScaleAmong(
+  beats: Array<{ id: string; beatJson: string }>,
+  beatId: string,
+  action: string,
+): string {
+  const actions = beats.map((row) => {
+    try {
+      const parsed = JSON.parse(row.beatJson) as { action?: unknown };
+      return typeof parsed.action === "string" ? parsed.action : "";
+    } catch {
+      return "";
+    }
+  });
+  const scales = assignDistinctShotScales(actions);
+  const index = beats.findIndex((row) => row.id === beatId);
+  return scales[index] ?? shotScaleForAction(action);
+}
+
 /** Resolve the durable project/preflight seam from a video job. Legacy or
  * non-project jobs return null; an incomplete/corrupt durable pin fails closed. */
 export async function resolveProjectVisualPromptForVideoScene(input: {
@@ -1149,6 +1168,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       brandVisualLanguage: context.brandVisualLanguage,
       visualBeat: { ...beatValue, entityRenderingDescriptions, phase },
       sceneRenderingDirection: input.sceneRenderingDirection,
+      sceneShotScale: shotScaleAmong(beats, beat.id, beatValue.action),
     }),
   };
 }

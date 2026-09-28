@@ -1,6 +1,11 @@
 import type { AiImageStyle } from "@/lib/ai-image-policy";
 import { latinLetteringOnly } from "@/lib/image-prompt-script";
 import {
+  pointingGestureRequested,
+  sceneDiversityClause,
+  shotScaleForAction,
+} from "@/lib/scene-brief-diversity";
+import {
   normalizeBrollRegionPreference,
   normalizeBrollVisualStyle,
   type BrollVisualStyle,
@@ -349,10 +354,13 @@ export function buildHeroImagePrompt(
   // connector for the encoder to interpret.
   const promptText = (value: string, fallback: string): string =>
     latinLetteringOnly(cleanText(value)) || fallback;
+  const settingText = promptText(brief.setting, "the setting named by this scene");
+  const actionText = promptText(brief.action, "the action named by this scene");
+  const subjectText = promptText(brief.subject, "the subject the story is about");
   const clauses = [
-    `${MODE_PROMPT[brief.visualMode]} of ${promptText(brief.subject, "the subject the story is about")}`,
-    `in ${promptText(brief.setting, "a real setting directly implied by the narration")}`,
-    promptText(brief.action, "one specific, decisive moment"),
+    `${MODE_PROMPT[brief.visualMode]} of ${subjectText}`,
+    `in ${settingText}`,
+    actionText,
     `story purpose: ${promptText(brief.narrativeBeat, "the current story beat")}`,
     `${promptText(brief.camera, "a natural eye-level view")}, vertical 9:16 single-camera composition filling the entire canvas`,
     promptText(brief.lighting, "believable light motivated by the setting"),
@@ -384,6 +392,12 @@ export function buildHeroImagePrompt(
       : "",
     "specific lived-in detail and believable materials captured with natural observational timing",
     "one uninterrupted edge-to-edge camera view with one primary framing and one consistent perspective",
+    sceneDiversityClause({
+      setting: settingText,
+      action: actionText,
+      shotScale: shotScaleForAction(actionText),
+      allowPointing: pointingGestureRequested(`${subjectText} ${actionText} ${settingText}`),
+    }),
   ].filter(Boolean);
   return `${clauses.join(", ")}.`;
 }
