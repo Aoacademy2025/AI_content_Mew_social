@@ -432,6 +432,14 @@ export function usePostPhaseEditor(
     const next = new Map(windowEdits);
     next.set(index, { ...(next.get(index) ?? {}), ...edit });
     commitWindowEdits(next);
+    if (edit.src) {
+      const span = brollTimelineSpans.find((item) => item.index === index);
+      const video = videoRef.current;
+      if (span && video) {
+        video.pause();
+        video.currentTime = span.startMs / 1000 + 0.05;
+      }
+    }
     trackEvent("editor_broll_edit_staged", {
       status: "started",
       properties: { surface, ...summarizeBrollGrowthEdits(Array.from(next.values())) },

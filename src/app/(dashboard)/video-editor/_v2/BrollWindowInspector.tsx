@@ -143,9 +143,13 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       }}
     >
       <span className="mr-auto hidden sm:flex sm:flex-col" style={{ lineHeight: 1.35 }}>
-        <span style={{ fontSize: 11.5, color: color.warning }}>ตัวอย่างยังเป็นวิดีโอเดิม</span>
+        <span style={{ fontSize: 11.5, color: color.warning }}>
+          {Array.from(ed.windowEdits.values()).some((edit) => edit.src && edit.enabled !== false)
+            ? "เห็นภาพที่เลือกบนตัวอย่างแล้ว"
+            : "ตัวอย่างยังเป็นวิดีโอเดิม"}
+        </span>
         <span style={{ fontSize: 10.5, color: color.textFaint }}>
-          แก้ B-roll ไว้ {ed.windowEdits.size} ช่วง · กดอัปเดตเพื่อดูผลจริง
+          แก้ B-roll ไว้ {ed.windowEdits.size} ช่วง · กดอัปเดตครั้งเดียวเพื่อเรนเดอร์ทั้งคลิป
         </span>
       </span>
       <button
@@ -790,7 +794,9 @@ export function BrollWindowInspector({
           <div className="flex min-w-0 flex-col gap-0.5">
             <span style={{ fontSize: 12, color: color.primary300 }}>ยังไม่ได้อัปเดตวิดีโอ</span>
             <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>
-              ตัวอย่างยังเป็นวิดีโอเดิม · กด “อัปเดตวิดีโอ” ด้านล่างเพื่อสร้างตัวอย่างใหม่ฟรี
+              {existingEdit?.src && existingEdit.enabled !== false
+                ? "เห็นภาพนี้บนตัวอย่างแล้ว · กดอัปเดตเมื่อพร้อมเรนเดอร์ทั้งคลิป"
+                : "กดอัปเดตเมื่อพร้อมเรนเดอร์ทั้งคลิป"}
             </span>
           </div>
         </div>

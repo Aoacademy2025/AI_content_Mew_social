@@ -32,6 +32,7 @@ import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { StagedBrollPreview } from "./StagedBrollPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import {
   BrollWindowInspector,
@@ -393,6 +394,12 @@ export function PostPhase({
               onError={onPreviewError}
               className="h-full w-full object-cover"
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
+            />
+            <StagedBrollPreview
+              timeMs={ed.timeMs}
+              playing={ed.playing}
+              spans={ed.brollTimelineSpans}
+              edits={ed.windowEdits}
             />
             <LogoOverlayPreview
               value={logoOverlay}
