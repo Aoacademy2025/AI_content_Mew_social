@@ -31,6 +31,7 @@ import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { StagedBrollPreview } from "./StagedBrollPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import { LayerVisibilityControls } from "./LayerVisibilityControls";
 import { HeadlineHookControls } from "./HeadlineHookControls";
@@ -334,6 +335,12 @@ export function PostPhaseMobile({
             onPause={() => ed.setPlaying(false)}
             onError={onPreviewError}
             className="h-full w-full object-cover"
+          />
+          <StagedBrollPreview
+            timeMs={ed.timeMs}
+            playing={ed.playing}
+            spans={ed.brollTimelineSpans}
+            edits={ed.windowEdits}
           />
           <LogoOverlayPreview
             value={logoOverlay}
