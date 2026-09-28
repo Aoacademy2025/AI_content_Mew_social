@@ -2076,6 +2076,21 @@ function compileBrandVisualPromptV11(input: {
   };
 }
 
+function countSafeScenePlaceAndAction(beat: VisualBeat): { setting: string; action: string } {
+  const facts = beat.hardSceneFacts;
+  const counted = facts?.count !== null && facts?.count !== undefined;
+  const safePlace = counted
+    ? facts.locationTypes.map((value) => letteringSafeVisualValueV8(value, 180)).filter(Boolean).join(" and ")
+    : "";
+  const safeAction = counted
+    ? facts.actions.map((value) => letteringSafeVisualValueV8(value, 240)).filter(Boolean).join(" and ")
+    : "";
+  return {
+    setting: safePlace || letteringSafeVisualValueV8(beat.setting, 180),
+    action: safeAction || letteringSafeVisualValueV8(beat.action, 240),
+  };
+}
+
 function cinematicSceneRenderingDirectionV10(
   direction: SceneRenderingDirection | undefined,
 ): string {
@@ -2144,8 +2159,7 @@ function compileBrandVisualPromptCinematicV10(input: {
       ? `Scene-specific flexible rendering direction: ${sceneRenderingDirection}`
       : "",
     sceneDiversityClause({
-      setting: beat.setting,
-      action: beat.action,
+      ...countSafeScenePlaceAndAction(beat),
       shotScale: input.sceneShotScale?.trim() || shotScaleForAction(beat.action),
       allowPointing: pointingGestureRequested(`${beat.subject} ${beat.action} ${beat.setting}`),
     }),
