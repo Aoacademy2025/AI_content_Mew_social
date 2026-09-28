@@ -85,11 +85,12 @@ assert.ok(
 );
 assert.match(jobsRoute, /error:\s*"stale_export_source"/u);
 
-// Support regression #odqpq2 — toggling a baked B-roll window stages a free
-// re-render; the current video preview cannot change until the batch is applied.
-// The UI must say that explicitly both in the inspector and the sticky action bar.
+// HERO-55 — a staged upload is visible on the current preview immediately.
+// Timing-only edits still say the preview video itself is unchanged until commit.
+assert.match(inspector, /เห็นภาพที่เลือกบนตัวอย่างแล้ว/u);
+assert.match(inspector, /เห็นภาพนี้บนตัวอย่างแล้ว/u);
 assert.match(inspector, /ตัวอย่างยังเป็นวิดีโอเดิม/u);
-assert.match(inspector, /กด “อัปเดตวิดีโอ” ด้านล่าง/u);
+assert.match(inspector, /กดอัปเดตครั้งเดียวเพื่อเรนเดอร์ทั้งคลิป/u);
 
 // Support regression cms4jnk0o02mhlcpiz462hd65 — a "new project" confirmation
 // must never promise only a re-render when both successful actions actually call
