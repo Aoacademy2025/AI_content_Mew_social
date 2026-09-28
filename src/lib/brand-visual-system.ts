@@ -3,6 +3,11 @@ import {
   treatmentPromptDirection,
   type TreatmentPin,
 } from "@/lib/brand-treatment-catalog";
+import {
+  pointingGestureRequested,
+  sceneDiversityClause,
+  shotScaleForAction,
+} from "@/lib/scene-brief-diversity";
 
 /** Provider-neutral visual identity vocabulary for Brand Visual System V1. */
 export const VISUAL_FORMAT_IDS = [
@@ -2103,6 +2108,7 @@ function compileBrandVisualPromptCinematicV10(input: {
   visualBeat: VisualBeat;
   brandVisualLanguage?: BrandVisualLanguage | null;
   sceneRenderingDirection?: SceneRenderingDirection;
+  sceneShotScale?: string;
 }): CompiledBrandVisualPrompt {
   const recipe = CINEMATIC_V10_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
   if (!recipe || recipe.formatId !== input.visualFormatId || input.visualFormatId !== "cinematic-realism") {
@@ -2137,6 +2143,12 @@ function compileBrandVisualPromptCinematicV10(input: {
     sceneRenderingDirection
       ? `Scene-specific flexible rendering direction: ${sceneRenderingDirection}`
       : "",
+    sceneDiversityClause({
+      setting: beat.setting,
+      action: beat.action,
+      shotScale: input.sceneShotScale?.trim() || shotScaleForAction(beat.action),
+      allowPointing: pointingGestureRequested(`${beat.subject} ${beat.action} ${beat.setting}`),
+    }),
     "Natural photographic surface plan: every visible surface is filled edge-to-edge by its native photographic material, color, light and texture; physical action, silhouette, spacing and light carry the scene's meaning",
     `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
     `Brand rendering direction: ${brand.direction}`,
@@ -2175,6 +2187,7 @@ export function compileBrandVisualPrompt(input: {
   visualBeat: VisualBeat;
   brandVisualLanguage?: BrandVisualLanguage | null;
   sceneRenderingDirection?: SceneRenderingDirection;
+  sceneShotScale?: string;
 }): CompiledBrandVisualPrompt {
   const format = SUPPORTED_VISUAL_FORMATS.find((candidate) => candidate.id === input.visualFormatId);
   if (!format) throw new Error("Unsupported Visual Format");
