@@ -1,6 +1,6 @@
 # Gemini WAV decoding worker report
 
-Status: implementation complete; review round 1 corrected; final build of corrected source pending.
+Status: implementation complete; review round 1 corrected; corrected-source production build passed. Task review and whole-branch review both passed.
 
 Initial implementation commit: `ab2ca5e5b7287370ffd96130090dbc6355c44cbe`. No deploy, push, production write, paid provider request, tracker update, or rollout expansion performed.
 
@@ -41,11 +41,19 @@ Setup/verification corrections: initial typecheck exited **2** with missing gene
 
 ## Remaining gate and limits
 
-The initial implementation passed the full build; the corrected parser is queued for a final build. No listener scoring, real provider probe, production cache regeneration, or public load test was performed. Already generated media remain unchanged. Keep the current internal rollout; production deployment and subsequent listening/long-narration checks remain separate release decisions.
+Both the initial implementation and corrected parser passed the full production build. No listener scoring, real provider probe, production cache regeneration, or public load test was performed. Already generated media remain unchanged. Keep the current internal rollout; production deployment and subsequent listening/long-narration checks remain separate release decisions.
 
 
 ## Review fix round 1 and build evidence
 
 The task reviewer reproduced a high-bit FourCC alias: Node ASCII decoding strips the high bit, so malformed bytes could compare equal to RIFF, WAVE, fmt or data. Added four actual-helper regression fixtures before fixing; the test exited **1** (`high-bit alias of RIFF: invalid media must fail safely`, actual true). Changed only the three identifier reads to byte-preserving Latin-1 plus an explanatory comment. The focused suite, scoped lint and `git diff --check` then exited **0**.
 
-`npm run verify:build-worker-config` exited **0**. For the full build, Orca had copied local `.env` files into the worktree: the first attempt was stopped during compilation (exit **143**) after noticing Next loaded `.env`. The worktree copies were temporarily renamed, then the build rerun under a cleared environment with only PATH, HOME, `DATABASE_URL=file:./ci.db`, `NEXT_DISABLE_ESLINT=1`, `NEXT_TELEMETRY_DISABLED=1`, and `CI=true`. No secrets were supplied to the rerun; Sentry confirmed no auth token and no release upload. That isolated `npm run build` exited **0**: compiled in 52 s, TypeScript completed in 21.2 s, and all 193 static pages generated. This build predates the three-read FourCC correction; final corrected-source build remains required. Existing Node deprecation/Sentry-without-token notices are nonblocking. Build log is local `/tmp/gemini38-wav-build-isolated.log`, not committed.
+`npm run verify:build-worker-config` exited **0**. For the full build, Orca had copied local `.env` files into the worktree: the first attempt was stopped during compilation (exit **143**) after noticing Next loaded `.env`. The worktree copies were temporarily renamed, then the build rerun under a cleared environment with only PATH, HOME, `DATABASE_URL=file:./ci.db`, `NEXT_DISABLE_ESLINT=1`, `NEXT_TELEMETRY_DISABLED=1`, and `CI=true`. No secrets were supplied to the rerun; Sentry confirmed no auth token and no release upload. That isolated `npm run build` exited **0**: compiled in 52 s, TypeScript completed in 21.2 s, and all 193 static pages generated. This build predates the three-read FourCC correction; the corrected-source result is recorded below. Existing Node deprecation/Sentry-without-token notices are nonblocking. Build log is local `/tmp/gemini38-wav-build-isolated.log`, not committed.
+
+
+Final verification at source commit `0727878331f7556080da7e6df0f4ceb241903cd0`: the same secret-free `env -i PATH="$PATH" HOME="$HOME" DATABASE_URL=file:./ci.db NEXT_DISABLE_ESLINT=1 NEXT_TELEMETRY_DISABLED=1 CI=true npm run build` command exited **0**. Compilation completed in 19.9 s, TypeScript in 9.1 s, all 193 static pages generated, and trace collection completed. Local log: `/tmp/gemini38-wav-build-final.log`. Restored both original worktree environment files afterward. No application changes after this build; only this report was updated. No push/deploy or production media mutation performed.
+
+
+## Independent review disposition
+
+Coordinator confirmed both reviews at source commit `07278783`: task review **PASS** (FourCC blocker fixed; no remaining blockers) and whole-branch review **PASS**. The independent managed-mode route probe also passed refund, duration settlement, legacy minute quota and no-double-charge checks. Report-only follow-up commit does not change the production source verified by those reviews or the final build.
