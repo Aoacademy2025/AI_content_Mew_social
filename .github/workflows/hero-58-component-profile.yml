@@ -27,12 +27,17 @@ jobs:
           cache: npm
       - name: Install locked dependencies without app setup
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install synthetic fixture media tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Record diagnostic environment
         run: |
           node --version
           node -p '"Remotion " + require("@remotion/renderer/package.json").version'
           command -v ffmpeg
           command -v ffprobe
+          node --import tsx -e 'const fs=require("node:fs"); const ffmpeg=require("./src/lib/ffmpeg-path.ts").getFfmpegPath(); const ffprobe=ffmpeg.replace(/ffmpeg(\.exe)?$/, (_m, ext) => "ffprobe" + (ext ?? "")); if (ffmpeg !== "/usr/bin/ffmpeg" || ffprobe !== "/usr/bin/ffprobe" || !fs.existsSync(ffprobe)) throw new Error("Unexpected harness media tools: " + ffmpeg + ", " + ffprobe); console.log("Harness media tools: " + ffmpeg + ", " + ffprobe);'
           ffmpeg -version | sed -n '1p'
           ffprobe -version | sed -n '1p'
           uname -srvm
