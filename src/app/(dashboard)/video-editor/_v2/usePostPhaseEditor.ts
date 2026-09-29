@@ -244,7 +244,7 @@ export function usePostPhaseEditor(
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => editSnapshot?.captionOverrides ?? {});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
-  const windowApplyInFlightRef = useRef(false);
+  const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
   const pendingApplyRef = useRef<PendingBrollApply | null>(null);
   const currentApplyOwnerRef = useRef({ accountId, projectId, jobId: job.jobId });
   const previousApplyOwnerRef = useRef({ accountId, projectId });
@@ -644,7 +644,7 @@ export function usePostPhaseEditor(
       }
     }
     pendingApplyRef.current = operation;
-    windowApplyInFlightRef.current = true;
+    windowApplyInFlightRef.current = operation;
     setApplyingWindows({ phase: operation.jobId ? "disconnected" : "submitting", progress: 0, queuePosition: null });
     setSelectedWindow(null);
     const growthSummary = summarizeBrollGrowthEdits(operation.windowEdits);
@@ -686,6 +686,7 @@ export function usePostPhaseEditor(
         }
         operation = { ...operation, jobId: d.jobId };
         pendingApplyRef.current = operation;
+        windowApplyInFlightRef.current = operation;
         // The original key remains durable if this later update fails; replaying the POST
         // recovers the same server job after a refresh.
         writePendingBrollApply(storage, operation);
@@ -789,7 +790,7 @@ export function usePostPhaseEditor(
       }
       return null;
     } finally {
-      windowApplyInFlightRef.current = false;
+      if (windowApplyInFlightRef.current === operation) windowApplyInFlightRef.current = null;
     }
   }
 
@@ -797,6 +798,7 @@ export function usePostPhaseEditor(
     const previous = previousApplyOwnerRef.current;
     if (previous.accountId && (previous.accountId !== accountId || previous.projectId !== projectId)) {
       pendingApplyRef.current = null;
+      windowApplyInFlightRef.current = null;
       setApplyingWindows(null);
       setWindowEditsState(new Map());
       windowUndoRef.current = [];
