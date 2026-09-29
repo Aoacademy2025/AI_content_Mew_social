@@ -217,6 +217,7 @@ async function profileComponents(media: Awaited<ReturnType<typeof fixtures>>, se
   if (cdp) await cdp.send("Tracing.start", { categories: "devtools.timeline,blink,cc,gpu,disabled-by-default-devtools.timeline.frame", transferMode: "ReturnAsStream" });
   const stopCpu = cpuSampler();
   const started = performance.now();
+  let frameStageMs = 0;
   let samples: ReturnType<ReturnType<typeof cpuSampler>> = [];
   let trace: { bytes: number; events: number; categories: Record<string, { count: number; durationMs: number }> } | undefined;
   try {
@@ -228,6 +229,7 @@ async function profileComponents(media: Awaited<ReturnType<typeof fixtures>>, se
       onStart: () => {},
       onFrameUpdate: (_count, frame, ms) => { frames.push({ frame, ms }); },
     });
+    frameStageMs = elapsed(started);
     if (cdp) {
       const complete = new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("Chromium tracingComplete timeout")), 30_000);
@@ -256,7 +258,6 @@ async function profileComponents(media: Awaited<ReturnType<typeof fixtures>>, se
       trace = { bytes: Buffer.byteLength(raw), events: events.length, categories };
     }
   } finally { samples = stopCpu(); if (browser) await browser.close({ silent: true }); }
-  const frameStageMs = elapsed(started);
   if (frames.length !== duration * fps) throw new Error(`Expected ${duration * fps} frame timings, got ${frames.length}`);
   const values = frames.map((entry) => entry.ms);
   const isBoundary = (frame: number) => {
