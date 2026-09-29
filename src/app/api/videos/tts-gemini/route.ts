@@ -289,9 +289,9 @@ export async function POST(req: Request) {
         voiceKey: voiceStyle === "neutral" ? selectedVoice : `${selectedVoice}:${voiceStyle}`,
         text: previewText,
         ext: "wav",
-        // v2: pre-fix cache files hold the old bytes (spoken English prefix, no
-        // tail fade) under identical hashes — force a one-time regen.
-        cacheVersion: "v2",
+        // v3: v2 may contain WAV headers/C2PA rendered as PCM or trimmed speech.
+        // Regenerate with decoded samples; leave existing media untouched.
+        cacheVersion: "v3",
       });
       const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
       if (cached) return NextResponse.json({ ...cached, preview: true });
@@ -317,7 +317,7 @@ export async function POST(req: Request) {
         r = await callGeminiTts(apiKey, previewText, selectedVoice, undefined, undefined, {}, preferFirst);
       }
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
-      // Finalize (trim 3.8 tail glitch + fade) BEFORE measuring: durations
+      // Finalize decoded PCM BEFORE measuring: durations
       // must describe the bytes actually written, or subtitles drift.
       const finalPreviewPcm = finalizeTtsPcm(r.pcm, r.sampleRate);
       fs.writeFileSync(cache.filePath, wavFromPcm(finalPreviewPcm, r.sampleRate));
@@ -394,8 +394,7 @@ export async function POST(req: Request) {
         pcms = null;
         break;
       }
-      // Finalize per segment (the glitch rides each API call): the concat
-      // below joins already-clean audio and durations match written bytes.
+      // Fade each decoded segment before concatenating and measuring its samples.
       const finalSeg = finalizeTtsPcm(r.pcm, r.sampleRate);
       pcms.push(finalSeg);
       durations.push(Math.round(pcmDurationMs(finalSeg.length, r.sampleRate)));
@@ -474,8 +473,15 @@ export async function POST(req: Request) {
     }
 
     // ---- Success: concat PCM, write one WAV, return exact timing ----
-    const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
-    const audioDurationMs = durations.reduce((a, b) => a + b, 0);
+    // Round cumulative sample boundaries, not individual durations: fractional
+    // milliseconds otherwise accumulate across segments and drift from the WAV.
+    let totalPcmBytes = 0;
+    const segments = mergeSegmentTiming(chunks.map((c, i) => {
+      const startMs = Math.round(pcmDurationMs(totalPcmBytes, sampleRate));
+      totalPcmBytes += pcms[i].length;
+      return { text: c.text, durationMs: Math.round(pcmDurationMs(totalPcmBytes, sampleRate)) - startMs };
+    }));
+    const audioDurationMs = Math.round(pcmDurationMs(totalPcmBytes, sampleRate));
     // Write the WAV FIRST, then reserve render minutes. If the disk write throws
     // (disk-full — real on this box), reserveMinutes never runs, so a failed save
     // can't leak render minutes to the outer catch (MON-6). The AI-audio reserve is

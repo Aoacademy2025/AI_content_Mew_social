@@ -15,7 +15,7 @@ async function main() {
       : {
           candidates: [{
             content: {
-              parts: [{ inlineData: { data: Buffer.from("pcm").toString("base64"), mimeType: "audio/L16;rate=24000" } }],
+              parts: [{ inlineData: { data: Buffer.from([0, 0, 1, 0]).toString("base64"), mimeType: "audio/L16;rate=24000" } }],
             },
           }],
         };

@@ -32,6 +32,59 @@ type GeminiTtsDependencies = {
   random?: () => number;
 };
 
+// Normalize the provider boundary once: every caller receives mono s16le samples.
+// RIFF lengths/chunks are untrusted; metadata (including C2PA) is never audio.
+function decodeGeminiAudio(bytes: Buffer, mimeType: string): { pcm: Buffer; sampleRate: number } {
+  const invalid = () => new Error("Invalid or unsupported Gemini TTS audio");
+  const signature = bytes.toString("ascii", 0, 4);
+  const mediaType = mimeType.split(";", 1)[0].trim().toLowerCase();
+  if (signature === "RIFF" || ["audio/wav", "audio/wave", "audio/x-wav"].includes(mediaType)) {
+    if (bytes.length < 12 || signature !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE") throw invalid();
+    const end = bytes.readUInt32LE(4) + 8;
+    if (end !== bytes.length) throw invalid();
+    let sampleRate: number | undefined;
+    let pcm: Buffer | undefined;
+    for (let offset = 12; offset < end;) {
+      if (end - offset < 8) throw invalid();
+      const id = bytes.toString("ascii", offset, offset + 4);
+      const size = bytes.readUInt32LE(offset + 4);
+      const start = offset + 8;
+      const next = start + size + (size % 2); // RIFF chunks are word-aligned.
+      if (next > end) throw invalid();
+      if (id === "fmt ") {
+        if (sampleRate !== undefined || size < 16) throw invalid();
+        sampleRate = bytes.readUInt32LE(start + 4);
+        // Only the format our downstream PCM pipeline supports. Reject compressed,
+        // float, extensible, stereo and other sample widths rather than guessing.
+        if (bytes.readUInt16LE(start) !== 1 || bytes.readUInt16LE(start + 2) !== 1
+          || bytes.readUInt16LE(start + 14) !== 16 || bytes.readUInt16LE(start + 12) !== 2
+          || sampleRate < 1 || sampleRate > 384000
+          || bytes.readUInt32LE(start + 8) !== sampleRate * 2) throw invalid();
+        if (size !== 16 && (size < 18 || bytes.readUInt16LE(start + 16) !== size - 18)) throw invalid();
+      } else if (id === "data") {
+        if (pcm !== undefined || size === 0 || size % 2 !== 0) throw invalid();
+        pcm = bytes.subarray(start, start + size);
+      }
+      offset = next;
+    }
+    if (sampleRate === undefined || pcm === undefined) throw invalid();
+    return { pcm, sampleRate };
+  }
+  // Gemini's legacy L16 response uses little-endian PCM; preserve those bytes.
+  if (mediaType !== "audio/l16" || signature === "RIFX" || signature === "RF64"
+    || bytes.length === 0 || bytes.length % 2 !== 0) throw invalid();
+  const params = new Map(mimeType.split(";").slice(1).map(param => {
+    const [name, value] = param.trim().split("=");
+    return [name.toLowerCase(), value?.trim()];
+  }));
+  const rate = params.get("rate") ?? "24000";
+  const sampleRate = Number(rate);
+  if (!/^\d+$/.test(rate) || !Number.isInteger(sampleRate) || sampleRate < 1 || sampleRate > 384000
+    || (params.has("channels") && params.get("channels") !== "1")
+    || (params.has("codec") && params.get("codec")?.toLowerCase() !== "pcm")) throw invalid();
+  return { pcm: bytes, sampleRate };
+}
+
 // modelLock pins all segments of a clip to the model that served segment 0;
 // mixing models mid-clip would change the voice at a chunk seam.
 export async function callGeminiTts(
@@ -110,14 +163,16 @@ export async function callGeminiTts(
           continue;
         }
         const mimeType: string = part?.mimeType ?? "audio/L16;rate=24000";
-        const rateMatch = mimeType.match(/rate=(\d+)/);
+        let audio: { pcm: Buffer; sampleRate: number };
+        try {
+          audio = decodeGeminiAudio(Buffer.from(audioB64, "base64"), mimeType);
+        } catch {
+          // A malformed successful response is not a reason to spend on retries.
+          // Keep the existing route's failure/refund/fail-open handling in control.
+          return { ok: false, status: 502, errBody: "Invalid or unsupported Gemini TTS audio" };
+        }
         console.log(`[tts-gemini] ok with ${model} (attempt ${attempt})`);
-        return {
-          ok: true,
-          pcm: Buffer.from(audioB64, "base64"),
-          sampleRate: rateMatch ? parseInt(rateMatch[1]) : 24000,
-          model,
-        };
+        return { ok: true, ...audio, model };
       }
 
       lastErrBody = await res.text();

@@ -50,6 +50,9 @@ jobs:
       - name: Verify editor native media keyboard isolation
         run: npm run verify:editor-media-keys
 
+      - name: Verify Gemini TTS audio decoding and route timing
+        run: npm run verify:gemini-tts-audio
+
       - name: Verify post-launch stability hotfixes
         run: npm run verify:launch-stability-hotfix
 
