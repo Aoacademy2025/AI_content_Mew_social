@@ -1,6 +1,8 @@
 # Gemini WAV decoding worker report
 
-Status: implementation complete; independent review and final build pending. No deploy, push, production write, paid provider request, tracker update, or rollout expansion performed.
+Status: implementation complete; review round 1 corrected; final build of corrected source pending.
+
+Initial implementation commit: `ab2ca5e5b7287370ffd96130090dbc6355c44cbe`. No deploy, push, production write, paid provider request, tracker update, or rollout expansion performed.
 
 ## Scope and behavior
 
@@ -19,7 +21,7 @@ All fixtures are synthetic; no production audio, user identities, prompts, or cr
 1. Before production edits, `./node_modules/.bin/tsx scripts/verify-gemini-tts-audio.ts` exited **1** on the actual helper: `WAV/C2PA container bytes must never become audio samples`, actual **15,704**, expected **9,600**. Raw 2.5 L16 control passed first.
 2. Before production edits, the tail regression failed: `a quiet gap followed by loud speech must not be trimmed`, actual **51,840**, expected **64,800** bytes. The Node assertion failure was captured; initial shell combined its output read with the test, so the enclosing command returned 0 from `cat`, not from the failed test.
 3. Before cumulative rounding correction, the actual six-segment route regression exited **1**: `reported duration matches final sample count`. The final concatenated WAV and sum of independently rounded durations differed by more than 1 ms.
-4. After fixes, the full offline suite exited **0**. Coverage includes 27 malformed/unsupported media cases; standard/extended PCM fmt headers; metadata before and after data; odd metadata padding; WAV delivered under L16 MIME; sample-rate authority; unchanged raw L16; preview and cache; single and six-segment output; guard retry; malformed and rate-change fallback.
+4. After fixes, the full offline suite exited **0**. Coverage includes 31 malformed/unsupported media cases (including four added during review); standard/extended PCM fmt headers; metadata before and after data; odd metadata padding; WAV delivered under L16 MIME; sample-rate authority; unchanged raw L16; preview and cache; single and six-segment output; guard retry; malformed and rate-change fallback.
 
 ## Verification commands
 
@@ -39,4 +41,11 @@ Setup/verification corrections: initial typecheck exited **2** with missing gene
 
 ## Remaining gate and limits
 
-Full build is deliberately deferred until review fixes settle, per approved plan. No listener scoring, real provider probe, production cache regeneration, or public load test was performed. Already generated media remain unchanged. Keep the current internal rollout; production deployment and subsequent listening/long-narration checks remain separate release decisions.
+The initial implementation passed the full build; the corrected parser is queued for a final build. No listener scoring, real provider probe, production cache regeneration, or public load test was performed. Already generated media remain unchanged. Keep the current internal rollout; production deployment and subsequent listening/long-narration checks remain separate release decisions.
+
+
+## Review fix round 1 and build evidence
+
+The task reviewer reproduced a high-bit FourCC alias: Node ASCII decoding strips the high bit, so malformed bytes could compare equal to RIFF, WAVE, fmt or data. Added four actual-helper regression fixtures before fixing; the test exited **1** (`high-bit alias of RIFF: invalid media must fail safely`, actual true). Changed only the three identifier reads to byte-preserving Latin-1 plus an explanatory comment. The focused suite, scoped lint and `git diff --check` then exited **0**.
+
+`npm run verify:build-worker-config` exited **0**. For the full build, Orca had copied local `.env` files into the worktree: the first attempt was stopped during compilation (exit **143**) after noticing Next loaded `.env`. The worktree copies were temporarily renamed, then the build rerun under a cleared environment with only PATH, HOME, `DATABASE_URL=file:./ci.db`, `NEXT_DISABLE_ESLINT=1`, `NEXT_TELEMETRY_DISABLED=1`, and `CI=true`. No secrets were supplied to the rerun; Sentry confirmed no auth token and no release upload. That isolated `npm run build` exited **0**: compiled in 52 s, TypeScript completed in 21.2 s, and all 193 static pages generated. This build predates the three-read FourCC correction; final corrected-source build remains required. Existing Node deprecation/Sentry-without-token notices are nonblocking. Build log is local `/tmp/gemini38-wav-build-isolated.log`, not committed.

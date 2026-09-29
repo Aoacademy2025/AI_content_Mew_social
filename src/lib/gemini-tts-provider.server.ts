@@ -34,19 +34,20 @@ type GeminiTtsDependencies = {
 
 // Normalize the provider boundary once: every caller receives mono s16le samples.
 // RIFF lengths/chunks are untrusted; metadata (including C2PA) is never audio.
+// Latin-1 preserves every identifier byte; ASCII would alias high-bit bytes.
 function decodeGeminiAudio(bytes: Buffer, mimeType: string): { pcm: Buffer; sampleRate: number } {
   const invalid = () => new Error("Invalid or unsupported Gemini TTS audio");
-  const signature = bytes.toString("ascii", 0, 4);
+  const signature = bytes.toString("latin1", 0, 4);
   const mediaType = mimeType.split(";", 1)[0].trim().toLowerCase();
   if (signature === "RIFF" || ["audio/wav", "audio/wave", "audio/x-wav"].includes(mediaType)) {
-    if (bytes.length < 12 || signature !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE") throw invalid();
+    if (bytes.length < 12 || signature !== "RIFF" || bytes.toString("latin1", 8, 12) !== "WAVE") throw invalid();
     const end = bytes.readUInt32LE(4) + 8;
     if (end !== bytes.length) throw invalid();
     let sampleRate: number | undefined;
     let pcm: Buffer | undefined;
     for (let offset = 12; offset < end;) {
       if (end - offset < 8) throw invalid();
-      const id = bytes.toString("ascii", offset, offset + 4);
+      const id = bytes.toString("latin1", offset, offset + 4);
       const size = bytes.readUInt32LE(offset + 4);
       const start = offset + 8;
       const next = start + size + (size % 2); // RIFF chunks are word-aligned.

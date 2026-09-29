@@ -48,7 +48,13 @@ async function main() {
   };
   const tooBig = Buffer.from(standard); tooBig.writeUInt32LE(0xffffffff, 40);
   const shortRiff = Buffer.from(standard); shortRiff.writeUInt32LE(4, 4);
+  const aliasedIds = [0, 8, 12, 36].map(offset => {
+    const bytes = Buffer.from(standard);
+    for (let i = offset; i < offset + 4; i++) bytes[i] |= 0x80;
+    return [`high-bit alias of ${standard.toString('latin1', offset, offset + 4)}`, bytes] as [string, Buffer];
+  });
   const invalid: Array<[string, Buffer, string?]> = [
+    ...aliasedIds,
     ['truncated header', Buffer.from('RIFF')],
     ['truncated body', standard.subarray(0, -1)],
     ['oversized chunk', tooBig],
