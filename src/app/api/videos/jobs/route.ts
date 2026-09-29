@@ -154,6 +154,27 @@ function creditsLiveNow(): boolean {
 function str(v: unknown, max: number): string | undefined {
   return typeof v === "string" && v.trim() && v.length <= max ? v : undefined;
 }
+
+// Read-only recovery of an accepted submit whose POST response was lost. The lookup is
+// scoped to the authenticated owner and returns no job input or customer media.
+export async function GET(req: Request) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const idempotencyKey = str(new URL(req.url).searchParams.get("idempotencyKey"), 120);
+  const sourceJobId = str(new URL(req.url).searchParams.get("sourceJobId"), 120);
+  if (!idempotencyKey || !sourceJobId) return NextResponse.json({ error: "invalid_key" }, { status: 400 });
+  const job = await prisma.videoJob.findFirst({
+    where: { userId: user.id, idempotencyKey },
+    select: { id: true, projectId: true, inputJson: true },
+  });
+  if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
+  let input: { mode?: unknown; sourceJobId?: unknown } | null = null;
+  try { input = JSON.parse(job.inputJson); } catch { /* invalid input is never recoverable */ }
+  if (input?.mode !== "broll-rerender" || input.sourceJobId !== sourceJobId) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+  return NextResponse.json({ jobId: job.id, projectId: job.projectId });
+}
 function num(v: unknown, min: number, max: number): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : undefined;
 }

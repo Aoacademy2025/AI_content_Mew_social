@@ -78,6 +78,10 @@ import {
 import { useEditorStylePresets } from "./useEditorStylePresets";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
+import {
+  clearPendingBrollApply, readPendingBrollApply, writePendingBrollApply,
+  type PendingBrollApply,
+} from "@/lib/broll-apply-recovery";
 
 export type ExportState =
   | { phase: "idle" }
@@ -132,6 +136,11 @@ function captionsMatch(left: readonly V2Caption[], right: readonly V2Caption[]):
   });
 }
 
+function brollStorage(): Storage | null {
+  try { return typeof window === "undefined" ? null : window.localStorage; }
+  catch { return null; }
+}
+
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
 };
@@ -153,6 +162,7 @@ export type UsePostPhaseEditorOptions = {
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
   onNewProject: () => void;
   projectId?: string | null;
+  accountId?: string | null;
   narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
@@ -190,6 +200,7 @@ export function usePostPhaseEditor(
     onAdoptJob,
     onNewProject,
     projectId = job.projectId,
+    accountId = null,
     narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
@@ -233,7 +244,11 @@ export function usePostPhaseEditor(
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => editSnapshot?.captionOverrides ?? {});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
-  const windowApplyInFlightRef = useRef(false);
+  const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
+  const pendingApplyRef = useRef<PendingBrollApply | null>(null);
+  const currentApplyOwnerRef = useRef({ accountId, projectId, jobId: job.jobId });
+  const previousApplyOwnerRef = useRef({ accountId, projectId });
+  currentApplyOwnerRef.current = { accountId, projectId, jobId: job.jobId };
   const brollViewTrackedRef = useRef(false);
   const brollAppliedSummariesRef = useRef<Map<string, BrollGrowthSummary>>(new Map());
   const [timeMs, setTimeMs] = useState(0);
@@ -346,7 +361,20 @@ export function usePostPhaseEditor(
   const windowRedoRef = useRef<Map<number, WindowEdit>[]>([]);
   const [windowHistory, setWindowHistory] = useState({ undo: 0, redo: 0 });
   const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
-  const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
+  const [applyingWindows, setApplyingWindows] = useState<{
+    phase: "submitting" | "queued" | "processing" | "disconnected";
+    progress: number;
+    queuePosition: number | null;
+  } | null>(null);
+  const applyingWindowsLabel = applyingWindows?.phase === "queued"
+    ? applyingWindows.queuePosition
+      ? `รอคิวอัปเดต B-roll #${applyingWindows.queuePosition}`
+      : "รอคิวอัปเดต B-roll"
+    : applyingWindows?.phase === "processing"
+      ? `กำลังอัปเดต B-roll ${applyingWindows.progress}%`
+      : applyingWindows?.phase === "disconnected"
+        ? "กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll"
+        : applyingWindows ? "กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll" : null;
   const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
@@ -421,6 +449,7 @@ export function usePostPhaseEditor(
   }, [windowEdits.size]);
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
+    if (pendingApplyRef.current) return;
     windowUndoRef.current.push(new Map(windowEdits));
     if (windowUndoRef.current.length > 50) windowUndoRef.current.shift();
     windowRedoRef.current = [];
@@ -429,6 +458,7 @@ export function usePostPhaseEditor(
   }
 
   function setWindowEdit(index: number, edit: WindowEdit) {
+    if (pendingApplyRef.current) return;
     const next = new Map(windowEdits);
     next.set(index, { ...(next.get(index) ?? {}), ...edit });
     commitWindowEdits(next);
@@ -446,6 +476,7 @@ export function usePostPhaseEditor(
     });
   }
   function setWindowEdits(edits: { index: number; edit: WindowEdit }[]) {
+    if (pendingApplyRef.current) return;
     const next = new Map(windowEdits);
     for (const { index, edit } of edits) {
       next.set(index, { ...(next.get(index) ?? {}), ...edit });
@@ -460,6 +491,7 @@ export function usePostPhaseEditor(
   /** Stage one shared boundary as two atomic window edits. Returning to the rendered boundary
    * removes only the timing fields while preserving any staged asset/visibility edit. */
   function moveBrollBoundary(leftIndex: number, targetMs: number): number | null {
+    if (pendingApplyRef.current) return null;
     const move = calculateBrollBoundaryMove(brollTimelineSpans, leftIndex, targetMs);
     if (!move) return null;
     const currentLeft = brollTimelineSpans.find((span) => span.index === leftIndex);
@@ -501,6 +533,7 @@ export function usePostPhaseEditor(
   }
 
   function clearWindowEdit(index: number) {
+    if (pendingApplyRef.current) return;
     if (!windowEdits.has(index)) return;
     const current = windowEdits.get(index);
     const next = new Map(windowEdits);
@@ -524,6 +557,7 @@ export function usePostPhaseEditor(
     commitWindowEdits(next);
   }
   function undoWindowEdits() {
+    if (pendingApplyRef.current) return;
     const previous = windowUndoRef.current.pop();
     if (!previous) return;
     windowRedoRef.current.push(new Map(windowEdits));
@@ -534,6 +568,7 @@ export function usePostPhaseEditor(
     });
   }
   function redoWindowEdits() {
+    if (pendingApplyRef.current) return;
     const next = windowRedoRef.current.pop();
     if (!next) return;
     windowUndoRef.current.push(new Map(windowEdits));
@@ -564,65 +599,144 @@ export function usePostPhaseEditor(
     return !ranges.some((range) => midpoint >= range.start && midpoint < range.end);
   }
 
-  /** ส่งงาน broll-rerender (ฟรี, ไม่ใช้นาที) → poll จนเสร็จ → swap videoUrl+config ในที่
-   *  (ตามแนว AvatarAdjustOverlay.apply) → เคลียร์ windowEdits ที่ apply แล้ว */
+  /** A VideoJob is durable; this browser journal retains its submit key and staged edits. */
   async function applyWindowEdits(): Promise<BrollExportSource | null> {
-    if (windowEdits.size === 0 || applyingWindows || windowApplyInFlightRef.current) return null;
-    const sourceJobId = job.jobId;
-    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
-    windowApplyInFlightRef.current = true;
-    setApplyingWindows({ progress: 0 });
-    const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
-      index,
-      ...(typeof e.startSec === "number" ? { start: e.startSec } : {}),
-      ...(typeof e.endSec === "number" ? { end: e.endSec } : {}),
-      ...(e.src ? { src: e.src } : {}),
-      ...(e.keyword ? { keyword: e.keyword } : {}),
-      ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
-      ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
-      ...(e.kind ? { replacementKind: e.kind } : {}),
-      ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
-    }));
-    const growthSummary = summarizeBrollGrowthEdits(edits);
-    try {
-      const res = await fetch("/api/videos/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          idempotencyKey: `editor-v2-broll-rerender-${globalThis.crypto.randomUUID()}`,
-          mode: "broll-rerender",
-          sourceJobId,
-          windowEdits: edits,
-        }),
-      });
-      const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.jobId) {
-        throw new Error(customerApiErrorMessage(d, "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
+    if (windowApplyInFlightRef.current || !accountId || !projectId) return null;
+    const storage = brollStorage();
+    const saved = readPendingBrollApply(storage, accountId, projectId);
+    if (saved.kind === "corrupt" || saved.kind === "unavailable") {
+      toast.error("กู้สถานะ B-roll ไม่ได้ กรุณาเปิดหน้านี้อีกครั้งก่อนสั่งงานใหม่");
+      return null;
+    }
+    let operation: PendingBrollApply;
+    if (saved.kind === "found") {
+      operation = saved.operation;
+      if (operation.jobId && job.jobId !== operation.sourceJobId && job.jobId !== operation.jobId) {
+        setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
+        return null;
       }
-      const newJobId = d.jobId as string;
-
-      let applied: BrollExportSource | null = null;
-      for (let i = 0; i < 450 && !windowPollStop.current; i++) {
+      setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+    } else {
+      if (windowEdits.size === 0) return null;
+      const sourceJobId = job.jobId;
+      if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
+      const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
+        index,
+        ...(typeof e.startSec === "number" ? { start: e.startSec } : {}),
+        ...(typeof e.endSec === "number" ? { end: e.endSec } : {}),
+        ...(e.src ? { src: e.src } : {}),
+        ...(e.keyword ? { keyword: e.keyword } : {}),
+        ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
+        ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
+        ...(e.kind ? { replacementKind: e.kind } : {}),
+        ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
+      }));
+      operation = {
+        version: 1, accountId, projectId, sourceJobId,
+        idempotencyKey: `editor-v2-broll-rerender-${globalThis.crypto.randomUUID()}`,
+        jobId: null,
+        draftEdits: Array.from(windowEdits.entries()),
+        windowEdits: edits,
+      };
+      if (!writePendingBrollApply(storage, operation)) {
+        toast.error("บันทึกสถานะ B-roll ไม่ได้ กรุณาลองอีกครั้ง");
+        return null;
+      }
+    }
+    pendingApplyRef.current = operation;
+    windowApplyInFlightRef.current = operation;
+    setApplyingWindows({ phase: operation.jobId ? "disconnected" : "submitting", progress: 0, queuePosition: null });
+    setSelectedWindow(null);
+    const growthSummary = summarizeBrollGrowthEdits(operation.windowEdits);
+    const owner = { accountId, projectId };
+    const ownsContext = () => !windowPollStop.current
+      && currentApplyOwnerRef.current.accountId === owner.accountId
+      && currentApplyOwnerRef.current.projectId === owner.projectId
+      && pendingApplyRef.current === operation;
+    const owns = () => ownsContext()
+      && (currentApplyOwnerRef.current.jobId === operation.sourceJobId
+        || currentApplyOwnerRef.current.jobId === operation.jobId);
+    try {
+      if (!operation.jobId) {
+        // Once the project has advanced, replaying a POST could create stale work if the
+        // original request never reached the server. Look up only the saved key instead.
+        const sourceStillCurrent = currentApplyOwnerRef.current.jobId === operation.sourceJobId;
+        const res = sourceStillCurrent ? await fetch("/api/videos/jobs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idempotencyKey: operation.idempotencyKey,
+            mode: "broll-rerender", sourceJobId: operation.sourceJobId,
+            windowEdits: operation.windowEdits }),
+        }) : await fetch(`/api/videos/jobs?idempotencyKey=${encodeURIComponent(operation.idempotencyKey)}&sourceJobId=${encodeURIComponent(operation.sourceJobId)}`);
+        const d = await res.json().catch(() => null);
+        if (!ownsContext()) return null;
+        if (!sourceStillCurrent) {
+          if (!res.ok || typeof d?.jobId !== "string" || d.projectId !== projectId) {
+            throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+          }
+        } else {
+          // These validation/ownership refusals are definitive: no job was accepted.
+          // Keep the draft, release this attempt, and let the creator correct/retry it.
+          if ([400, 403, 404, 422].includes(res.status)) {
+            if (!clearPendingBrollApply(storage, operation)) {
+              throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+            }
+            pendingApplyRef.current = null;
+            setApplyingWindows(null);
+            trackEvent("editor_broll_edit_applied", {
+              status: "error", properties: { surface, ...growthSummary },
+            });
+            toast.error(customerApiErrorMessage(d,
+              "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
+            return null;
+          }
+          if (!res.ok || typeof d?.jobId !== "string"
+            || (d.idempotencyKey && d.idempotencyKey !== operation.idempotencyKey)) {
+            throw new Error(customerApiErrorMessage(d, "กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll"));
+          }
+        }
+        operation = { ...operation, jobId: d.jobId };
+        pendingApplyRef.current = operation;
+        windowApplyInFlightRef.current = operation;
+        // The original key remains durable if this update fails; refresh can replay
+        // against the source or look up the accepted job after the project advances.
+        writePendingBrollApply(storage, operation);
+        if (!owns()) throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+      }
+      const newJobId = operation.jobId;
+      if (!newJobId) return null;
+      while (owns()) {
         await new Promise((r) => setTimeout(r, 2000));
-        let p: {
-          status?: string; progress?: number; errorMessage?: string; projectId?: string | null; contentPreflightId?: string | null;
-          output?: {
-            videoUrl?: string;
-            preview?: {
-              config?: Record<string, unknown>;
-              compositeBaseUrl?: string | null;
-              cutawayPersonRanges?: { start: number; end: number }[];
-            };
-          };
-        } | null = null;
-        try {
-          p = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`).then((r) => r.json());
-        } catch { continue; }
-        if (!p) continue;
-        if (typeof p.progress === "number") setApplyingWindows({ progress: Math.max(0, Math.min(100, Math.round(p.progress))) });
+        if (!owns()) return null;
+        const response = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`);
+        if (!response.ok) throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+        const p = await response.json() as {
+          id?: string; idempotencyKey?: string; status?: string; progress?: number; queuePosition?: number | null;
+          errorMessage?: string; projectId?: string | null; contentPreflightId?: string | null;
+          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>;
+            compositeBaseUrl?: string | null; cutawayPersonRanges?: { start: number; end: number }[] } };
+        };
+        if (!owns()) return null;
+        if (p.id !== newJobId || p.projectId !== projectId
+          || p.idempotencyKey !== operation.idempotencyKey) {
+          throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+        }
+        if (p.status === "queued") {
+          setApplyingWindows({ phase: "queued", progress: 0,
+            queuePosition: typeof p.queuePosition === "number" ? p.queuePosition : null });
+          continue;
+        }
+        if (p.status === "processing") {
+          setApplyingWindows({ phase: "processing",
+            progress: typeof p.progress === "number" ? Math.max(0, Math.min(100, Math.round(p.progress))) : 0,
+            queuePosition: null });
+          continue;
+        }
         if (p.status === "done") {
           const newVideoUrl = p.output?.videoUrl;
-          if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
+          if (!newVideoUrl) throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+          if (!clearPendingBrollApply(storage, operation)) {
+            throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+          }
           const nextCompositeBaseUrl = p.output?.preview && "compositeBaseUrl" in p.output.preview
             ? p.output.preview.compositeBaseUrl ?? null
             : compositeBaseUrl;
@@ -649,7 +763,9 @@ export function usePostPhaseEditor(
             contentPreflightId: p.contentPreflightId ?? job.contentPreflightId ?? null,
           });
           toast.success("อัปเดตวิดีโอแล้ว");
-          applied = {
+          pendingApplyRef.current = null;
+          setApplyingWindows(null);
+          const applied: BrollExportSource = {
             jobId: newJobId,
             videoUrl: newVideoUrl,
             compositeBaseUrl: nextCompositeBaseUrl,
@@ -659,29 +775,75 @@ export function usePostPhaseEditor(
             status: "done",
             properties: { surface, ...growthSummary },
           });
-          break;
+          return applied;
         }
         if (p.status === "failed" || p.status === "canceled") {
-          throw new Error(customerApiErrorMessage(
+          if (!clearPendingBrollApply(storage, operation)) {
+            throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+          }
+          pendingApplyRef.current = null;
+          setApplyingWindows(null);
+          trackEvent("editor_broll_edit_applied", {
+            status: "error", properties: { surface, ...growthSummary },
+          });
+          toast.error(customerApiErrorMessage(
             { message: p.errorMessage },
             "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่",
           ));
+          return null;
         }
+        throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
       }
-      if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
-      return applied;
+      if (ownsContext()) setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
+      return null;
     } catch (e) {
-      trackEvent("editor_broll_edit_applied", {
-        status: "error",
-        properties: { surface, ...growthSummary },
-      });
-      toast.error(e instanceof Error ? e.message : "อัปเดตวิดีโอไม่สำเร็จ");
+      if (ownsContext()) {
+        setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
+        toast.error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+      }
       return null;
     } finally {
-      windowApplyInFlightRef.current = false;
-      setApplyingWindows(null);
+      if (windowApplyInFlightRef.current === operation) windowApplyInFlightRef.current = null;
     }
   }
+
+  useEffect(() => {
+    const previous = previousApplyOwnerRef.current;
+    if (previous.accountId && (previous.accountId !== accountId || previous.projectId !== projectId)) {
+      pendingApplyRef.current = null;
+      windowApplyInFlightRef.current = null;
+      setApplyingWindows(null);
+      setWindowEditsState(new Map());
+      windowUndoRef.current = [];
+      windowRedoRef.current = [];
+      setWindowHistory({ undo: 0, redo: 0 });
+    }
+    previousApplyOwnerRef.current = { accountId, projectId };
+    if (!accountId || !projectId || !job.jobId) return;
+    const saved = readPendingBrollApply(brollStorage(), accountId, projectId);
+    if (saved.kind !== "found") return;
+    const current = pendingApplyRef.current;
+    const operation = current?.accountId === accountId && current.projectId === projectId
+      && current.idempotencyKey === saved.operation.idempotencyKey
+      ? current : saved.operation;
+    pendingApplyRef.current = operation;
+    setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+    if (job.jobId === operation.sourceJobId || job.jobId === operation.jobId || !operation.jobId) {
+      void applyWindowEdits();
+    } else {
+      setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
+    }
+    // Recovery is scoped to the mounted account/project; normal job adoption may change jobId.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, projectId]);
+
+  useEffect(() => {
+    const resume = () => {
+      if (pendingApplyRef.current && !windowApplyInFlightRef.current) void applyWindowEdits();
+    };
+    window.addEventListener("online", resume);
+    return () => window.removeEventListener("online", resume);
+  });
   // ปรับได้เมื่องานนี้มีอวตาร + worker เก็บข้อมูล re-composite ไว้ (งานเก่าก่อนฟีเจอร์นี้ = ซ่อน)
   // bookend-both ต้องมี tailAvatarUrl ด้วย ไม่งั้น composite split ขาดท่อน
   const canAdjustAvatar = !!(
@@ -946,10 +1108,14 @@ export function usePostPhaseEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => {
-    pollStop.current = true;
-    windowPollStop.current = true;
-    headlineSuggestionAbortRef.current?.abort();
+  useEffect(() => {
+    pollStop.current = false;
+    windowPollStop.current = false;
+    return () => {
+      pollStop.current = true;
+      windowPollStop.current = true;
+      headlineSuggestionAbortRef.current?.abort();
+    };
   }, []);
 
   function set<K extends keyof V2SubConfig>(k: K, v: V2SubConfig[K]) {
@@ -1212,6 +1378,10 @@ export function usePostPhaseEditor(
   }
 
   function requestNewProject() {
+    if (pendingApplyRef.current) {
+      toast("ตรวจสถานะ B-roll ให้เสร็จก่อนเปิดโปรเจกต์ใหม่");
+      return;
+    }
     if (windowEdits.size > 0) {
       setPendingBrollIntent("new-project");
       trackEvent("editor_pending_broll_dialog_opened", {
@@ -1310,7 +1480,7 @@ export function usePostPhaseEditor(
     canRedoWindowEdits: windowHistory.redo > 0,
     isBrollWindowEnabled,
     selectedWindow, setSelectedWindow,
-    applyWindowEdits, applyingWindows,
+    applyWindowEdits, applyingWindows, applyingWindowsLabel,
     pendingBrollIntent,
     requestNewProject,
     cancelPendingBrollIntent,

@@ -76,6 +76,7 @@ export function PostPhaseMobile({
   onNewProject,
   onPreviewError,
   projectId,
+  accountId,
   narrativeSourceKind,
   logoOverlay,
   onLogoOverlayChange,
@@ -106,6 +107,7 @@ export function PostPhaseMobile({
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
+  accountId: string | null;
   narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
@@ -141,6 +143,7 @@ export function PostPhaseMobile({
     onAdoptJob,
     onNewProject,
     projectId,
+    accountId,
     narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange,
@@ -679,7 +682,7 @@ export function PostPhaseMobile({
             style={{ flex: 2, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, ...(busy ? { opacity: 0.7, cursor: "wait" } : {}) }}
           >
             {ed.applyingWindows
-              ? `กำลังอัปเดต B-roll ${ed.applyingWindows.progress}%`
+              ? ed.applyingWindowsLabel
               : ed.exp.phase === "burning"
                 ? `กำลังฝังซับ ${ed.exp.progress}%`
                 : ed.exp.phase === "saving"
@@ -1021,7 +1024,7 @@ export function PostPhaseMobile({
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
       {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
 
-      {brollEditEnabled && ed.selectedWindow != null && (
+      {brollEditEnabled && ed.selectedWindow != null && !ed.applyingWindows && (
         <BrollWindowInspector
           ed={ed}
           videoJobId={job.jobId}
