@@ -88,7 +88,7 @@ async function main() {
     await page.evaluateOnNewDocument(() => {
       const original = window.setTimeout;
       window.setTimeout = ((task: TimerHandler, ms?: number, ...args: unknown[]) =>
-        original(task, ms === 2000 ? 0 : ms, ...args)) as typeof window.setTimeout;
+        original(task, ms === 2000 ? 2 : ms, ...args)) as typeof window.setTimeout;
       const storage = window.localStorage;
       storage.setItem("editor-v2-project-account", new URLSearchParams(location.search).get("account") ?? "account-a");
       let polls = 0;
