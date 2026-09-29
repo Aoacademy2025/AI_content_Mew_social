@@ -70,6 +70,7 @@ export function PostPhase({
   onNewProject,
   onPreviewError,
   projectId,
+  accountId,
   narrativeSourceKind,
   logoOverlay,
   onLogoOverlayChange,
@@ -100,6 +101,7 @@ export function PostPhase({
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
+  accountId: string | null;
   narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
@@ -138,6 +140,7 @@ export function PostPhase({
     onAdoptJob,
     onNewProject,
     projectId,
+    accountId,
     narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange,
@@ -808,7 +811,7 @@ export function PostPhase({
         </aside>
 
         </EditorPanelLayout>
-        {brollEditEnabled && ed.selectedWindow != null && (
+        {brollEditEnabled && ed.selectedWindow != null && !ed.applyingWindows && (
           <BrollWindowInspector
             ed={ed}
             videoJobId={job.jobId}
@@ -844,7 +847,7 @@ export function PostPhase({
               style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.applyingWindows ? { opacity: 0.7, cursor: "wait" } : {}) }}
             >
               {ed.applyingWindows
-                ? `กำลังอัปเดต B-roll ${ed.applyingWindows.progress}%`
+                ? ed.applyingWindowsLabel
                 : ed.exp.phase === "burning"
                   ? `กำลังฝังซับ ${ed.exp.progress}%`
                   : ed.exp.phase === "saving"
@@ -872,8 +875,8 @@ export function PostPhase({
         durationMs={Math.max(ed.preview?.audioDurationMs ?? 0, ed.captions.length ? ed.captions[ed.captions.length - 1].endMs : 0)}
         config={ed.previewConfig}
         brollTimelineSpans={ed.brollTimelineSpans}
-        onSelectBrollWindow={brollEditEnabled ? ed.setSelectedWindow : undefined}
-        onBrollBoundaryChange={fullBrollEditEnabled ? ed.moveBrollBoundary : undefined}
+        onSelectBrollWindow={brollEditEnabled && !ed.applyingWindows ? ed.setSelectedWindow : undefined}
+        onBrollBoundaryChange={fullBrollEditEnabled && !ed.applyingWindows ? ed.moveBrollBoundary : undefined}
         editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
         disabledWindowIndices={brollEditEnabled ? disabledWindowIndices : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}

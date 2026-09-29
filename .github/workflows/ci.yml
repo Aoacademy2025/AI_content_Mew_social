@@ -95,6 +95,9 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify B-roll apply recovery (HERO-57)
+        run: npm run verify:broll-apply-recovery
+
       - name: Verify VideoJob stall watchdog
         run: npm run verify:video-job-watchdog
 

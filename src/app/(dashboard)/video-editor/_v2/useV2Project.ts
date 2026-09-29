@@ -454,6 +454,7 @@ export type V2OmniVoice = OmniVoiceInfo;
 const DEFAULT_PROJECT = EDITOR_DEFAULT_DRAFT;
 
 export function useV2Project() {
+  const [accountId, setAccountId] = useState<string | null>(null);
   // Keep the first client render byte-compatible with SSR. Local/server drafts are
   // applied after mount in ensureServerProject(); reading localStorage here causes
   // hydration text mismatches when a previous draft exists.
@@ -2106,6 +2107,7 @@ export function useV2Project() {
     }).catch(() => {});
     const applyMe = (m: Awaited<ReturnType<typeof fetchMe>>) => {
       const accountId = typeof m?.id === "string" && m.id ? m.id : null;
+      setAccountId(accountId);
       if (accountId) {
         const storage = browserStorage();
         projectIdStorageKeyRef.current = scopedProjectIdKey(accountId);
@@ -2517,7 +2519,7 @@ export function useV2Project() {
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
-    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, logoEntitlementStalled: meRetriesExhausted, logoEntitlementRetrying: meRetryPending, retryEntitlement, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, logoEntitlementStalled: meRetriesExhausted, logoEntitlementRetrying: meRetryPending, retryEntitlement, accountId, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     projectStylePack, setProjectStylePack,
     saveStatus, retryProjectSave,

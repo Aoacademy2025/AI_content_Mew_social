@@ -449,6 +449,7 @@ export function EditorV2Shell() {
 
   const visibleProjects = filterProjectMenuItems(projects, projectFilter);
   const postPhaseProjectProps = {
+    accountId: p.accountId,
     projectId: p.projectId,
     narrativeSourceKind: p.mode === "upload" ? "upload-transcript" as const : p.narrativeSourceKind,
     logoOverlay: p.logoOverlay,

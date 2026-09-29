@@ -128,7 +128,8 @@ type SearchCandidate = { id: string; provider: "pexels" | "pixabay"; thumb: stri
 // more windows with the inspector closed. ──────────────────────────────────────
 export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
   if (ed.windowEdits.size === 0) return null;
-  const busy = !!ed.applyingWindows;
+  const busy = !!ed.applyingWindows && ed.applyingWindows.phase !== "disconnected";
+  const pending = !!ed.applyingWindows;
   return (
     <div
       className="flex shrink-0 items-center justify-end gap-3 px-4 py-2"
@@ -155,7 +156,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       <button
         type="button"
         onClick={ed.undoWindowEdits}
-        disabled={busy || !ed.canUndoWindowEdits}
+        disabled={pending || !ed.canUndoWindowEdits}
         aria-label="เลิกทำการแก้ B-roll"
         title="เลิกทำ"
         className="flex min-h-11 min-w-11 items-center justify-center lg:min-h-9 lg:min-w-9"
@@ -163,7 +164,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
           border: "none",
           background: "none",
           color: ed.canUndoWindowEdits ? color.textSecondary : color.textFaintest,
-          cursor: busy || !ed.canUndoWindowEdits ? "default" : "pointer",
+          cursor: pending || !ed.canUndoWindowEdits ? "default" : "pointer",
         }}
       >
         <Undo2 size={15} />
@@ -171,7 +172,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       <button
         type="button"
         onClick={ed.redoWindowEdits}
-        disabled={busy || !ed.canRedoWindowEdits}
+        disabled={pending || !ed.canRedoWindowEdits}
         aria-label="ทำซ้ำการแก้ B-roll"
         title="ทำซ้ำ"
         className="flex min-h-11 min-w-11 items-center justify-center lg:min-h-9 lg:min-w-9"
@@ -179,7 +180,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
           border: "none",
           background: "none",
           color: ed.canRedoWindowEdits ? color.textSecondary : color.textFaintest,
-          cursor: busy || !ed.canRedoWindowEdits ? "default" : "pointer",
+          cursor: pending || !ed.canRedoWindowEdits ? "default" : "pointer",
         }}
       >
         <Redo2 size={15} />
@@ -189,7 +190,9 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
         disabled={busy}
         style={{ padding: "7px 16px", fontSize: 12.5, ...(busy ? { opacity: 0.75, cursor: "wait" } : {}) }}
       >
-        {busy ? `กำลังอัปเดต ${ed.applyingWindows!.progress}%` : `อัปเดตวิดีโอ (${ed.windowEdits.size} ช่วง) — ฟรี ไม่ใช้นาทีเพิ่ม`}
+        {busy ? ed.applyingWindowsLabel
+          : pending ? "ตรวจสถานะอีกครั้ง"
+            : `อัปเดตวิดีโอ (${ed.windowEdits.size} ช่วง) — ฟรี ไม่ใช้นาทีเพิ่ม`}
       </BtnPrimary>
     </div>
   );
