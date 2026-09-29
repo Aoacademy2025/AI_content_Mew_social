@@ -9,6 +9,7 @@ import puppeteer from "puppeteer";
 const root = process.cwd();
 const directory = mkdtempSync(join(tmpdir(), "hero-broll-apply-"));
 const bundlePath = join(directory, "bundle.js");
+const strictBundlePath = join(directory, "strict-bundle.js");
 const hookPath = resolve(root, "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts");
 
 const entry = `
@@ -19,7 +20,7 @@ import { usePostPhaseEditor } from ${JSON.stringify(hookPath)};
 const projectId = new URLSearchParams(location.search).get("project") ?? "project-a";
 const preview = { videoUrl: "/source.mp4", preview: { captions: [], audioDurationMs: 4000,
   config: { bgVideos: [{ start: 0, end: 4, src: "/source.mp4" }] } } };
-const job = { phase: "done", jobId: "source-job", projectId, contentPreflightId: null,
+const job = { phase: "done", jobId: new URLSearchParams(location.search).get("job") ?? "source-job", projectId, contentPreflightId: null,
   output: preview, jobType: "preview", currentStep: null, progress: 100,
   queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, mediaState: null };
 window.__adopted = [];
@@ -43,10 +44,13 @@ window.__unmount = () => root.unmount();
 `;
 
 async function main() {
-  await build({ stdin: { contents: entry, loader: "tsx", resolveDir: root, sourcefile: "broll-apply-probe.tsx" },
-    bundle: true, outfile: bundlePath, platform: "browser", format: "iife",
+  const buildProbe = (strict: boolean) => build({
+    stdin: { contents: strict
+      ? entry.replace("root.render(<Probe />);", "root.render(<React.StrictMode><Probe /></React.StrictMode>);")
+      : entry, loader: "tsx", resolveDir: root, sourcefile: "broll-apply-probe.tsx" },
+    bundle: true, outfile: strict ? strictBundlePath : bundlePath, platform: "browser", format: "iife",
     banner: { js: "var process = { env: {} };" },
-    define: { "process.env.NODE_ENV": '"production"' },
+    define: { "process.env.NODE_ENV": strict ? '"development"' : '"production"' },
     plugins: [{ name: "synthetic-auth-fetch", setup(plugin) {
       plugin.onResolve({ filter: /^@\/lib\/authenticated-fetch$/ }, () => ({ path: "auth-fetch", namespace: "fixture" }));
       plugin.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
@@ -54,13 +58,19 @@ async function main() {
         loader: "js",
       }));
     } }] });
+  await buildProbe(false);
+  await buildProbe(true);
   const bundle = readFileSync(bundlePath);
+  const strictBundle = readFileSync(strictBundlePath);
   const server = createServer((request, response) => {
     if (request.url === "/bundle.js") {
       response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" }); response.end(bundle); return;
     }
+    if (request.url === "/strict-bundle.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" }); response.end(strictBundle); return;
+    }
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    response.end('<div id="root"></div><script src="/bundle.js"></script>');
+    response.end(`<div id="root"></div><script src="${request.url?.includes("strict=1") ? "/strict-bundle.js" : "/bundle.js"}"></script>`);
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const address = server.address();
@@ -84,25 +94,38 @@ async function main() {
       let polls = 0;
       window.__postCount = 0;
       window.__postKeys = [];
+      window.__lookupCount = 0;
+      window.__finish = new URLSearchParams(location.search).has("done");
       window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url.startsWith("/api/videos/jobs?idempotencyKey=")) {
+          window.__lookupCount++;
+          const lookup = new URL(url, location.origin);
+          const key = lookup.searchParams.get("idempotencyKey");
+          const saved = key ? sessionStorage.getItem("accepted:" + key) : null;
+          const matchesSource = lookup.searchParams.get("sourceJobId") === "source-job";
+          return new Response(saved && matchesSource ? JSON.stringify({ jobId: saved, projectId: "project-a" }) : "{}",
+            { status: saved && matchesSource ? 200 : 404 });
+        }
         if (url === "/api/videos/jobs" && init?.method === "POST") {
           window.__postCount++;
           const key = JSON.parse(String(init.body)).idempotencyKey;
           window.__postKeys.push(key);
+          if (!window.__postNotAccepted) sessionStorage.setItem("accepted:" + key, "apply-job");
           if (window.__postAmbiguous && window.__postCount === 1) throw new TypeError("connection lost after submit");
           return new Response(JSON.stringify({ jobId: "apply-job", idempotencyKey: key }), { status: 200 });
         }
         if (url === "/api/videos/jobs/apply-job") {
           polls++;
           window.__polls = polls;
+          const pendingKey = JSON.parse(localStorage.getItem("editor-v2-broll-apply:account-a:project-a") ?? "{}").idempotencyKey;
           if (window.__pollHttpError) return new Response("{}", { status: 401 });
-          if (window.__terminalStatus) return new Response(JSON.stringify({ id: "apply-job",
+          if (window.__terminalStatus) return new Response(JSON.stringify({ id: "apply-job", idempotencyKey: pendingKey,
             projectId: "project-a", status: window.__terminalStatus, errorMessage: "synthetic terminal failure" }), { status: 200 });
           return new Response(JSON.stringify(!window.__finish
-            ? { id: "apply-job", projectId: "project-a", status: window.__processing ? "processing" : "queued",
+            ? { id: "apply-job", idempotencyKey: pendingKey, projectId: "project-a", status: window.__processing ? "processing" : "queued",
                 queuePosition: 2, progress: window.__processing ? 37 : 0 }
-            : { id: "apply-job", projectId: "project-a", status: "done", output: {
+            : { id: "apply-job", idempotencyKey: pendingKey, projectId: "project-a", status: "done", output: {
                 videoUrl: "/done.mp4", preview: { config: { bgVideos: [{ start: 0, end: 4, src: "/new.mp4" }] } }
               } }), { status: 200 });
         }
@@ -241,6 +264,59 @@ async function main() {
     await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1);
     console.log("PASS: refresh after an uncertain POST replays the original key");
 
+    // The server may finish while the lost POST response still leaves jobId unknown locally.
+    await page.evaluate(() => {
+      const state = window as unknown as { __finish: boolean; __postAmbiguous: boolean; __postCount: number };
+      state.__finish = false; state.__postAmbiguous = true; state.__postCount = 0;
+    });
+    await page.click("#stage");
+    await page.click("#apply");
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("disconnected"));
+    const completedKey = await page.evaluate(() => (window as unknown as { __postKeys: string[] }).__postKeys[0]);
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor?job=apply-job&done=1`);
+    await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1,
+      { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => (window as unknown as { __postCount: number }).__postCount), 0);
+    assert.equal(await page.evaluate(() => (window as unknown as { __lookupCount: number }).__lookupCount), 1);
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem("accepted:" + key), completedKey), "apply-job");
+    console.log("PASS: completed server job is reconciled after a lost POST response");
+
+    // An unrelated new project job must not cause the old request to be submitted late.
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor`);
+    await page.evaluate(() => {
+      const state = window as unknown as { __postAmbiguous: boolean; __postNotAccepted: boolean };
+      state.__postAmbiguous = true; state.__postNotAccepted = true;
+    });
+    await page.click("#stage");
+    await page.click("#apply");
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("disconnected"));
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor?job=unrelated-job&done=1`);
+    await page.waitForFunction(() => (window as unknown as { __lookupCount: number }).__lookupCount === 1,
+      { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => (window as unknown as { __postCount: number }).__postCount), 0);
+    assert.equal(await page.evaluate(() => (window as unknown as { __adopted: unknown[] }).__adopted.length), 0);
+    assert.equal(await page.$eval("#edits", (element) => element.textContent), "1");
+    console.log("PASS: unrelated newer job cannot trigger a stale submit or adoption");
+
+    // Even when the original request was accepted, a newer unrelated result owns the project.
+    await page.evaluate(() => localStorage.removeItem("editor-v2-broll-apply:account-a:project-a"));
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor`);
+    await page.evaluate(() => { (window as unknown as { __postAmbiguous: boolean }).__postAmbiguous = true; });
+    await page.click("#stage");
+    await page.click("#apply");
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("disconnected"));
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor?job=unrelated-job&done=1`);
+    await page.waitForFunction(() => (window as unknown as { __lookupCount: number }).__lookupCount === 1,
+      { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => (window as unknown as { __postCount: number }).__postCount), 0);
+    assert.equal(await page.evaluate(() => (window as unknown as { __adopted: unknown[] }).__adopted.length), 0);
+    assert.equal(await page.$eval("#edits", (element) => element.textContent), "1");
+    console.log("PASS: completed older job cannot overwrite unrelated newer output");
+
+    // Remove only the synthetic unresolved fixture before testing terminal statuses.
+    await page.evaluate(() => localStorage.removeItem("editor-v2-broll-apply:account-a:project-a"));
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor`);
+
     await page.evaluate(() => { (window as unknown as { __terminalStatus: string }).__terminalStatus = "canceled"; });
     await page.click("#stage");
     await page.click("#apply");
@@ -258,6 +334,21 @@ async function main() {
     assert.equal(await page.evaluate(() => (window as unknown as { __postCount: number }).__postCount), 0);
     assert.equal(await page.$eval("#edits", (element) => element.textContent), "1");
     console.log("PASS: corrupt storage blocks unsafe fresh submission");
+
+    await page.evaluate(() => {
+      localStorage.removeItem("editor-v2-broll-apply:account-a:project-a");
+      const state = window as unknown as { __terminalStatus: string | null; __finish: boolean };
+      state.__terminalStatus = null; state.__finish = false;
+    });
+    await page.click("#apply");
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("queued"));
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor?strict=1`);
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("queued"),
+      { timeout: 5_000 });
+    await page.evaluate(() => { (window as unknown as { __finish: boolean }).__finish = true; });
+    await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1,
+      { timeout: 5_000 });
+    console.log("PASS: development StrictMode remount keeps one known-job recovery alive");
   } finally {
     await browser.close(); await new Promise<void>((done) => server.close(() => done()));
     rmSync(directory, { recursive: true, force: true });

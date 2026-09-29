@@ -611,7 +611,7 @@ export function usePostPhaseEditor(
     let operation: PendingBrollApply;
     if (saved.kind === "found") {
       operation = saved.operation;
-      if (job.jobId !== operation.sourceJobId && job.jobId !== operation.jobId) {
+      if (operation.jobId && job.jobId !== operation.sourceJobId && job.jobId !== operation.jobId) {
         setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
         return null;
       }
@@ -649,47 +649,58 @@ export function usePostPhaseEditor(
     setSelectedWindow(null);
     const growthSummary = summarizeBrollGrowthEdits(operation.windowEdits);
     const owner = { accountId, projectId };
-    const owns = () => !windowPollStop.current
+    const ownsContext = () => !windowPollStop.current
       && currentApplyOwnerRef.current.accountId === owner.accountId
       && currentApplyOwnerRef.current.projectId === owner.projectId
-      && (currentApplyOwnerRef.current.jobId === operation.sourceJobId
-        || currentApplyOwnerRef.current.jobId === operation.jobId)
       && pendingApplyRef.current === operation;
+    const owns = () => ownsContext()
+      && (currentApplyOwnerRef.current.jobId === operation.sourceJobId
+        || currentApplyOwnerRef.current.jobId === operation.jobId);
     try {
       if (!operation.jobId) {
-        const res = await fetch("/api/videos/jobs", {
+        // Once the project has advanced, replaying a POST could create stale work if the
+        // original request never reached the server. Look up only the saved key instead.
+        const sourceStillCurrent = currentApplyOwnerRef.current.jobId === operation.sourceJobId;
+        const res = sourceStillCurrent ? await fetch("/api/videos/jobs", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ idempotencyKey: operation.idempotencyKey,
             mode: "broll-rerender", sourceJobId: operation.sourceJobId,
             windowEdits: operation.windowEdits }),
-        });
+        }) : await fetch(`/api/videos/jobs?idempotencyKey=${encodeURIComponent(operation.idempotencyKey)}&sourceJobId=${encodeURIComponent(operation.sourceJobId)}`);
         const d = await res.json().catch(() => null);
-        if (!owns()) return null;
-        // These validation/ownership refusals are definitive: no job was accepted.
-        // Keep the draft, release this attempt, and let the creator correct/retry it.
-        if ([400, 403, 404, 422].includes(res.status)) {
-          if (!clearPendingBrollApply(storage, operation)) {
+        if (!ownsContext()) return null;
+        if (!sourceStillCurrent) {
+          if (!res.ok || typeof d?.jobId !== "string" || d.projectId !== projectId) {
             throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
           }
-          pendingApplyRef.current = null;
-          setApplyingWindows(null);
-          trackEvent("editor_broll_edit_applied", {
-            status: "error", properties: { surface, ...growthSummary },
-          });
-          toast.error(customerApiErrorMessage(d,
-            "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
-          return null;
-        }
-        if (!res.ok || typeof d?.jobId !== "string"
-          || (d.idempotencyKey && d.idempotencyKey !== operation.idempotencyKey)) {
-          throw new Error(customerApiErrorMessage(d, "กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll"));
+        } else {
+          // These validation/ownership refusals are definitive: no job was accepted.
+          // Keep the draft, release this attempt, and let the creator correct/retry it.
+          if ([400, 403, 404, 422].includes(res.status)) {
+            if (!clearPendingBrollApply(storage, operation)) {
+              throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
+            }
+            pendingApplyRef.current = null;
+            setApplyingWindows(null);
+            trackEvent("editor_broll_edit_applied", {
+              status: "error", properties: { surface, ...growthSummary },
+            });
+            toast.error(customerApiErrorMessage(d,
+              "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
+            return null;
+          }
+          if (!res.ok || typeof d?.jobId !== "string"
+            || (d.idempotencyKey && d.idempotencyKey !== operation.idempotencyKey)) {
+            throw new Error(customerApiErrorMessage(d, "กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll"));
+          }
         }
         operation = { ...operation, jobId: d.jobId };
         pendingApplyRef.current = operation;
         windowApplyInFlightRef.current = operation;
-        // The original key remains durable if this later update fails; replaying the POST
-        // recovers the same server job after a refresh.
+        // The original key remains durable if this update fails; refresh can replay
+        // against the source or look up the accepted job after the project advances.
         writePendingBrollApply(storage, operation);
+        if (!owns()) throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
       }
       const newJobId = operation.jobId;
       if (!newJobId) return null;
@@ -699,13 +710,14 @@ export function usePostPhaseEditor(
         const response = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`);
         if (!response.ok) throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
         const p = await response.json() as {
-          id?: string; status?: string; progress?: number; queuePosition?: number | null;
+          id?: string; idempotencyKey?: string; status?: string; progress?: number; queuePosition?: number | null;
           errorMessage?: string; projectId?: string | null; contentPreflightId?: string | null;
           output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>;
             compositeBaseUrl?: string | null; cutawayPersonRanges?: { start: number; end: number }[] } };
         };
         if (!owns()) return null;
-        if (p.id !== newJobId || p.projectId !== projectId) {
+        if (p.id !== newJobId || p.projectId !== projectId
+          || p.idempotencyKey !== operation.idempotencyKey) {
           throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
         }
         if (p.status === "queued") {
@@ -782,9 +794,10 @@ export function usePostPhaseEditor(
         }
         throw new Error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
       }
+      if (ownsContext()) setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
       return null;
     } catch (e) {
-      if (owns()) {
+      if (ownsContext()) {
         setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
         toast.error("กำลังเชื่อมต่อเพื่อตรวจสถานะ B-roll");
       }
@@ -809,9 +822,13 @@ export function usePostPhaseEditor(
     if (!accountId || !projectId || !job.jobId) return;
     const saved = readPendingBrollApply(brollStorage(), accountId, projectId);
     if (saved.kind !== "found") return;
-    pendingApplyRef.current = saved.operation;
-    setWindowEditsState(new Map(saved.operation.draftEdits as [number, WindowEdit][]));
-    if (job.jobId === saved.operation.sourceJobId || job.jobId === saved.operation.jobId) {
+    const current = pendingApplyRef.current;
+    const operation = current?.accountId === accountId && current.projectId === projectId
+      && current.idempotencyKey === saved.operation.idempotencyKey
+      ? current : saved.operation;
+    pendingApplyRef.current = operation;
+    setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+    if (job.jobId === operation.sourceJobId || job.jobId === operation.jobId || !operation.jobId) {
       void applyWindowEdits();
     } else {
       setApplyingWindows({ phase: "disconnected", progress: 0, queuePosition: null });
