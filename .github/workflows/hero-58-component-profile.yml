@@ -1,0 +1,51 @@
+name: HERO-58 synthetic component profile
+
+on:
+  push:
+    branches:
+      - codex/hero-58-upload-render-performance
+    paths:
+      - .github/workflows/hero-58-component-profile.yml
+      - scripts/benchmark-hero58-upload-render.ts
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-profile:
+    if: github.ref == 'refs/heads/codex/hero-58-upload-render-performance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      HERO58_FORCE_LOW_RESOURCE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies without app setup
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Record diagnostic environment
+        run: |
+          node --version
+          node -p '"Remotion " + require("@remotion/renderer/package.json").version'
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -version | sed -n '1p'
+          ffprobe -version | sed -n '1p'
+          uname -srvm
+          lscpu | grep -E '^(Architecture|CPU\(s\)|Model name):'
+          free -m
+      - name: Profile one synthetic 60-second five-upload timeline
+        run: |
+          node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-full | tee hero58-component.log
+          grep '^{"stage":"component_profile"' hero58-component.log > hero58-component-summary.ndjson
+      - name: Keep only small metrics summary for one day
+        uses: actions/upload-artifact@v4
+        with:
+          name: hero58-synthetic-component-summary
+          path: hero58-component-summary.ndjson
+          retention-days: 1
+          if-no-files-found: error

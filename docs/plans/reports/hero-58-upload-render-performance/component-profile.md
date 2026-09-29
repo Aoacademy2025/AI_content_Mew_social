@@ -1,0 +1,64 @@
+# HERO-58 Task 4 — synthetic renderer component profile
+
+Date: 2026-09-29. [HERO-58](https://linear.app/mew-social/issue/HERO-58). This continues the reviewed [Task 1 report](task-1.md) at `ca0618c0c302472d1ce3b5cc2ca5c9cb00969a15`. The approved continuation and production baseline are in the separate coordinator checkout (`docs/plans/2026-09-29-hero-58-upload-render-performance.md` and `docs/audits/2026-09-29-render-latency-baseline.md`). This is **local research only**. No production behavior or quality setting changed.
+
+## Question and discriminating measurements
+
+The production upload-and-Update cohort spends most post-submit time in child rendering, but the Task 1 full-render profile could not assign frame work to browser raster/filtering, video decode/seek, or repeated media I/O. We ranked those hypotheses before this run:
+
+| Hypothesis | Expected diagnostic signal | Local result |
+|---|---|---|
+| Full-frame browser raster/filter work | High Chromium CPU and raster trace activity; removing only grade filters reduces frame cost while media reads stay fixed | **Supported as a material local contributor.** An A/B/A short probe lowered frame-stage time 16.9% with grade disabled; Chromium trace contained 43,040 raster tasks. Disabling grade visibly changes output, so this is diagnostic only. |
+| Video decoding/seek | Slow frames around window changes or repeated video loops, with decode/compositor activity despite modest network reads | **Unresolved.** Boundary frames are slower, but transitions also show two clips. The trace's image decode events do not isolate Remotion compositor video decode or seek. |
+| Repeated HTTP media fetch | Many GET/range requests or source bytes retransferred per frame/window | **Not observed in this fixture.** Each served media path was fetched once, with no range requests. This does not measure compositor's local decoded-frame cache or production storage. |
+
+## Reproducible seam and measurement limits
+
+`scripts/benchmark-hero58-upload-render.ts` now has `component-short` (12 s, three four-second windows, one normalized uploaded video) and `component-full` (60 s, 15 windows, five distinct normalized uploaded asset paths). It reuses the Task 1 synthetic fixture generation, the actual `applyKenBurns` and `normalizeForRemotion` upload functions, `validateWindowEdits`, `mergeWindowEdits`, `prepareBrollRenderAssets`, the actual `ShortVideoComposition`, Remotion bundle, and `selectComposition`. The new component modes call installed Remotion 4.0.509 `renderFrames` to write JPEG frames. Its `onFrameUpdate` receives each frame's `timeToRenderInMilliseconds` from `node_modules/@remotion/renderer/dist/render-frame-with-option-to-reject.js`. The stage wall time is **not** the sum of individual frame times because three render threads run concurrently. `renderFrames` has **no final MP4/AAC encode or stitch**, and its wall time must not be compared directly with Task 1's `runRender`/`renderMedia` wall time. The `RENDER_LOW_RESOURCE=1` flag is pinned for repeatability, but there is no x264 preset in this frame-only mode.
+
+Both modes render 1080×1920 at 30 fps, JPEG quality 90, concurrency 3, 128 MiB offthread video cache, the production `ShortVideoComposition` grade/transitions, synthetic narration and no watermark or keyword popups. The 60 s case uses five distinct upload-derived file paths, although their simple generated patterns repeat. Media is served on `127.0.0.1` from local files with stock-route-style CORS, range support and `Cache-Control: public, max-age=86400`; the counters track GET/HEAD/range requests and filesystem stream bytes. They do not measure Next, remote storage, production network/cache headers or socket bytes on aborted responses. A one-second `ps` sampler aggregates process `%CPU` and RSS for checkout-owned Chromium and Remotion compositor processes; percentages span cores and are approximate samples, not attribution to a particular browser thread.
+
+Local host: macOS arm64, 10 reported CPUs/16 GiB RAM, Node 26.7.0, ffmpeg 8.1.2, Remotion 4.0.509. The harness now obtains ffmpeg using the app's existing `getFfmpegPath()` rather than Homebrew-only paths. It expects a matching `ffprobe` beside that executable; the Linux workflow verifies both system commands. Production has 8 vCPU/32 GiB Linux, no GPU and two PM2 render-worker processes with three frame threads each. These local frame-only timings do not establish production throughput or preset selection.
+
+## Local results
+
+All runs exited 0. The short A/B/A used the same source files, composition, frame count, concurrency, cache and JPEG quality. For B only, `GRADE_FILTER` was temporarily set to `"none"` in `src/remotion/ShortVideoComposition.tsx`; the source was restored byte-for-byte before A2 and the representative run (SHA-256 `a1b928d1092235818393f5662991d5d2beed8949d49bccf5b59a5a77cd0eadae`, no source diff). This removes visible grading and **is not a candidate fix**.
+
+| Run | Frames | Frame stage | Frame p50 / p95 / p99 | Browser CPU median / compositor median | Local media reads |
+|---|---:|---:|---:|---:|---|
+| Short A1, grade on | 360 | 9,153 ms | 74.1 / 95.6 / 127.0 ms | 455.2% / 13.9% | 3 GET, 0 ranges, 8,490,949 B |
+| Short B, grade off | 360 | 7,543 ms | 59.3 / 76.9 / 85.9 ms | 393.0% / 15.2% | same |
+| Short A2, grade restored | 360 | 9,002 ms | 72.9 / 93.7 / 142.3 ms | 442.9% / 13.7% | same |
+| Full, grade on | 1,800 | 57,880 ms | 88.8 / 153.7 / 189.0 ms | 425.0% / 25.2% | 7 GET, 0 ranges, 17,349,589 B |
+
+The average short graded frame stage was 9,077.5 ms, versus 7,543 ms without grading, a 16.9% local reduction. Bundle and preparation were measured separately (short A1/B/A2 bundle 674/1,053/721 ms; preparation 45/43/47 ms; full bundle 471 ms and preparation 129 ms). No visual parity test is appropriate for B because it deliberately changes the image. The restored A2 and full runs use the original grade.
+
+For the full run, frames within eight positions before or after each four-second window boundary had p50 105.2 ms and p95 191.9 ms (`n=238`); other frames had p50 86.8 ms and p95 144.8 ms (`n=1,562`). The short graded A1/A2 boundary p50 was 82.0/77.5 ms, versus interior 73.7/72.1 ms. These boundary statistics were recomputed from the saved per-frame timings after correcting the diagnostic to exclude the final eight frames before the nonexistent end boundary. Boundary cost can include crossfade, two visible clips, CSS work and seek; it is **not** proof of decoding. The full run's slowest frame, 309.3 ms, was frame 840 at the start of an uploaded still window. But window 6, a reused synthetic base clip, had the highest sustained p50 (142 ms). The profile therefore does not establish an upload-only renderer path.
+
+The short server saw one GET each for `base.mp4` (7,056 B), narration WAV (5,760,078 B), and uploaded video (2,723,815 B). The full server saw one GET each for those base/narration files and five distinct upload MP4 paths: two still-derived at 1,705,505 B each and three video-derived at 2,723,815 B each. Both had zero HEAD and zero ranged requests. This falsifies repeated HTTP transfer for these inputs, but Chromium or the Remotion compositor can still decode the already downloaded files repeatedly in local memory.
+
+One **separate, traced** 12 s graded run used the existing Remotion browser handle's Chrome DevTools Protocol `Tracing.start`/`Tracing.end` with `devtools.timeline,blink,cc,gpu,disabled-by-default-devtools.timeline.frame`. It returned 866,265 events (169,456,047 B) and 43,040 `RasterTask` complete events with 25,801 ms summed duration. Corresponding nested `RasterizerTaskImpl::RunOnWorkerThread`, `ZeroCopyRasterBuffer::Playback`, and `DisplayItemList::Raster` events each summed about 25.7–25.9 s. `SoftwareImageDecodeTaskImpl::RunOnWorkerThread` summed 1,413 ms across 1,504 events. These event durations overlap across nested calls and workers; **they are not additive phase shares or wall time**. The traced frame stage rose to 14,831 ms (untraced graded A1/A2: 9,153/9,002 ms), so tracing has substantial overhead and is used only to identify active browser categories. The 169 MB raw trace stays in ignored `.tmp/hero58/` and is never a CI artifact. The optional trace mode is off in the Linux workflow.
+
+## Candidate ruling and next discrimination
+
+The source and measurements identify grade-associated browser raster work as a material component on this Mac fixture, while local HTTP retransmission is absent. They do **not** identify redundant, quality-equivalent work that can be removed. The grade is required appearance; dropping it, lowering resolution/fps/JPEG quality, increasing concurrency, or changing the render architecture would violate the approved constraints. No production correction or speedup claim is recommended from this profile. A safe candidate would need a specific equivalent rendering method plus repeated Linux before/after measurements and pixel/audio parity under the same output settings. Boundary/seek work remains an open subquestion, particularly in the production two-worker environment.
+
+The bounded Linux diagnostic package is `.github/workflows/hero-58-component-profile.yml`. It runs only on a push to exactly `codex/hero-58-upload-render-performance` when that workflow or manual benchmark changes. It uses `ubuntu-24.04`, `contents: read`, a 20-minute timeout, Node 22, locked packages without app setup, existing ffmpeg/ffprobe, no secrets/DB/provider/deploy step, and **one** synthetic 60 s `component-full` run. It logs Node, resolved Remotion, ffmpeg/ffprobe, kernel, CPU and memory; the benchmark JSON logs actual 1080×1920/30 fps, three frame threads, JPEG 90 and 128 MiB cache. Only the compact summary line is retained as an artifact for one day, never media, raw frames or trace. [GitHub's hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) lists public `ubuntu-24.04` at 4 CPUs/16 GiB, so this run tests whether the Mac component pattern appears on Linux; it still **cannot be extrapolated** to production's 8 vCPU/32 GiB, two-process full MP4 renderer. No Linux job has run at this report checkpoint; coordinator will have the fixed commit independently reviewed before any feature-branch push.
+
+## Commands, exits and artifacts
+
+Run from the assigned research worktree. These exact commands exited 0:
+
+```sh
+HERO58_FORCE_LOW_RESOURCE=1 node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-short > .tmp/hero58/component-short.log 2>&1
+# After the one-variable temporary GRADE_FILTER="none" source edit:
+HERO58_FORCE_LOW_RESOURCE=1 node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-short > .tmp/hero58/component-short-ablation.log 2>&1
+# After byte-for-byte source restoration:
+HERO58_FORCE_LOW_RESOURCE=1 node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-short > .tmp/hero58/component-short-baseline2.log 2>&1
+HERO58_FORCE_LOW_RESOURCE=1 node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-full > .tmp/hero58/component-full.log 2>&1
+HERO58_FORCE_LOW_RESOURCE=1 HERO58_CHROME_TRACE=1 node --import ./scripts/register-server-only-node.mjs --import tsx scripts/benchmark-hero58-upload-render.ts component-short > .tmp/hero58/component-short-trace.log 2>&1
+```
+
+The first A1 detailed JSON was saved as `.tmp/hero58/component-short-baseline1.json`, B as `component-short-no-grade.json`, A2 as `component-short-baseline2.json`, and the representative run as `component-component-full.json`. The harness also writes regenerated frame JPEGs under `.tmp/hero58/frames-*`, detailed per-frame JSON, and optional `chromium-component-short-trace.json` there; all are ignored and uncommitted. Run one mode at a time so per-process CPU and server counts remain interpretable. The Linux workflow runs the exact `component-full` Node command above with `HERO58_FORCE_LOW_RESOURCE=1` in job environment. Its output is pending review and push; no runner result is implied here.
+
+After the boundary-count correction, a final `component-short` functional repeat exited 0 with the expected 360 frame timings and 34 boundary frames. Its frame stage was 11,040 ms, slower than the bracketed A/B/A, reinforcing that local host load varies; it is not part of the controlled ablation estimate. `npx eslint scripts/benchmark-hero58-upload-render.ts`, `actionlint .github/workflows/hero-58-component-profile.yml`, `git diff --check`, and the production composition diff check all exited 0. An initial optional YAML parse check using Node's `yaml` package exited 1 (`Cannot find module 'yaml'`); `actionlint` supplied the installed workflow syntax check without adding a dependency.
