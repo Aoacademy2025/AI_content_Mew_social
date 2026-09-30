@@ -78,7 +78,7 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
     avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
       { key: "gemini", required: process.env.MANAGED_GEMINI !== "1", configured: process.env.MANAGED_GEMINI === "1" ? true : keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
-      { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: PROVIDERS.pexels.whatFor, getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
+      { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: "คลิป b-roll ฟรี และส่วนสต็อกของ AutoMix — Hero AI Image ไม่ใช้คีย์นี้", getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
       { key: "elevenlabs", required: false, configured: keys.elevenlabs, label: PROVIDERS.elevenlabs.label, whatFor: PROVIDERS.elevenlabs.whatFor, getKeyUrl: PROVIDERS.elevenlabs.getKeyUrl, note: ELEVENLABS_VOICEID_HELP },
     ],
   };
@@ -108,16 +108,17 @@ ${process.env.MANAGED_GEMINI === "1"
 ข้อจำกัด: งานค้างพร้อมกันได้ไม่เกิน 3 ชิ้น/คน และมีโควต้า${process.env.MINUTE_QUOTA === "1" ? "นาที" : "คลิป"}ตามแผน. error ทุกตัวเป็นข้อความภาษาไทยแบบ in-band ให้แปล/อธิบายให้ผู้ใช้ตามนั้น.
 
 โหมดไกด์สร้างวิดีโอ: เมื่อผู้ใช้สื่อว่าจะทำวิดีโอ (เช่น "วิดีโอ HERO AI") ให้ถามทีละข้อ (ห้ามถามรวด) — เรียก get_video_options เพื่อเสนอตัวเลือกจริง.
-‼️ ห้ามตั้งค่า default เองเงียบๆ แล้วบอกว่า "ปรับได้ทีหลัง" — ต้องถามผู้ใช้จริงให้ครบก่อน create_video_job. มี 3 ข้อบังคับที่ห้ามข้ามเด็ดขาด (ถ้าข้าม = ทำผิด): (ก) ถ้าใช้ avatar แบบเปิดอย่างเดียว/เปิด-ปิด → ต้องถาม "กี่วินาที"; (ข) ตำแหน่งซับไทย (บน/กลาง/ล่าง); (ค) "ใส่เพลง BGM ไหม". ถามครบ 3 ข้อนี้ก่อนเสมอ.
+‼️ ห้ามตั้งค่า default เองเงียบๆ แล้วบอกว่า "ปรับได้ทีหลัง" — ต้องถามผู้ใช้จริงให้ครบก่อน create_video_job. มี 4 ข้อบังคับที่ห้ามข้ามเด็ดขาด (ถ้าข้าม = ทำผิด): (ก) B-roll จะใช้วิดีโอสต็อกฟรี, Hero AI Image, หรือ AutoMix; (ข) ถ้าใช้ avatar แบบเปิดอย่างเดียว/เปิด-ปิด → ต้องถาม "กี่วินาที"; (ค) ตำแหน่งซับไทย (บน/กลาง/ล่าง); (ง) "ใส่เพลง BGM ไหม". ถามครบ 4 ข้อนี้ก่อนเสมอ.
 1) ขอสคริปต์.
 2) เสียง: gemini หรือ elevenlabs (เสนอเสียงจาก get_video_options). ⚠️ ถ้า get_video_options ดึงรายชื่อเสียง ElevenLabs ไม่ได้ (voices มี error — key อาจมีสิทธิ์แค่ TTS ไม่มีสิทธิ์ list) อย่าสรุปว่า key เสีย/ใช้ไม่ได้ — voiceId ที่เซฟไว้หรือผู้ใช้ใส่เองยังใช้สร้างเสียงได้ ลองสร้างเลย.
-3) เพลงประกอบ (BGM): ⚠️ ต้องถามจริงทุกครั้งว่า "ใส่เพลงไหม + แนวไหน?" — เสนอเป็น "แนว/อารมณ์" จาก get_video_options.music.byMood (เช่น 😌ชิล 🎬ดราม่า 💼จริงจัง 🧒สดใส 🎉สนุก) ไม่ใช่ชื่อไฟล์ (user มองไม่เห็น dropdown). พอ user เลือก ส่งเป็น bgmFile ได้เลย — จะเป็น "ชื่อแนว" ("ชิล"/"ดราม่า"), ชื่อเพลง, หรือ path ก็ได้ ระบบ resolve ให้เอง. ❌ ไม่อยากได้เพลง = ไม่ต้องส่ง bgmFile. ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile. ‼️ BGM เป็นคำถามแยกอิสระจาก avatar — คลิปจะมี avatar + เพลง พร้อมกันก็ได้ (ระบบรองรับ). ห้ามมัด "ไม่ใส่ avatar + ใส่เพลง" เป็นตัวเลือกเดียวกับ avatar modes เด็ดขาด; ต้องถาม BGM ทุกคลิปไม่ว่าจะใส่ avatar หรือไม่.
-4) ซับ: ตำแหน่ง (top/middle/bottom) + โหมด (sentence/1/2/3/4 คำ; 3="แนะนำ อ่านง่าย"). ⚠️ โหมด 1–2 คำ ทำให้การ์ดเยอะ = ฉาก b-roll เยอะ = เรนเดอร์นานขึ้นมาก (อาจ 15–20 นาที); ถ้าผู้ใช้ไม่ได้ต้องการ viral-style จัด ๆ แนะนำ 3.
-5) avatar (พิธีกร AI): ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO — แพลนครอบแค่ render ปกติ) ต้องอธิบายให้ผู้ใช้เข้าใจก่อนเลือก แล้วเสนอ:
+3) B-roll: ถามทุกครั้งว่าจะใช้ภาพแบบไหน แล้วส่ง brollSource. "stock" = วิดีโอสต็อกฟรี (ค่าเริ่มต้น ต้องมี Pexels หรือ Pixabay). "hero-ai-image" = ภาพ AI ทุกช่วง (ใช้เครดิตของแผน ไม่ต้องมีคีย์สต็อก). "automix" = ผสมสต็อกกับภาพ AI ตามสัดส่วนแนะนำ (ต้องมีคีย์สต็อก). ตัวเลือกอยู่ที่ get_video_options.broll.
+4) เพลงประกอบ (BGM): ⚠️ ต้องถามจริงทุกครั้งว่า "ใส่เพลงไหม + แนวไหน?" — เสนอเป็น "แนว/อารมณ์" จาก get_video_options.music.byMood (เช่น 😌ชิล 🎬ดราม่า 💼จริงจัง 🧒สดใส 🎉สนุก) ไม่ใช่ชื่อไฟล์ (user มองไม่เห็น dropdown). พอ user เลือก ส่งเป็น bgmFile ได้เลย — จะเป็น "ชื่อแนว" ("ชิล"/"ดราม่า"), ชื่อเพลง, หรือ path ก็ได้ ระบบ resolve ให้เอง. ❌ ไม่อยากได้เพลง = ไม่ต้องส่ง bgmFile. ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile. ‼️ BGM เป็นคำถามแยกอิสระจาก avatar — คลิปจะมี avatar + เพลง พร้อมกันก็ได้ (ระบบรองรับ). ห้ามมัด "ไม่ใส่ avatar + ใส่เพลง" เป็นตัวเลือกเดียวกับ avatar modes เด็ดขาด; ต้องถาม BGM ทุกคลิปไม่ว่าจะใส่ avatar หรือไม่.
+5) ซับ: ตำแหน่ง (top/middle/bottom) + โหมด (sentence/1/2/3/4 คำ; 3="แนะนำ อ่านง่าย"). ⚠️ โหมด 1–2 คำ ทำให้การ์ดเยอะ = ฉาก b-roll เยอะ = เรนเดอร์นานขึ้นมาก (อาจ 15–20 นาที); ถ้าผู้ใช้ไม่ได้ต้องการ viral-style จัด ๆ แนะนำ 3.
+6) avatar (พิธีกร AI): ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO — แพลนครอบแค่ render ปกติ) ต้องอธิบายให้ผู้ใช้เข้าใจก่อนเลือก แล้วเสนอ:
    - "เปิดอย่างเดียว" (avatar โผล่ช่วงต้นคลิป) = avatarMode "bookend" — ✅ แนะนำ ประหยัด
    - "เปิด-ปิด" (avatar ต้น+ท้าย) = avatarMode "bookend-both" — ✅ แนะนำ ประหยัด
    - "Full" (avatar ทั้งคลิป) = avatarMode "full" — รองรับไม่เกิน 5 นาทีและแพง (จ่ายตามความยาวคลิปเต็ม); ถ้ายาวกว่านี้ให้เลือก bookend
    - ไม่เอา = ไม่ใส่ avatarMode
    ถ้าเอา avatar เสนอตัว avatar จาก get_video_options. ⚠️ ถ้าเลือก "เปิดอย่างเดียว"/"เปิด-ปิด" ต้องถามเสมอว่า "ใช้ avatar กี่วินาที?" → ใส่ avatarIntroSecs (และ avatarTailSecs ถ้าเปิด-ปิด); ถ้าผู้ใช้ไม่ระบุ ใช้ default 5 วินาที. ("Full" ไม่ต้องถามวินาที — ตามทั้งคลิป). จะปรับขนาดก็ใส่ avatarScale (default 1 = พอดีเฟรม).
-สรุปยืนยัน (บอกชัดว่าจะส่งอะไรจริง: เสียง/เพลง/ซับ/avatar+วินาที) แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (ทุก ~60–90 วิ; มี avatar ทุก ~2 นาที; ห้ามถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
+สรุปยืนยัน (บอกชัดว่าจะส่งอะไรจริง: เสียง/B-roll/เพลง/ซับ/avatar+วินาที) แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (ทุก ~60–90 วิ; มี avatar ทุก ~2 นาที; ห้ามถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
 ⚠️ ห้ามสัญญาว่าจะแจ้งเตือนเอง — MCP ส่ง push ไม่ได้; ให้ผู้ใช้พิมพ์ "เช็ควิดีโอ" เมื่อผ่านไปตาม ETA.`;

@@ -8,7 +8,7 @@ import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
-import { preflightElevenLabs, preflightStockProviders } from "@/lib/key-preflight";
+import { preflightElevenLabs, preflightStockProviders, stockVideoProvidersMayBeUsed } from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool,
@@ -38,6 +38,8 @@ import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
+import { mcpBrollJobFields, mcpBrollSource } from "@/lib/mcp/broll-source";
+import { mcpBrollCreateRefusal } from "@/lib/mcp/broll-source.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 
@@ -128,7 +130,7 @@ const handler = createMcpHandler(
 
     server.registerTool(
       "get_video_options",
-      { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
+      { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/B-roll/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
       async (_args, extra) => runTool("get_video_options", extra, async (p) => getVideoOptions(pipelineCaller(p.userId), p.user)),
     );
 
@@ -136,7 +138,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
@@ -197,7 +199,15 @@ const handler = createMcpHandler(
               };
             }
           }
-          if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          const brollSource = mcpBrollSource(args.brollSource);
+          const brollFields = mcpBrollJobFields(brollSource);
+          const needsStockKey = stockVideoProvidersMayBeUsed({
+            stockSource: brollFields.stockSource ?? "stock",
+            autoMixProviders: brollFields.autoMixProviders,
+          });
+          if (needsStockKey && !u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          const brollRefusal = await mcpBrollCreateRefusal(u, brollSource);
+          if (brollRefusal) return brollRefusal;
           // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the
           // same guard in /api/videos/jobs (web). See @/lib/key-preflight for the
           // fail-open rationale (only a confirmed 401/403 blocks job creation).
@@ -205,10 +215,12 @@ const handler = createMcpHandler(
             useEleven && u.elevenlabsKey
               ? preflightElevenLabs(decryptKey(u.elevenlabsKey))
               : Promise.resolve(null),
-            preflightStockProviders({
-              pexelsKey: u.pexelsKey ? decryptKey(u.pexelsKey) : null,
-              pixabayKey: u.pixabayKey ? decryptKey(u.pixabayKey) : null,
-            }),
+            needsStockKey
+              ? preflightStockProviders({
+                  pexelsKey: u.pexelsKey ? decryptKey(u.pexelsKey) : null,
+                  pixabayKey: u.pixabayKey ? decryptKey(u.pixabayKey) : null,
+                })
+              : Promise.resolve({ block: null, providers: [] as const }),
           ]);
           const keyBlock = elevenBlock ?? stockPreflight.block;
           if (keyBlock) return { error: "invalid_key", missingKey: keyBlock.key, message: keyBlock.message };
@@ -270,6 +282,7 @@ const handler = createMcpHandler(
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
                 ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
                 ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
+                ...brollFields,
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
