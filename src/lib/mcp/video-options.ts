@@ -130,5 +130,14 @@ export async function getVideoOptions(
     },
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
+    broll: {
+      default: "stock" as const,
+      howToChoose: "ถามผู้ใช้ว่าจะใช้ภาพแบบไหน แล้วส่ง brollSource ตอน create_video_job ไม่ส่ง = วิดีโอสต็อกฟรี",
+      options: [
+        { value: "stock", title: "วิดีโอสต็อก", detail: "Pexels · Pixabay ฟรี", needsStockKey: true },
+        { value: "hero-ai-image", title: "Hero AI Image", detail: "ภาพ AI ทุกช่วง ใช้เครดิตของแผน ไม่ต้องมีคีย์สต็อก", needsStockKey: false },
+        { value: "automix", title: "AutoMix", detail: "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ต้องมีคีย์สต็อก", needsStockKey: true },
+      ],
+    },
   };
 }

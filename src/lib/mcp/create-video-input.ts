@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { GEMINI_VOICE_STYLES } from "@/lib/gemini-voice-styles";
+import { MCP_BROLL_SOURCES } from "@/lib/mcp/broll-source";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -32,6 +33,8 @@ export const createVideoJobInputShape = {
   bgmVolume: z.number().min(0).max(1).optional(),
   subtitleMode: z.enum(["sentence", "1", "2", "3", "4"]).optional(),
   subtitlePosition: z.enum(["top", "middle", "bottom"]).optional(),
+  brollSource: z.enum(MCP_BROLL_SOURCES).optional()
+    .describe("stock = วิดีโอสต็อกฟรี (ค่าเริ่มต้น), hero-ai-image = ภาพ AI ทุกช่วง, automix = สต็อกผสมภาพ AI"),
   idempotencyKey: z.string().max(120).optional(),
 } satisfies z.ZodRawShape;
 
