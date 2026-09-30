@@ -2946,7 +2946,7 @@ export default function ShortVideoPage() {
                               selectClassName="w-full h-10 px-3 pr-8 rounded-lg text-sm text-white font-medium appearance-none cursor-pointer"
                               selectStyle={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)", outline: "none" }}
                             />
-                            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
+                            <ChevronDown className="pointer-events-none absolute right-2.5 top-5 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
                           </div>
                         </>
                       )}
