@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Loader2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import type { ElevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
 import { fetchMe } from "@/lib/use-me";
@@ -37,6 +38,9 @@ export function ApiKeySettings() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [managed, setManaged] = useState(false);
+  const [speechModel, setSpeechModel] = useState<ElevenLabsSpeechModel>("v3");
+  const [speechLoaded, setSpeechLoaded] = useState(false);
+  const [speechSaving, setSpeechSaving] = useState(false);
 
   useEffect(() => {
     fetchApiKeys();
@@ -47,6 +51,11 @@ export function ApiKeySettings() {
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.managed) setManaged(true); })
       .catch(() => {});
+    fetch("/api/user/video-settings", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.elevenlabsModel === "v4") setSpeechModel("v4"); })
+      .catch(() => {})
+      .finally(() => setSpeechLoaded(true));
   }, []);
 
   // Sync ข้ามจุดที่ component นี้ถูกใช้ (popup ใน editor / หน้า Settings) —
@@ -71,6 +80,27 @@ export function ApiKeySettings() {
   // "Set" = already saved on the server OR the user has typed a new value locally.
   function isSet(key: keyof ApiKeys) {
     return !!saved[key]?.set || !!(apiKeys[key] && String(apiKeys[key]).length > 0);
+  }
+
+  async function chooseSpeechModel(next: ElevenLabsSpeechModel) {
+    if (!speechLoaded || next === speechModel || speechSaving) return;
+    const previous = speechModel;
+    setSpeechModel(next);
+    setSpeechSaving(true);
+    try {
+      const res = await fetch("/api/user/video-settings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ elevenlabsModel: next }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      toast.success(next === "v4" ? "คลิปถัดไปใช้เสียงใหม่" : "คลิปถัดไปใช้เสียงเดิม");
+    } catch {
+      setSpeechModel(previous);
+      toast.error("บันทึกโมเดลเสียงไม่สำเร็จ");
+    } finally {
+      setSpeechSaving(false);
+    }
   }
 
   function updateKey(id: keyof ApiKeys, value: string) {
@@ -227,7 +257,17 @@ export function ApiKeySettings() {
               <ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
               ขั้นสูง (ไม่บังคับ) — ไม่ใส่ก็ใช้งานได้
             </button>
-            {advancedOpen && (<>{field("elevenlabs")}{field("heygen")}</>)}
+            {advancedOpen && (
+              <>
+                {field("elevenlabs")}
+                <ElevenLabsModelChoice
+                  value={speechModel}
+                  saving={!speechLoaded || speechSaving}
+                  onChange={chooseSpeechModel}
+                />
+                {field("heygen")}
+              </>
+            )}
 
             {isAdmin && (
               <>
@@ -257,5 +297,54 @@ export function ApiKeySettings() {
         </button>
       </div>
     </div>
+  );
+}
+
+const SPEECH_MODELS: Array<{ id: ElevenLabsSpeechModel; title: string; detail: string }> = [
+  { id: "v3", title: "เสียงเดิม", detail: "โมเดลที่ใช้อยู่ตอนนี้" },
+  { id: "v4", title: "เสียงใหม่", detail: "ชัดและมีอารมณ์กว่า ใช้ Voice ID เดิม ไม่ต้อง clone ใหม่" },
+];
+
+export function ElevenLabsModelChoice({
+  value,
+  saving,
+  onChange,
+}: {
+  value: ElevenLabsSpeechModel;
+  saving: boolean;
+  onChange: (next: ElevenLabsSpeechModel) => void;
+}) {
+  return (
+    <fieldset
+      className="rounded-lg border border-white/10 px-4 py-3"
+      disabled={saving}
+    >
+      <legend className="px-1 text-xs font-semibold text-slate-200">โมเดลเสียง ElevenLabs</legend>
+      <p className="mb-2 text-[11px] leading-relaxed text-slate-400">
+        ใช้กับคลิปถัดไป ทั้งตัวอย่างเสียงและคลิปที่สร้างใหม่
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="โมเดลเสียง ElevenLabs">
+        {SPEECH_MODELS.map((model) => {
+          const selected = value === model.id;
+          return (
+            <button
+              key={model.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onChange(model.id)}
+              className="rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60"
+              style={{
+                borderColor: selected ? "hsl(252 70% 65% / 0.7)" : "rgba(255,255,255,0.1)",
+                background: selected ? "hsl(252 70% 65% / 0.12)" : "transparent",
+              }}
+            >
+              <span className="block text-sm font-medium text-slate-100">{model.title}</span>
+              <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-400">{model.detail}</span>
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }

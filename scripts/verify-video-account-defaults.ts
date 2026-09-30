@@ -58,6 +58,15 @@ async function main() {
   assert.equal(validateVideoSettingsPatch({ elevenlabsVoiceId: "x".repeat(257) }).ok, false);
   assert.equal(validateVideoSettingsPatch({ heygenAvatarId: "bad\nvalue" }).ok, false);
   assert.equal(validateVideoSettingsPatch({ ignored: "field" }).ok, false);
+  assert.deepEqual(validateVideoSettingsPatch({ elevenlabsModel: "v4" }), {
+    ok: true,
+    data: { elevenlabsModel: "v4" },
+  });
+  assert.deepEqual(validateVideoSettingsPatch({ elevenlabsModel: "v3" }), {
+    ok: true,
+    data: { elevenlabsModel: "v3" },
+  });
+  assert.equal(validateVideoSettingsPatch({ elevenlabsModel: "turbo" }).ok, false);
 
   const hookSource = readFileSync(join(process.cwd(), "src/app/(dashboard)/video-editor/_v2/useV2Project.ts"), "utf8");
   assert.match(hookSource, /saveAccountVideoDefaults/);

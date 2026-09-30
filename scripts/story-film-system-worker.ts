@@ -30,6 +30,7 @@ import { isValidOmniVoiceId } from "../src/lib/omnivoice";
 import { renderStoryFilmFinal } from "../src/lib/story-film-render.server";
 import { decryptKey } from "../src/lib/key-crypto";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
+import { elevenLabsProviderModelId, elevenLabsSpeechModel } from "../src/lib/elevenlabs-model";
 import { synthesizeElevenLabsV3 } from "../src/lib/elevenlabs-v3.server";
 import {
   storyFilmCaptionTrackFromTtsTiming,
@@ -287,7 +288,7 @@ async function existingElevenLabsArtifact(filePath: string) {
 async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
   const project = await prisma.storyFilmProject.findUnique({
     where: { id: job.projectId },
-    include: { user: { select: { id: true, elevenlabsKey: true } } },
+    include: { user: { select: { id: true, elevenlabsKey: true, elevenlabsModel: true } } },
   });
   if (!project || project.stage !== "narration" || project.generationEpoch !== job.generationEpoch) {
     throw new Error("narration job is stale");
@@ -297,6 +298,8 @@ async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
   const rawSpeed = Number(job.payload.speed);
   const speed = Number.isFinite(rawSpeed) ? Math.min(1.2, Math.max(0.7, rawSpeed)) : 1;
   if (!project.user.elevenlabsKey) throw new Error("ElevenLabs API key is not configured");
+  const speechModel = elevenLabsSpeechModel(project.user.elevenlabsModel);
+  const providerModelId = elevenLabsProviderModelId(speechModel);
 
   const filename = `story-film-narration-${job.id}.mp3`;
   const finalPath = path.join(rendersDir, filename);
@@ -315,7 +318,7 @@ async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
       mimeType: "audio/mpeg",
       sizeBytes: recovered.stats.size,
       durationMs: recovered.durationMs,
-      metadata: { adapter: "elevenlabs", modelId: "eleven_v3", voiceId, recovered: true },
+      metadata: { adapter: "elevenlabs", modelId: providerModelId, voiceId, recovered: true },
     };
   }
   if (job.resumeProviderJobId) {
@@ -339,6 +342,7 @@ async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
       text,
       languageCode: "th",
       speed,
+      model: speechModel,
       label: `story-film:${project.id}`,
     });
   } catch (error) {
@@ -386,7 +390,7 @@ async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
     durationMs,
     metadata: {
       adapter: "elevenlabs",
-      modelId: "eleven_v3",
+      modelId: providerModelId,
       voiceId,
       speed,
       ...(captionTrack ? { captionTrack } : {}),

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { validateVideoSettingsPatch } from "@/lib/video-settings";
 import { parseTtsProvider } from "@/lib/tts-providers";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
@@ -14,7 +15,7 @@ export async function GET() {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true, email: true },
+      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true, email: true, elevenlabsModel: true },
     });
 
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -24,6 +25,7 @@ export async function GET() {
       elevenlabsVoiceId: user.elevenlabsVoiceId ?? "",
       ttsProvider: parseTtsProvider(user.ttsProvider),
       geminiVoiceName: user.geminiVoiceName ?? "Aoede",
+      elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel),
       // 3.8 + style beta flag for the voice pickers (additive — old clients ignore it).
       tts38Beta: isInternalAiBetaEnabledFor(
         { email: user.email },
@@ -50,10 +52,14 @@ export async function PATCH(req: Request) {
     const user = await prisma.user.update({
       where: { id: authUser.id },
       data: validated.data,
-      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true },
+      select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true, elevenlabsModel: true },
     });
 
-    return NextResponse.json({ ok: true, ...user });
+    return NextResponse.json({
+      ok: true,
+      ...user,
+      elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel),
+    });
   } catch (error) {
     return apiError({ route: "PATCH /api/user/video-settings", error });
   }
