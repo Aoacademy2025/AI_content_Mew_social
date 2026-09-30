@@ -19,13 +19,27 @@ assert.equal(payload.language_code, "th");
 assert.equal(payload.voice_settings.speed, 1.1);
 assert.equal(payload.voice_settings.use_speaker_boost, true);
 
+const v4 = elevenLabsV3RequestBody({ text: "สวัสดีครับ", languageCode: "th", speed: 1.1, model: "v4" });
+assert.equal(v4.model_id, "eleven_v4");
+assert.equal(v4.language_code, "th");
+assert.equal("speed" in v4.voice_settings, false);
+assert.equal("style" in v4.voice_settings, false);
+assert.equal("use_speaker_boost" in v4.voice_settings, false);
+assert.equal(v4.voice_settings.stability, 0.5);
+assert.equal(v4.voice_settings.similarity_boost, 0.75);
+
 const server = readFileSync("src/lib/story-film.server.ts", "utf8");
 const worker = readFileSync("scripts/story-film-system-worker.ts", "utf8");
 const mcp = readFileSync("src/app/api/story-film/[transport]/route.ts", "utf8");
+const settings = readFileSync("src/components/settings/api-key-settings.tsx", "utf8");
 assert.match(server, /narrationProvider === "elevenlabs"/);
-assert.match(server, /modelId: "eleven_v3"/);
+assert.match(server, /elevenLabsProviderModelId\(elevenLabsSpeechModel/);
 assert.match(worker, /providerBackend === "elevenlabs"/);
 assert.match(worker, /languageCode: "th"/);
+assert.match(worker, /model: speechModel/);
 assert.match(mcp, /narrationProvider: z\.enum\(\["hero_voice", "elevenlabs"\]\)/);
+assert.match(settings, /เสียงเดิม/);
+assert.match(settings, /เสียงใหม่/);
+assert.match(settings, /elevenlabsModel/);
 
-console.log("ok: Hero Story Film pins ElevenLabs v3, Thai narration, account voice resolution, and paid-call retry safety");
+console.log("ok: ElevenLabs v3 stays the default, v4 omits style and speed, and the account choice reaches Story Film");

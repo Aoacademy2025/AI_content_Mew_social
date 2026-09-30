@@ -1,3 +1,4 @@
+import { elevenLabsSpeechModel, type ElevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import type { TtsProvider } from "@/lib/tts-providers";
 
@@ -10,6 +11,7 @@ export type ValidVideoSettingsPatch = {
   elevenlabsVoiceId?: string;
   ttsProvider?: TtsProvider;
   geminiVoiceName?: string;
+  elevenlabsModel?: ElevenLabsSpeechModel;
 };
 
 export type VideoSettingsPatchValidation =
@@ -59,6 +61,13 @@ export function validateVideoSettingsPatch(body: unknown): VideoSettingsPatchVal
       return { ok: false, message: "เสียง Gemini ไม่ถูกต้อง" };
     }
     data.geminiVoiceName = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "elevenlabsModel")) {
+    recognized += 1;
+    if (input.elevenlabsModel !== "v3" && input.elevenlabsModel !== "v4") {
+      return { ok: false, message: "โมเดลเสียง ElevenLabs ไม่ถูกต้อง" };
+    }
+    data.elevenlabsModel = elevenLabsSpeechModel(input.elevenlabsModel);
   }
 
   if (recognized === 0) return { ok: false, message: "ไม่พบค่าเริ่มต้นที่รองรับ" };

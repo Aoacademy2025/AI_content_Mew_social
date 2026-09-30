@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { decryptKey } from "@/lib/key-crypto";
+import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
+import { elevenLabsV3RequestBody } from "@/lib/elevenlabs-v3.server";
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
@@ -58,7 +60,7 @@ export async function POST(req: Request) {
     // 3. Get ElevenLabs key from DB
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { elevenlabsKey: true },
+      select: { elevenlabsKey: true, elevenlabsModel: true },
     });
 
     if (!user?.elevenlabsKey) {
@@ -66,6 +68,7 @@ export async function POST(req: Request) {
     }
 
     const elevenlabsKey = decryptKey(user.elevenlabsKey);
+    const speechModel = elevenLabsSpeechModel(user.elevenlabsModel);
 
     // 4. Generate audio per scene
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -86,12 +89,14 @@ export async function POST(req: Request) {
           "Content-Type": "application/json",
           Accept: "audio/mpeg",
         },
-        body: JSON.stringify({
-          text: s.text,
-          model_id: "eleven_v3",
-          language_code,
-          voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true },
-        }),
+        body: JSON.stringify(speechModel === "v4"
+          ? elevenLabsV3RequestBody({ text: s.text, languageCode: language_code, model: "v4" })
+          : {
+              text: s.text,
+              model_id: "eleven_v3",
+              language_code,
+              voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true },
+            }),
       });
 
       if (!res.ok) {

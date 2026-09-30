@@ -24,6 +24,7 @@ import {
   mergeCharAlignments,
   type TtsCharAlignment,
 } from "@/lib/tts-timing";
+import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import {
   synthesizeElevenLabsV3,
   type ElevenLabsAlignment,
@@ -88,11 +89,12 @@ async function handleTts(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { elevenlabsKey: true, plan: true },
+    select: { elevenlabsKey: true, plan: true, elevenlabsModel: true },
   });
   if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
   if (!user?.elevenlabsKey) return NextResponse.json({ error: "ElevenLabs API key not set", missingKey: "elevenlabs" }, { status: 400 });
   const apiKey = decryptKey(user.elevenlabsKey);
+  const speechModel = elevenLabsSpeechModel(user.elevenlabsModel);
   const selectedVoiceId = typeof voiceId === "string" && voiceId.trim() ? voiceId.trim() : "9lvVsLbaxGND6aZnt1W1";
 
   if (preview === true) {
@@ -100,14 +102,14 @@ async function handleTts(req: Request) {
     const cache = getVoicePreviewCachePath({
       provider: "elevenlabs",
       userId: authUser.id,
-      voiceKey: `${selectedVoiceId}:${languageCode ?? ""}`,
+      voiceKey: `${selectedVoiceId}:${languageCode ?? ""}:${speechModel}`,
       text: previewText,
       ext: "mp3",
     });
     const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
     if (cached) return NextResponse.json({ ...cached, preview: true });
 
-    const r = await synthesizeElevenLabsV3({ apiKey, voiceId: selectedVoiceId, text: previewText, languageCode, speed, label: "preview" });
+    const r = await synthesizeElevenLabsV3({ apiKey, voiceId: selectedVoiceId, text: previewText, languageCode, speed, model: speechModel, label: "preview" });
     if (!r.ok) {
       const code = classifyHttpResponse(r.status, r.errBody);
       const pErr = providerError(code, "elevenlabs", `ElevenLabs preview failed (${r.status}): ${r.errBody.slice(0, 200)}`, { status: r.status });
@@ -139,6 +141,7 @@ async function handleTts(req: Request) {
       text: chunks[i].text,
       languageCode,
       speed,
+      model: speechModel,
       label: `chunk ${i + 1}/${chunks.length}`,
     });
     if (!r.ok) {

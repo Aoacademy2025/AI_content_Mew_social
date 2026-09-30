@@ -1,9 +1,14 @@
 import "server-only";
 
 import { fetchWithBudget } from "@/lib/fetch-budget";
+import {
+  elevenLabsSpeechModel,
+  type ElevenLabsSpeechModel,
+} from "@/lib/elevenlabs-model";
 import { shouldStopProviderFallback } from "@/lib/provider-errors";
 
 export const ELEVENLABS_V3_MODEL_ID = "eleven_v3";
+export const ELEVENLABS_V4_MODEL_ID = "eleven_v4";
 export const ELEVENLABS_V3_MAX_CHARS = 5_000;
 
 export interface ElevenLabsAlignment {
@@ -26,11 +31,25 @@ export function elevenLabsV3RequestBody(input: {
   text: string;
   languageCode?: string;
   speed?: number;
+  model?: ElevenLabsSpeechModel;
 }) {
+  const model = elevenLabsSpeechModel(input.model);
+  const language = input.languageCode ? { language_code: input.languageCode } : {};
+  if (model === "v4") {
+    return {
+      text: input.text,
+      model_id: ELEVENLABS_V4_MODEL_ID,
+      ...language,
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75,
+      },
+    };
+  }
   return {
     text: input.text,
     model_id: ELEVENLABS_V3_MODEL_ID,
-    ...(input.languageCode ? { language_code: input.languageCode } : {}),
+    ...language,
     voice_settings: {
       stability: 0.5,
       similarity_boost: 0.75,
@@ -52,6 +71,7 @@ export async function synthesizeElevenLabsV3(input: {
   text: string;
   languageCode?: string;
   speed?: number;
+  model?: ElevenLabsSpeechModel;
   label: string;
 }): Promise<ElevenLabsV3Result> {
   const text = input.text.trim();
@@ -79,6 +99,7 @@ export async function synthesizeElevenLabsV3(input: {
         text,
         languageCode: variant.lang ? input.languageCode : undefined,
         speed: input.speed,
+        model: input.model,
       })),
     }, {
       provider: "elevenlabs",

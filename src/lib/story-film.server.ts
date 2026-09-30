@@ -7,6 +7,7 @@ import {
   type StoryFilmEditorialConfig,
 } from "@/lib/story-film-editorial";
 import { sceneUsesProjectCharacter } from "@/lib/story-film-character-placement";
+import { elevenLabsProviderModelId, elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 
 export const STORY_FILM_STAGES = [
   "setup",
@@ -1169,7 +1170,12 @@ export async function decideStoryFilm(
             text: project.narrativeSource,
             voiceId: project.narrationVoiceId,
             speed: project.narrationVoiceSpeed ?? 1,
-            ...(narrationProvider === "elevenlabs" ? { modelId: "eleven_v3", languageCode: "th" } : {}),
+            ...(narrationProvider === "elevenlabs" ? {
+              modelId: elevenLabsProviderModelId(elevenLabsSpeechModel(
+                (await tx.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } }))?.elevenlabsModel,
+              )),
+              languageCode: "th",
+            } : {}),
           }),
           idempotencyKey: `auto:narration:epoch:${resultGenerationEpoch}`,
         },
