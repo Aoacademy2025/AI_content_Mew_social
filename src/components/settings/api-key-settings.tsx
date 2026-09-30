@@ -301,8 +301,8 @@ export function ApiKeySettings() {
 }
 
 const SPEECH_MODELS: Array<{ id: ElevenLabsSpeechModel; title: string; detail: string }> = [
-  { id: "v3", title: "เสียงเดิม", detail: "โมเดลที่ใช้อยู่ตอนนี้" },
-  { id: "v4", title: "เสียงใหม่", detail: "ชัดและมีอารมณ์กว่า ใช้ Voice ID เดิม ไม่ต้อง clone ใหม่" },
+  { id: "v3", title: "เสียงเดิม · v3", detail: "โมเดลที่ใช้อยู่ตอนนี้" },
+  { id: "v4", title: "เสียงใหม่ · v4 (ล่าสุด)", detail: "ชัดและมีอารมณ์กว่า ใช้ Voice ID เดิม ไม่ต้อง clone ใหม่" },
 ];
 
 export function ElevenLabsModelChoice({

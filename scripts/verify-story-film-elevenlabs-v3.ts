@@ -38,8 +38,8 @@ assert.match(worker, /providerBackend === "elevenlabs"/);
 assert.match(worker, /languageCode: "th"/);
 assert.match(worker, /model: speechModel/);
 assert.match(mcp, /narrationProvider: z\.enum\(\["hero_voice", "elevenlabs"\]\)/);
-assert.match(settings, /เสียงเดิม/);
-assert.match(settings, /เสียงใหม่/);
+assert.match(settings, /เสียงเดิม · v3/);
+assert.match(settings, /เสียงใหม่ · v4 \(ล่าสุด\)/);
 assert.match(settings, /elevenlabsModel/);
 
 console.log("ok: ElevenLabs v3 stays the default, v4 omits style and speed, and the account choice reaches Story Film");
