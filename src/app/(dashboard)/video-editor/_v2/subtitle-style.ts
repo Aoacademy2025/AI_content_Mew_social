@@ -188,11 +188,13 @@ export function regroupCaptions(
   len: V2CardLen,
   words?: V2TimedWord[] | null,
   fullText?: string | null,
+  /** Subtitle size for the one-line Card Line Budget (default 80, same as the pipeline). */
+  subtitleSize?: number,
 ): V2Caption[] {
   if (len === "sentence") return original.map((c) => ({ ...c }));
   const n = parseInt(len, 10);
   if (words?.length && fullText) {
-    return tagCards(groupTimedCaptionWords(words, n, fullText).map((card) => ({ ...card, tag: "body" })));
+    return tagCards(groupTimedCaptionWords(words, n, fullText, subtitleSize).map((card) => ({ ...card, tag: "body" })));
   }
 
   // fallback: interpolate เวลาในการ์ดเดิมตามสัดส่วนคำ (v1 page.tsx:3546-3561)

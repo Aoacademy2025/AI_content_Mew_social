@@ -6,6 +6,7 @@
 // fullText, no trim/re-join), so subtitle text can never drift from the audio.
 
 import { loanwordSpans } from "@/lib/thai-loanwords";
+import { baseGraphemeCount, cardLineCount, maxCardCharsFor } from "@/lib/card-line-budget";
 
 export type CaptionTag = "hook" | "body" | "cta";
 
@@ -139,7 +140,7 @@ function isValidThaiWordStart(fullText: string, index: number): boolean {
 // happened: Thai segmentation is context-dependent, so boundaries must come
 // from the whole string, never a slice. Boundaries the segmenter places inside
 // a Thai garan/combining cluster are dropped (see isValidThaiWordStart).
-function wordBoundaries(fullText: string): number[] {
+export function wordBoundaries(fullText: string): number[] {
   const seg = thaiWordSegmenter();
   if (!seg) return [];
   // Loanwords ICU mis-splits (แอดมิน, แชตบอต, คอมเมนต์, …): drop any boundary that
@@ -1061,6 +1062,255 @@ export function splitCardsAtSilences(
     out.push({ startChar: s, endChar: c.endChar });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Card Line Budget — the final caption pass (CONTEXT.md; plan 2026-10-01 T1)
+// ---------------------------------------------------------------------------
+
+const CARD_OPENING_CHAR = /[\p{L}\p{N}\p{Ps}\p{Pi}]/u;
+const CARD_OPENING_PUNCT = /[\p{Ps}\p{Pi}]/u; // never the last character of a Caption
+const CARD_BINDS_BACK_CHAR = /[ๆฯ]/u; // repetition / abbreviation marks belong to the word before
+const CARD_WORD_CHAR = /[\p{L}\p{N}]/u;
+const CARD_NUMERIC_TAIL = /[0-9๐-๙][.,:/-]?$/u;
+const CARD_DIGIT_HEAD = /^[0-9๐-๙]/u;
+const CARD_CLOCK_TAIL = /[0-9๐-๙]{1,2}:[0-9๐-๙]{2}[^\S\r\n]*$/u;
+// How far past the previous caption a caption's text may start (a dropped punctuation-only
+// card, a skipped blank) before the pass treats it as unmapped and leaves it alone.
+const CARD_SPAN_RESYNC_CHARS = 400;
+
+const displayedCardText = (value: string) => value.replace(/\s+/gu, " ").trim();
+
+// Word boundaries where one Caption may end and the next begin. Every result is a
+// wordBoundaries index; on top of that the next visible character must open a readable
+// unit (a letter, a digit, an opening bracket or quote — never ๆ / ฯ, never closing
+// punctuation), the previous one must not be an opening bracket or quote, and a numeric
+// value such as 08:30, 1,250.50 or "08:30 น." is never cut.
+function cardCutBoundaries(fullText: string): number[] {
+  const out: number[] = [];
+  for (const boundary of wordBoundaries(fullText)) {
+    if (boundary <= 0 || boundary >= fullText.length) continue;
+    let next = boundary;
+    while (next < fullText.length && /\s/u.test(fullText[next])) next++;
+    if (next >= fullText.length) continue;
+    const ch = String.fromCodePoint(fullText.codePointAt(next)!);
+    if (!CARD_OPENING_CHAR.test(ch) || CARD_BINDS_BACK_CHAR.test(ch)) continue;
+    let previous = boundary - 1;
+    while (previous > 0 && /\s/u.test(fullText[previous])) previous--;
+    if (CARD_OPENING_PUNCT.test(fullText[previous])) continue;
+    if (next === boundary && CARD_DIGIT_HEAD.test(ch)
+      && CARD_NUMERIC_TAIL.test(fullText.slice(Math.max(0, boundary - 2), boundary))) continue;
+    // "08:30 น." is one value (the same rule groupTimedCaptionWords applies).
+    if (fullText.startsWith("น.", next) && CARD_CLOCK_TAIL.test(fullText.slice(Math.max(0, boundary - 6), next))) continue;
+    out.push(boundary);
+  }
+  return out;
+}
+
+// A caption's visible span on fullText: its non-whitespace code units matched in order,
+// whitespace-insensitive, at or shortly after `from`. Null when the text is not there.
+function captionSourceSpan(fullText: string, text: string, from: number): { start: number; end: number } | null {
+  const visible = text.replace(/\s+/gu, "");
+  if (!visible) return null;
+  const endOfMatchAt = (position: number): number => {
+    let p = position;
+    for (let i = 0; i < visible.length; i++) {
+      while (p < fullText.length && /\s/u.test(fullText[p])) p++;
+      if (fullText[p] !== visible[i]) return -1;
+      p++;
+    }
+    return p;
+  };
+  for (let p = from, scanned = 0; p < fullText.length && scanned <= CARD_SPAN_RESYNC_CHARS; p++, scanned++) {
+    if (fullText[p] !== visible[0]) continue;
+    const end = endOfMatchAt(p);
+    if (end >= 0) return { start: p, end };
+  }
+  return null;
+}
+
+// Index of the first value in the ascending list that is > `value`.
+function firstIndexAbove(sorted: readonly number[], value: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Card edges inside one caption span [start, end), chosen so every piece fits the budget.
+// Balanced: k = ceil(width / capacity) pieces, each cut taken by findCut (newline, then
+// whitespace, then the last word boundary) at or before the balanced target width.
+function cardLineBudgetCuts(
+  fullText: string,
+  start: number,
+  end: number,
+  allowed: readonly number[],
+  oneLine: number,
+  lines: 1 | 2,
+): number[] {
+  const width = (a: number, b: number) => baseGraphemeCount(displayedCardText(fullText.slice(a, b)));
+  const capacity = lines * oneLine;
+  const fits = (a: number, b: number): boolean => {
+    const w = width(a, b);
+    if (w <= oneLine) return true;
+    if (lines === 1 || w > capacity) return false;
+    // Two lines: some allowed break leaves both lines within one line's budget.
+    for (let i = firstIndexAbove(allowed, a); i < allowed.length && allowed[i] < b; i++) {
+      if (width(a, allowed[i]) <= oneLine && width(allowed[i], b) <= oneLine) return true;
+    }
+    return false;
+  };
+  // Largest index ≤ end whose displayed width from `a` stays ≤ limit. Whitespace is free
+  // until a visible character follows, so the window reaches the start of the next word.
+  const indexAtWidth = (a: number, limit: number): number => {
+    let count = 0;
+    let pendingSpace = false;
+    let i = a;
+    while (i < end) {
+      const cp = fullText.codePointAt(i)!;
+      const ch = String.fromCodePoint(cp);
+      if (/\s/u.test(ch)) {
+        if (count > 0) pendingSpace = true;
+        i += ch.length;
+        continue;
+      }
+      const add = (pendingSpace ? 1 : 0) + (/\p{Mn}/u.test(ch) ? 0 : 1);
+      if (count + add > limit) break;
+      count += add;
+      pendingSpace = false;
+      i += ch.length;
+    }
+    return i;
+  };
+
+  let lastWord = end - 1;
+  while (lastWord >= start && !CARD_WORD_CHAR.test(fullText[lastWord])) lastWord--;
+  const cuts: number[] = [];
+  let from = start;
+  while (!fits(from, end)) {
+    let firstWord = from;
+    while (firstWord < end && !CARD_WORD_CHAR.test(fullText[firstWord])) firstWord++;
+    // Usable cuts leave a letter or digit on both sides: no punctuation-only piece.
+    const lo = firstIndexAbove(allowed, Math.max(from, firstWord));
+    const hi = firstIndexAbove(allowed, lastWord);
+    const usable = allowed.slice(lo, hi);
+    if (usable.length === 0) break; // one unbreakable word: never cut inside it
+    const total = width(from, end);
+    const target = Math.min(capacity, Math.ceil(total / Math.max(2, Math.ceil(total / capacity))));
+    const hardMax = indexAtWidth(from, target);
+    const minCut = indexAtWidth(from, Math.floor(target * 0.4));
+    let cut = findCut(fullText, from, hardMax, minCut, usable);
+    if (!usable.includes(cut)) {
+      const atOrBelow = firstIndexAbove(usable, hardMax) - 1;
+      cut = atOrBelow >= 0 ? usable[atOrBelow] : usable[0];
+    }
+    // A sentence piece must also break into two lines; shrink to the previous cut until it does.
+    for (let i = usable.indexOf(cut) - 1; i >= 0 && !fits(from, cut); i--) cut = usable[i];
+    cuts.push(cut);
+    from = cut;
+  }
+  return cuts;
+}
+
+/**
+ * Card Line Budget, enforced once over the finished caption track — after every timing
+ * rung, LLM-accepted card and merge, just before `repairCaptionTiming`. A caption wider
+ * than its budget (one line for word-count modes "1"–"4", two lines for "sentence", at
+ * `subtitleSize`) is split into more captions at Thai word boundaries of fullText; every
+ * other caption is returned untouched, and a track with nothing over budget is returned
+ * as the same array.
+ *
+ * Text: only captions whose text is exactly the whitespace-collapsed fullText slice they
+ * cover are split, and each piece is that slice cut at a word boundary — the pieces'
+ * visible characters concatenate to the original caption's, so the textExact and
+ * spacing checks see the same text. A caption that does not map onto fullText is left as is.
+ * Timing: a split starts at the onset of the first word after the cut when `words` time it
+ * inside the caption, otherwise at the base-grapheme proportion of the caption span. The
+ * pieces partition the original [startMs, endMs] exactly: never reordered, never merged.
+ * Other fields are copied to every piece, except that a split "hook" stays only on the
+ * first piece and a split "cta" only on the last (the others become "body").
+ */
+export function enforceCardLineBudget<T extends { text: string; startMs: number; endMs: number }>(
+  captions: T[],
+  words: readonly TimedWord[] | null | undefined,
+  fullText: string,
+  mode: string | null | undefined,
+  subtitleSize: number,
+): T[] {
+  if (captions.length === 0 || !fullText) return captions;
+  const oneLine = maxCardCharsFor(subtitleSize);
+  if (captions.every((caption) => baseGraphemeCount(displayedCardText(caption.text)) <= oneLine)) return captions;
+  const lines = cardLineCount(mode);
+  const allowed = cardCutBoundaries(fullText);
+  const timedWords = words ?? [];
+  const wordStarts = timedWords.map((word) => word.startChar);
+
+  const out: T[] = [];
+  let changed = false;
+  let cursor = 0;
+  for (const caption of captions) {
+    const span = captionSourceSpan(fullText, caption.text, cursor);
+    if (!span) {
+      out.push(caption);
+      continue;
+    }
+    cursor = span.end;
+    const sourceExact = displayedCardText(fullText.slice(span.start, span.end)) === caption.text;
+    const cuts = sourceExact && baseGraphemeCount(caption.text) > oneLine
+      ? cardLineBudgetCuts(fullText, span.start, span.end, allowed, oneLine, lines)
+      : [];
+    const startMs = Number(caption.startMs);
+    const endMs = Number(caption.endMs);
+    // Split times: the next word's onset when it lies inside the caption, else proportional.
+    const totalWidth = baseGraphemeCount(caption.text);
+    const times: number[] = [];
+    for (const cut of cuts) {
+      const previous = times.length ? times[times.length - 1] : startMs;
+      const wordIndex = firstIndexAbove(wordStarts, cut - 1);
+      const word = timedWords[wordIndex];
+      let at = word && word.startChar < span.end ? Math.round(word.startMs) : NaN;
+      if (!(at > previous && at < endMs)) {
+        const before = baseGraphemeCount(displayedCardText(fullText.slice(span.start, cut)));
+        at = Math.round(startMs + (endMs - startMs) * (before / totalWidth));
+      }
+      if (!(at > previous && at < endMs)) break;
+      times.push(at);
+    }
+    if (cuts.length === 0 || times.length !== cuts.length) {
+      out.push(caption);
+      continue;
+    }
+    const edges = [span.start, ...cuts, span.end];
+    const hasCharSpan = typeof (caption as { startChar?: unknown }).startChar === "number"
+      && typeof (caption as { endChar?: unknown }).endChar === "number";
+    const tag = (caption as { tag?: unknown }).tag;
+    const lastPiece = edges.length - 2;
+    for (let i = 0; i <= lastPiece; i++) {
+      const piece: T = {
+        ...caption,
+        text: displayedCardText(fullText.slice(edges[i], edges[i + 1])),
+        startMs: i === 0 ? caption.startMs : times[i - 1],
+        endMs: i === lastPiece ? caption.endMs : times[i],
+      };
+      // A hook is the track's first card and a cta its last: only the matching piece keeps it.
+      if ((tag === "hook" && i > 0) || (tag === "cta" && i < lastPiece)) Object.assign(piece, { tag: "body" });
+      if (hasCharSpan) {
+        // Keep the TimedCaption contract: the exact visible span on fullText.
+        let first = edges[i];
+        let last = edges[i + 1];
+        while (first < last && /\s/u.test(fullText[first])) first++;
+        while (last > first && /\s/u.test(fullText[last - 1])) last--;
+        Object.assign(piece, { startChar: first, endChar: last });
+      }
+      out.push(piece);
+    }
+    changed = true;
+  }
+  return changed ? out : captions;
 }
 
 // ---------------------------------------------------------------------------

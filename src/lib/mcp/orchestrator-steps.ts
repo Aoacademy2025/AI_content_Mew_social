@@ -1,4 +1,5 @@
 import { groupTimedCaptionWords } from "../word-caption-groups";
+import { DEFAULT_CARD_SUBTITLE_SIZE } from "../card-line-budget";
 // PURE request-payload builders that reproduce the video-editor's non-avatar
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
@@ -137,9 +138,8 @@ export const DEFAULT_STOCK_SOURCE = "both";
 export const RENDER_FPS = 30;
 export const RENDER_JPEG_QUALITY = 85; // 720p
 
-export function maxCardCharsFor(subtitleSize: number = DEFAULT_STYLE.subtitleSize): number {
-  return Math.max(10, Math.floor((1080 - 160) / (subtitleSize * 0.47)));
-}
+// Card Line Budget lives in the pure module so the caption core and renderer share it.
+export { maxCardCharsFor } from "../card-line-budget";
 
 export function buildKeywordsPayload(
   captionTexts: string[],
@@ -246,8 +246,13 @@ type CharWord = { word: string; startMs: number; endMs: number; startChar: numbe
 
 /** Shared word grouping keeps text, numeric punctuation and Thai phrase edges
  * identical to the editor while preserving the provider's word timing. */
-export function cardsByWordCount(words: CharWord[], n: number, fullText: string): OrchCaption[] {
-  return groupTimedCaptionWords(words, n, fullText) as OrchCaption[];
+export function cardsByWordCount(
+  words: CharWord[],
+  n: number,
+  fullText: string,
+  subtitleSize: number = DEFAULT_CARD_SUBTITLE_SIZE,
+): OrchCaption[] {
+  return groupTimedCaptionWords(words, n, fullText, subtitleSize) as OrchCaption[];
 }
 
 export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], audioDurationMs: number, fps: number = RENDER_FPS, topPercent?: number) {

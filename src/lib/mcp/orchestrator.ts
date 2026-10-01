@@ -97,7 +97,8 @@ import {
   type CutawayBrollSegment,
 } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
-import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
+import { enforceCardLineBudget, type ScriptCard, type TtsTiming } from "@/lib/tts-timing";
+import { DEFAULT_CARD_SUBTITLE_SIZE } from "@/lib/card-line-budget";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { avatarBookendDurationViolation, avatarFullDurationViolation } from "@/lib/avatar-duration";
@@ -2459,8 +2460,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const subtitleVerification = subtitleVerificationEvidence(verification);
 
     const baseCaptions = capRes.captions as OrchCaption[];
+    // Card Line Budget size: the default subtitle size until the job's resolved size is wired.
+    const cardBudgetSize = DEFAULT_CARD_SUBTITLE_SIZE;
     const rawWordModeCaptions = (input.subtitleMode && input.subtitleMode !== "sentence")
-      ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
+      ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText, cardBudgetSize)
       : baseCaptions;
     const wordModeCaptions = verification.acoustic?.applied
       ? mergeShortAcousticCards(mergeUncertainCaptionCards(rawWordModeCaptions,
@@ -2468,9 +2471,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           capRes.fullText, SUBTITLE_MIN_CARD_MS)
       : rawWordModeCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
+    // 2b. Card Line Budget, once over the finished track (after LLM cards and merges): an
+    //     over-budget card splits at Thai word boundaries; everything else is untouched.
+    const budgetedCaptions = enforceCardLineBudget(wordModeCaptions, capRes.words, capRes.fullText,
+      input.subtitleMode || "sentence", cardBudgetSize);
     // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
     //    monotonic, never shorter than the render floor.
-    const repairedTiming = repairCaptionTiming(wordModeCaptions, durMs);
+    const repairedTiming = repairCaptionTiming(budgetedCaptions, durMs);
     const captions = repairedTiming.captions;
     const subtitleQa = validateSubtitleQuality({
       script: capRes.fullText,

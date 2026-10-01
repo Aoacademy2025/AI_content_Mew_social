@@ -150,6 +150,7 @@
     "verify:transcribe-alignment": "tsx scripts/verify-transcribe-quality-retry.ts && tsx scripts/verify-transcribe-words-guard.ts && tsx scripts/verify-transcribe-chunking.ts && tsx scripts/verify-transcribe-desync-guard.ts && tsx scripts/verify-transcribe-source-duration.ts",
     "verify:bounded-subtitle-verification": "node --conditions=react-server --import tsx scripts/verify-bounded-transcribe.ts",
     "verify:subtitle-preview-parity": "tsx scripts/verify-subtitle-preview-pause-parity.ts",
+    "verify:card-line-budget": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-card-line-budget.ts",
     "verify:subtitle-fit-v2": "tsx scripts/verify-subtitle-fit-v2.ts && tsx scripts/verify-subtitle-manual-newlines.ts && tsx scripts/verify-subtitle-fit-v2-remotion.ts",
     "verify:headline-hook": "tsx scripts/verify-headline-hook.ts",
     "verify:subtitle-karaoke": "tsx scripts/verify-subtitle-render-text.ts && tsx scripts/verify-subtitle-karaoke-integration.ts && tsx scripts/verify-subtitle-typewriter-graphemes.ts",

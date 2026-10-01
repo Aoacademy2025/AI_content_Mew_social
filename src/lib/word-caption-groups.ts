@@ -1,3 +1,5 @@
+import { DEFAULT_CARD_SUBTITLE_SIZE, baseGraphemeCount, maxCardCharsFor } from "./card-line-budget";
+
 /** Shared by editor regrouping and pipeline captions. Offsets reference the
  * authoritative narration text; grouping never estimates a new word clock. */
 export interface CaptionTimedWord {
@@ -17,7 +19,14 @@ const THAI_BINDS_PREVIOUS = new Set([
   "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "จริง", "ได้",
 ]);
 
-export function groupTimedCaptionWords(words: readonly CaptionTimedWord[], n: number, fullText: string) {
+export function groupTimedCaptionWords(
+  words: readonly CaptionTimedWord[],
+  n: number,
+  fullText: string,
+  subtitleSize: number = DEFAULT_CARD_SUBTITLE_SIZE,
+) {
+  // Card Line Budget: a word-count Caption stays within one rendered line at subtitleSize.
+  const oneLine = maxCardCharsFor(subtitleSize);
   const out: {text: string; startMs: number; endMs: number}[] = [];
   let group: CaptionTimedWord[] = [];
   let textCursor = 0;
@@ -45,7 +54,11 @@ export function groupTimedCaptionWords(words: readonly CaptionTimedWord[], n: nu
       const natural = n <= 3 && group.length === n
         && (THAI_BINDS_NEXT.has(previous.word) || THAI_BINDS_PREVIOUS.has(word.word));
       const closing = n <= 2 && group.length === n + 1 && word.word === "ได้";
-      if (hardBoundary || (group.length >= n && !numericJoin && !repetition && !natural && !closing)) {
+      // Adding this word would push the group past one line: start a new Caption here,
+      // unless the word cannot stand first (ๆ, the rest of a numeric value).
+      const overBudget = !numericJoin && !repetition
+        && baseGraphemeCount(fullText.slice(textCursor, word.endChar).replace(/\s+/g, " ").trim()) > oneLine;
+      if (hardBoundary || overBudget || (group.length >= n && !numericJoin && !repetition && !natural && !closing)) {
         // Opening delimiters belong to the following word; a straight quote
         // alternates between opening and closing in the authoritative text.
         const opening = /["“‘«(\[{]\s*$/u.exec(gap);
