@@ -153,7 +153,7 @@
     "verify:card-line-budget": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-card-line-budget.ts",
     "verify:subtitle-fit-v2": "tsx scripts/verify-subtitle-fit-v2.ts && tsx scripts/verify-subtitle-manual-newlines.ts && tsx scripts/verify-subtitle-fit-v2-remotion.ts",
     "verify:headline-hook": "tsx scripts/verify-headline-hook.ts",
-    "verify:subtitle-karaoke": "tsx scripts/verify-subtitle-render-text.ts && tsx scripts/verify-subtitle-karaoke-integration.ts && tsx scripts/verify-subtitle-typewriter-graphemes.ts",
+    "verify:subtitle-karaoke": "tsx scripts/verify-subtitle-render-text.ts && tsx scripts/verify-subtitle-karaoke-integration.ts && tsx scripts/verify-subtitle-typewriter-graphemes.ts && tsx scripts/verify-subtitle-balanced-break.ts",
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts",
     "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts",
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",

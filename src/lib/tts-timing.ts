@@ -5,8 +5,12 @@
 // fullText sent to TTS. Chunks are contiguous slices of it (concat(chunks) ===
 // fullText, no trim/re-join), so subtitle text can never drift from the audio.
 
-import { loanwordSpans } from "@/lib/thai-loanwords";
-import { baseGraphemeCount, cardLineCount, maxCardCharsFor } from "@/lib/card-line-budget";
+// T2: relative imports (not the "@/lib/..." alias) — this module now reaches Remotion's
+// bundle via renderSubtitle.tsx's cardCutBoundaries import, and @remotion/bundler's
+// webpack config (run-render.ts, webpackOverride: config => config) has no alias
+// resolution configured. A relative path resolves to the identical file under tsc/Next.
+import { loanwordSpans } from "./thai-loanwords";
+import { baseGraphemeCount, cardLineCount, maxCardCharsFor } from "./card-line-budget";
 
 export type CaptionTag = "hook" | "body" | "cta";
 
@@ -1086,7 +1090,12 @@ const displayedCardText = (value: string) => value.replace(/\s+/gu, " ").trim();
 // unit (a letter, a digit, an opening bracket or quote — never ๆ / ฯ, never closing
 // punctuation), the previous one must not be an opening bracket or quote, and a numeric
 // value such as 08:30, 1,250.50 or "08:30 น." is never cut.
-function cardCutBoundaries(fullText: string): number[] {
+//
+// Exported (T2) so the display-only line-break chooser in renderSubtitle.tsx reuses the
+// exact same cut-filter — never a second boundary definition. `fullText` here can be a
+// standalone string (e.g. one Caption's own text), since the function depends only on
+// its own characters, not on an outer document.
+export function cardCutBoundaries(fullText: string): number[] {
   const out: number[] = [];
   for (const boundary of wordBoundaries(fullText)) {
     if (boundary <= 0 || boundary >= fullText.length) continue;

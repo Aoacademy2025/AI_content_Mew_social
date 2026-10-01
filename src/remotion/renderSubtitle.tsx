@@ -1,5 +1,7 @@
 import React from "react";
 import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
+import { baseGraphemeCount, maxCardCharsFor } from "../lib/card-line-budget";
+import { cardCutBoundaries } from "../lib/tts-timing";
 
 /**
  * Single source of truth for subtitle rendering.
@@ -74,18 +76,17 @@ const THAI_DISPLAY_NO_BREAK_TERMS = [
   "หลงทาง",
 ] as const;
 
-/**
- * Chromium's Thai dictionary may consider a transliterated proper name such as
- * "อัลลัน" to be two valid line-break segments ("อัล" + "ลัน"). Protect
- * short, author-delimited tokens with WORD JOINER so a name never breaks in the
- * middle. Longer unspaced Thai phrases remain available to ICU word wrapping.
- */
-export function protectSubtitleWordBreaks(value: string): string {
+type ProtectedSpan = { start: number; end: number };
+
+// The spans `protectSubtitleWordBreaks` guards (ICU-fragile short proper names, plus
+// THAI_DISPLAY_NO_BREAK_TERMS compounds), merged and sorted. Factored out so the
+// display-only line-break chooser (T2, further below) can refuse to land inside one
+// too — a forced break must never split what this function protects from a natural one.
+function computeProtectedSpans(value: string): ProtectedSpan[] {
   const graphemeSegmenter = getSegmenter("th", "grapheme");
   const wordSegmenter = getSegmenter("th", "word");
-  if (!graphemeSegmenter || !wordSegmenter || !/[\u0E00-\u0E7F]/u.test(value)) return value;
+  if (!graphemeSegmenter || !wordSegmenter || !/[\u0E00-\u0E7F]/u.test(value)) return [];
 
-  type ProtectedSpan = { start: number; end: number };
   const spans: ProtectedSpan[] = [];
   const addSpan = (start: number, end: number) => {
     if (end > start) spans.push({ start, end });
@@ -125,6 +126,19 @@ export function protectSubtitleWordBreaks(value: string): string {
       merged.push({ ...span });
     }
   }
+  return merged;
+}
+
+/**
+ * Chromium's Thai dictionary may consider a transliterated proper name such as
+ * "อัลลัน" to be two valid line-break segments ("อัล" + "ลัน"). Protect
+ * short, author-delimited tokens with WORD JOINER so a name never breaks in the
+ * middle. Longer unspaced Thai phrases remain available to ICU word wrapping.
+ */
+export function protectSubtitleWordBreaks(value: string): string {
+  const merged = computeProtectedSpans(value);
+  if (merged.length === 0) return value;
+  const graphemeSegmenter = getSegmenter("th", "grapheme")!;
 
   const graphemes = Array.from(graphemeSegmenter.segment(value));
   let spanIndex = 0;
@@ -139,6 +153,95 @@ export function protectSubtitleWordBreaks(value: string): string {
     if (span && current.index >= span.start && next.index < span.end) output += WORD_JOINER;
   }
   return output;
+}
+
+// ── Display-time balanced line break (T2, the reported defect) ─────────────────────
+// renderSubtitle draws one Caption's text with `whiteSpace: "pre-line"`, so Chromium's
+// own line-breaking algorithm decides where a too-wide Caption wraps (renderSubtitle.tsx
+// base style, `wordBreak: "keep-all"`). That algorithm is not Thai-balance-aware, so a
+// card like "กระจุกอยู่ที่เด็กซึ่งทำการบ้านเสร็จเร็วผิดปกติ" can wrap into one long line and
+// one near-empty one (ตัดคำ/เว้นวรรคผิด). Insert ONE display-only `\n` instead, at the
+// Card Line Budget's own cut-boundary filter (`cardCutBoundaries`, tts-timing.ts — the
+// same set T1 uses, never a second boundary definition), chosen to balance the two
+// resulting lines. The inserted `\n` is never written back into caption text or QA; it
+// only changes what Chromium draws, via the same `pre-line` CSS this file already uses
+// for a caption's own manual newlines.
+
+const displayLineBreakCache = new Map<string, string>();
+const DISPLAY_LINE_BREAK_CACHE_MAX = 256;
+
+function widthOf(value: string): number {
+  return baseGraphemeCount(value.replace(/\s+/gu, " ").trim());
+}
+
+/**
+ * The Thai word-boundary index in `text` (display-only) that most evenly balances the
+ * two resulting lines, each within `oneLineBudget` base graphemes when a boundary makes
+ * that possible. Reuses `cardCutBoundaries` directly on the Caption's own text — that
+ * function depends only on the string it is given, so a Caption's text is as valid an
+ * input as a fullText span — and never returns an index inside a `protectSubtitleWordBreaks`
+ * span. Returns null when `text` already fits one line, or has no usable boundary at all
+ * (e.g. a single unbreakable word/loanword token).
+ */
+export function chooseBalancedLineBreak(text: string, oneLineBudget: number): number | null {
+  if (widthOf(text) <= oneLineBudget) return null;
+  const boundaries = cardCutBoundaries(text);
+  if (boundaries.length === 0) return null;
+  const protectedSpans = computeProtectedSpans(text);
+  const candidates = boundaries.filter((b) => !protectedSpans.some((s) => b > s.start && b < s.end));
+  if (candidates.length === 0) return null;
+
+  const diffAt = (b: number) => Math.abs(widthOf(text.slice(0, b)) - widthOf(text.slice(b)));
+  // Prefer a cut where both resulting lines fit the one-line budget (the normal, two-line
+  // case). When none exists (an old job or user-typed card that cannot fit two lines), fall
+  // back to the most balanced cut overall — natural wrap handles whichever side still
+  // overflows, and only this one break is ever forced.
+  const fitsBoth = candidates.filter((b) => (
+    widthOf(text.slice(0, b)) <= oneLineBudget && widthOf(text.slice(b)) <= oneLineBudget
+  ));
+  const pool = fitsBoth.length > 0 ? fitsBoth : candidates;
+
+  let best = pool[0];
+  let bestDiff = diffAt(best);
+  for (const b of pool) {
+    const diff = diffAt(b);
+    if (diff < bestDiff) {
+      best = b;
+      bestDiff = diff;
+    }
+  }
+  return best;
+}
+
+/**
+ * Insert the balanced display break chosen above, or return `text` unchanged. A Caption
+ * that already carries a manual `\n` (old jobs, user-typed multi-line cards) is left
+ * alone, matching `enforceCardLineBudget`'s own fail-open rule (T1) for the same case —
+ * the author's own line break is kept, never a second one added on top of it. Results
+ * are cached by text + size: this runs on every subtitle render, including 60x/sec
+ * during karaoke/highlight preview playback (see the `tokenLinesCache` comment above).
+ */
+export function applyDisplayLineBreak(text: string, size: number): string {
+  if (text.includes("\n")) return text;
+  const cacheKey = `${size}\u0000${text}`;
+  const cached = displayLineBreakCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const budget = maxCardCharsFor(size);
+  const cut = chooseBalancedLineBreak(text, budget);
+  let result = text;
+  if (cut !== null) {
+    const before = text.slice(0, cut).replace(/\s+$/u, "");
+    const after = text.slice(cut).replace(/^\s+/u, "");
+    if (before && after) result = `${before}\n${after}`;
+  }
+
+  if (displayLineBreakCache.size >= DISPLAY_LINE_BREAK_CACHE_MAX) {
+    const oldest = displayLineBreakCache.keys().next().value; // Map preserves insertion order
+    if (oldest !== undefined) displayLineBreakCache.delete(oldest);
+  }
+  displayLineBreakCache.set(cacheKey, result);
+  return result;
 }
 
 // Tokenize for per-word effects (highlight / karaoke) without losing any source
@@ -320,8 +423,12 @@ export function renderSubtitle(
   if (!text.trim()) return null;
 
   const scaledSize = resolveSubtitleFontSize(text, size);
-  const sourceText = text;
-  text = protectSubtitleWordBreaks(text);
+  // T2: a display-only balanced break, inserted before protection so karaoke/highlight's
+  // tokenLines() and typewriter's grapheme reveal (both below, keyed off sourceText) see
+  // the same `\n` that CSS `pre-line` turns into a second line.
+  const withLineBreak = applyDisplayLineBreak(text, size);
+  const sourceText = withLineBreak;
+  text = protectSubtitleWordBreaks(withLineBreak);
   const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
   const manualShadow = decorations.shadow
     ? "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)"
