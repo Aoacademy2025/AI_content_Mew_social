@@ -201,16 +201,16 @@ export function chooseBalancedLineBreak(text: string, oneLineBudget: number): nu
   ));
   const pool = fitsBoth.length > 0 ? fitsBoth : candidates;
 
-  let best = pool[0];
-  let bestDiff = diffAt(best);
-  for (const b of pool) {
-    const diff = diffAt(b);
-    if (diff < bestDiff) {
-      best = b;
-      bestDiff = diff;
-    }
-  }
-  return best;
+  // Fix round 1 tie-break: among candidates within one base grapheme of the best balance,
+  // prefer a boundary that sits at a space (closer to how the sentence already visually
+  // chunks — e.g. "Rocket Media" vs. "Lab"), then the LATER boundary, closer to Chromium's
+  // own natural greedy wrap, so the forced break surprises the reader as little as possible.
+  const minDiff = Math.min(...pool.map(diffAt));
+  const nearBest = pool.filter((b) => diffAt(b) - minDiff <= 1);
+  const atSpace = (b: number) => /\s/u.test(text[b] ?? "") || /\s/u.test(text[b - 1] ?? "");
+  const spaceCandidates = nearBest.filter(atSpace);
+  const finalPool = spaceCandidates.length > 0 ? spaceCandidates : nearBest;
+  return Math.max(...finalPool);
 }
 
 /**

@@ -1083,6 +1083,31 @@ const CARD_CLOCK_TAIL = /[0-9๐-๙]{1,2}:[0-9๐-๙]{2}[^\S\r\n]*$/u;
 // card, a skipped blank) before the pass treats it as unmapped and leaves it alone.
 const CARD_SPAN_RESYNC_CHARS = 400;
 
+// Thai nominalizing/compound-forming prefixes that, immediately followed by more Thai
+// script with no space, almost always bind to what follows as one semantic unit — even
+// when Intl.Segmenter("th") itself offers a boundary there, because its general dictionary
+// doesn't know every specific compound. The plan's own cited defect card is exactly this:
+// "ทำการบ้าน" (do homework) segments as "ทำการ" + "บ้าน" ("operate" + "house"), not
+// "ทำ" + "การบ้าน", so cutting at that ICU boundary reads line 1 as ending in the wrong
+// word. Checked as a TRAILING STRING MATCH immediately before the candidate boundary, not
+// against the segmenter's own word unit: "ทำการ" above is one ICU segment, but it still
+// ends in "การ", which is what has to be caught. Each entry: การ (การบ้าน, การเดินทาง),
+// ความ (ความสัมพันธ์, ความเสียหาย), ผู้ (ผู้บริหาร, ผู้หญิง), นัก (นักเรียน, นักวิจัย),
+// ชาว (ชาวบ้าน, ชาวนา), ช่าง (ช่างภาพ, ช่างไฟ), เครื่อง (เครื่องบิน, เครื่องดื่ม) — all
+// bound derivational prefixes that essentially never stand as a complete thought alone.
+// ที่ is deliberately EXCLUDED: it is overwhelmingly a free function word (relative
+// pronoun / locative / ordinal marker — e.g. this same defect card's own "...อยู่ที่เด็ก
+// ซึ่ง...") rather than a bound prefix, so blocking right after it would refuse far more
+// good cuts than bad ones.
+const CARD_NOMINALIZING_PREFIXES = ["เครื่อง", "ความ", "ชาว", "ช่าง", "การ", "ผู้", "นัก"];
+const CARD_THAI_SCRIPT_CHAR = /[฀-๿]/u;
+
+function endsWithBoundThaiPrefix(fullText: string, boundary: number): boolean {
+  return CARD_NOMINALIZING_PREFIXES.some((prefix) => (
+    boundary >= prefix.length && fullText.slice(boundary - prefix.length, boundary) === prefix
+  ));
+}
+
 const displayedCardText = (value: string) => value.replace(/\s+/gu, " ").trim();
 
 // Word boundaries where one Caption may end and the next begin. Every result is a
@@ -1111,6 +1136,10 @@ export function cardCutBoundaries(fullText: string): number[] {
       && CARD_NUMERIC_TAIL.test(fullText.slice(Math.max(0, boundary - 2), boundary))) continue;
     // "08:30 น." is one value (the same rule groupTimedCaptionWords applies).
     if (fullText.startsWith("น.", next) && CARD_CLOCK_TAIL.test(fullText.slice(Math.max(0, boundary - 6), next))) continue;
+    // Fix round 1: never cut right after a bound Thai nominalizing/compound prefix when
+    // the next segment is itself Thai script with no space in between (see the constant's
+    // doc comment above — ทำการ|บ้าน, ความ|สัมพันธ์, ผู้|บริหาร, นัก|เรียน, etc.).
+    if (next === boundary && CARD_THAI_SCRIPT_CHAR.test(ch) && endsWithBoundThaiPrefix(fullText, boundary)) continue;
     out.push(boundary);
   }
   return out;

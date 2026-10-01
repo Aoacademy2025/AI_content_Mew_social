@@ -16,7 +16,7 @@ import {
   renderSubtitle,
 } from "../src/remotion/renderSubtitle";
 import { baseGraphemeCount, maxCardCharsFor } from "../src/lib/card-line-budget";
-import { cardCutBoundaries } from "../src/lib/tts-timing";
+import { cardCutBoundaries, enforceCardLineBudget } from "../src/lib/tts-timing";
 
 function check(ok: unknown, message: string): asserts ok {
   assert.ok(ok, message);
@@ -185,6 +185,73 @@ for (const effect of ["karaoke", "highlight"] as const) {
   ));
   const revealed = finalMarkup.match(/<span style="color:#fff">([^<]*)<\/span>/)?.[1]?.replace(/⁠/gu, "");
   check(revealed === withBreak, `typewriter fully reveals the display-broken text, including its \\n (got ${JSON.stringify(revealed)})`);
+}
+
+// ── H) Fix round 1 (coordinator-blocking): a legal ICU word boundary is not good enough —
+// never break right after a bound Thai nominalizing/compound prefix (การ, ความ, ผู้, นัก,
+// ชาว, ช่าง, เครื่อง) when the next segment is Thai script with no space, in BOTH T2's
+// display break and T1's own card cuts (A9: one shared definition, cardCutBoundaries).
+{
+  // H1) The plan's own cited defect card: Intl.Segmenter("th") gives "ทำการ" (index 21-26,
+  // one ICU segment meaning "operate") then "บ้าน" (26-30, "house") as its own segment —
+  // ICU does NOT keep "การบ้าน" together; the boundary at 26 is a genuine, bare segmenter
+  // boundary. But "ทำการ" itself still ENDS in the bound prefix "การ", so cutting there
+  // reads line 1 as ending in "ทำการ" (wrong word) instead of continuing into "การบ้าน"
+  // (homework) — exactly the ตัดคำผิด defect reported. Must never happen at any size.
+  const card1 = REPORTED_CARDS[0];
+  const compoundCut = card1.indexOf("บ้าน"); // = 26: the boundary between การ and บ้าน
+  check(!cardCutBoundaries(card1).includes(compoundCut), "H1: cardCutBoundaries never offers the การ|บ้าน split, even though it is a bare ICU segment boundary");
+  for (const size of [80, 60] as const) {
+    const broken = applyDisplayLineBreak(card1, size);
+    check(!broken.includes("ทำการ\nบ้าน"), `H1 size ${size}: the display break never splits ทำการ|บ้าน (got ${JSON.stringify(broken)})`);
+  }
+
+  // H2) A T1 card-cut case with a ความ/การ compound: here ICU gives "ความ" (22-26) as its
+  // OWN exact segment, then "สัมพันธ์" (26-34, "relation") — same defect shape, this time
+  // an exact-segment prefix rather than a trailing substring of a longer one. Exercised
+  // through enforceCardLineBudget itself (T1's public card-splitter), not just the raw
+  // boundary list, so both consumers of cardCutBoundaries are proven, not just one.
+  const compoundSentence = "เรื่องนี้ส่งผลกระทบต่อความสัมพันธ์ของทั้งสองฝ่ายอย่างมาก";
+  const comboundCut = compoundSentence.indexOf("สัมพันธ์");
+  check(!cardCutBoundaries(compoundSentence).includes(comboundCut), "H2: cardCutBoundaries never offers the ความ|สัมพันธ์ split either");
+  const split = enforceCardLineBudget(
+    [{ text: compoundSentence, startMs: 0, endMs: 5000 }],
+    null,
+    compoundSentence,
+    "sentence",
+    80,
+  );
+  check(split.length > 1, "H2: the compound sentence is long enough to actually exercise a card split (sanity check on the fixture)");
+  check(
+    split.every((piece) => !piece.text.endsWith("ความ") && !piece.text.startsWith("สัมพันธ์")),
+    `H2: enforceCardLineBudget (T1) never orphans ความ from สัมพันธ์ across a card edge (got ${JSON.stringify(split.map((p) => p.text))})`,
+  );
+
+  // H3) Two more real examples (นัก|วิจัย, ผู้|บริหาร) from the production fixture's own
+  // vocabulary, confirming the rule generalizes beyond this one card.
+  const moreCases: Array<[string, string]> = [
+    ["นักวิจัยรายงานว่าความเสียหายรุนแรงกว่าที่คาดไว้มาก", "วิจัย"], // นัก|วิจัย
+    ["ผู้บริหารต้องตัดสินใจเรื่องงบประมาณภายในสัปดาห์นี้อย่างรอบคอบ", "บริหาร"], // ผู้|บริหาร
+  ];
+  for (const [text, afterPrefix] of moreCases) {
+    const cut = text.indexOf(afterPrefix);
+    check(!cardCutBoundaries(text).includes(cut), `H3: cardCutBoundaries never splits right before ${JSON.stringify(afterPrefix)} in ${JSON.stringify(text)}`);
+  }
+
+  // H4) ที่ is deliberately NOT in the blocked-prefix list (it's a free function word, not a
+  // bound prefix) — card 1 itself has "...อยู่ที่เด็ก..." where breaking around ที่ must
+  // stay available to the chooser; this just confirms the exclusion didn't silently vanish.
+  check(cardCutBoundaries(card1).includes(card1.indexOf("ที่") + "ที่".length), "H4: ที่ is NOT treated as a blocked bound prefix (boundary right after it stays offered)");
+}
+
+// ── I) Tie-break (fix round 1): among near-balanced candidates, prefer a boundary at a
+// space, then the later one. "ผลสำรวจของ Rocket Media Lab" has two Latin-run boundaries
+// near the balance point; the chosen one must land at the space before "Rocket", keeping
+// the proper noun "Rocket Media Lab" whole on line 2, not orphaning "Lab" alone.
+{
+  const text = "ผลสำรวจของ Rocket Media Lab";
+  const broken = applyDisplayLineBreak(text, 80);
+  check(broken === "ผลสำรวจของ\nRocket Media Lab", `I: tie-break prefers the space boundary that keeps "Rocket Media Lab" whole (got ${JSON.stringify(broken)})`);
 }
 
 console.log("\n✅ SUBTITLE BALANCED LINE BREAK CHECKS PASSED");
