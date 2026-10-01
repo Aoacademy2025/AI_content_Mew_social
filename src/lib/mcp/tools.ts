@@ -2,7 +2,7 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
-import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields } from "@/lib/mcp/video-job";
+import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
 import {
   enqueueMcpChainExportSafely,
   resolveMcpChain,
@@ -209,6 +209,15 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
   if (failure && inExportHalf && editorUrl) {
     failure = { ...failure, userAction: `${failure.userAction} ${CHAIN_EXPORT_RETRY_USER_ACTION}` };
   }
+  // Fix round 2 (PR-B advisory): a canceled export half had no refunded/refundPending — an
+  // agent following T11 could not tell the user whether money came back. `exportJob` is
+  // always present here (status "canceled" is only reached via the `exportJob.status ===
+  // "canceled"` branch above). Settlement truth spans BOTH chain rows (see
+  // `deriveSettlementFields`'s doc comment) — the export row's own fundingState is always
+  // "none", so without the preview row a kept base charge would misreport refunded: true.
+  const canceledSettlement = status === "canceled" && exportJob
+    ? await deriveSettlementFields([preview, exportJob], chainIds)
+    : null;
   return {
     kind: "job" as const,
     jobId: preview.id,
@@ -226,6 +235,7 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
         ? "งานนี้ถูกยกเลิกแล้ว"
         : null,
     ...(failure ? failure : {}),
+    ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: output?.billingReceipt ?? null,
     ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),

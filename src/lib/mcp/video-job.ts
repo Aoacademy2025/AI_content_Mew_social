@@ -695,20 +695,7 @@ export async function deriveFailedJobFields(
     userAction = appendAvatarNotice(copy.body);
   }
 
-  // refunded = !reservationRefundPending && fundingState ∈ {none, refunded}
-  //   && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}
-  // (Global Constraints "Failure fields") — a reservedQuota RenderJob means a clip was
-  // actually charged and never settled back, so the job is NOT refunded regardless of
-  // fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
-  // either way on its own — the RenderJob check is the source of truth for "was a clip spent").
-  const chargedRenderJob = await prisma.renderJob.findFirst({
-    where: { userId: job.userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
-    select: { id: true },
-  });
-  const refundPending = job.reservationRefundPending;
-  const refunded = !refundPending
-    && (job.fundingState === "none" || job.fundingState === "refunded")
-    && !chargedRenderJob;
+  const { refunded, refundPending } = await deriveSettlementFields([job], chainJobIds);
 
   return {
     errorCode,
@@ -720,6 +707,38 @@ export async function deriveFailedJobFields(
     refunded,
     refundPending,
   };
+}
+
+export type SettlementJobLike = Pick<FailedJobLike, "userId" | "reservationRefundPending" | "fundingState">;
+
+/**
+ * refunded = !any reservationRefundPending across `jobs` && every job's fundingState ∈
+ * {none, refunded} && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}
+ * (Global Constraints "Failure fields") — a reservedQuota RenderJob means a clip was
+ * actually charged and never settled back, so the chain is NOT refunded regardless of
+ * fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
+ * either way on its own — the RenderJob check is the source of truth for "was a clip spent").
+ *
+ * `jobs` takes every persisted row that could hold the chain's real funding — for a single
+ * non-chain job that is just `[job]` (the original failed-path call); for an MCP chain's
+ * export half the real charge usually sits on the *preview* row (the export row's own
+ * fundingState is always "none" — `createVideoJob`'s export calls never pass `funding`), so
+ * passing both rows here is what keeps a kept base charge (preview settled, export canceled)
+ * from reading as `refunded: true` just because the export row itself was never funded.
+ */
+export async function deriveSettlementFields(
+  jobs: SettlementJobLike[],
+  chainJobIds: string[],
+): Promise<{ refunded: boolean; refundPending: boolean }> {
+  const chargedRenderJob = await prisma.renderJob.findFirst({
+    where: { userId: jobs[0].userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
+    select: { id: true },
+  });
+  const refundPending = jobs.some((job) => job.reservationRefundPending);
+  const refunded = !refundPending
+    && jobs.every((job) => job.fundingState === "none" || job.fundingState === "refunded")
+    && !chargedRenderJob;
+  return { refunded, refundPending };
 }
 
 /**

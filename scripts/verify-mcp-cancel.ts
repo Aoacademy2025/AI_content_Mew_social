@@ -617,7 +617,7 @@ async function main() {
     const foreign = await makeJob(other.id, { status: "processing" });
 
     const ctx = mock.module("@/lib/clerk-auth", {
-      exports: { getCurrentUser: async () => authed },
+      namedExports: { getCurrentUser: async () => authed },
     });
     let DELETE: typeof import("../src/app/api/videos/jobs/[id]/route").DELETE;
     try {
@@ -648,6 +648,67 @@ async function main() {
     } finally {
       ctx.restore();
     }
+  });
+
+  // ── M: fix round 2 advisory — canceled export half carries refunded/refundPending ──────
+  await section("M: fix round 2 — canceled chain-export-half settlement fields", async () => {
+    // A real export canceled AFTER a paid, completed preview: the base charge is kept (the
+    // preview row settled, not refunded/none), so the chain must NOT read as refunded.
+    const u1 = await makeUser();
+    const proj1 = await makeProject(u1.id);
+    const preview1 = await makeChainPreview(u1.id, proj1.id, { status: "done" });
+    await prisma.videoJob.update({ where: { id: preview1.id }, data: { fundingState: "settled" } });
+    const export1 = await makeChainExport(u1.id, preview1.id, proj1.id, "processing");
+    const r1 = await cancelMcpVideoJob(u1.id, preview1.id);
+    check("M1: the real-row cancel succeeded", r1.kind === "canceled");
+    const status1 = await getVideoJobStatusTool(u1.id, preview1.id) as
+      { status?: string; refunded?: boolean; refundPending?: boolean } | null;
+    check("M2: canceled export half reports refunded: false — the base charge is kept",
+      status1?.status === "canceled" && status1?.refunded === false && status1?.refundPending === false,
+      JSON.stringify(status1));
+    void export1;
+
+    // The gap marker, same paid preview: still nothing to refund FOR THE EXPORT, but the
+    // base charge is still kept — refunded must stay false, not flip to true just because
+    // the marker row (which was never funded) looks clean on its own.
+    const u2 = await makeUser();
+    const proj2 = await makeProject(u2.id);
+    const preview2 = await makeChainPreview(u2.id, proj2.id, { status: "done" });
+    await prisma.videoJob.update({ where: { id: preview2.id }, data: { fundingState: "settled" } });
+    const r2 = await cancelMcpVideoJob(u2.id, preview2.id);
+    check("M3: the gap cancel succeeded", r2.kind === "canceled");
+    const status2 = await getVideoJobStatusTool(u2.id, preview2.id) as
+      { status?: string; refunded?: boolean; refundPending?: boolean } | null;
+    check("M4: gap-marker cancel still reports refunded: false (base charge kept)",
+      status2?.status === "canceled" && status2?.refunded === false && status2?.refundPending === false,
+      JSON.stringify(status2));
+
+    // A preview that was NEVER funded (fundingState stays "none", the makeChainPreview
+    // fixture default): nothing was ever charged, so the canceled export half IS refunded.
+    const u3 = await makeUser();
+    const proj3 = await makeProject(u3.id);
+    const preview3 = await makeChainPreview(u3.id, proj3.id, { status: "done" });
+    const export3 = await makeChainExport(u3.id, preview3.id, proj3.id, "processing");
+    const r3 = await cancelMcpVideoJob(u3.id, preview3.id);
+    check("M5: the real-row cancel succeeded", r3.kind === "canceled");
+    const status3 = await getVideoJobStatusTool(u3.id, preview3.id) as
+      { status?: string; refunded?: boolean; refundPending?: boolean } | null;
+    check("M6: an unfunded preview's canceled export half reports refunded: true",
+      status3?.status === "canceled" && status3?.refunded === true && status3?.refundPending === false,
+      JSON.stringify(status3));
+    void export3;
+
+    // Scope check: a still-IN-FLIGHT export (not canceled) carries no refunded/refundPending
+    // at all — these fields are specific to the canceled-export-half case added here.
+    const u4 = await makeUser();
+    const proj4 = await makeProject(u4.id);
+    const preview4 = await makeChainPreview(u4.id, proj4.id, { status: "done" });
+    await makeChainExport(u4.id, preview4.id, proj4.id, "processing");
+    const status4 = await getVideoJobStatusTool(u4.id, preview4.id) as
+      { status?: string; refunded?: boolean; refundPending?: boolean } | null;
+    check("M7: an in-flight (not canceled) export half carries no refunded/refundPending keys",
+      status4?.status === "processing" && !("refunded" in (status4 ?? {})) && !("refundPending" in (status4 ?? {})),
+      JSON.stringify(status4));
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
