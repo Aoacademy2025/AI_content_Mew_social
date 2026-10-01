@@ -363,4 +363,4 @@ Waves for PR-A: {T1, T5} → {T2, T4} → {T3, T7} → {T6}. T2 touches only ren
 - **Admin UI for MCP client stats.** Data capture only this round.
 
 ## Status
-interviewed 2026-10-01 | critic: revised for B1–B8, A1–A14 | approved: 2026-10-01 | executed: - | delivered: -
+interviewed 2026-10-01 | critic: revised for B1–B8, A1–A14 | approved: 2026-10-01 | executed: 2026-10-01 (PR-A #565 → 5ff3368f, deployed prod 2026-10-01; PR-B #566 → 2b375aa4, not deployed) | delivered: 2026-10-01 — follow-up #567 (Hero AI Image cancel rule, Mew-approved)
