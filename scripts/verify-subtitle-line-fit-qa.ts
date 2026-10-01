@@ -11,6 +11,8 @@ import {
   validateSubtitleQuality, subtitleQualityShouldFailJob, BLOCKING_SUBTITLE_CODES,
 } from "../src/lib/mcp/subtitle-quality";
 import { maxCardCharsFor } from "../src/lib/card-line-budget";
+import { resolveExportCardLineBudget } from "../src/lib/mcp/orchestrator-steps";
+import { DEFAULT_V2_SUB } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 
 assert.ok(
   !(BLOCKING_SUBTITLE_CODES as readonly string[]).includes("card_exceeds_line_budget"),
@@ -123,5 +125,88 @@ const docFixtureReport = validateSubtitleQuality({
   cardLineBudget: { mode: "sentence", size: 80 },
 });
 assert.equal(docFixtureReport.status, "passed");
+
+// ── Fix round 1 (reviewer B1) ────────────────────────────────────────────────────────
+// Export call site precedence: `resolveExportCardLineBudget(sourceInput, editSnapshot)`.
+// What is actually burned on an Editor V2 export is the creator's post-phase edit
+// (`editSnapshot.subtitleConfig.fontSize` / `.cardLen`), not the SOURCE (preview) job's
+// resolved design — that design is correct only when the export is unedited.
+
+const sourceAt100: { subtitleDesign: typeof DEFAULT_V2_SUB; subtitleCardLen: "sentence" } = {
+  subtitleDesign: { ...DEFAULT_V2_SUB, fontSize: 100 },
+  subtitleCardLen: "sentence",
+};
+const sourceAt60: { subtitleDesign: typeof DEFAULT_V2_SUB; subtitleCardLen: "sentence" } = {
+  subtitleDesign: { ...DEFAULT_V2_SUB, fontSize: 60 },
+  subtitleCardLen: "sentence",
+};
+
+// A. Snapshot size LARGER than source → the check must use the larger (current) size, so
+// a card that fit the old, smaller font now correctly reports overflow at the real burned
+// size. maxCardCharsFor(100)=19 → sentence budget 38; a 45-grapheme card fits at the old
+// size 60 (budget 64) but overflows at the edited size 100.
+const largerSnapshot = resolveExportCardLineBudget(sourceAt60, { subtitleConfig: { fontSize: 100 }, cardLen: "sentence" });
+assert.deepEqual(largerSnapshot, { mode: "sentence", size: 100 }, "snapshot size must win over the source's");
+const cardText45 = "ก".repeat(45);
+const overflowAtEditedSize = validateSubtitleQuality({
+  script: cardText45,
+  captions: [{ text: cardText45, startMs: 0, endMs: 5000 }],
+  audioDurationMs: 5000,
+  timingSource: "provider_alignment",
+  cardLineBudget: largerSnapshot,
+});
+assert.equal(overflowAtEditedSize.status, "warning");
+assert.equal(
+  overflowAtEditedSize.status !== "passed" && overflowAtEditedSize.code,
+  "card_exceeds_line_budget",
+  "a larger edited size must surface the overflow the stale source size would have missed",
+);
+
+// B. Snapshot size SMALLER than source → no false-positive warning for a card that is
+// actually fine at the real (smaller) burned size. maxCardCharsFor(60)=32 → sentence
+// budget 64; the same 45-grapheme card fits comfortably once the edit shrank the font.
+const smallerSnapshot = resolveExportCardLineBudget(sourceAt100, { subtitleConfig: { fontSize: 60 }, cardLen: "sentence" });
+assert.deepEqual(smallerSnapshot, { mode: "sentence", size: 60 }, "snapshot size must win over the source's");
+const noFalsePositive = validateSubtitleQuality({
+  script: cardText45,
+  captions: [{ text: cardText45, startMs: 0, endMs: 5000 }],
+  audioDurationMs: 5000,
+  timingSource: "provider_alignment",
+  cardLineBudget: smallerSnapshot,
+});
+assert.equal(
+  noFalsePositive.status,
+  "passed",
+  "a smaller edited size must not carry the stale source size's overflow into a false warning",
+);
+
+// C. No snapshot (unedited export) → falls back to the source job's resolved design.
+assert.deepEqual(
+  resolveExportCardLineBudget(sourceAt100, null),
+  { mode: "sentence", size: 100 },
+);
+assert.deepEqual(
+  resolveExportCardLineBudget(sourceAt100, undefined),
+  { mode: "sentence", size: 100 },
+);
+
+// D. Legacy source with nothing persisted (pre-T4 job) and no snapshot → the same
+// DEFAULT_V2_SUB (size 80) / "sentence" fallback `resolvedMcpSubtitleDesignFromInput`
+// itself uses for every other call site.
+assert.deepEqual(resolveExportCardLineBudget(null, null), { mode: "sentence", size: 80 });
+assert.deepEqual(resolveExportCardLineBudget({}, undefined), { mode: "sentence", size: 80 });
+
+// E. A snapshot can edit card length without touching size, and vice versa — each field
+// resolves independently (matches T4's own per-field overlay pattern).
+assert.deepEqual(
+  resolveExportCardLineBudget(sourceAt100, { cardLen: "1" }),
+  { mode: "1", size: 100 },
+  "cardLen-only edit must keep the source's size",
+);
+assert.deepEqual(
+  resolveExportCardLineBudget(sourceAt100, { subtitleConfig: { fontSize: 60 } }),
+  { mode: "sentence", size: 60 },
+  "fontSize-only edit must keep the source's cardLen",
+);
 
 console.log("verify-subtitle-line-fit-qa: ok");

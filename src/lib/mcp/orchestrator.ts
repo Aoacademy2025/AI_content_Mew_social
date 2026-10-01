@@ -56,6 +56,7 @@ import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, createStylePackRenderResolver, type OrchCaption,
   cardsByWordCount, v2SubConfigToHeroDesign, resolvedMcpSubtitleDesignFromInput,
+  resolveExportCardLineBudget,
 } from "@/lib/mcp/orchestrator-steps";
 import type { V2SubConfig } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
@@ -1684,22 +1685,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         overlayRetimed = retimedOverlay !== null;
         if (retimedOverlay) exportOverlayConfig = retimedOverlay;
       }
-      // T3: the source (preview) job carries the resolved design, not this export job's own
-      // inputJson (an export job has no subtitleDesign/subtitleCardLen of its own — it only
-      // persists sourceJobId/subtitleOverlayConfig/editSnapshot). Read it back through the
-      // same T4 helper every other call site uses; a pre-T4 source job falls back to
-      // DEFAULT_V2_SUB, same as the render that originally burned it.
-      const exportSubtitleDesign = resolvedMcpSubtitleDesignFromInput(sourceInput ?? {});
+      // T3 fix round 1: what is actually burned is the creator's post-phase edit
+      // (input.editSnapshot.subtitleConfig.fontSize / .cardLen — PostPhaseMobile.tsx's
+      // subtitle-size slider, buildV2BurnConfig's `size: cfg.fontSize`), not the SOURCE
+      // (preview) job's resolved design — that design is only correct for an UNEDITED
+      // export. resolveExportCardLineBudget prefers editSnapshot per field, falling back
+      // to the same T4 helper every other call site uses (which itself falls back to
+      // DEFAULT_V2_SUB for a legacy/no-design source).
+      const exportCardLineBudget = resolveExportCardLineBudget(sourceInput, input.editSnapshot);
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
         captions: finalCaptions,
         audioDurationMs: exportAudioDurationMs,
         timingSource: exportTimingSource,
         speechCoverage: exportSpeechCoverage,
-        cardLineBudget: {
-          mode: exportSubtitleDesign.cardLen,
-          size: exportSubtitleDesign.design.fontSize,
-        },
+        cardLineBudget: exportCardLineBudget,
       });
       if (exportSubtitleQa.status !== "passed") {
         emitTelemetry({
@@ -1923,12 +1923,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+      // Advisory A (T3 fix round 1): this upload job's own resolved design — the web
+      // upload route (jobs/route.ts, mode "upload") never resolves/persists
+      // subtitleDesign/subtitleCardLen the way the MCP route does for T4, and there is no
+      // editSnapshot this early (that only exists on a later export), so
+      // resolvedSubtitleCardLen/cardBudgetSize deterministically fall back to
+      // DEFAULT_V2_SUB's size (80) + input.subtitleMode ?? "sentence" here — still the
+      // best available answer, and these captions skip T1's enforceCardLineBudget entirely
+      // (ASR output straight from /api/videos/transcribe), so they are structurally more
+      // likely to carry an over-budget card than the main TTS path.
       const uploadSubtitleQa = validateSubtitleQuality({
         script: upCaps.map((caption) => caption.text).join(""),
         captions: upCaps,
         audioDurationMs: upDurMs,
         timingSource: "upload_transcription",
         speechCoverage: tx.speechCoverage,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
       });
       if (subtitleQualityShouldFailJob(uploadSubtitleQa)) {
         throw new Error(`ซับจากคลิปไม่ผ่านการตรวจคุณภาพ (${uploadSubtitleQa.status === "failed" ? uploadSubtitleQa.code : "unknown"}) — กรุณาลองใหม่`);

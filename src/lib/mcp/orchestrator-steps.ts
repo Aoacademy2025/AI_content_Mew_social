@@ -13,6 +13,7 @@ import {
   V2_QUICK_STYLES,
   type V2SubConfig,
 } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import type { EditorExportCardLen, EditorExportSubtitleConfig } from "@/lib/editor-export-snapshot";
 
 /** What one video job's pinned Style Pack resolves to at render time: the
  *  Stock Mood driving B-roll search, and the Pacing driving window cadence /
@@ -393,4 +394,35 @@ export function resolvedMcpSubtitleDesignFromInput(
     design: input.subtitleDesign ?? DEFAULT_V2_SUB,
     cardLen: input.subtitleCardLen ?? (input.subtitleMode as SubtitleCardLen | undefined) ?? "sentence",
   };
+}
+
+/** The subset of a durable export's `editSnapshot` the line-fit check needs — matches
+ *  `EditorExportSnapshot` (`editor-export-snapshot.ts`) structurally without importing its
+ *  runtime (captions/preview are irrelevant here). */
+export type ExportCardLineBudgetEditSnapshot = {
+  subtitleConfig?: Pick<EditorExportSubtitleConfig, "fontSize"> | null;
+  cardLen?: EditorExportCardLen | null;
+};
+
+/**
+ * T3 fix round 1: what is actually burned on an Editor V2 durable export is the creator's
+ * post-phase edit (`editSnapshot.subtitleConfig.fontSize` / `editSnapshot.cardLen` —
+ * `PostPhaseMobile.tsx`'s subtitle-size slider, `buildV2BurnConfig`'s `size: cfg.fontSize`
+ * building the `subtitleOverlayConfig` the server burns), not the SOURCE (preview) job's
+ * resolved design — that design is only correct when the export is unedited. Precedence
+ * is per field, matching `resolveMcpSubtitleDesign`'s own overlay style: `editSnapshot`'s
+ * `fontSize`/`cardLen` win when present, independently of each other, else
+ * `resolvedMcpSubtitleDesignFromInput(sourceInput)` (whose own fallback is `DEFAULT_V2_SUB`
+ * for a legacy/no-design source). Pure: no DB or Remotion import, unit-testable on its own.
+ */
+export function resolveExportCardLineBudget(
+  sourceInput: ResolvedMcpSubtitleJobInput | null | undefined,
+  editSnapshot: ExportCardLineBudgetEditSnapshot | null | undefined,
+): { mode: SubtitleCardLen; size: number } {
+  const base = resolvedMcpSubtitleDesignFromInput(sourceInput ?? {});
+  const size = typeof editSnapshot?.subtitleConfig?.fontSize === "number"
+    ? editSnapshot.subtitleConfig.fontSize
+    : base.design.fontSize;
+  const mode = editSnapshot?.cardLen ?? base.cardLen;
+  return { mode, size };
 }
