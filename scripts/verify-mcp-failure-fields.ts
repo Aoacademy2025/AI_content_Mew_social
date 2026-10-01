@@ -6,6 +6,10 @@
  *     at READ time, never written back.
  *   - message/userAction reuse the EXISTING Editor v2 Thai copy map (`classifyFailure` +
  *     `failureViewCopy`, `_v2/failure-view.ts`) — no second copy of that taxonomy.
+ *     `message` is that map's heading (GENERIC_ERROR_COPY with no code) and NEVER the stored
+ *     errorMessage, which is diagnostic text that can carry HTTP status lines, upstream body
+ *     fragments and server paths (PR-A security review S1). The legacy `error` field is
+ *     unchanged (pre-existing, parked by the session).
  *   - refundPending = reservationRefundPending.
  *   - refunded = !refundPending && fundingState ∈ {none, refunded}
  *       && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}.
@@ -88,7 +92,8 @@ async function main() {
   });
   const system = await getVideoJobStatusTool(user.id, "ff-system");
   ok(system?.errorCode === "render_unknown", "system class: errorCode passed through verbatim");
-  ok(system?.message === "เรนเดอร์ไม่สำเร็จ (render_unknown)", "system class: message is the stored Thai errorMessage");
+  ok(system?.message === "ประกอบวิดีโอไม่สำเร็จ", "system class: message is failure-view's render-step heading");
+  ok(system?.message !== "เรนเดอร์ไม่สำเร็จ (render_unknown)", "system class: message is never the stored errorMessage (S1)");
   ok(
     system?.userAction === "ภาพ เสียง และการตั้งค่าของโปรเจกต์ยังอยู่ — กลับไปลองเรนเดอร์ใหม่ได้",
     "system class: userAction reuses failure-view's generic render-step copy",
@@ -103,6 +108,7 @@ async function main() {
   });
   const byok = await getVideoJobStatusTool(user.id, "ff-byok");
   ok(byok?.errorCode === "invalid_key" && byok?.errorProvider === "elevenlabs", "byok class: code + provider pass through");
+  ok(byok?.message === "เชื่อมต่อบริการภายนอกไม่สำเร็จ", "byok class: message is failure-view's provider-key heading, not the stored errorMessage");
   ok(
     byok?.userAction.includes("API Key ของ ElevenLabs ใช้ไม่ได้หรือหมดอายุ"),
     "byok class: userAction reuses failure-view's provider-key copy (customer's own key)",
@@ -115,6 +121,7 @@ async function main() {
   });
   const quota = await getVideoJobStatusTool(user.id, "ff-quota");
   ok(quota?.errorCode === "quota_exceeded", "quota class: code passes through");
+  ok(quota?.message === "โควต้าเรนเดอร์ของแพ็กเกจใช้ครบแล้ว", "quota class: message is failure-view's plan-quota heading");
   ok(
     quota?.userAction.includes("อัปเกรดแพ็กเกจหรือเติมเครดิต"),
     "quota class: userAction reuses failure-view's plan-quota copy (pricing signal, not a bug)",
@@ -127,7 +134,7 @@ async function main() {
   });
   const legacy = await getVideoJobStatusTool(user.id, "ff-legacy");
   ok(legacy?.errorCode === "internal", "legacy NULL-code row reads as errorCode 'internal'");
-  ok(legacy?.message === GENERIC_ERROR_COPY, "legacy row keeps its stored generic message");
+  ok(legacy?.message === GENERIC_ERROR_COPY, "legacy row reads the generic copy as its message");
   ok(legacy?.userAction === INTERNAL_USER_ACTION, "legacy row gets the session-authored internal userAction, not a bare generic");
 
   // A null errorCode with NO stored errorMessage either (the worker-restart direct-update
@@ -135,6 +142,43 @@ async function main() {
   await makeFailedJob("ff-legacy-no-message", { errorCode: null, errorMessage: null });
   const legacyNoMessage = await getVideoJobStatusTool(user.id, "ff-legacy-no-message");
   ok(legacyNoMessage?.errorCode === "internal" && legacyNoMessage?.message === GENERIC_ERROR_COPY, "null errorCode + null errorMessage still resolves to internal/generic, never leaks `null`");
+
+  // ── 2b. S1: a raw diagnostic errorMessage never reaches message/userAction ──────────────
+  // classifyUnknownStepFailure stores "<prefix> (<code>): <scrubbed cause>"; scrubSecrets
+  // removes keys/tokens only, so HTTP status lines, upstream bodies and paths survive into
+  // errorMessage. None of that may reach the customer-facing fields, coded or not.
+  const LEAKY_ERROR_MESSAGE =
+    'เรนเดอร์ไม่สำเร็จ (render_failed): HTTP 500 Internal Server Error POST /api/videos/render '
+    + '/var/www/ai-content/public/renders/u1/x.mp4 {"error":"upstream exploded","stack":"at run-render.ts:255"}';
+  const LEAK_MARKERS = ["HTTP 500", "/var/www", '{"error"', "upstream exploded", "run-render.ts", "/api/videos/render"];
+  await makeFailedJob("ff-leak-coded", {
+    errorCode: "render_failed",
+    errorMessage: LEAKY_ERROR_MESSAGE,
+    currentStep: "render",
+  });
+  await makeFailedJob("ff-leak-null-code", { errorCode: null, errorMessage: LEAKY_ERROR_MESSAGE });
+  await makeFailedJob("ff-leak-avatar", {
+    errorCode: "fatal",
+    errorProvider: "heygen",
+    errorMessage: LEAKY_ERROR_MESSAGE,
+    currentStep: "avatar",
+    inputJson: avatarInput(),
+  });
+  for (const id of ["ff-leak-coded", "ff-leak-null-code", "ff-leak-avatar"]) {
+    const leak = await getVideoJobStatusTool(user.id, id);
+    ok(typeof leak?.message === "string" && leak.message.length > 0, `${id}: message is a non-empty string`);
+    ok(leak?.message !== LEAKY_ERROR_MESSAGE, `${id}: message is not the stored errorMessage`);
+    for (const marker of LEAK_MARKERS) {
+      ok(
+        !leak?.message.includes(marker) && !leak?.userAction.includes(marker),
+        `${id}: ${JSON.stringify(marker)} from the stored errorMessage never appears in message/userAction`,
+      );
+    }
+  }
+  const leakCoded = await getVideoJobStatusTool(user.id, "ff-leak-coded");
+  ok(leakCoded?.message === "ประกอบวิดีโอไม่สำเร็จ", "coded leaky job: message is the render-step heading");
+  const leakNullCode = await getVideoJobStatusTool(user.id, "ff-leak-null-code");
+  ok(leakNullCode?.message === GENERIC_ERROR_COPY && leakNullCode.errorCode === "internal", "null-code leaky job: message is the generic copy, code internal");
 
   // ── 3. refunded/refundPending states ───────────────────────────────────────────────────
   await makeFailedJob("ff-refund-none", { errorCode: "render_unknown", fundingState: "none" });

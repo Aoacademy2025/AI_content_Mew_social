@@ -628,9 +628,12 @@ function jobHadAvatar(inputJson: string): boolean {
  * (`classifyFailure` + `failureViewCopy`, `_v2/failure-view.ts`) for message/userAction so this
  * module owns no second copy of that taxonomy — the only new copy is the two session-authored
  * strings above, both reserved for cases that map has no entry for (null code; avatar BYOK
- * notice). `message` always comes from `errorMessage` when present (every current failJob call
- * site on the MCP-create path writes Thai, reviewed customer copy there) and only falls back to
- * the map's heading when it is somehow missing.
+ * notice). `message` is the map's heading (GENERIC_ERROR_COPY when there is no code) and is
+ * NEVER built from `errorMessage`: that column is diagnostic evidence — classifyUnknownStepFailure
+ * stores scrubbed-but-raw causes there (HTTP status lines, upstream body fragments, server paths,
+ * English debug text), and failure-view.ts's own contract is that it is never echoed to a
+ * customer (PR-A security review S1). The legacy `error` field on get_video_status still
+ * returns errorMessage unchanged; that pre-existing exposure is out of this function's scope.
  *
  * `chainJobIds`: the set of VideoJob ids whose RenderJob children count toward "was a clip
  * actually charged." T6 scope is pre-P1, so this is always `[job.id]` today; T8 (the P1
@@ -650,7 +653,7 @@ export async function deriveFailedJobFields(
   let userAction: string;
   if (job.errorCode == null) {
     errorCode = INTERNAL_JOB_FAILURE_CODE;
-    message = job.errorMessage ?? GENERIC_ERROR_COPY;
+    message = GENERIC_ERROR_COPY;
     userAction = appendAvatarNotice(INTERNAL_JOB_FAILURE_USER_ACTION);
   } else {
     errorCode = job.errorCode;
@@ -663,7 +666,7 @@ export async function deriveFailedJobFields(
     };
     const kind = classifyFailure(failureJob);
     const copy = failureViewCopy(kind, failureJob, false);
-    message = job.errorMessage ?? copy.heading;
+    message = copy.heading;
     userAction = appendAvatarNotice(copy.body);
   }
 
