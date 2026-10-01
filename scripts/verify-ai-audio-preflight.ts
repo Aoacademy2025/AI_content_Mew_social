@@ -84,16 +84,18 @@ check(
 );
 
 // ── D. Both create paths must run the gate BEFORE a job row exists ──
-for (const [label, path] of [
-  ["web create", "src/app/api/videos/jobs/route.ts"],
-  ["MCP create_video_job", "src/app/api/[transport]/route.ts"],
+// T8 (ADR 0063): MCP create_video_job writes its row through createMcpVideoJob (which wraps
+// createVideoJob and, behind the MCP Editor Project flag, also opens the Agent-created Project).
+for (const [label, path, createCall] of [
+  ["web create", "src/app/api/videos/jobs/route.ts", "createVideoJob("],
+  ["MCP create_video_job", "src/app/api/[transport]/route.ts", "createMcpVideoJob("],
 ] as const) {
   const src = repoFile(path);
   check(`D (${label}): calls the ceiling preflight`, src.includes("managedAudioCeilingApplies("));
   check(`D (${label}): turns it into a refusal`, src.includes("aiAudioCeilingRefusal("));
   // The gate is worthless below the line that writes the row.
   const gateAt = src.indexOf("managedAudioCeilingApplies(");
-  const createAt = src.lastIndexOf("createVideoJob(");
+  const createAt = src.lastIndexOf(createCall);
   check(
     `D (${label}): the gate runs before the VideoJob row is created`,
     gateAt !== -1 && createAt !== -1 && gateAt < createAt,

@@ -138,7 +138,8 @@ import {
   validateSubtitleQuality,
   type SubtitleTimingSource,
 } from "@/lib/mcp/subtitle-quality";
-import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
+import { getVideoJobBillingReceipt, getVideoJobChainBillingReceipt } from "@/lib/mcp/billing-receipt";
+import { enqueueMcpChainExportSafely, isMcpChainPreview } from "@/lib/mcp/chain-export";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
@@ -285,6 +286,13 @@ interface CreateInput {
    * MCP clients never send this — the full path below is byte-identical without it.
    */
   previewMode?: boolean;
+  /**
+   * T8 (ADR 0063): set ONLY by the server (`createMcpVideoJob` / `enqueueMcpChainExport`,
+   * chain-export.ts) — never accepted from a client input. On a `type:"create"` preview it
+   * means "when this preview is done, enqueue the server-chained export"; on that export it
+   * marks the chain so the release gate checks the whole chain's single charge.
+   */
+  mcpChainExport?: boolean;
 }
 
 type SourceVideoJob = {
@@ -1256,6 +1264,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             fullText: checkpoint.fullText,
           },
         });
+        // T8 (ADR 0063): an MCP chain preview hands off to its server-chained export only
+        // AFTER the finish above committed. Never throws (a throw here would refund a done
+        // preview); a lost enqueue is recovered by get_video_status / the watchdog.
+        if (input.mcpChainExport === true) await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
         return;
       }
 
@@ -1600,17 +1612,32 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // another project, closes the tab, or refreshes, this job keeps running and the
     // project can later resume from activeExportJobId.
     if (input.mode === "export") {
-      if (!input.sourceJobId) { await failJob(jobId, "export job missing sourceJobId"); return; }
+      // R-T8-1: P1 makes this path MCP-reachable (the server-chained export), so every
+      // refusal carries an explicit code. Codes + copy are the jobs route's own export-branch
+      // vocabulary (src/app/api/videos/jobs/route.ts); the Thai messages already here stay.
+      if (!input.sourceJobId) {
+        await failJob(jobId, { message: "ไม่พบวิดีโอต้นฉบับ", code: "invalid_source" });
+        return;
+      }
       if (!input.subtitleOverlayConfig || typeof input.subtitleOverlayConfig !== "object") {
-        await failJob(jobId, "export job missing subtitle overlay config");
+        await failJob(jobId, { message: "ข้อมูลซับสำหรับส่งออกไม่ถูกต้อง", code: "invalid_export" });
         return;
       }
       const src = await prisma.videoJob.findUnique({ where: { id: input.sourceJobId } });
-      if (!src || src.userId !== userId) { await failJob(jobId, "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง"); return; }
-      if (src.status !== "done") { await failJob(jobId, "วิดีโอต้นฉบับยังไม่พร้อมสำหรับส่งออก"); return; }
+      if (!src || src.userId !== userId) {
+        await failJob(jobId, { message: "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง", code: "source_not_found" });
+        return;
+      }
+      if (src.status !== "done") {
+        await failJob(jobId, { message: "วิดีโอต้นฉบับยังไม่พร้อมสำหรับส่งออก", code: "source_not_ready" });
+        return;
+      }
       const parsed = parseVideoJobOutput(src.outputJson);
       const preview = parsed?.preview;
-      if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
+      if (!preview) {
+        await failJob(jobId, { message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก", code: "source_not_exportable" });
+        return;
+      }
       const sourceSubtitleQa = parsed?.subtitleQa;
       const sourceInput = parseCreateInput(src.inputJson);
       const overlayPopups = Array.isArray(input.subtitleOverlayConfig.keywordPopups)
@@ -1759,6 +1786,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         );
       }
 
+      // T8 (ADR 0063): the release gate (same rule and copy as the full MCP path) applied to
+      // the server-chained export — the preview's base render and this burn are ONE product,
+      // so the chain as a whole must hold exactly one settled charge before it is delivered.
+      // Runs while still in the burn phase, so a refusal settles this job's own burn
+      // reservation through the existing catch-all (no new refund logic). Keyed on job data
+      // (both rows chain-marked), never on the live flag. Web exports never carry the marker.
+      const chainBillingReceipt = process.env.RENDER_VIA_QUEUE === "1"
+        && input.mcpChainExport === true
+        && isMcpChainPreview(src)
+        ? await getVideoJobChainBillingReceipt({ videoJobIds: [src.id, jobId], userId })
+        : null;
+      if (chainBillingReceipt && chainBillingReceipt.status !== "settled") {
+        throw new Error(`ตรวจสอบการคิดนาที/เครดิตไม่ผ่าน (${chainBillingReceipt.code}) — ระบบหยุดก่อนส่งมอบงาน`);
+      }
+
       await step("save", 92);
       let videoId = job.videoId ?? undefined;
       if (!videoId) {
@@ -1810,6 +1852,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         },
         ...(videoId ? { videoId } : {}),
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
+        ...(chainBillingReceipt ? { billingReceipt: chainBillingReceipt } : {}),
       });
       if (
         completion.transitioned
@@ -2974,6 +3017,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           fullText: capRes.fullText,
         },
       });
+      // T8 (ADR 0063): see the avatar-resume site — enqueue only after the finish committed.
+      if (input.mcpChainExport === true) await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
       return;
     }
 

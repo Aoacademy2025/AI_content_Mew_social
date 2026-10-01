@@ -3,19 +3,39 @@ import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields } from "@/lib/mcp/video-job";
+import {
+  enqueueMcpChainExportSafely,
+  resolveMcpChain,
+  type McpChain,
+  type McpChainRow,
+} from "@/lib/mcp/chain-export";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
+
+/** The app origin every absolute link MCP hands an agent is built on. */
+function mcpPublicOrigin(): string {
+  return process.env.MCP_PUBLIC_ORIGIN?.trim()
+    || process.env.NEXT_PUBLIC_APP_URL?.trim()
+    || DEFAULT_MCP_PUBLIC_ORIGIN;
+}
 
 function publicVideoUrl(value: string | null): string | null {
   if (!value) return null;
   try {
-    const origin = process.env.MCP_PUBLIC_ORIGIN?.trim()
-      || process.env.NEXT_PUBLIC_APP_URL?.trim()
-      || DEFAULT_MCP_PUBLIC_ORIGIN;
-    const url = new URL(value, origin);
+    const url = new URL(value, mcpPublicOrigin());
     return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : value;
   } catch {
     return value;
+  }
+}
+
+/** T8: absolute link that opens an Agent-created Project in the Editor (Post phase). */
+export function mcpEditorUrl(projectId: string): string | null {
+  try {
+    const url = new URL(`/video-editor?projectId=${encodeURIComponent(projectId)}`, mcpPublicOrigin());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
   }
 }
 
@@ -111,7 +131,100 @@ export async function getVideoStatusTool(userId: string, videoId: string) {
   };
 }
 
+/** Preview share of a chain's progress bar; the export fills the rest (R-T8 status mapping). */
+const CHAIN_PREVIEW_PROGRESS_SHARE = 85;
+
+function scaledProgress(progress: number, from: number, to: number): number {
+  const clamped = Math.min(100, Math.max(0, Number.isFinite(progress) ? progress : 0));
+  return from + Math.round((clamped * (to - from)) / 100);
+}
+
+/**
+ * T8 (ADR 0063): get_video_status for an MCP chain — one job from the agent's point of view,
+ * whichever of the two ids it holds. Preview 0–85, export 85–100; failure fields come from
+ * the FAILING row with both chain ids (R-T8-2). `jobId` is always the preview id, so a query
+ * by the export id returns the identical shape.
+ */
+async function chainJobStatus(userId: string, resolved: McpChain) {
+  let chain = resolved;
+  const { preview } = chain;
+  if (preview.status === "done" && !chain.exportJob && !chain.conflict) {
+    // Lost-enqueue recovery: the same idempotent enqueue the worker runs after the finish.
+    await enqueueMcpChainExportSafely({ previewJobId: preview.id, userId });
+    chain = (await resolveMcpChain(userId, preview.id)) ?? chain;
+  }
+  const exportJob = chain.exportJob;
+  const chainIds = exportJob ? [preview.id, exportJob.id] : [preview.id];
+  const inExportHalf = preview.status === "done";
+  const row: McpChainRow = inExportHalf && exportJob ? exportJob : preview;
+  const output = parseVideoJobOutput(row.outputJson);
+
+  let status: string;
+  let progress: number;
+  if (!inExportHalf) {
+    status = toPublicVideoJobStatus(preview.status);
+    progress = scaledProgress(preview.progress, 0, CHAIN_PREVIEW_PROGRESS_SHARE);
+  } else if (chain.conflict) {
+    status = "failed";
+    progress = CHAIN_PREVIEW_PROGRESS_SHARE;
+  } else if (!exportJob) {
+    status = "processing";
+    progress = CHAIN_PREVIEW_PROGRESS_SHARE;
+  } else if (exportJob.status === "done" || exportJob.status === "failed" || exportJob.status === "canceled") {
+    status = exportJob.status;
+    progress = exportJob.status === "done"
+      ? 100
+      : scaledProgress(exportJob.progress, CHAIN_PREVIEW_PROGRESS_SHARE, 100);
+  } else {
+    status = "processing";
+    progress = scaledProgress(exportJob.progress, CHAIN_PREVIEW_PROGRESS_SHARE, 100);
+  }
+
+  let failure = null;
+  if (status === "failed") {
+    const failingRow: McpChainRow = chain.conflict
+      ? {
+          ...preview,
+          errorCode: "idempotency_conflict",
+          errorMessage: "idempotencyKey นี้ถูกใช้แล้ว",
+          errorProvider: null,
+          currentStep: null,
+        }
+      : row;
+    failure = await deriveFailedJobFields(failingRow, chainIds, {
+      exportMode: inExportHalf,
+      avatarSourceInputJson: preview.inputJson,
+    });
+  }
+  const done = status === "done";
+  const projectId = preview.projectId ?? exportJob?.projectId ?? null;
+  return {
+    kind: "job" as const,
+    jobId: preview.id,
+    status,
+    currentStep: chain.conflict ? null : row.currentStep,
+    progress,
+    videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
+    error: status === "failed" || status === "canceled"
+      ? (chain.conflict ? "idempotencyKey นี้ถูกใช้แล้ว" : row.errorMessage ?? null)
+      : null,
+    ...(failure ? failure : {}),
+    subtitleQa: output?.subtitleQa ?? null,
+    billingReceipt: output?.billingReceipt ?? null,
+    ...(done
+      ? {
+          videoId: output?.videoId ?? null,
+          editorUrl: projectId ? mcpEditorUrl(projectId) : null,
+        }
+      : {}),
+  };
+}
+
 export async function getVideoJobStatusTool(userId: string, jobId: string) {
+  // T8: an MCP chain (preview or its chained export) reads as one job. Owner-scoped: another
+  // user's id resolves to null here AND below, so it is "not found" either way.
+  const chain = await resolveMcpChain(userId, jobId);
+  if (chain) return chainJobStatus(userId, chain);
   const job = await prisma.videoJob.findFirst({
     where: { id: jobId, userId },
     select: {

@@ -58,9 +58,9 @@ async function runJob(job: { id: string; userId: string }): Promise<void> {
 
 async function sweepStalledJobs(): Promise<void> {
   const result = await sweepStalledVideoJobs();
-  if (result.failed.length > 0 || result.repairedPoll.length > 0) {
+  if (result.failed.length > 0 || result.repairedPoll.length > 0 || result.recoveredChainExports.length > 0) {
     console.log(
-      `[mcp-worker] stall sweep failed=${result.failed.length} repairedProviderPoll=${result.repairedPoll.length}`,
+      `[mcp-worker] stall sweep failed=${result.failed.length} repairedProviderPoll=${result.repairedPoll.length} recoveredChainExports=${result.recoveredChainExports.length}`,
     );
   }
 }

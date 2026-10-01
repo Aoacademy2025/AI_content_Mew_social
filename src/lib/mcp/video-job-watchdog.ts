@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { failJob, withVideoJobSqliteRetry } from "@/lib/mcp/video-job";
+import { recoverLostMcpChainExports } from "@/lib/mcp/chain-export";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 /**
@@ -12,7 +13,11 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
  *  2. A row left `waiting_provider` with `providerNextPollAt = NULL` while still holding a
  *     provider checkpoint. Give it a poll time so it re-enters the normal resume path.
  *
- * Both are swept by the worker on its poll loop — no cron, no schema change.
+ *  3. (T8, ADR 0063) An MCP chain preview that finished `done` but whose server-chained
+ *     export was never enqueued (worker died between the finish commit and the enqueue).
+ *     The same idempotent enqueue get_video_status uses closes it.
+ *
+ * All are swept by the worker on its poll loop — no cron, no schema change.
  */
 
 const DEFAULT_STALE_MS = 45 * 60_000;
@@ -80,7 +85,7 @@ export function stalledVideoJobMessage(staleMs: number = VIDEO_JOB_STALE_MS): st
  */
 export async function sweepStalledVideoJobs(
   now: Date = new Date(),
-): Promise<{ failed: string[]; repairedPoll: string[] }> {
+): Promise<{ failed: string[]; repairedPoll: string[]; recoveredChainExports: string[] }> {
   // Read at the SHORTEST deadline, then apply each row's own deadline in JS. One query, and
   // adding a longer-deadline step can never accidentally widen what the query returns.
   const candidates = await withVideoJobSqliteRetry("watchdog scan stalled", () => prisma.videoJob.findMany({
@@ -170,5 +175,13 @@ export async function sweepStalledVideoJobs(
     }
   }
 
-  return { failed, repairedPoll };
+  let recoveredChainExports: string[] = [];
+  try {
+    recoveredChainExports = await recoverLostMcpChainExports(now);
+  } catch (error) {
+    // Recovery is best effort here; get_video_status re-runs the same enqueue on the next poll.
+    console.error("[video-job-watchdog] chain export recovery failed:", error instanceof Error ? error.message : "unknown");
+  }
+
+  return { failed, repairedPoll, recoveredChainExports };
 }

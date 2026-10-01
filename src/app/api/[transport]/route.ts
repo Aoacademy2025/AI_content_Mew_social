@@ -17,10 +17,8 @@ import {
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import {
-  createVideoJob,
-  VIDEO_JOB_INFLIGHT_STATUSES,
-} from "@/lib/mcp/video-job";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job";
+import { createMcpVideoJob } from "@/lib/mcp/chain-export";
 import {
   aiAudioCeilingRefusal,
   managedAudioCeilingApplies,
@@ -331,8 +329,11 @@ const handler = createMcpHandler(
           const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
           if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
           try {
-            const job = await createVideoJob(
-              p.userId,
+            // T8 (ADR 0063): with the MCP Editor Project flag on for this user, this also
+            // opens an Agent-created Project and marks the job for the server-chained export.
+            // Flag off = the exact PR-A createVideoJob call.
+            const created = await createMcpVideoJob(
+              p.user,
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
@@ -350,7 +351,11 @@ const handler = createMcpHandler(
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
+              { title: args.title },
             );
+            // `mcp-chain:` keys belong to the server's chained export — same answer as a reuse.
+            if (created.kind === "reserved_key") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            const job = created.job;
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
               ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"

@@ -590,8 +590,15 @@ export const HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX =
 /** Internal vendors behind managed, product-funded features (RunPod = Hero AI Image, OmniVoice
  *  = Hero AI Voice). `errorProvider` exists so a customer knows which of THEIR OWN keys to fix;
  *  these have no customer key, and their vendor names stay private (PR-A security low S5). BYOK
- *  providers (heygen, elevenlabs, gemini, …) keep the field. */
-const MANAGED_ERROR_PROVIDERS = new Set(["runpod", "omnivoice"]);
+ *  providers (heygen, elevenlabs, gemini, …) keep the field. Matched by provider FAMILY (prefix,
+ *  case-insensitive) so a writer's variant label (`runpod-hero-image`, `omnivoice-…`) can never
+ *  leak the vendor name (R-T8-3). */
+const MANAGED_ERROR_PROVIDER_FAMILIES = ["runpod", "omnivoice"] as const;
+
+function isManagedErrorProvider(provider: string): boolean {
+  const normalized = provider.trim().toLowerCase();
+  return MANAGED_ERROR_PROVIDER_FAMILIES.some((family) => normalized.startsWith(family));
+}
 
 export interface FailedJobFields {
   errorCode: string;
@@ -649,12 +656,20 @@ function jobHadAvatar(inputJson: string): boolean {
  * preview+export chain) passes every job id in the chain instead — the query below already
  * takes a list so T8 needs no shape change here. Every RenderJob it reads is additionally
  * filtered to `job.userId`, so a chain-building bug can never pull in another tenant's row.
+ *
+ * T8 `opts` (R-T8-2), both optional and absent for every pre-P1 caller:
+ *  - `exportMode`: the failing row is the export half of an MCP chain — the copy map's export
+ *    wording ("ส่งออกวิดีโอไม่สำเร็จ…"), exactly what the Editor shows for a failed export.
+ *  - `avatarSourceInputJson`: the chain preview's inputJson, so an export that fails after an
+ *    avatar preview still carries the HeyGen BYOK notice (the export row has no avatar input).
  */
 export async function deriveFailedJobFields(
   job: FailedJobLike,
   chainJobIds: string[],
+  opts: { exportMode?: boolean; avatarSourceInputJson?: string | null } = {},
 ): Promise<FailedJobFields> {
-  const hadAvatar = jobHadAvatar(job.inputJson);
+  const hadAvatar = jobHadAvatar(job.inputJson)
+    || (typeof opts.avatarSourceInputJson === "string" && jobHadAvatar(opts.avatarSourceInputJson));
   const appendAvatarNotice = (userAction: string): string =>
     hadAvatar ? `${userAction} ${HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX}` : userAction;
 
@@ -675,7 +690,7 @@ export async function deriveFailedJobFields(
       reservationRefundPending: job.reservationRefundPending,
     };
     const kind = classifyFailure(failureJob);
-    const copy = failureViewCopy(kind, failureJob, false);
+    const copy = failureViewCopy(kind, failureJob, opts.exportMode === true);
     message = copy.heading;
     userAction = appendAvatarNotice(copy.body);
   }
@@ -697,7 +712,7 @@ export async function deriveFailedJobFields(
 
   return {
     errorCode,
-    ...(job.errorProvider && !MANAGED_ERROR_PROVIDERS.has(job.errorProvider.toLowerCase())
+    ...(job.errorProvider && !isManagedErrorProvider(job.errorProvider)
       ? { errorProvider: job.errorProvider }
       : {}),
     message,
