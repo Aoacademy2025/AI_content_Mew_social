@@ -18,3 +18,8 @@ We decided that, behind `MCP_EDITOR_PROJECT`, an MCP create now builds an Agent-
 - MCP and web clips have identical structure, and the once-per-video charge stays on the proven `isBurnAlreadyPaid` path.
 - Delivery takes slightly longer because the export is a second queued job.
 - Cancelling or failing either half must be reported against the original `jobId`.
+
+## Implementation notes (2026-10-01, PR #566)
+
+- The gate is `isInternalAiBetaEnabledFor(user, MCP_EDITOR_PROJECT_PUBLIC === "1")`, evaluated at create time. With the variable unset, only internal-beta accounts get the new path.
+- Money rule (Mew, 2026-10-01): when the export half fails or is canceled, the completed base render stays charged, the same as on the web (Q10). The customer recovers by re-exporting from `editorUrl`. Hero AI Image credits on a user cancel follow the same rule in #567.
