@@ -1105,6 +1105,12 @@ const CARD_SPAN_RESYNC_CHARS = 400;
 //       ("operate" + "house"), but "การบ้าน" (homework) is one ICU word, so the cut is
 //       refused; "ต้องการ" + "ให้" → "การให้" is two ICU words, so that cut stays available.
 const CARD_NOMINALIZING_PREFIXES = ["เครื่อง", "ความ", "ชาว", "ช่าง", "การ", "ผู้", "นัก"];
+// Forward-binding segments: a segment EXACTLY equal to an entry never allows a break after it
+// when Thai follows. ICU lexicalizes the light verb ทำ + nominalizer ความ as one segment
+// "ทำความ" and then splits ความ|สะอาด, so neither rule above sees it — yet ทำความ never stands
+// alone (ทำความสะอาด, ทำความเข้าใจ, ทำความรู้จัก). Session ruling: this one entry only; it is
+// not an exception list for anything rule (a)/(b) decides.
+const CARD_FORWARD_BINDING_SEGMENTS = new Set(["ทำความ"]);
 const CARD_THAI_SCRIPT_CHAR = /[฀-๿]/u;
 
 function bindsToBoundThaiPrefix(
@@ -1112,6 +1118,7 @@ function bindsToBoundThaiPrefix(
   segmentAfter: string,
   isOneWord: (value: string) => boolean,
 ): boolean {
+  if (CARD_FORWARD_BINDING_SEGMENTS.has(segmentBefore)) return true;
   return CARD_NOMINALIZING_PREFIXES.some((prefix) => (
     segmentBefore === prefix
     || (segmentBefore.endsWith(prefix) && isOneWord(prefix + segmentAfter))
@@ -1158,7 +1165,8 @@ export function cardCutBoundaries(fullText: string): number[] {
     if (fullText.startsWith("น.", next) && CARD_CLOCK_TAIL.test(fullText.slice(Math.max(0, boundary - 6), next))) continue;
     // Never cut right after a bound Thai nominalizing/compound prefix when the next segment
     // is itself Thai script with no space in between — rules (a)/(b) in the constant's doc
-    // comment above (ความ|สัมพันธ์, ทำการ|บ้าน refused; ต้องการ|ให้, หนัก|มาก allowed).
+    // comment above (ความ|สัมพันธ์, ทำการ|บ้าน, ทำความ|สะอาด refused; ต้องการ|ให้, หนัก|มาก
+    // allowed).
     if (next === boundary && CARD_THAI_SCRIPT_CHAR.test(ch) && bindsToBoundThaiPrefix(
       fullText.slice(boundaries[index - 1], boundary),
       fullText.slice(boundary, boundaries[index + 1] ?? fullText.length),

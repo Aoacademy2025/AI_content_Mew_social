@@ -253,17 +253,9 @@ for (const effect of ["karaoke", "highlight"] as const) {
 //       prefix + the next segment as ONE word-like segment, i.e. a dictionary compound
 //       (ทำการ|บ้าน → การบ้าน). No hand-written exception list.
 {
-  const wordSegmenter = new Intl.Segmenter("th", { granularity: "word" });
-  const oneWord = (value: string) => {
-    const parts = Array.from(wordSegmenter.segment(value));
-    return parts.length === 1 && parts[0].isWordLike === true;
-  };
-  // H5) The ICU facts rule (b) rests on — if a runtime's ICU dictionary ever disagrees,
-  // this names the cause instead of failing H1 obscurely.
-  check(oneWord("การบ้าน"), "H5: ICU reads การบ้าน (homework) as one dictionary word");
-  for (const pair of ["การให้", "การนี้", "ความนี้", "นักมาก", "การลูกค้า", "ความนั้น"]) {
-    check(!oneWord(pair), `H5: ICU does NOT read ${JSON.stringify(pair)} as one word`);
-  }
+  // H5 (removed): this section used to pin raw ICU segmentations ("การบ้าน is one word"),
+  // which can differ between ICU versions (CI runs Node 22, local runs Node 26). Every
+  // assertion below checks our rule's OUTCOME on a concrete sentence instead.
 
   // H6) Whole words that merely END in a prefix no longer refuse a following word that does
   // not form a compound with that prefix.
@@ -298,6 +290,26 @@ for (const effect of ["karaoke", "highlight"] as const) {
   ] as const) {
     check(!cardCutBoundaries(text).includes(text.indexOf(afterPrefix)), `H7: an exact-prefix segment still refuses the break before ${JSON.stringify(afterPrefix)} in ${JSON.stringify(text)}`);
   }
+}
+
+// ── H8) Forward-binding segment (session ruling): ICU lexicalizes the light verb +
+// nominalizer "ทำความ" as ONE segment and then splits ความ|สะอาด, so neither prefix rule
+// sees it. ทำความ never stands alone (ทำความสะอาด / ทำความเข้าใจ / ทำความรู้จัก), so a break
+// right after it is refused. Neighbouring whole words ending in ความ stay breakable.
+{
+  for (const text of [
+    "ทุกเช้าแม่ทำความสะอาดบ้านก่อนออกไปทำงาน",
+    "เราควรทำความเข้าใจปัญหานี้ให้ตรงกันก่อน",
+  ]) {
+    const afterVerb = text.indexOf("ทำความ") + "ทำความ".length;
+    check(!cardCutBoundaries(text).includes(afterVerb), `H8: never breaks right after ทำความ in ${JSON.stringify(text)}`);
+    for (const size of [80, 60] as const) {
+      const broken = applyDisplayLineBreak(text, size);
+      check(!broken.includes("ทำความ\n"), `H8 size ${size}: the display break never lands after ทำความ (got ${JSON.stringify(broken)})`);
+    }
+  }
+  const article = "เรื่องราวในบทความนี้ทำให้หลายคนคิดได้";
+  check(cardCutBoundaries(article).includes(article.indexOf("บทความ") + "บทความ".length), "H8: บทความ|นี้ is still allowed (the set matches whole segments only)");
 }
 
 // ── I) Tie-break (fix round 1): among near-balanced candidates, prefer a boundary at a
