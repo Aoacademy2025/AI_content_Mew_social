@@ -38,6 +38,9 @@ import {
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
+import { resolveMcpSubtitleDesign } from "@/lib/mcp/orchestrator-steps";
+import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 import { mcpBrollJobFields, mcpBrollSource } from "@/lib/mcp/broll-source";
@@ -133,7 +136,8 @@ const handler = createMcpHandler(
     server.registerTool(
       "get_video_options",
       { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/B-roll/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
-      async (_args, extra) => runTool("get_video_options", extra, async (p) => getVideoOptions(pipelineCaller(p.userId), p.user)),
+      async (_args, extra) => runTool("get_video_options", extra, async (p) =>
+        getVideoOptions(pipelineCaller(p.userId), p.user, await listActiveBrandProfilesForMcp(p.userId))),
     );
 
     server.registerTool(
@@ -268,6 +272,40 @@ const handler = createMcpHandler(
           if (!geminiVoiceStyleGateOpen && args.geminiVoiceStyle && args.geminiVoiceStyle !== "neutral") {
             warnings.push("โหมดสไตล์เสียง Gemini (geminiVoiceStyle) ยังไม่เปิดใช้งานสำหรับบัญชีนี้ ใช้เสียงปกติ (neutral) แทน");
           }
+          // T4: Brand Subtitle Style — owner-checked, active-only (resolveMcpBrandSubtitleStyle).
+          // A foreign or inactive brandProfileId refuses identically (never reveals which it was).
+          // Without an explicit id: one active brand auto-picks; more than one only warns (never
+          // guesses which). This affects the subtitle look only — never voice, visuals or logo.
+          let brandSubtitleStyle: SubtitleStylePresetConfig | null = null;
+          if (args.brandProfileId) {
+            const brandLookup = await resolveMcpBrandSubtitleStyle(p.userId, args.brandProfileId);
+            if (!brandLookup.found) {
+              return { error: "brand_not_found", message: "ไม่พบแบรนด์นี้ หรือยังใช้ไม่ได้ในขณะนี้" };
+            }
+            brandSubtitleStyle = brandLookup.style;
+          } else {
+            const activeBrands = await listActiveBrandProfilesForMcp(p.userId);
+            if (activeBrands.length === 1) {
+              const soleBrandLookup = await resolveMcpBrandSubtitleStyle(p.userId, activeBrands[0].brandProfileId);
+              brandSubtitleStyle = soleBrandLookup.found ? soleBrandLookup.style : null;
+            } else if (activeBrands.length > 1) {
+              warnings.push(`มีแบรนด์ให้เลือก ${activeBrands.length} แบรนด์ — ระบุ brandProfileId เพื่อใช้สไตล์ซับของแบรนด์`);
+            }
+          }
+          // Resolution order: explicit MCP args → Brand Subtitle Style → DEFAULT_V2_SUB.
+          // Persisted into job inputJson below so the orchestrator cuts cards once for the
+          // real size and the burned overlay matches it (T4 Global Constraints).
+          const { design: resolvedSubtitleDesign, cardLen: resolvedSubtitleCardLen } = resolveMcpSubtitleDesign(
+            {
+              subtitleSize: args.subtitleSize,
+              subtitleStyle: args.subtitleStyle,
+              subtitleColor: args.subtitleColor,
+              subtitleAccentColor: args.subtitleAccentColor,
+              subtitlePosition: args.subtitlePosition,
+              subtitleMode: args.subtitleMode,
+            },
+            brandSubtitleStyle,
+          );
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
           const avatarLayout =
             avatar.kind === "ok"
@@ -298,6 +336,8 @@ const handler = createMcpHandler(
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
                 ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
                 ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
+                subtitleDesign: resolvedSubtitleDesign,
+                subtitleCardLen: resolvedSubtitleCardLen,
                 ...brollFields,
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },

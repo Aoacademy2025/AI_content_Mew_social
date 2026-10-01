@@ -28,7 +28,10 @@ import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { withTransientDbRetry } from "@/lib/prisma-transient-retry";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
-import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import {
+  normalizeSubtitleStylePresetConfig,
+  type SubtitleStylePresetConfig,
+} from "@/lib/editor-style-preset-contract";
 import { normalizeHexColor } from "@/lib/hex-color";
 import {
   parseProjectLook,
@@ -722,6 +725,64 @@ export async function resolveBrandProfileRevisionForNewProjectInTransaction(
     );
   }
   return { revisionId: revision.id, payload: parsedStoredPayload(revision.payloadJson) };
+}
+
+export type McpActiveBrandProfileSummary = { brandProfileId: string; name: string };
+
+/** "Active" for the MCP subtitle-style read (T4): published (revision > 0), not
+ *  archived, not frozen — the same three conditions
+ *  `resolveBrandProfileRevisionForNewProjectInTransaction` checks (profile lookup +
+ *  `activeRevisionNumber <= 0` + the frozen-set membership), without its plan-cap
+ *  reconciliation side effects: reading a subtitle default never needs to gate on
+ *  seat availability, and must never throw PREFERRED_REQUIRED/FROZEN for a tool call
+ *  that only wants to know which brands are selectable right now. */
+function activeMcpBrandProfileWhere(userId: string): Prisma.BrandProfileWhereInput {
+  return { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null, frozenAt: null };
+}
+
+/** The caller's own active brands, for `get_video_options.subtitle.brands` and the
+ *  single-brand auto-pick / multi-brand warning in `create_video_job`. */
+export async function listActiveBrandProfilesForMcp(userId: string): Promise<McpActiveBrandProfileSummary[]> {
+  const profiles = await prisma.brandProfile.findMany({
+    where: activeMcpBrandProfileWhere(userId),
+    orderBy: ACTIVE_BRAND_PROFILE_ORDER,
+    select: { id: true, name: true },
+  });
+  return profiles.map((profile) => ({ brandProfileId: profile.id, name: profile.name }));
+}
+
+export type McpBrandSubtitleLookup =
+  | { found: true; style: SubtitleStylePresetConfig | null }
+  | { found: false };
+
+/** Owner-checked, subtitle-style-only read of one Brand Profile for MCP create (T4).
+ * A foreign id and an inactive one (not found, unpublished, archived or frozen) both
+ * come back `{ found: false }` — indistinguishable, so the caller can never learn
+ * whether a brandProfileId exists from the error alone. This never binds voice,
+ * visuals or logo: only the active revision's own subtitle preset is read, mirroring
+ * `applyBrandRevisionDefaultsToProjectDraft`'s `brandSubtitleDefault` derivation
+ * without applying the rest of that function's draft defaults. */
+export async function resolveMcpBrandSubtitleStyle(
+  userId: string,
+  brandProfileId: string,
+): Promise<McpBrandSubtitleLookup> {
+  const profile = await prisma.brandProfile.findFirst({
+    where: { id: brandProfileId, ...activeMcpBrandProfileWhere(userId) },
+    select: { id: true, activeRevisionNumber: true },
+  });
+  if (!profile) return { found: false };
+  const revision = await prisma.brandProfileRevision.findUnique({
+    where: { brandProfileId_version: { brandProfileId: profile.id, version: profile.activeRevisionNumber } },
+    select: { payloadJson: true },
+  });
+  if (!revision) return { found: true, style: null };
+  try {
+    const parsed = storedBrandProfilePayloadSchema.safeParse(JSON.parse(revision.payloadJson));
+    if (!parsed.success) return { found: true, style: null };
+    return { found: true, style: normalizeSubtitleStylePresetConfig(parsed.data.subtitle.config) };
+  } catch {
+    return { found: true, style: null };
+  }
 }
 
 async function assertBrandProfileWritableInTransaction(

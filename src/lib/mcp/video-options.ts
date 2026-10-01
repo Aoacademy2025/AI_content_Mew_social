@@ -2,6 +2,8 @@ import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
 import { HEYGEN_EXTERNAL_COST_DISCLOSURE, HEYGEN_ENGINE_LABELS, type HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
+import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import type { McpActiveBrandProfileSummary } from "@/lib/brand-profile-library.server";
 
 async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
@@ -53,6 +55,10 @@ export async function getVideoOptions(
     geminiVoiceName: string | null;
     elevenlabsVoiceId: string | null;
   },
+  // The caller's active brands (T4): the route looks these up (brand-profile-library.server
+  // is a DB/server module this pure, caller+plain-fields function never imports) and passes
+  // them through so get_video_options stays easy to unit test without a database.
+  subtitleBrands: McpActiveBrandProfileSummary[] = [],
 ) {
   // Fetch the (slow, external) sources concurrently so the wizard isn't blocked ~30s+ serially.
   const [music, avatars, elevenlabs] = await Promise.all([
@@ -130,6 +136,14 @@ export async function getVideoOptions(
     },
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
+    // T4: resolution order is explicit args → Brand Subtitle Style → default below.
+    subtitle: {
+      sizeRange: [30, 160] as const,
+      default: DEFAULT_V2_SUB.fontSize,
+      styles: V2_QUICK_STYLES.map((style) => ({ id: style.key, label: style.label, desc: style.desc })),
+      howToChoose: "ไม่ต้องระบุ subtitleSize/subtitleStyle/subtitleColor/subtitleAccentColor ก็ได้ — ใช้สไตล์ของแบรนด์ (ถ้ามี) หรือค่าเริ่มต้น",
+      brands: subtitleBrands,
+    },
     broll: {
       default: "stock" as const,
       howToChoose: "ถามผู้ใช้ว่าจะใช้ภาพแบบไหน แล้วส่ง brollSource ตอน create_video_job ไม่ส่ง = วิดีโอสต็อกฟรี",
