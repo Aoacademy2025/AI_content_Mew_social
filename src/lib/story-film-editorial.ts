@@ -3,7 +3,8 @@ import {
   normalizeHeadlineHook,
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
-import { cardsByWordCount, maxCardCharsFor } from "@/lib/mcp/orchestrator-steps";
+import { cardsByWordCount } from "@/lib/mcp/orchestrator-steps";
+import { maxCardCharsFor } from "@/lib/card-line-budget";
 import {
   buildCanonicalCaptionsFromAlignedWords,
   hasPlausibleAlignedWordTiming,
@@ -374,6 +375,7 @@ export function captionsForStoryFilmEditorial(input: {
       input.track.words,
       Number(input.editorial.subtitleMode),
       input.track.fullText,
+      input.editorial.subtitleFontSize,
     ).map((caption, index, all) => ({
       ...caption,
       tag: index === 0 ? "hook" : index === all.length - 1 ? "cta" : "body",

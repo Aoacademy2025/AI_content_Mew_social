@@ -2,7 +2,7 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
-import { parseVideoJobOutput, toPublicVideoJobStatus } from "@/lib/mcp/video-job";
+import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields } from "@/lib/mcp/video-job";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 
@@ -116,15 +116,29 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     where: { id: jobId, userId },
     select: {
       id: true,
+      userId: true,
       status: true,
       currentStep: true,
       progress: true,
       outputJson: true,
       errorMessage: true,
+      errorCode: true,
+      errorProvider: true,
+      reservationRefundPending: true,
+      fundingState: true,
+      inputJson: true,
     },
   });
   if (!job) return null;
   const output = parseVideoJobOutput(job.outputJson);
+  // T6: failure transparency — {errorCode, errorProvider?, message, userAction, refunded,
+  // refundPending} per the plan's Global Constraints, only on a FAILED job. `error` (raw
+  // errorMessage) stays exactly as-is for backward compatibility (verify-mcp-audit-status.ts
+  // keys its isInBandError classification on that field's null/non-null value).
+  // Chain = [job.id] only — T6 scope is pre-P1; T8 passes the full preview+export chain.
+  const failure = job.status === "failed"
+    ? await deriveFailedJobFields(job, [job.id])
+    : null;
   return {
     kind: "job" as const,
     jobId: job.id,
@@ -133,6 +147,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     progress: job.progress,
     videoUrl: publicVideoUrl(output?.videoUrl ?? null),
     error: job.errorMessage ?? null,
+    ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: output?.billingReceipt ?? null,
   };

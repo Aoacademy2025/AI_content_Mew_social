@@ -1,11 +1,19 @@
 import { groupTimedCaptionWords } from "../word-caption-groups";
+import { DEFAULT_CARD_SUBTITLE_SIZE } from "../card-line-budget";
 // PURE request-payload builders that reproduce the video-editor's non-avatar
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
 import { stockMoodForProject, pacingForProject, type BrollPreferenceInput, type ResolvedStockMood } from "@/lib/broll-preferences";
 import type { PacingLevel, StylePackId } from "@/lib/style-pack-catalog";
 import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
-import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
+import { buildHeroSubtitleOverlayConfig, type HeroSubtitleDesign } from "@/lib/hero-editorial";
+import type { SubtitleCardLen, SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import {
+  DEFAULT_V2_SUB,
+  V2_QUICK_STYLES,
+  type V2SubConfig,
+} from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import type { EditorExportCardLen, EditorExportSubtitleConfig } from "@/lib/editor-export-snapshot";
 
 /** What one video job's pinned Style Pack resolves to at render time: the
  *  Stock Mood driving B-roll search, and the Pacing driving window cadence /
@@ -137,9 +145,8 @@ export const DEFAULT_STOCK_SOURCE = "both";
 export const RENDER_FPS = 30;
 export const RENDER_JPEG_QUALITY = 85; // 720p
 
-export function maxCardCharsFor(subtitleSize: number = DEFAULT_STYLE.subtitleSize): number {
-  return Math.max(10, Math.floor((1080 - 160) / (subtitleSize * 0.47)));
-}
+// Card Line Budget lives in the pure module so the caption core and renderer share it.
+export { maxCardCharsFor } from "../card-line-budget";
 
 export function buildKeywordsPayload(
   captionTexts: string[],
@@ -246,25 +253,176 @@ type CharWord = { word: string; startMs: number; endMs: number; startChar: numbe
 
 /** Shared word grouping keeps text, numeric punctuation and Thai phrase edges
  * identical to the editor while preserving the provider's word timing. */
-export function cardsByWordCount(words: CharWord[], n: number, fullText: string): OrchCaption[] {
-  return groupTimedCaptionWords(words, n, fullText) as OrchCaption[];
+export function cardsByWordCount(
+  words: CharWord[],
+  n: number,
+  fullText: string,
+  subtitleSize: number = DEFAULT_CARD_SUBTITLE_SIZE,
+): OrchCaption[] {
+  return groupTimedCaptionWords(words, n, fullText, subtitleSize) as OrchCaption[];
 }
 
-export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], audioDurationMs: number, fps: number = RENDER_FPS, topPercent?: number) {
+/** The burned overlay now takes the fully resolved design (T4) instead of building one
+ *  from the MCP-only DEFAULT_STYLE — callers pass `v2SubConfigToHeroDesign(resolved)`. */
+export function buildBurnConfig(
+  baseVideoUrl: string,
+  captions: OrchCaption[],
+  audioDurationMs: number,
+  design: HeroSubtitleDesign,
+  fps: number = RENDER_FPS,
+) {
   return buildHeroSubtitleOverlayConfig({
     baseVideoUrl,
     captions,
     durationMs: audioDurationMs,
     fps,
-    design: {
-      fontFamily: DEFAULT_STYLE.fontFamily,
-      positionTopPercent: topPercent ?? DEFAULT_STYLE.subtitlePosition,
-      fontSize: DEFAULT_STYLE.subtitleSize,
-      fontWeight: DEFAULT_STYLE.subtitleFontWeight,
-      color: DEFAULT_STYLE.subtitleColor,
-      accentColor: DEFAULT_STYLE.subtitleAccentColor,
-      stylePreset: DEFAULT_STYLE.subtitleStylePreset,
-      textEffect: DEFAULT_STYLE.subtitleTextEffect,
-    },
+    design,
   });
+}
+
+// ── T4: MCP subtitle style resolution ───────────────────────────────────────────────
+// Subtitle style resolution order (Global Constraints): explicit MCP args → Brand
+// Subtitle Style → DEFAULT_V2_SUB. A brand affects only the subtitle look this round —
+// voice, visuals and logo are never touched. Mode/position resolve per field: an
+// explicit subtitleMode/subtitlePosition always beats the brand's cardLen/verticalPos,
+// even when the rest of the design comes from the brand.
+
+/** V2SubConfig (what MCP resolves, and what the web editor already burns) →
+ *  HeroSubtitleDesign (the Remotion burn contract `buildHeroSubtitleOverlayConfig`
+ *  takes). `fontFamily` passes through as the plain family name: the web editor
+ *  burns it unquoted too (`buildV2BurnConfig`), and `SubtitleOverlayComposition`'s
+ *  CSS-stack fallback only applies when it is falsy. `preset`/`effect` and
+ *  `stylePreset`/`textEffect` share one literal id set (`_components/types.ts` vs
+ *  `remotion/types.ts`), so the cast is an identity, not a lookup. */
+export function v2SubConfigToHeroDesign(cfg: V2SubConfig): HeroSubtitleDesign {
+  return {
+    fontFamily: cfg.fontFamily,
+    positionTopPercent: cfg.verticalPos,
+    fontSize: cfg.fontSize,
+    fontWeight: cfg.fontWeight ?? (cfg.bold ? 900 : 400),
+    color: cfg.textColor,
+    accentColor: cfg.accentColor,
+    stylePreset: cfg.preset as HeroSubtitleDesign["stylePreset"],
+    textEffect: cfg.effect as HeroSubtitleDesign["textEffect"],
+    shadow: cfg.shadow,
+    outline: cfg.outline,
+    outlineSize: cfg.outlineSize,
+  };
+}
+
+/** Brand Subtitle Style (an immutable Revision's own persisted preset,
+ * `payload.subtitle.config` normalized) → the same V2SubConfig shape explicit args
+ * and DEFAULT_V2_SUB resolve against. Drops `cardLen`: T4 resolves card length
+ * separately from the rest of the look (see `resolveMcpSubtitleDesign`). */
+export function brandSubtitleStyleToV2SubConfig(preset: SubtitleStylePresetConfig): V2SubConfig {
+  const { cardLen: _cardLen, ...design } = preset;
+  return design;
+}
+
+export type McpSubtitleStyleArgs = {
+  subtitleSize?: number;
+  subtitleStyle?: string;
+  subtitleColor?: string;
+  subtitleAccentColor?: string;
+  subtitlePosition?: "top" | "middle" | "bottom";
+  subtitleMode?: SubtitleCardLen;
+};
+
+/** Resolve one job's subtitle design + card length from explicit MCP args and an
+ * (already looked-up) Brand Subtitle Style. Pure — the brand lookup itself (owner
+ * check, active-only, foreign/inactive refusal) is `resolveMcpBrandSubtitleStyle`
+ * in `brand-profile-library.server.ts`; this function only merges precedence. */
+export function resolveMcpSubtitleDesign(
+  args: McpSubtitleStyleArgs,
+  brandStyle: SubtitleStylePresetConfig | null,
+): { design: V2SubConfig; cardLen: SubtitleCardLen } {
+  const base: V2SubConfig = brandStyle ? brandSubtitleStyleToV2SubConfig(brandStyle) : DEFAULT_V2_SUB;
+  const quickStyle = args.subtitleStyle
+    ? V2_QUICK_STYLES.find((style) => style.key === args.subtitleStyle)
+    : undefined;
+  const design: V2SubConfig = {
+    ...base,
+    ...(quickStyle ? { preset: quickStyle.preset, effect: quickStyle.effect } : {}),
+    ...(args.subtitleSize !== undefined ? { fontSize: args.subtitleSize } : {}),
+    ...(args.subtitleColor ? { textColor: args.subtitleColor } : {}),
+    ...(args.subtitleAccentColor ? { accentColor: args.subtitleAccentColor } : {}),
+    ...(args.subtitlePosition ? { verticalPos: POSITION_TOP_PERCENT[args.subtitlePosition] } : {}),
+  };
+  const cardLen: SubtitleCardLen = args.subtitleMode ?? brandStyle?.cardLen ?? "sentence";
+  return { design, cardLen };
+}
+
+// T7 Part B (session ruling, folded in from the T4 tier-1 review's A2): when a create
+// resolves a Brand Profile (explicit brandProfileId or the single-brand auto pick) whose
+// active revision has no usable subtitle style, resolveMcpSubtitleDesign's `base` silently
+// falls through to DEFAULT_V2_SUB above. The caller gets the default look with no signal
+// that their brand's subtitle style wasn't actually applied — unlike the multi-brand-no-id
+// case, which already warns. This does not change resolution order or the multi-brand
+// warning; it only adds the missing signal for this one path.
+export const BRAND_SUBTITLE_STYLE_MISSING_WARNING =
+  "แบรนด์นี้ยังไม่ได้ตั้งสไตล์ซับ — ใช้สไตล์ซับค่าเริ่มต้นแทน";
+
+/** `brandLookup` is the route's already-performed brand lookup (explicit brandProfileId,
+ * or the single-brand auto-pick) — `null` when no brand was looked up at all (no id and
+ * zero or several active brands; the several-active case has its own warning already).
+ * Fires only when a brand WAS found but its resolved style is null (empty/malformed
+ * `brandSubtitleDefault`), matching exactly the condition under which `base` in
+ * `resolveMcpSubtitleDesign` falls back to `DEFAULT_V2_SUB`. */
+export function brandSubtitleStyleMissingWarning(
+  brandLookup: { found: boolean; style?: SubtitleStylePresetConfig | null } | null,
+): string | null {
+  if (!brandLookup || !brandLookup.found) return null;
+  return brandLookup.style === null ? BRAND_SUBTITLE_STYLE_MISSING_WARNING : null;
+}
+
+export type ResolvedMcpSubtitleJobInput = {
+  subtitleDesign?: V2SubConfig;
+  subtitleCardLen?: SubtitleCardLen;
+  /** Pre-T4 jobs only ever carried the raw arg under this key. */
+  subtitleMode?: string;
+};
+
+/** Read back what `resolveMcpSubtitleDesign` persisted into job `inputJson` (T4). A
+ * job created before this field existed falls back to DEFAULT_V2_SUB and its own
+ * `subtitleMode` — exactly pre-T4 behaviour (DEFAULT_CARD_SUBTITLE_SIZE/DEFAULT_STYLE
+ * for the design, `subtitleMode || "sentence"` for the mode). Both `orchestrator.ts`
+ * burn sites and T3's QA finding read the design/size through this one helper. */
+export function resolvedMcpSubtitleDesignFromInput(
+  input: ResolvedMcpSubtitleJobInput,
+): { design: V2SubConfig; cardLen: SubtitleCardLen } {
+  return {
+    design: input.subtitleDesign ?? DEFAULT_V2_SUB,
+    cardLen: input.subtitleCardLen ?? (input.subtitleMode as SubtitleCardLen | undefined) ?? "sentence",
+  };
+}
+
+/** The subset of a durable export's `editSnapshot` the line-fit check needs — matches
+ *  `EditorExportSnapshot` (`editor-export-snapshot.ts`) structurally without importing its
+ *  runtime (captions/preview are irrelevant here). */
+export type ExportCardLineBudgetEditSnapshot = {
+  subtitleConfig?: Pick<EditorExportSubtitleConfig, "fontSize"> | null;
+  cardLen?: EditorExportCardLen | null;
+};
+
+/**
+ * T3 fix round 1: what is actually burned on an Editor V2 durable export is the creator's
+ * post-phase edit (`editSnapshot.subtitleConfig.fontSize` / `editSnapshot.cardLen` —
+ * `PostPhaseMobile.tsx`'s subtitle-size slider, `buildV2BurnConfig`'s `size: cfg.fontSize`
+ * building the `subtitleOverlayConfig` the server burns), not the SOURCE (preview) job's
+ * resolved design — that design is only correct when the export is unedited. Precedence
+ * is per field, matching `resolveMcpSubtitleDesign`'s own overlay style: `editSnapshot`'s
+ * `fontSize`/`cardLen` win when present, independently of each other, else
+ * `resolvedMcpSubtitleDesignFromInput(sourceInput)` (whose own fallback is `DEFAULT_V2_SUB`
+ * for a legacy/no-design source). Pure: no DB or Remotion import, unit-testable on its own.
+ */
+export function resolveExportCardLineBudget(
+  sourceInput: ResolvedMcpSubtitleJobInput | null | undefined,
+  editSnapshot: ExportCardLineBudgetEditSnapshot | null | undefined,
+): { mode: SubtitleCardLen; size: number } {
+  const base = resolvedMcpSubtitleDesignFromInput(sourceInput ?? {});
+  const size = typeof editSnapshot?.subtitleConfig?.fontSize === "number"
+    ? editSnapshot.subtitleConfig.fontSize
+    : base.design.fontSize;
+  const mode = editSnapshot?.cardLen ?? base.cardLen;
+  return { mode, size };
 }

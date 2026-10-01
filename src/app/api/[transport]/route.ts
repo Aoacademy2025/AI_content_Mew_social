@@ -10,6 +10,8 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
 import { preflightElevenLabs, preflightStockProviders, stockVideoProvidersMayBeUsed } from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -36,6 +38,9 @@ import {
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
+import { resolveMcpSubtitleDesign, brandSubtitleStyleMissingWarning } from "@/lib/mcp/orchestrator-steps";
+import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 import { mcpBrollJobFields, mcpBrollSource } from "@/lib/mcp/broll-source";
@@ -54,8 +59,8 @@ function text(obj: unknown) {
 
 type Extra = { authInfo?: AuthInfo };
 function principalFrom(extra: Extra) {
-  const e = (extra.authInfo?.extra ?? {}) as { userId?: string; effectivePlan?: string; user?: User };
-  return { userId: e.userId, effectivePlan: e.effectivePlan, user: e.user };
+  const e = (extra.authInfo?.extra ?? {}) as { userId?: string; effectivePlan?: string; user?: User; userAgent?: string | null };
+  return { userId: e.userId, effectivePlan: e.effectivePlan, user: e.user, userAgent: e.userAgent ?? null };
 }
 
 // Per-tool guard (PRO/BUSINESS) + audit wrapper.
@@ -66,17 +71,17 @@ async function runTool(
   args?: unknown,
 ) {
   const started = Date.now();
-  const { userId, effectivePlan, user } = principalFrom(extra);
+  const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
   if (!userId || !user || !effectivePlan || !mcpAccessAllowed(effectivePlan)) {
-    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args });
+    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent });
     return text({ error: "plan_required", message: UPSELL });
   }
   try {
     const result = await fn({ userId, user });
-    await recordToolCall({ userId, toolName, status: isInBandError(result) ? "error" : "ok", durationMs: Date.now() - started, requestJson: args });
+    await recordToolCall({ userId, toolName, status: isInBandError(result) ? "error" : "ok", durationMs: Date.now() - started, requestJson: args, userAgent });
     return text(result);
   } catch {
-    await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args });
+    await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent });
     return text({ error: "internal_error", message: "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง" });
   }
 }
@@ -131,7 +136,8 @@ const handler = createMcpHandler(
     server.registerTool(
       "get_video_options",
       { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/B-roll/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
-      async (_args, extra) => runTool("get_video_options", extra, async (p) => getVideoOptions(pipelineCaller(p.userId), p.user)),
+      async (_args, extra) => runTool("get_video_options", extra, async (p) =>
+        getVideoOptions(pipelineCaller(p.userId), p.user, await listActiveBrandProfilesForMcp(p.userId))),
     );
 
     server.registerTool(
@@ -253,6 +259,61 @@ const handler = createMcpHandler(
             }
           }
           const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
+          // Gate like web (jobs/route.ts:585-589): same function, same env var. A denied
+          // non-neutral request is never dropped silently — it falls back to neutral and
+          // the caller is told why (#T5, recon.md §E — MCP used to drop this unconditionally).
+          const geminiVoiceStyleGateOpen = isInternalAiBetaEnabledFor(u, process.env.GEMINI_TTS_38_PUBLIC === "1");
+          const geminiVoiceStyle = geminiVoiceStyleGateOpen
+            ? resolveGeminiVoiceStyle(args.geminiVoiceStyle).id
+            : "neutral";
+          // Every create-time finding lands here; T4 appends more with one line each.
+          const warnings: string[] = [];
+          if (heygenWarning) warnings.push(heygenWarning);
+          if (!geminiVoiceStyleGateOpen && args.geminiVoiceStyle && args.geminiVoiceStyle !== "neutral") {
+            warnings.push("โหมดสไตล์เสียง Gemini (geminiVoiceStyle) ยังไม่เปิดใช้งานสำหรับบัญชีนี้ ใช้เสียงปกติ (neutral) แทน");
+          }
+          // T4: Brand Subtitle Style — owner-checked, active-only (resolveMcpBrandSubtitleStyle).
+          // A foreign or inactive brandProfileId refuses identically (never reveals which it was).
+          // Without an explicit id: one active brand auto-picks; more than one only warns (never
+          // guesses which). This affects the subtitle look only — never voice, visuals or logo.
+          let brandSubtitleStyle: SubtitleStylePresetConfig | null = null;
+          // T7 Part B: the brand lookup that actually resolved (explicit id or the
+          // single-brand auto pick), kept only to decide whether the "brand has no
+          // subtitle style" warning fires. null when no brand was looked up at all.
+          let resolvedBrandLookup: { found: boolean; style?: SubtitleStylePresetConfig | null } | null = null;
+          if (args.brandProfileId) {
+            const brandLookup = await resolveMcpBrandSubtitleStyle(p.userId, args.brandProfileId);
+            if (!brandLookup.found) {
+              return { error: "brand_not_found", message: "ไม่พบแบรนด์นี้ หรือยังใช้ไม่ได้ในขณะนี้" };
+            }
+            brandSubtitleStyle = brandLookup.style;
+            resolvedBrandLookup = brandLookup;
+          } else {
+            const activeBrands = await listActiveBrandProfilesForMcp(p.userId);
+            if (activeBrands.length === 1) {
+              const soleBrandLookup = await resolveMcpBrandSubtitleStyle(p.userId, activeBrands[0].brandProfileId);
+              brandSubtitleStyle = soleBrandLookup.found ? soleBrandLookup.style : null;
+              resolvedBrandLookup = soleBrandLookup;
+            } else if (activeBrands.length > 1) {
+              warnings.push(`มีแบรนด์ให้เลือก ${activeBrands.length} แบรนด์ — ระบุ brandProfileId เพื่อใช้สไตล์ซับของแบรนด์`);
+            }
+          }
+          const missingBrandStyleWarning = brandSubtitleStyleMissingWarning(resolvedBrandLookup);
+          if (missingBrandStyleWarning) warnings.push(missingBrandStyleWarning);
+          // Resolution order: explicit MCP args → Brand Subtitle Style → DEFAULT_V2_SUB.
+          // Persisted into job inputJson below so the orchestrator cuts cards once for the
+          // real size and the burned overlay matches it (T4 Global Constraints).
+          const { design: resolvedSubtitleDesign, cardLen: resolvedSubtitleCardLen } = resolveMcpSubtitleDesign(
+            {
+              subtitleSize: args.subtitleSize,
+              subtitleStyle: args.subtitleStyle,
+              subtitleColor: args.subtitleColor,
+              subtitleAccentColor: args.subtitleAccentColor,
+              subtitlePosition: args.subtitlePosition,
+              subtitleMode: args.subtitleMode,
+            },
+            brandSubtitleStyle,
+          );
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
           const avatarLayout =
             avatar.kind === "ok"
@@ -275,6 +336,7 @@ const handler = createMcpHandler(
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
+                ...(geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle } : {}),
                 ...(avatar.kind === "ok" && avatarLayout
                   ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                       avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
@@ -282,12 +344,15 @@ const handler = createMcpHandler(
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
                 ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
                 ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
+                subtitleDesign: resolvedSubtitleDesign,
+                subtitleCardLen: resolvedSubtitleCardLen,
                 ...brollFields,
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
             );
-            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว", ...(heygenWarning ? { warning: heygenWarning } : {}),
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
+              ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"
                 ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
                 : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };
@@ -302,22 +367,36 @@ const handler = createMcpHandler(
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
 );
 
-function principalAuthInfo(bearerToken: string, principal: McpPrincipal): AuthInfo {
+function principalAuthInfo(bearerToken: string, principal: McpPrincipal, userAgent: string | null): AuthInfo {
   return {
     token: bearerToken,
     scopes: ["heroai:read"],
     clientId: principal.userId,
-    extra: { userId: principal.userId, plan: principal.plan, effectivePlan: principal.effectivePlan, user: principal.user },
+    extra: { userId: principal.userId, plan: principal.plan, effectivePlan: principal.effectivePlan, user: principal.user, userAgent },
   };
 }
 
 // Accept EITHER a Personal Access Token (Claude Code / header-capable clients) OR a Clerk
 // OAuth access token (Claude desktop app via the OAuth connector). Both resolve to the same
 // McpPrincipal, so every tool + the runTool guard work unchanged regardless of how you authed.
-const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
+//
+// T7: carry the client's User-Agent header through to the audit (recordToolCall, via
+// AuthInfo.extra → principalFrom → runTool). Spike result (task-7.md): mcp-handler's
+// streamable-HTTP transport builds a brand new McpServer per HTTP POST (this route has no
+// `sessionIdGenerator`, so it is fully stateless), and the SDK only populates
+// `Server.getClientVersion()` (the MCP `clientInfo` name/version from the "initialize"
+// JSON-RPC method) on the one request that IS that initialize call — never on the separate
+// `tools/call` request a tool handler runs inside. There is no persisted session to read it
+// back from at that point, so clientInfo is not available here; user-agent is, on every
+// request, straight off the Request the SDK already hands verifyToken. The header is
+// untrusted input — recordToolCall/sanitizeUserAgent strips control characters and caps
+// length before it is ever stored.
+const verifyToken = async (req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
+  const userAgent = req.headers.get("user-agent");
+
   // 1. Personal Access Token
   const patPrincipal = await resolveMcpPrincipal(bearerToken);
-  if (patPrincipal) return principalAuthInfo(bearerToken!, patPrincipal);
+  if (patPrincipal) return principalAuthInfo(bearerToken!, patPrincipal, userAgent);
 
   // 2. Clerk OAuth access token (desktop app)
   try {
@@ -326,7 +405,7 @@ const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInf
     if (verified) {
       const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
       const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
-      if (principal) return principalAuthInfo(bearerToken!, principal);
+      if (principal) return principalAuthInfo(bearerToken!, principal, userAgent);
     }
   } catch {
     // not a valid Clerk OAuth token → fall through to 401

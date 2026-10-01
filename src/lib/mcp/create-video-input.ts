@@ -2,6 +2,7 @@ import { z } from "zod";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { GEMINI_VOICE_STYLES } from "@/lib/gemini-voice-styles";
 import { MCP_BROLL_SOURCES } from "@/lib/mcp/broll-source";
+import { V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -12,6 +13,15 @@ const GEMINI_VOICE_STYLE_IDS = GEMINI_VOICE_STYLES.map((style) => style.id) as [
   (typeof GEMINI_VOICE_STYLES)[number]["id"],
   ...(typeof GEMINI_VOICE_STYLES)[number]["id"][],
 ];
+
+// Same catalog the web editor's quick-style buttons use (V2_QUICK_STYLES) — never a
+// second hardcoded list (T4, Global Constraints "New MCP inputs").
+const SUBTITLE_STYLE_IDS = V2_QUICK_STYLES.map((style) => style.key) as [
+  (typeof V2_QUICK_STYLES)[number]["key"],
+  ...(typeof V2_QUICK_STYLES)[number]["key"][],
+];
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 /** Public create_video_job input contract shared by MCP registration and tests. */
 export const createVideoJobInputShape = {
@@ -33,6 +43,13 @@ export const createVideoJobInputShape = {
   bgmVolume: z.number().min(0).max(1).optional(),
   subtitleMode: z.enum(["sentence", "1", "2", "3", "4"]).optional(),
   subtitlePosition: z.enum(["top", "middle", "bottom"]).optional(),
+  subtitleSize: z.number().int().min(30).max(160).optional(),
+  subtitleStyle: z.enum(SUBTITLE_STYLE_IDS).optional()
+    .describe("โทนซับ: viral (เด้งไวรัล) | shadow (เงาเข้ม) | outline (ขอบหนา) | clean (มินิมอล)"),
+  subtitleColor: z.string().regex(HEX_COLOR).optional(),
+  subtitleAccentColor: z.string().regex(HEX_COLOR).optional(),
+  brandProfileId: z.string().max(64).optional()
+    .describe("ใช้สไตล์ซับของแบรนด์นี้ — ถ้ามีแบรนด์ active แบรนด์เดียว ระบบเลือกให้อัตโนมัติโดยไม่ต้องระบุ"),
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()
     .describe("stock = วิดีโอสต็อกฟรี (ค่าเริ่มต้น), hero-ai-image = ภาพ AI ทุกช่วง, automix = สต็อกผสมภาพ AI"),
   idempotencyKey: z.string().max(120).optional(),

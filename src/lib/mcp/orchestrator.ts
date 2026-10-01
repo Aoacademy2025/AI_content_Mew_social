@@ -55,8 +55,11 @@ import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-r
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, createStylePackRenderResolver, type OrchCaption,
-  cardsByWordCount, POSITION_TOP_PERCENT,
+  cardsByWordCount, v2SubConfigToHeroDesign, resolvedMcpSubtitleDesignFromInput,
+  resolveExportCardLineBudget,
 } from "@/lib/mcp/orchestrator-steps";
+import type { V2SubConfig } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
 import { PACING_CADENCE_MULTIPLIER, PACING_MIN_HOLD_SEC } from "@/lib/style-pack-catalog";
 import {
   attemptAvatarComposite,
@@ -97,7 +100,7 @@ import {
   type CutawayBrollSegment,
 } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
-import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
+import { enforceCardLineBudget, type ScriptCard, type TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { avatarBookendDurationViolation, avatarFullDurationViolation } from "@/lib/avatar-duration";
@@ -212,6 +215,15 @@ interface CreateInput {
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
   subtitlePosition?: "top" | "middle" | "bottom";
+  /**
+   * T4: the fully resolved subtitle look (explicit MCP args → Brand Subtitle Style →
+   * DEFAULT_V2_SUB), persisted by the web route at create time so a repaint-on-resume
+   * (checkpoint) or a later QA read never has to re-run resolution. `subtitleMode`/
+   * `subtitlePosition` above stay as the caller's raw request for logging/debugging;
+   * `subtitleCardLen` is the one actually used to split cards.
+   */
+  subtitleDesign?: V2SubConfig;
+  subtitleCardLen?: SubtitleCardLen;
   /** Per-job Gemini voice override (Editor v2) — falls back to user.geminiVoiceName. */
   geminiVoiceName?: string;
   /** Per-job Gemini voice style preset id — validated + beta-gated at the web route. */
@@ -969,8 +981,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   try {
     const job = await prisma.videoJob.findUnique({ where: { id: jobId } });
     if (!job) return;
-    if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
+    // defense-in-depth (IDOR guard) — T6: always carries a code so get_video_status never
+    // surfaces a bare message with errorCode null.
+    if (job.userId !== userId) { await failJob(jobId, { message: "forbidden: job/user mismatch", code: "job_owner_mismatch" }); return; }
     const input = JSON.parse(job.inputJson) as CreateInput;
+    // T4: the fully resolved subtitle look + card length (web route resolved it once at
+    // create time from explicit args → Brand Subtitle Style → DEFAULT_V2_SUB and
+    // persisted it on the job; a pre-T4 job without `subtitleDesign` falls back to the
+    // same default this job would have rendered with before). Read once, used by every
+    // maxCardCharsFor(cardBudgetSize) call in the caption block below and by both burn
+    // call sites — cards are cut once for the real size, and the burned overlay matches it.
+    const { design: resolvedSubtitleDesign, cardLen: resolvedSubtitleCardLen } =
+      resolvedMcpSubtitleDesignFromInput(input);
+    const heroSubtitleDesign = v2SubConfigToHeroDesign(resolvedSubtitleDesign);
+    const cardBudgetSize = resolvedSubtitleDesign.fontSize;
     // HERO-42: the customer asked for a video with no B-roll. Declared once here so
     // every stage below — window planning, keyword extraction, the provider call and
     // the preflight degrade path — reads the same decision.
@@ -1160,6 +1184,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         audioDurationMs: checkpoint.audioDurationMs,
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
         speechCoverage: checkpoint.speechCoverage,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
       });
       // The alignment already ran before the provider wait; the resume path only re-reports
       // it (ADR 0056) and replays the evidence the checkpoint carries.
@@ -1197,7 +1222,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         timings.push([phaseName, previewDuration]);
         emitStage(phaseName, "done", previewDuration);
         const totalPreviewS = (Date.now() - jobStartedAt) / 1000;
-        console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+        console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${resolvedSubtitleCardLen}`);
         await finishJob(jobId, {
           version: 2,
           mode: "preview",
@@ -1248,9 +1273,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       });
 
       await step("burn", 88);
-      const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
       const render = await caller.post<{ jobId: string }>("/api/videos/render", {
-        subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, RENDER_FPS, subTop),
+        subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, heroSubtitleDesign, RENDER_FPS),
         parentJobId: jobId,
       });
       const burnedUrl = await pollRender(
@@ -1272,7 +1296,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       timings.push([phaseName, finalDuration]);
       emitStage(phaseName, "done", finalDuration);
       const totalS = (Date.now() - jobStartedAt) / 1000;
-      console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+      console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${resolvedSubtitleCardLen}`);
       await finishJob(jobId, {
         videoUrl: burnedUrl,
         videoId: created.id,
@@ -1371,7 +1395,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         const res = resolveBgm(rawBgm, bgmTracks);
         if (res.kind === "resolved") input.bgmFile = res.bgmFile;
         else if (res.kind === "none") input.bgmFile = undefined;
-        else { await failJob(jobId, `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`); return; }
+        else { await failJob(jobId, { message: `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`, code: "bgm_not_found" }); return; }
       } catch {
         if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
       }
@@ -1663,12 +1687,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         overlayRetimed = retimedOverlay !== null;
         if (retimedOverlay) exportOverlayConfig = retimedOverlay;
       }
+      // T3 fix round 1: what is actually burned is the creator's post-phase edit
+      // (input.editSnapshot.subtitleConfig.fontSize / .cardLen — PostPhaseMobile.tsx's
+      // subtitle-size slider, buildV2BurnConfig's `size: cfg.fontSize`), not the SOURCE
+      // (preview) job's resolved design — that design is only correct for an UNEDITED
+      // export. resolveExportCardLineBudget prefers editSnapshot per field, falling back
+      // to the same T4 helper every other call site uses (which itself falls back to
+      // DEFAULT_V2_SUB for a legacy/no-design source).
+      const exportCardLineBudget = resolveExportCardLineBudget(sourceInput, input.editSnapshot);
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
         captions: finalCaptions,
         audioDurationMs: exportAudioDurationMs,
         timingSource: exportTimingSource,
         speechCoverage: exportSpeechCoverage,
+        cardLineBudget: exportCardLineBudget,
       });
       if (exportSubtitleQa.status !== "passed") {
         emitTelemetry({
@@ -1892,12 +1925,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+      // Advisory A (T3 fix round 1): this upload job's own resolved design — the web
+      // upload route (jobs/route.ts, mode "upload") never resolves/persists
+      // subtitleDesign/subtitleCardLen the way the MCP route does for T4, and there is no
+      // editSnapshot this early (that only exists on a later export), so
+      // resolvedSubtitleCardLen/cardBudgetSize deterministically fall back to
+      // DEFAULT_V2_SUB's size (80) + input.subtitleMode ?? "sentence" here — still the
+      // best available answer, and these captions skip T1's enforceCardLineBudget entirely
+      // (ASR output straight from /api/videos/transcribe), so they are structurally more
+      // likely to carry an over-budget card than the main TTS path.
       const uploadSubtitleQa = validateSubtitleQuality({
         script: upCaps.map((caption) => caption.text).join(""),
         captions: upCaps,
         audioDurationMs: upDurMs,
         timingSource: "upload_transcription",
         speechCoverage: tx.speechCoverage,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
       });
       if (subtitleQualityShouldFailJob(uploadSubtitleQa)) {
         throw new Error(`ซับจากคลิปไม่ผ่านการตรวจคุณภาพ (${uploadSubtitleQa.status === "failed" ? uploadSubtitleQa.code : "unknown"}) — กรุณาลองใหม่`);
@@ -2290,7 +2333,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // text (timing stays 100% TTS-derived), server-validated verbatim; ANY failure → viralCards
     // null → byte-identical to the old deterministic cards (fail-open). Only sentence mode uses
     // these cards — word modes re-split capRes.words below, so skip the extra call there.
-    const wantsSentenceCards = !input.subtitleMode || input.subtitleMode === "sentence";
+    const wantsSentenceCards = resolvedSubtitleCardLen === "sentence";
     let subtitleTimingSource: SubtitleTimingSource = provider === "elevenlabs"
       ? "provider_alignment"
       : "tts_segment_timing";
@@ -2302,7 +2345,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       try {
         const split = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
           text: fullTextForCards,
-          maxCardChars: maxCardCharsFor(),
+          maxCardChars: maxCardCharsFor(cardBudgetSize),
         });
         viralCards = Array.isArray(split.cards) ? split.cards : null;
       } catch { /* fail-open → deterministic sentence cards */ }
@@ -2312,11 +2355,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 1. The provider clock always renders unless something better is proven. It is exact
     //    by arithmetic for ElevenLabs and deterministic for Gemini/Hero AI Voice.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(cardBudgetSize), viralCards);
     if (!capRes || capRes.captions.length === 0) {
       // The provider returned no usable timing (the tts-gemini single-call fallback):
       // spread the exact narration over the measured duration instead of refusing the clip.
-      capRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor());
+      capRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor(cardBudgetSize));
       subtitleTimingSource = "avatar_script_clock";
     }
     if (!capRes || capRes.captions.length === 0) {
@@ -2368,7 +2411,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         caller,
         audioUrl: tts.voiceUrl,
         narrationText,
-        maxCardChars: maxCardCharsFor(),
+        maxCardChars: maxCardCharsFor(cardBudgetSize),
         budgetMs: subtitleVerifyBudgetMs(),
         audioDurationMs,
         ttsCaptions,
@@ -2403,7 +2446,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     }
     if (acousticAttempt) {
       const selection = selectAcousticSubtitleClock({ text: narrationText,
-        maxCardChars: maxCardCharsFor(), existingTimingSource: subtitleTimingSource,
+        maxCardChars: maxCardCharsFor(cardBudgetSize), existingTimingSource: subtitleTimingSource,
         result: await acousticAttempt,
         // Measure the remote alignment against the acoustic clock before either
         // renders. Report only — the selection above does not read it.
@@ -2459,18 +2502,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const subtitleVerification = subtitleVerificationEvidence(verification);
 
     const baseCaptions = capRes.captions as OrchCaption[];
-    const rawWordModeCaptions = (input.subtitleMode && input.subtitleMode !== "sentence")
-      ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
+    const rawWordModeCaptions = resolvedSubtitleCardLen !== "sentence"
+      ? cardsByWordCount(capRes.words, parseInt(resolvedSubtitleCardLen), capRes.fullText, cardBudgetSize)
       : baseCaptions;
     const wordModeCaptions = verification.acoustic?.applied
       ? mergeShortAcousticCards(mergeUncertainCaptionCards(rawWordModeCaptions,
-          verification.acoustic.uncertainRanges ?? [], capRes.fullText, maxCardCharsFor()),
+          verification.acoustic.uncertainRanges ?? [], capRes.fullText, maxCardCharsFor(cardBudgetSize)),
           capRes.fullText, SUBTITLE_MIN_CARD_MS)
       : rawWordModeCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
+    // 2b. Card Line Budget, once over the finished track (after LLM cards and merges): an
+    //     over-budget card splits at Thai word boundaries; everything else is untouched.
+    const budgetedCaptions = enforceCardLineBudget(wordModeCaptions, capRes.words, capRes.fullText,
+      resolvedSubtitleCardLen, cardBudgetSize);
     // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
     //    monotonic, never shorter than the render floor.
-    const repairedTiming = repairCaptionTiming(wordModeCaptions, durMs);
+    const repairedTiming = repairCaptionTiming(budgetedCaptions, durMs);
     const captions = repairedTiming.captions;
     const subtitleQa = validateSubtitleQuality({
       script: capRes.fullText,
@@ -2478,6 +2525,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       audioDurationMs: durMs,
       timingSource: subtitleTimingSource,
       speechCoverage: subtitleSpeechCoverage,
+      cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
     });
     if (subtitleQa.status !== "passed") {
       emitTelemetry({
@@ -2890,7 +2938,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       timings.push([phaseName, previewDuration]);
       emitStage(phaseName, "done", previewDuration);
       const totalPreviewS = (Date.now() - jobStartedAt) / 1000;
-      console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+      console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${resolvedSubtitleCardLen}`);
       await finishJob(jobId, {
         version: 2,
         mode: "preview",
@@ -2938,9 +2986,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await step("burn", 88);
-    const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
-      subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop),
+      subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, heroSubtitleDesign, RENDER_FPS),
       parentJobId: jobId,
     });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
@@ -2960,7 +3007,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     timings.push([phaseName, finalDuration]);
     emitStage(phaseName, "done", finalDuration); // final phase (burn) done
     const totalS = (Date.now() - jobStartedAt) / 1000;
-    console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+    console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${resolvedSubtitleCardLen}`);
 
     await finishJob(jobId, {
       videoUrl: burnedUrl,

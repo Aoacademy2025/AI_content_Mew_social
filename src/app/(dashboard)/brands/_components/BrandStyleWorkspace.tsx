@@ -89,7 +89,7 @@ export function BrandStyleWorkspace({ draft, library, disabled, onSelect, onForm
             <dt className="text-muted-foreground">จังหวะ</dt><dd>{pack ? ({ slow: "ช้า", normal: "ปกติ", fast: "เร็ว" }[pack.pacing]) : "ตามการตั้งค่าคลิป"}</dd>
           </dl>
           <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="ชุดสีที่เลือก">{draft.visual.palette.map((color, i) => <span key={`${color}-${i}`} title={color} className="h-5 w-5 rounded-full border border-border" style={{ backgroundColor: color }} />)}</div>
-          <details className="mt-3"><summary className="cursor-pointer py-2 text-xs text-muted-foreground">ดูตัวอย่างซับ</summary><div className="mt-2 rounded-lg bg-zinc-900 px-3 py-4 text-center" aria-label="ตัวอย่างตัวอักษรซับ">{renderSubtitle("ทุกเรื่องเริ่มต้นได้", config.textColor, 20, false, config.preset, config.fontFamily, config.fontWeight, -1, 60, config.effect, config.accentColor, { shadow: config.shadow, outline: config.outline, outlineSize: config.outlineSize })}</div>
+          <details className="mt-3"><summary className="cursor-pointer py-2 text-xs text-muted-foreground">ดูตัวอย่างซับ</summary><div className="mt-2 rounded-lg bg-zinc-900 px-3 py-4 text-center" aria-label="ตัวอย่างตัวอักษรซับ">{renderSubtitle("ทุกเรื่องเริ่มต้นได้", config.textColor, 20, false, config.preset, config.fontFamily, config.fontWeight, -1, 60, config.effect, config.accentColor, { shadow: config.shadow, outline: config.outline, outlineSize: config.outlineSize, lineBudgetSize: config.fontSize })}</div>
           <p className="mt-1 text-[11px] leading-5 text-muted-foreground">ตัวอย่างสีและตัวอักษร · จังหวะซับดูในคลิปจริง</p></details>
         </div>
       </div>

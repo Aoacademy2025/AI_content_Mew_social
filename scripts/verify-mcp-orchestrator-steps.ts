@@ -1,8 +1,9 @@
 //   npx tsx scripts/verify-mcp-orchestrator-steps.ts
 import {
   DEFAULT_STYLE, maxCardCharsFor, buildKeywordsPayload, buildStockPayload,
-  buildConfigPayload, buildBurnConfig,
+  buildConfigPayload, buildBurnConfig, v2SubConfigToHeroDesign,
 } from "../src/lib/mcp/orchestrator-steps";
+import { DEFAULT_V2_SUB } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -64,12 +65,17 @@ assert(cfg.voiceFile === "/v.mp3" && cfg.audioDurationMs === 2000, "config paylo
 assert(cfg.subtitleStylePreset === DEFAULT_STYLE.subtitleStylePreset && cfg.fontFamily === DEFAULT_STYLE.fontFamily, "config uses default style");
 assert(JSON.stringify(cfg.sceneClipCounts) === JSON.stringify([1, 1]), "config sceneClipCounts passthrough");
 
-const burn = buildBurnConfig("/base.mp4", caps, 2000, 30);
+// T4: buildBurnConfig now takes the resolved design directly (DEFAULT_V2_SUB here) instead
+// of building one from the MCP-only DEFAULT_STYLE — a deliberate visual change. DEFAULT_V2_SUB
+// differs from the old DEFAULT_STYLE (fontSize/verticalPos happen to match; shadow is now on).
+const defaultDesign = v2SubConfigToHeroDesign(DEFAULT_V2_SUB);
+const burn = buildBurnConfig("/base.mp4", caps, 2000, defaultDesign, 30);
 assert(burn.videoUrl === "/base.mp4" && burn.durationInFrames === 60, "burn durationInFrames = round(ms/1000*fps)");
 assert(burn.keywordPopups.length === 2, "one popup per caption");
 const p0 = burn.keywordPopups[0];
 assert(p0.start === 0 && p0.end === 30 && p0.isHighlight === true && p0.tag === "hook", "popup frame timing + hook highlight");
-assert(p0.size === DEFAULT_STYLE.subtitleSize && p0.topPercent === DEFAULT_STYLE.subtitlePosition, "popup uses default style");
+assert(p0.size === DEFAULT_V2_SUB.fontSize && p0.topPercent === DEFAULT_V2_SUB.verticalPos, "popup uses the resolved (DEFAULT_V2_SUB) design, not the old MCP-only DEFAULT_STYLE");
+assert(burn.subtitleShadow === true, "DEFAULT_V2_SUB turns the shadow on — a deliberate visual change from the old default (off)");
 
 // relevanceSpec is forwarded into the stock payload when present
 {

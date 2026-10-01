@@ -336,6 +336,18 @@ async function main() {
     "M2: apply(logo preset) is wired to the same canRunProjectOperation readiness check every other project mutation already gates on",
   );
 
+  // T2 (MCP upgrade plan) advisory A1: applyCardLen used to call regroupCaptions without a
+  // size, so the web word-mode regroup always budgeted at 80 regardless of the editor's
+  // own configured subtitle size (cfg.fontSize). It must pass it through.
+  const applyCardLenMatch = postPhaseEditorSource.match(/function applyCardLen\([\s\S]*?\n {2}\}/);
+  ok(!!applyCardLenMatch, "usePostPhaseEditor still defines applyCardLen");
+  ok(
+    /regroupCaptions\(originalCapsRef\.current, len, preview\?\.words, preview\?\.fullText, cfg\.fontSize\)/.test(
+      applyCardLenMatch![0],
+    ),
+    "A1: applyCardLen passes the editor's current subtitle size into regroupCaptions's Card Line Budget",
+  );
+
   const stylePresetsHookSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/useEditorStylePresets.ts",
     "utf8",

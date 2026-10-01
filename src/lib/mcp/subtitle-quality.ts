@@ -11,6 +11,7 @@ import {
   subtitleTimingRequiresSpeechCoverage,
   type SubtitleSpeechCoverage,
 } from "@/lib/subtitle-speech-coverage";
+import { fitsCardLineBudget } from "@/lib/card-line-budget";
 
 export type SubtitleTimingSource =
   | "provider_alignment"
@@ -38,7 +39,8 @@ export type SubtitleQualityCode =
   | "speech_coverage_incomplete"
   | "broken_thai_grapheme"
   | "punctuation_only_card"
-  | "card_too_short";
+  | "card_too_short"
+  | "card_exceeds_line_budget";
 
 /** Everything a finding carries, shared by `failed` and `warning` (ADR 0056). */
 type SubtitleQualityFinding = {
@@ -68,6 +70,14 @@ export interface SubtitleQualityInput {
   timingSource: SubtitleTimingSource;
   /** Acoustic end-of-speech evidence from the audio that produced these captions. */
   speechCoverage?: SubtitleSpeechCoverage;
+  /**
+   * Card Line Budget (CONTEXT.md) inputs for the T3 line-fit finding — the job's
+   * resolved subtitle mode and size (T4; read back through
+   * `resolvedMcpSubtitleDesignFromInput`, never re-derived here). Omit to skip the
+   * check entirely (a caller that has not resolved these yet) — it is never
+   * promoted to a finding when absent.
+   */
+  cardLineBudget?: { mode: string | null | undefined; size: number };
 }
 
 export interface TranscriptWord {
@@ -1248,6 +1258,28 @@ function classifySubtitleQuality(input: SubtitleQualityInput): SubtitleQualityRe
     }
     if (endMs - startMs < MIN_CARD_MS) {
       return { status: "failed", timingSource: input.timingSource, textExact, code: "card_too_short", captionIndex: index, ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}) };
+    }
+  }
+
+  // Card Line Budget (T3) — lowest precedence of every finding above. It runs last, after
+  // every ADR 0056 measurement/content/timing check, so it can never mask a higher-precedence
+  // code: it only fires when the report would otherwise be `passed`. T1 (final enforceCardLineBudget
+  // pass) and T2 (display-time break) already keep fresh renders inside budget, so in practice
+  // this mainly surfaces legacy jobs and creator-edited cards (CONTEXT.md Card Line Budget).
+  if (input.cardLineBudget) {
+    const { mode, size } = input.cardLineBudget;
+    const overBudgetIndex = input.captions.findIndex(
+      (caption) => !fitsCardLineBudget(caption.text, mode, size),
+    );
+    if (overBudgetIndex >= 0) {
+      return {
+        status: "failed",
+        timingSource: input.timingSource,
+        textExact,
+        code: "card_exceeds_line_budget",
+        captionIndex: overBudgetIndex,
+        ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
+      };
     }
   }
 

@@ -35,6 +35,9 @@ export function renderSubEl(
 ): React.ReactNode {
   // The Remotion renderer expects the final pixel size; scale it here so the
   // preview overlay (e.g. 260/1080 phone frame) matches what gets rendered at 1080.
+  // The unscaled fontSizePx still goes along as lineBudgetSize: the display line break
+  // must be budgeted from the 1080-frame size the burn uses, or the preview never breaks
+  // where the export does (PR-A review B1).
   const scaledSize = Math.max(1, Math.round(fontSizePx * scale));
   const effectiveColor = isAccent ? accentColor : color;
   return renderSubtitle(
@@ -49,6 +52,6 @@ export function renderSubEl(
     captionDurFrames,
     textEffect,
     accentColor,
-    { shadow, outline, outlineSize },
+    { shadow, outline, outlineSize, lineBudgetSize: fontSizePx },
   );
 }

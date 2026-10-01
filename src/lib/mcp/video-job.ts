@@ -25,6 +25,14 @@ import {
 import { compileNarrationPlan } from "@/lib/narration-plan";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
+// Zero-import leaf (same precedent as orchestrator.ts's GENERIC_ERROR_COPY import) — reused
+// here, not duplicated, for the create-path failure message/userAction copy (T6).
+import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
+import {
+  classifyFailure,
+  failureViewCopy,
+  type FailureJobLike,
+} from "@/app/(dashboard)/video-editor/_v2/failure-view";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -557,6 +565,146 @@ export async function failJob(id: string, failure: string | VideoJobFailure) {
   const { refundVideoJobFunding } = await import("@/lib/mcp/video-job-funding");
   await refundVideoJobFunding(id, job.userId, "job-failed");
   return job;
+}
+
+// ── T6: failure transparency for get_video_status ───────────────────────────────────────
+
+/**
+ * errorCode === null covers every legacy row (the 29 historical NULL-code failures, audit
+ * 2026-10-01) AND any future direct status-flip that bypasses `failJob` (e.g. the worker-
+ * restart recovery path in `recoverProcessingJobsAfterWorkerRestart`, which never calls
+ * `failJob`). Mapped to this fixed code at READ time (Global Constraints "Failure fields").
+ */
+export const INTERNAL_JOB_FAILURE_CODE = "internal";
+
+/** Session-authored (plan dispatch) — used ONLY for the internal/null-errorCode fallback. */
+export const INTERNAL_JOB_FAILURE_USER_ACTION =
+  "ระบบขัดข้องชั่วคราว ลองสั่งสร้างใหม่อีกครั้ง หากยังไม่สำเร็จติดต่อทีมงานพร้อมแจ้งรหัสงานนี้";
+
+/** Session-authored (plan dispatch) — appended whenever the failed job had an avatar. HeyGen
+ *  is billed directly to the customer's own BYOK account; our funding/refund system never
+ *  touches that spend, so it stays non-refundable even when the base render funding is. */
+export const HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX =
+  "ค่าใช้จ่าย HeyGen ที่ใช้ไปแล้วคิดจากบัญชี HeyGen ของคุณโดยตรงและไม่สามารถคืนได้";
+
+/** Internal vendors behind managed, product-funded features (RunPod = Hero AI Image, OmniVoice
+ *  = Hero AI Voice). `errorProvider` exists so a customer knows which of THEIR OWN keys to fix;
+ *  these have no customer key, and their vendor names stay private (PR-A security low S5). BYOK
+ *  providers (heygen, elevenlabs, gemini, …) keep the field. */
+const MANAGED_ERROR_PROVIDERS = new Set(["runpod", "omnivoice"]);
+
+export interface FailedJobFields {
+  errorCode: string;
+  errorProvider?: string;
+  message: string;
+  userAction: string;
+  refunded: boolean;
+  refundPending: boolean;
+}
+
+/** The subset of VideoJob columns the derivation reads. */
+export interface FailedJobLike {
+  id: string;
+  /** The job owner. Scopes the RenderJob refund query below, so a chain id list can never
+   *  read another tenant's charge state (PR-A security low S4). */
+  userId: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  errorProvider: string | null;
+  currentStep: string | null;
+  reservationRefundPending: boolean;
+  fundingState: string;
+  inputJson: string;
+}
+
+/** A job "had an avatar" when it was configured to call HeyGen, regardless of which step
+ *  ultimately failed — the BYOK non-refundability fact holds for the whole job, not just
+ *  the avatar step. Mirrors the `CreateInput.avatarMode`/`avatarId` shape without importing
+ *  orchestrator.ts (a heavy, worker-only module this read path should not pull in). */
+function jobHadAvatar(inputJson: string): boolean {
+  try {
+    const parsed = JSON.parse(inputJson) as { avatarMode?: unknown; avatarId?: unknown };
+    return typeof parsed.avatarMode === "string" && parsed.avatarMode !== "none"
+      && typeof parsed.avatarId === "string" && parsed.avatarId.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `{errorCode, errorProvider?, message, userAction, refunded, refundPending}` per the plan's
+ * Global Constraints "Failure fields". Reuses the EXISTING Editor v2 Thai copy map
+ * (`classifyFailure` + `failureViewCopy`, `_v2/failure-view.ts`) for message/userAction so this
+ * module owns no second copy of that taxonomy — the only new copy is the two session-authored
+ * strings above, both reserved for cases that map has no entry for (null code; avatar BYOK
+ * notice). `message` is the map's heading (GENERIC_ERROR_COPY when there is no code) and is
+ * NEVER built from `errorMessage`: that column is diagnostic evidence — classifyUnknownStepFailure
+ * stores scrubbed-but-raw causes there (HTTP status lines, upstream body fragments, server paths,
+ * English debug text), and failure-view.ts's own contract is that it is never echoed to a
+ * customer (PR-A security review S1). The legacy `error` field on get_video_status still
+ * returns errorMessage unchanged; that pre-existing exposure is out of this function's scope.
+ *
+ * `chainJobIds`: the set of VideoJob ids whose RenderJob children count toward "was a clip
+ * actually charged." T6 scope is pre-P1, so this is always `[job.id]` today; T8 (the P1
+ * preview+export chain) passes every job id in the chain instead — the query below already
+ * takes a list so T8 needs no shape change here. Every RenderJob it reads is additionally
+ * filtered to `job.userId`, so a chain-building bug can never pull in another tenant's row.
+ */
+export async function deriveFailedJobFields(
+  job: FailedJobLike,
+  chainJobIds: string[],
+): Promise<FailedJobFields> {
+  const hadAvatar = jobHadAvatar(job.inputJson);
+  const appendAvatarNotice = (userAction: string): string =>
+    hadAvatar ? `${userAction} ${HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX}` : userAction;
+
+  let errorCode: string;
+  let message: string;
+  let userAction: string;
+  if (job.errorCode == null) {
+    errorCode = INTERNAL_JOB_FAILURE_CODE;
+    message = GENERIC_ERROR_COPY;
+    userAction = appendAvatarNotice(INTERNAL_JOB_FAILURE_USER_ACTION);
+  } else {
+    errorCode = job.errorCode;
+    const failureJob: FailureJobLike = {
+      errorCode: job.errorCode,
+      errorMessage: job.errorMessage,
+      errorProvider: job.errorProvider,
+      currentStep: job.currentStep,
+      reservationRefundPending: job.reservationRefundPending,
+    };
+    const kind = classifyFailure(failureJob);
+    const copy = failureViewCopy(kind, failureJob, false);
+    message = copy.heading;
+    userAction = appendAvatarNotice(copy.body);
+  }
+
+  // refunded = !reservationRefundPending && fundingState ∈ {none, refunded}
+  //   && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}
+  // (Global Constraints "Failure fields") — a reservedQuota RenderJob means a clip was
+  // actually charged and never settled back, so the job is NOT refunded regardless of
+  // fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
+  // either way on its own — the RenderJob check is the source of truth for "was a clip spent").
+  const chargedRenderJob = await prisma.renderJob.findFirst({
+    where: { userId: job.userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
+    select: { id: true },
+  });
+  const refundPending = job.reservationRefundPending;
+  const refunded = !refundPending
+    && (job.fundingState === "none" || job.fundingState === "refunded")
+    && !chargedRenderJob;
+
+  return {
+    errorCode,
+    ...(job.errorProvider && !MANAGED_ERROR_PROVIDERS.has(job.errorProvider.toLowerCase())
+      ? { errorProvider: job.errorProvider }
+      : {}),
+    message,
+    userAction,
+    refunded,
+    refundPending,
+  };
 }
 
 /**
