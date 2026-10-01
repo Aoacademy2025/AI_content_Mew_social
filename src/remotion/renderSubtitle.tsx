@@ -390,6 +390,14 @@ export interface SubtitleDecorationOptions {
   shadow?: boolean;
   outline?: boolean;
   outlineSize?: number;
+  /**
+   * The configured subtitle size on the 1080-wide render frame, before any preview scaling.
+   * The display line break (T2) is budgeted from this size, never from the `size` actually
+   * drawn by a scaled preview: renderSubEl draws at fontSizePx × (frame width / 1080) and
+   * passes fontSizePx here, so the preview breaks exactly where the burn does. Absent → `size`
+   * (the burn already passes its 1080-frame size).
+   */
+  lineBudgetSize?: number;
 }
 
 function mergeTextShadow(...parts: Array<React.CSSProperties["textShadow"] | undefined>): string | undefined {
@@ -425,8 +433,13 @@ export function renderSubtitle(
   const scaledSize = resolveSubtitleFontSize(text, size);
   // T2: a display-only balanced break, inserted before protection so karaoke/highlight's
   // tokenLines() and typewriter's grapheme reveal (both below, keyed off sourceText) see
-  // the same `\n` that CSS `pre-line` turns into a second line.
-  const withLineBreak = applyDisplayLineBreak(text, size);
+  // the same `\n` that CSS `pre-line` turns into a second line. Budgeted from the size the
+  // BURN draws on the 1080-wide frame — the unscaled design size passed as lineBudgetSize
+  // (preview) or `size` itself (burn), run through the same fit-mode resolution as the drawn
+  // font — so a scaled preview and the burn break identically, in the configured-size mode
+  // and in the NEXT_PUBLIC_SUBTITLE_FIT_V2=0 rollback alike (PR-A review B1, T2 review F1).
+  const lineBudgetSize = resolveSubtitleFontSize(text, decorations.lineBudgetSize ?? size);
+  const withLineBreak = applyDisplayLineBreak(text, lineBudgetSize);
   const sourceText = withLineBreak;
   text = protectSubtitleWordBreaks(withLineBreak);
   const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));

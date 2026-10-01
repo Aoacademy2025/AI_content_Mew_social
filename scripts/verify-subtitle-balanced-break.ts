@@ -8,6 +8,7 @@
 // calls), both exported from renderSubtitle.tsx — plus the fixture + karaoke/highlight/
 // typewriter integration the plan requires.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -252,6 +253,62 @@ for (const effect of ["karaoke", "highlight"] as const) {
   const text = "ผลสำรวจของ Rocket Media Lab";
   const broken = applyDisplayLineBreak(text, 80);
   check(broken === "ผลสำรวจของ\nRocket Media Lab", `I: tie-break prefers the space boundary that keeps "Rocket Media Lab" whole (got ${JSON.stringify(broken)})`);
+}
+
+// ── J) Preview ≡ burn (PR-A whole-branch review B1, + T2 review F1). The editor preview
+// draws through renderSubEl, which scales the font to the preview frame (V2CaptionOverlay
+// 0.3, v1 260/1080, RightSettingsPanel 220/1080); the burn draws the configured size on the
+// 1080-wide frame. The display break must be budgeted from that 1080-frame size in BOTH, so
+// every fixture card breaks at the same positions in preview and export — in the default
+// configured-size mode AND in the NEXT_PUBLIC_SUBTITLE_FIT_V2=0 rollback, where the burn
+// draws a length-scaled size and must budget from the size it actually draws (F1). Each mode
+// runs in its own process: renderSubtitle reads the flag once, at import.
+{
+  type ParityOutput = {
+    fitV2: boolean;
+    scales: number[];
+    rows: Array<{ size: number; index: number; text: string; burn: string; previews: string[]; atDrawnSize: string }>;
+  };
+  const breakPositions = (value: string) => [...value].flatMap((ch, i) => (ch === "\n" ? [i] : []));
+  for (const flag of ["1", "0"] as const) {
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/fixtures/subtitle-display-break-parity.ts"],
+      { encoding: "utf8", env: { ...process.env, NEXT_PUBLIC_SUBTITLE_FIT_V2: flag }, maxBuffer: 16 * 1024 * 1024 },
+    );
+    check(child.status === 0, `J flag=${flag}: the parity child process exits 0 (stderr: ${child.stderr.slice(0, 300)})`);
+    const line = child.stdout.split("\n").find((l) => l.startsWith("PARITY_JSON "));
+    check(line !== undefined, `J flag=${flag}: the parity child printed its result`);
+    const out = JSON.parse(line.slice("PARITY_JSON ".length)) as ParityOutput;
+    const mode = out.fitV2 ? "configured-size" : "rollback";
+    check(out.fitV2 === (flag !== "0"), `J flag=${flag}: the child ran in ${mode} mode`);
+
+    for (const size of [80, 60]) {
+      const rows = out.rows.filter((row) => row.size === size);
+      check(rows.filter((row) => row.index >= 0).length === 48, `J ${mode} size ${size}: all 48 fixture cards (+ ${rows.filter((row) => row.index < 0).length} long extra) were rendered`);
+      const brokenAtBurn = rows.filter((row) => row.burn.includes("\n")).length;
+      out.scales.forEach((scale, scaleIndex) => {
+        const mismatches = rows
+          .filter((row) => JSON.stringify(breakPositions(row.previews[scaleIndex])) !== JSON.stringify(breakPositions(row.burn))
+            || row.previews[scaleIndex] !== row.burn)
+          .map((row) => `#${row.index} burn=${JSON.stringify(row.burn)} preview=${JSON.stringify(row.previews[scaleIndex])}`);
+        check(
+          mismatches.length === 0,
+          `J ${mode} size ${size}: preview at scale ${scale.toFixed(3)} breaks every card exactly where the burn does (${brokenAtBurn}/${rows.length} broken at burn)${mismatches.length ? `\n    ${mismatches.slice(0, 3).join("\n    ")}` : ""}`,
+        );
+      });
+      const drawnMismatches = rows
+        .filter((row) => row.burn !== row.atDrawnSize)
+        .map((row) => `#${row.index} burn=${JSON.stringify(row.burn)} atDrawnSize=${JSON.stringify(row.atDrawnSize)}`);
+      check(
+        drawnMismatches.length === 0,
+        `J ${mode} size ${size}: the burn budgets its break from the size it actually draws on the 1080 frame${drawnMismatches.length ? `\n    ${drawnMismatches.slice(0, 3).join("\n    ")}` : ""}`,
+      );
+      if (size === 80) {
+        check(brokenAtBurn > 0, `J ${mode} size 80: the parity sweep is not vacuous (${brokenAtBurn} cards carry a display break)`);
+      }
+    }
+  }
 }
 
 console.log("\n✅ SUBTITLE BALANCED LINE BREAK CHECKS PASSED");
