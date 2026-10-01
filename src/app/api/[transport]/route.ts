@@ -109,7 +109,7 @@ const handler = createMcpHandler(
 
     server.registerTool(
       "get_video_status",
-      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video)", inputSchema: { id: z.string().min(1) } },
+      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video) ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้; ถ้ามี editorUrl ให้ส่งลิงก์ \"กดลิงก์นี้เพื่อแก้ต่อในเว็บได้\"; ถ้า failed ให้อธิบายตาม userAction และ refunded/refundPending.", inputSchema: { id: z.string().min(1) } },
       async (args, extra) =>
         runTool("get_video_status", extra, async (p) => {
           const job = await getVideoJobStatusTool(p.userId, args.id);
@@ -143,7 +143,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId) แจ้งผู้ใช้ทุกข้อใน warnings. แบรนด์ (brandProfileId) มีผลกับสไตล์ซับเท่านั้น.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
@@ -373,7 +373,7 @@ const handler = createMcpHandler(
       "cancel_video_job",
       {
         title: "Cancel video job",
-        description: "ยกเลิกงาน (รับ id ของ preview หรือ export ก็ได้ ยกเลิกครึ่งที่กำลังทำงานอยู่) — ถ้าวิดีโอหลักเรนเดอร์เสร็จไปแล้วก่อนยกเลิก ค่าใช้จ่ายส่วนนั้นจะไม่คืน ใช้แทนการสร้างงานใหม่ซ้ำ",
+        description: "ยกเลิกงานวิดีโอที่ยังไม่เสร็จ (ใส่ jobId ที่ได้จาก create_video_job). ยกเลิกหลังเรนเดอร์หลักเสร็จ ส่วนที่เสร็จแล้วยังถูกคิดตามปกติ; ค่า HeyGen คืนไม่ได้.",
         inputSchema: { id: z.string().min(1) },
       },
       async (args, extra) =>
@@ -386,7 +386,7 @@ const handler = createMcpHandler(
         }, args),
     );
   },
-  { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+  { serverInfo: { name: "heroai", version: "0.2.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
 );
 
