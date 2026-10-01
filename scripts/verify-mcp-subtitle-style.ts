@@ -21,6 +21,8 @@ import {
   resolveMcpSubtitleDesign,
   resolvedMcpSubtitleDesignFromInput,
   maxCardCharsFor,
+  brandSubtitleStyleMissingWarning,
+  BRAND_SUBTITLE_STYLE_MISSING_WARNING,
 } from "../src/lib/mcp/orchestrator-steps";
 import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { SubtitleStylePresetConfig } from "../src/lib/editor-style-preset-contract";
@@ -142,6 +144,27 @@ console.log("C) resolvedMcpSubtitleDesignFromInput read-back (T3's QA helper)");
     JSON.stringify(emptyJob.design) === JSON.stringify(DEFAULT_V2_SUB) && emptyJob.cardLen === "sentence");
 }
 
+// ── C2. brandSubtitleStyleMissingWarning (T7 Part B): fires only when a brand WAS
+// resolved (explicit id or single-brand auto-pick) but has no usable subtitle style ──────
+console.log("C2) brandSubtitleStyleMissingWarning (T7 Part B session ruling)");
+{
+  check("no brand looked up at all (no id, no/zero active brands) → no warning",
+    brandSubtitleStyleMissingWarning(null) === null);
+  check("a brand lookup that refused (foreign/archived/frozen/unpublished) → no warning (brand_not_found already returned)",
+    brandSubtitleStyleMissingWarning({ found: false }) === null);
+  check("a resolved brand with a usable subtitle style → no warning",
+    brandSubtitleStyleMissingWarning({
+      found: true,
+      style: { preset: "shadow", effect: "fade", cardLen: "2", fontFamily: "Noto Sans Thai", bold: false,
+        fontWeight: 400, fontSize: 64, textColor: "#000000", accentColor: "#00FF00",
+        shadow: true, outline: false, outlineSize: 2, verticalPos: 30 },
+    }) === null);
+  check("a resolved brand with no usable subtitle style (style: null) → fires the exact warning text",
+    brandSubtitleStyleMissingWarning({ found: true, style: null }) === BRAND_SUBTITLE_STYLE_MISSING_WARNING);
+  check("the warning text matches the plan's session ruling exactly",
+    BRAND_SUBTITLE_STYLE_MISSING_WARNING === "แบรนด์นี้ยังไม่ได้ตั้งสไตล์ซับ — ใช้สไตล์ซับค่าเริ่มต้นแทน");
+}
+
 // ── D. get_video_options.subtitle shape (no DB — brands are passed in) ─────────────────
 async function verifyVideoOptionsSubtitleShape() {
   console.log("D) get_video_options.subtitle shape");
@@ -186,6 +209,10 @@ console.log("E) [transport]/route.ts wiring");
     routeSrc.includes("subtitleDesign: resolvedSubtitleDesign") && routeSrc.includes("subtitleCardLen: resolvedSubtitleCardLen"));
   check("get_video_options forwards the caller's active brands",
     routeSrc.includes("getVideoOptions(pipelineCaller(p.userId), p.user, await listActiveBrandProfilesForMcp(p.userId))"));
+  check("T7 Part B: a resolved brand with no usable subtitle style pushes brandSubtitleStyleMissingWarning into warnings",
+    routeSrc.includes("brandSubtitleStyleMissingWarning("));
+  check("T7 Part B: resolution order and the multi-brand warning are untouched (still exactly one multi-brand push site)",
+    (routeSrc.match(/มีแบรนด์ให้เลือก \$\{activeBrands\.length\} แบรนด์/g) ?? []).length === 1);
 }
 {
   const orchSrc = readFileSync(join(__dirname, "..", "src", "lib", "mcp", "orchestrator.ts"), "utf8");
@@ -274,6 +301,13 @@ async function verifyBrandLookup() {
   const activeNoStyleLookup = await resolveMcpBrandSubtitleStyle(owner.id, activeWithoutStyle.profile.id);
   check("an active, owned brand whose subtitle.config is not a full preset returns {found:true, style:null} (defaults apply)",
     activeNoStyleLookup.found === true && activeNoStyleLookup.style === null);
+
+  // T7 Part B: the session-ruling warning fires on exactly this {found:true, style:null}
+  // shape, and never on a brand that has a real style.
+  check("T7 Part B: the warning fires for the active brand with no usable subtitle style",
+    brandSubtitleStyleMissingWarning(activeNoStyleLookup) === BRAND_SUBTITLE_STYLE_MISSING_WARNING);
+  check("T7 Part B: the warning does NOT fire for the active brand with a valid subtitle style",
+    brandSubtitleStyleMissingWarning(activeLookup) === null);
 
   const ownerBrands = await listActiveBrandProfilesForMcp(owner.id);
   check("listActiveBrandProfilesForMcp returns only active brands (excludes archived/frozen/unpublished)",
