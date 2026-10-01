@@ -131,6 +131,9 @@ export async function getVideoStatusTool(userId: string, videoId: string) {
   };
 }
 
+/** Session-authored (T8 fix round 1, A2) — appended to userAction for an export-half failure. */
+const CHAIN_EXPORT_RETRY_USER_ACTION = "งานเรนเดอร์หลักเสร็จแล้ว — เปิดลิงก์ editorUrl เพื่อสั่ง export ใหม่ได้";
+
 /** Preview share of a chain's progress bar; the export fills the rest (R-T8 status mapping). */
 const CHAIN_PREVIEW_PROGRESS_SHARE = 85;
 
@@ -180,7 +183,7 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
     progress = scaledProgress(exportJob.progress, CHAIN_PREVIEW_PROGRESS_SHARE, 100);
   }
 
-  let failure = null;
+  let failure: Awaited<ReturnType<typeof deriveFailedJobFields>> | null = null;
   if (status === "failed") {
     const failingRow: McpChainRow = chain.conflict
       ? {
@@ -197,7 +200,15 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
     });
   }
   const done = status === "done";
+  // VideoJob.projectId is onDelete: SetNull, so a non-null id means the Agent-created Project
+  // still exists. A2 (fix round 1): the link also rides on an export half that failed or was
+  // canceled — the paid preview is on that Project, so the customer can export it from there.
   const projectId = preview.projectId ?? exportJob?.projectId ?? null;
+  const exportHalfEnded = inExportHalf && (status === "failed" || status === "canceled");
+  const editorUrl = projectId && (done || exportHalfEnded) ? mcpEditorUrl(projectId) : null;
+  if (failure && inExportHalf && editorUrl) {
+    failure = { ...failure, userAction: `${failure.userAction} ${CHAIN_EXPORT_RETRY_USER_ACTION}` };
+  }
   return {
     kind: "job" as const,
     jobId: preview.id,
@@ -211,12 +222,8 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: output?.billingReceipt ?? null,
-    ...(done
-      ? {
-          videoId: output?.videoId ?? null,
-          editorUrl: projectId ? mcpEditorUrl(projectId) : null,
-        }
-      : {}),
+    ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
+    ...(exportHalfEnded && editorUrl ? { editorUrl } : {}),
   };
 }
 

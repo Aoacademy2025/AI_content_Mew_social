@@ -11,6 +11,7 @@ import * as avatarDurationModule from "../src/lib/avatar-duration";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as firstClipPathModule from "../src/lib/first-clip-path";
+import * as mcpChainKeyModule from "../src/lib/mcp/chain-key";
 import * as geminiVoiceStylesModule from "../src/lib/gemini-voice-styles";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
 // HERO-42: the real module, not a hand-written stand-in — it is pure and has no
@@ -2494,6 +2495,8 @@ async function runExactReplayRouteScenario(input: {
       };
     }
     if (specifier === "@/lib/first-clip-path") return firstClipPathModule;
+    // Zero-import leaf (ADR 0063 reserved key namespace) — run the real predicate.
+    if (specifier === "@/lib/mcp/chain-key") return mcpChainKeyModule;
     if (specifier === "@/lib/managed-stock.server") {
       // MANAGED_STOCK off is the default posture this harness replays: the route
       // must still answer a keyless caller with `missing_key: broll`.
@@ -3036,6 +3039,24 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
     crossUserKey.expectedFingerprint,
     "a new job atomically persists its exact request fingerprint",
   );
+
+  // T8 fix round 1 (L3): `mcp-chain:` keys belong to the server-chained MCP export (ADR 0063).
+  // A caller-supplied one is refused before any replay lookup, mutable gate or durable create.
+  for (const body of [
+    { idempotencyKey: "mcp-chain:preview-job-1", script: "same logical attempt", voiceProvider: "gemini" },
+    { idempotencyKey: "mcp-chain:preview-job-1", mode: "export", sourceJobId: "preview-job-1", subtitleOverlayConfig: {} },
+  ] as Array<Record<string, unknown>>) {
+    const reserved = await runExactReplayRouteScenario({ body, failOnMutableGate: true });
+    assert.equal(reserved.response.status, 409, `a reserved mcp-chain: key is refused (${String(body.mode ?? "preview")})`);
+    assert.deepEqual(
+      reserved.responseBody,
+      { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+      "the refusal reuses the route's existing idempotency_conflict shape and copy",
+    );
+    assert.equal(reserved.createCalls.length, 0, "a reserved key never creates a durable job");
+    assert.deepEqual(reserved.replayQueries, [], "a reserved key never reaches the replay lookup");
+    assert.deepEqual(reserved.mutableTouches, [], "a reserved key is refused before any mutable gate");
+  }
 }
 
 async function narrationReviewRequiresDeliberateConfirmedSubmit(): Promise<void> {

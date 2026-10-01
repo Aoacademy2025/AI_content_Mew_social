@@ -100,6 +100,7 @@ import {
 import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-clip-path.server";
 import { requiresFirstClipScript } from "@/lib/first-clip-path";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
+import { isReservedMcpChainIdempotencyKey } from "@/lib/mcp/chain-key";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -241,6 +242,13 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: "idempotency_key_required", message: "ไม่พบรหัสยืนยันคำขอ กรุณาลองใหม่" },
         { status: 400 },
+      );
+    }
+    // ADR 0063: `mcp-chain:` keys belong to the server-chained MCP export; no caller may claim one.
+    if (isReservedMcpChainIdempotencyKey(requestedIdempotencyKey)) {
+      return NextResponse.json(
+        { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+        { status: 409 },
       );
     }
     const operation = videoJobOperationKind(body as Record<string, unknown>);

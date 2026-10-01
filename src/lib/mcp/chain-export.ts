@@ -1,6 +1,6 @@
 import type { Prisma, VideoJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { createVideoJob, parseVideoJobOutput } from "@/lib/mcp/video-job";
+import { INTERNAL_JOB_FAILURE_CODE, createVideoJob, parseVideoJobOutput } from "@/lib/mcp/video-job";
 import { assertCurrentEditorExportSource, createEditorProject } from "@/lib/editor-projects";
 import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
@@ -12,6 +12,14 @@ import {
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { isTransientDbError } from "@/lib/prisma-transient-retry";
+import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
+import {
+  MCP_CHAIN_IDEMPOTENCY_PREFIX,
+  isReservedMcpChainIdempotencyKey,
+  mcpChainExportKey,
+} from "@/lib/mcp/chain-key";
 
 /**
  * T8 (ADR 0063): an MCP video is an Agent-created Project — a Preview Mode job followed by
@@ -27,19 +35,10 @@ import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
  *    so recovery never enqueues after it.
  */
 
-export const MCP_CHAIN_IDEMPOTENCY_PREFIX = "mcp-chain:";
+export { MCP_CHAIN_IDEMPOTENCY_PREFIX, mcpChainExportKey, isReservedMcpChainIdempotencyKey };
 
 /** Draft marker on an Agent-created Project (`EditorProject.draftJson.createdVia`). */
 export const MCP_PROJECT_CREATED_VIA = "mcp";
-
-export function mcpChainExportKey(previewJobId: string): string {
-  return `${MCP_CHAIN_IDEMPOTENCY_PREFIX}${previewJobId}`;
-}
-
-/** Caller-supplied keys may never claim the server's chain namespace. */
-export function isReservedMcpChainIdempotencyKey(key: unknown): boolean {
-  return typeof key === "string" && key.startsWith(MCP_CHAIN_IDEMPOTENCY_PREFIX);
-}
 
 /** R-T8-6: evaluated at create time only. Chain-following never reads this flag. */
 export function mcpEditorProjectEnabledFor(user: { email?: string | null }): boolean {
@@ -359,6 +358,52 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
   };
 }
 
+function isRenderDeployDrain(error: unknown): boolean {
+  if (error instanceof RenderDeployDrainError) return true;
+  const named = error as { name?: unknown; code?: unknown } | null;
+  return named?.name === "RenderDeployDrainError" || named?.code === "render_deploy_drain";
+}
+
+/**
+ * Fix round 1 (L1): only the deploy-drain refusal and SQLite busy/locked/timeouts clear on
+ * their own, so only they stay retryable by recovery (poll / watchdog). Every other error
+ * fails the same way on each retry and would leave get_video_status at processing/85 forever.
+ */
+export function isRetryableMcpChainEnqueueError(error: unknown): boolean {
+  return isRenderDeployDrain(error) || isTransientDbError(error);
+}
+
+/**
+ * Retryable → `deferred` (no row). Anything else → a terminal failed marker under the chain
+ * key with the existing `internal` code and generic copy. Settlement is untouched: the
+ * preview's single charge stands exactly as the existing export-failure paths leave it.
+ * If the marker write itself fails, the error propagates (enqueueMcpChainExportSafely → null)
+ * and the next poll or sweep tries again.
+ */
+async function deferOrCloseChain(
+  preview: { id: string; userId: string },
+  error: unknown,
+): Promise<McpChainEnqueueResult> {
+  if (isRetryableMcpChainEnqueueError(error)) {
+    const reason = isRenderDeployDrain(error) ? "render_maintenance" as const : "enqueue_failed" as const;
+    console.warn(`[mcp-chain] export enqueue deferred for job ${preview.id}: ${reason}`);
+    return { kind: "deferred", reason };
+  }
+  // Class name only — an error message can carry script text or media URLs.
+  const errorName = error instanceof Error ? error.name : typeof error;
+  console.warn(`[mcp-chain] export enqueue failed permanently for job ${preview.id}: ${errorName}`);
+  const marker = await writeMarkerRow({
+    userId: preview.userId,
+    previewJobId: preview.id,
+    status: "failed",
+    code: INTERNAL_JOB_FAILURE_CODE,
+    message: GENERIC_ERROR_COPY,
+  });
+  return marker.created
+    ? { kind: "refused", code: INTERNAL_JOB_FAILURE_CODE, exportJobId: marker.id }
+    : { kind: "exists", exportJobId: marker.id };
+}
+
 /**
  * Idempotently enqueue the chained export for a finished MCP chain preview. Callers: the
  * orchestrator right AFTER the preview's finish transaction committed (never inside
@@ -369,6 +414,7 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
  * - No in-flight cap: this is the server finishing work the customer already ordered.
  * - A permanent refusal writes a failed marker under the chain key (existing codes/copy).
  * - Transient failures (deploy drain, SQLite) return `deferred`; a later poll or sweep retries.
+ * - Any other error closes the chain with a failed `internal` marker (fix round 1, L1).
  */
 export async function enqueueMcpChainExport(input: {
   previewJobId: string;
@@ -394,7 +440,12 @@ export async function enqueueMcpChainExport(input: {
   const existing = await chainKeyRow(preview.userId, preview.id);
   if (existing) return { kind: "exists", exportJobId: existing.id };
 
-  const plan = await planChainExport(preview);
+  let plan: ChainExportPlan;
+  try {
+    plan = await planChainExport(preview);
+  } catch (error) {
+    return deferOrCloseChain(preview, error);
+  }
   if (!plan.ok) {
     const marker = await writeMarkerRow({
       userId: preview.userId,
@@ -425,11 +476,7 @@ export async function enqueueMcpChainExport(input: {
       const row = await chainKeyRow(preview.userId, preview.id);
       if (row) return { kind: "exists", exportJobId: row.id };
     }
-    const reason = (error as { name?: unknown } | null)?.name === "RenderDeployDrainError"
-      ? "render_maintenance" as const
-      : "enqueue_failed" as const;
-    console.warn(`[mcp-chain] export enqueue deferred for job ${preview.id}: ${reason}`);
-    return { kind: "deferred", reason };
+    return deferOrCloseChain(preview, error);
   }
 
   try {

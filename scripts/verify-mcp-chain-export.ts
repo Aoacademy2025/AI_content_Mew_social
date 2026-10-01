@@ -226,6 +226,10 @@ async function main() {
     ...extra,
   });
   const keyFor = (previewId: string) => `mcp-chain:${previewId}`;
+  // Fix round 1 (A2): the one session-authored sentence appended for an export-half FAILURE.
+  const RETRY_EXPORT_SENTENCE = "งานเรนเดอร์หลักเสร็จแล้ว — เปิดลิงก์ editorUrl เพื่อสั่ง export ใหม่ได้";
+  const editorUrlFor = (projectId: string | null | undefined) =>
+    `https://studio.example.test/video-editor?projectId=${projectId}`;
   const chainRows = (userId: string, previewId: string) =>
     prisma.videoJob.findMany({ where: { userId, idempotencyKey: keyFor(previewId) } });
   const activeCharges = (userId: string, ids: string[]) =>
@@ -455,6 +459,8 @@ async function main() {
     check("status: preview-half failure → failed with T6 fields, refunded",
       pfStatus?.status === "failed" && typeof pfStatus?.errorCode === "string" && pfStatus?.refunded === true
       && pfStatus?.refundPending === false && !("editorUrl" in (pfStatus ?? {})));
+    check("A2: a preview-half failure carries neither editorUrl nor the retry-export sentence",
+      !("editorUrl" in (pfStatus ?? {})) && !String(pfStatus?.userAction ?? "").includes(RETRY_EXPORT_SENTENCE));
     await sweepStalledVideoJobs(new Date());
     check("watchdog never chains a failed preview", (await chainRows(tester.id, pf.id)).length === 0);
 
@@ -472,6 +478,13 @@ async function main() {
     check("status: export-half failure comes from the export row, export copy",
       efStatus?.status === "failed" && efStatus?.errorCode === ef.errorCode
       && efStatus?.message === "ส่งออกวิดีโอไม่สำเร็จ" && efStatus?.refunded === false);
+    check("A2: an export-half failure carries the absolute editorUrl of the Agent-created Project",
+      (efStatus as { editorUrl?: string } | null)?.editorUrl === editorUrlFor(exportFail.projectId),
+      JSON.stringify(efStatus));
+    check("A2: an export-half failure appends exactly the retry-export sentence to userAction",
+      String(efStatus?.userAction ?? "").endsWith(` ${RETRY_EXPORT_SENTENCE}`)
+      && String(efStatus?.userAction ?? "").split(RETRY_EXPORT_SENTENCE).length === 2,
+      String(efStatus?.userAction));
     check("status(export id) on a failed chain = same shape",
       JSON.stringify(await getVideoJobStatusTool(tester.id, ef.id)) === JSON.stringify(efStatus));
 
@@ -534,6 +547,9 @@ async function main() {
     check("status: refused chain → failed, export copy (exportMode=true)",
       staleStatus?.status === "failed" && staleStatus?.errorCode === "stale_export_source"
       && staleStatus?.message === "ส่งออกวิดีโอไม่สำเร็จ");
+    check("A2: a refused export (marker) is an export-half failure → editorUrl + retry sentence",
+      (staleStatus as { editorUrl?: string } | null)?.editorUrl === editorUrlFor(stale.projectId)
+      && String(staleStatus?.userAction ?? "").endsWith(` ${RETRY_EXPORT_SENTENCE}`));
     const sweepStale = await sweepStalledVideoJobs(new Date());
     check("watchdog never retries a refused chain",
       !((sweepStale as { recoveredChainExports?: string[] }).recoveredChainExports ?? []).includes(stale.job.id)
@@ -611,7 +627,9 @@ async function main() {
     await prisma.videoJob.update({ where: { id }, data: { status: "waiting_provider", progress: 84 } });
     check("preview waiting_provider → processing", (await getVideoJobStatusTool(tester.id, id))?.status === "processing");
     await prisma.videoJob.update({ where: { id }, data: { status: "canceled", errorMessage: "canceled by user" } });
-    check("preview canceled → canceled", (await getVideoJobStatusTool(tester.id, id))?.status === "canceled");
+    const previewCanceled = await getVideoJobStatusTool(tester.id, id);
+    check("preview canceled → canceled, no editorUrl (A2 is export-half only)",
+      previewCanceled?.status === "canceled" && !("editorUrl" in (previewCanceled ?? {})));
 
     const shell = await createChain(tester, {}, "h-shell");
     const doneOut = (await prisma.videoJob.findUniqueOrThrow({ where: { id: bPreviewId } })).outputJson;
@@ -627,7 +645,13 @@ async function main() {
     check("query by export id while running = same shape",
       JSON.stringify(await getVideoJobStatusTool(tester.id, exp.id)) === JSON.stringify(exporting));
     await prisma.videoJob.update({ where: { id: exp.id }, data: { status: "canceled", errorMessage: "canceled by user" } });
-    check("export canceled → canceled", (await getVideoJobStatusTool(tester.id, shell.job.id))?.status === "canceled");
+    const exportCanceled = await getVideoJobStatusTool(tester.id, shell.job.id);
+    check("export canceled → canceled with the absolute editorUrl (A2), no retry sentence",
+      exportCanceled?.status === "canceled"
+      && (exportCanceled as { editorUrl?: string } | null)?.editorUrl === editorUrlFor(shell.projectId)
+      && !JSON.stringify(exportCanceled).includes(RETRY_EXPORT_SENTENCE));
+    check("query by export id while canceled = same shape",
+      JSON.stringify(await getVideoJobStatusTool(tester.id, exp.id)) === JSON.stringify(exportCanceled));
 
     const squat = await createChain(tester, {}, "h-squat");
     await prisma.videoJob.update({ where: { id: squat.job.id }, data: { status: "done", progress: 100, outputJson: doneOut, finishedAt: new Date() } });
@@ -723,6 +747,101 @@ async function main() {
     const failedExport = await prisma.videoJob.findUniqueOrThrow({ where: { id: exportJob.id } });
     check(`export of an unfinished source → source_not_ready (got ${failedExport.errorCode})`,
       failedExport.status === "failed" && failedExport.errorCode === "source_not_ready");
+  });
+
+  // ── P. Fix round 1 (L1): an unexpected enqueue error closes the chain; drain/SQLite stay retryable
+  await section("P) enqueue errors: unexpected → terminal failed marker; drain / SQLite busy → retryable", async () => {
+    const { RENDER_DEPLOY_DRAIN_KEY } = await import("../src/lib/render-deploy-drain");
+    const loseEnqueue = async (previewId: string, projectId: string) => {
+      await prisma.videoJob.deleteMany({ where: { idempotencyKey: keyFor(previewId) } });
+      await prisma.editorProject.update({ where: { id: projectId }, data: { activeExportJobId: null, status: "post" } });
+    };
+
+    // Classifier: only the deploy drain and SQLite busy/locked/timeouts are retryable.
+    const { RenderDeployDrainError } = await import("../src/lib/render-deploy-drain");
+    const classify = (chain as { isRetryableMcpChainEnqueueError?: (e: unknown) => boolean }).isRetryableMcpChainEnqueueError;
+    check("classifier exported", typeof classify === "function");
+    if (typeof classify === "function") {
+      check("drain refusal is retryable", classify(new RenderDeployDrainError()) === true);
+      check("SQLite busy (P1008 / 'database is locked' / SQLITE_BUSY) is retryable",
+        classify(Object.assign(new Error("Operations timed out"), { code: "P1008" }))
+        && classify(new Error("SQLITE_BUSY: database is locked"))
+        && classify(Object.assign(new Error("Transaction already closed"), { code: "P2028" })));
+      check("anything else is permanent (TypeError, FK violation, plain Error)",
+        !classify(new TypeError("Cannot read properties of null (reading 'trim')"))
+        && !classify(Object.assign(new Error("Foreign key constraint failed"), { code: "P2003" }))
+        && !classify(new Error("boom")));
+    }
+
+    // Permanent: odd persisted preview data makes the server-side overlay build throw.
+    const odd = await createChain(tester, {}, "p-odd");
+    await runJob(odd.job.id, tester.id);
+    await loseEnqueue(odd.job.id, odd.projectId!);
+    const oddRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: odd.job.id } });
+    const oddOut = JSON.parse(oddRow.outputJson ?? "{}") as { preview: { captions: Array<Record<string, unknown>> } };
+    oddOut.preview.captions = [{ text: null, startMs: 0, endMs: 1000, tag: "hook" }];
+    await prisma.videoJob.update({ where: { id: odd.job.id }, data: { outputJson: JSON.stringify(oddOut) } });
+    const minutesBeforeOdd = (await prisma.user.findUniqueOrThrow({ where: { id: tester.id } })).minutesUsed;
+    const oddResult = await chain.enqueueMcpChainExport({ previewJobId: odd.job.id, userId: tester.id });
+    check(`unexpected error → refused with the existing internal code (got ${JSON.stringify(oddResult)})`,
+      oddResult.kind === "refused" && oddResult.code === "internal");
+    const oddRows = await chainRows(tester.id, odd.job.id);
+    check("unexpected error writes ONE terminal failed marker",
+      oddRows.length === 1 && oddRows[0].status === "failed" && oddRows[0].errorCode === "internal");
+    const oddStatus = await getVideoJobStatusTool(tester.id, odd.job.id);
+    check("status leaves processing/85: failed, export copy, editorUrl + retry sentence",
+      oddStatus?.status === "failed" && oddStatus?.errorCode === "internal"
+      && oddStatus?.message === "ส่งออกวิดีโอไม่สำเร็จ"
+      && (oddStatus as { editorUrl?: string } | null)?.editorUrl === editorUrlFor(odd.projectId)
+      && String(oddStatus?.userAction ?? "").endsWith(` ${RETRY_EXPORT_SENTENCE}`),
+      JSON.stringify(oddStatus));
+    check("the marker settles nothing new: the preview's single charge stands, minutes unchanged",
+      (await activeCharges(tester.id, [odd.job.id, oddRows[0]?.id ?? ""])) === 1
+      && (await prisma.user.findUniqueOrThrow({ where: { id: tester.id } })).minutesUsed === minutesBeforeOdd);
+    const oddSweep = await sweepStalledVideoJobs(new Date());
+    check("watchdog never retries the closed chain",
+      !(oddSweep.recoveredChainExports ?? []).includes(odd.job.id) && (await chainRows(tester.id, odd.job.id)).length === 1);
+
+    // Retryable: deploy drain → deferred, no marker; lifting it lets recovery enqueue.
+    const drained = await createChain(tester, {}, "p-drain");
+    await runJob(drained.job.id, tester.id);
+    await loseEnqueue(drained.job.id, drained.projectId!);
+    await prisma.siteConfig.upsert({
+      where: { key: RENDER_DEPLOY_DRAIN_KEY }, create: { key: RENDER_DEPLOY_DRAIN_KEY, value: "1" }, update: { value: "1" },
+    });
+    const drainResult = await chain.enqueueMcpChainExport({ previewJobId: drained.job.id, userId: tester.id });
+    const drainStatus = await getVideoJobStatusTool(tester.id, drained.job.id);
+    await prisma.siteConfig.update({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, data: { value: "0" } });
+    check(`drain → deferred, no marker (got ${JSON.stringify(drainResult)})`,
+      drainResult.kind === "deferred" && drainResult.reason === "render_maintenance"
+      && drainStatus?.status === "processing" && drainStatus?.progress === 85);
+    check("drain wrote no row under the chain key", (await chainRows(tester.id, drained.job.id)).length <= 0);
+    const afterDrain = await getVideoJobStatusTool(tester.id, drained.job.id);
+    const afterDrainRows = await chainRows(tester.id, drained.job.id);
+    check("after the drain lifts, recovery enqueues the real export",
+      afterDrain?.status === "processing" && afterDrainRows.length === 1
+      && afterDrainRows[0].status === "queued" && afterDrainRows[0].type === "export");
+
+    // Retryable: SQLite busy while creating the export → deferred, no marker.
+    const busy = await createChain(tester, {}, "p-busy");
+    await runJob(busy.job.id, tester.id);
+    await loseEnqueue(busy.job.id, busy.projectId!);
+    const client = prisma as unknown as { $transaction: (...args: unknown[]) => Promise<unknown> };
+    const realTransaction = client.$transaction;
+    client.$transaction = async () => {
+      throw Object.assign(new Error("SQLITE_BUSY: database is locked"), { code: "P1008" });
+    };
+    let busyResult: Awaited<ReturnType<typeof chain.enqueueMcpChainExport>> | null = null;
+    try {
+      busyResult = await chain.enqueueMcpChainExport({ previewJobId: busy.job.id, userId: tester.id });
+    } finally {
+      client.$transaction = realTransaction;
+    }
+    check(`SQLite busy → deferred, no marker (got ${JSON.stringify(busyResult)})`,
+      busyResult?.kind === "deferred" && (await chainRows(tester.id, busy.job.id)).length === 0);
+    await getVideoJobStatusTool(tester.id, busy.job.id);
+    check("after SQLite recovers, recovery enqueues the real export",
+      (await chainRows(tester.id, busy.job.id)).some((row) => row.status === "queued" && row.type === "export"));
   });
 
   // ── M. inflight cap bypass + CI wiring ────────────────────────────────────────────────
