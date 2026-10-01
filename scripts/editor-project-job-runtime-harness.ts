@@ -594,6 +594,10 @@ function mountEditorShell(input: {
         projectDeleteBlocked: () => false,
         projectMenuDate: () => null,
         projectStatusLabel: (status: string) => status,
+        // T9 (ADR 0063): mirrors the real pure function so this harness's render of
+        // EditorV2Shell's project menu stays in sync with the actual label contract.
+        projectMenuAgentLabel: (proj: { createdVia?: string }) =>
+          proj.createdVia === "mcp" ? "สร้างผ่าน AI agent" : null,
       };
     }
     if (specifier === "@/lib/video-export-name") {

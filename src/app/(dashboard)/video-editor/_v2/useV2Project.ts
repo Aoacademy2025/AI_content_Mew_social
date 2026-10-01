@@ -93,6 +93,12 @@ interface V2Draft {
   brandSubtitleDefault?: SubtitleStylePresetConfig;
   layerVisibility?: EditorLayerVisibility;
   headlineHook?: HeadlineHookConfig;
+  /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
+   *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
+   *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
+   *  ever accepted; any other value is dropped so an untrusted local/legacy draft can
+   *  never forge the Agent-created Project label. */
+  createdVia?: "mcp";
 }
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
@@ -802,11 +808,22 @@ export function useV2Project() {
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
       logoOverlay, brandSubtitleDefault, layerVisibility,
       ...headlineHookDraftFragment(headlineHook),
+      // T9: pass through from effectiveDraftRef (never from React state — there is no
+      // setter), so the field this hook never edits still rides every autosave/new-project
+      // payload exactly as applyDraft() last hydrated it.
+      ...(effectiveDraftRef.current.createdVia === "mcp" ? { createdVia: "mcp" as const } : {}),
     };
   }
 
   function applyDraft(next: V2Draft) {
     draftRef.current = next;
+    // T9 (ADR 0063): read-only pass-through. Only "mcp" survives — any other value
+    // (a tampered local draft, a future/renamed origin) is dropped, never carried forward.
+    effectiveDraftRef.current = withUserDraftField(
+      effectiveDraftRef.current,
+      "createdVia",
+      next.createdVia === "mcp" ? "mcp" : undefined,
+    );
     if (next.projectTitle !== undefined) setProjectTitleRaw(next.projectTitle || DEFAULT_PROJECT.projectTitle);
     if (next.mode) setModeRaw(next.mode);
     if (next.narrativeSourceKind) setNarrativeSourceKindRaw(next.narrativeSourceKind);

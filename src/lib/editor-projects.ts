@@ -103,12 +103,28 @@ async function assertExactEditorProjectPointers(
   }
 }
 
+/** T9 (ADR 0063): the Agent-created Project marker lives in draft JSON
+ *  (`createdVia: "mcp"`, written once by `src/lib/mcp/chain-export.ts`'s
+ *  `MCP_PROJECT_CREATED_VIA`). Only that exact literal is ever surfaced —
+ *  no import of the mcp module here, to avoid the circular dependency
+ *  (chain-export.ts itself calls `createEditorProject` from this file). */
+function createdViaFromDraft(draft: unknown): "mcp" | undefined {
+  return draft !== null
+    && typeof draft === "object"
+    && !Array.isArray(draft)
+    && (draft as Record<string, unknown>).createdVia === "mcp"
+    ? "mcp"
+    : undefined;
+}
+
 export function editorProjectResponse(project: NonNullable<ProjectRow>) {
+  const draft = project.draftJson ? JSON.parse(project.draftJson) : null;
   return {
     id: project.id,
     title: project.title,
     status: project.status,
-    draft: project.draftJson ? JSON.parse(project.draftJson) : null,
+    draft,
+    createdVia: createdViaFromDraft(draft),
     draftRevision: project.draftRevision,
     activeJobId: project.activeJobId,
     activeExportJobId: project.activeExportJobId,

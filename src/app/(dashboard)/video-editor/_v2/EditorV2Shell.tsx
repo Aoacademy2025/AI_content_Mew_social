@@ -63,6 +63,7 @@ import {
   fetchRecentProjectMenu,
   filterProjectMenuItems,
   projectDeleteBlocked,
+  projectMenuAgentLabel,
   projectMenuDate,
   projectStatusLabel,
   type ProjectMenuItem,
@@ -631,6 +632,7 @@ export function EditorV2Shell() {
                 const deleteBlocked = projectDeleteBlocked(project.status);
                 const deleting = deletingProjectId === project.id;
                 const activityDate = projectMenuDate(project);
+                const agentLabel = projectMenuAgentLabel(project);
                 return (
                   <DropdownMenuItem
                     key={project.id}
@@ -649,6 +651,11 @@ export function EditorV2Shell() {
                       {activityDate ? (
                         <span className="mt-0.5 block truncate" style={{ fontSize: 9.5, color: color.textFaintest }}>
                           แก้ไข {activityDate}
+                        </span>
+                      ) : null}
+                      {agentLabel ? (
+                        <span className="mt-0.5 block truncate" style={{ fontSize: 9.5, color: color.textFaintest }}>
+                          {agentLabel}
                         </span>
                       ) : null}
                     </span>
