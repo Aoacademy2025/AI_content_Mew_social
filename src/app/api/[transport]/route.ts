@@ -10,6 +10,8 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
 import { preflightElevenLabs, preflightStockProviders, stockVideoProvidersMayBeUsed } from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -253,6 +255,19 @@ const handler = createMcpHandler(
             }
           }
           const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
+          // Gate like web (jobs/route.ts:585-589): same function, same env var. A denied
+          // non-neutral request is never dropped silently — it falls back to neutral and
+          // the caller is told why (#T5, recon.md §E — MCP used to drop this unconditionally).
+          const geminiVoiceStyleGateOpen = isInternalAiBetaEnabledFor(u, process.env.GEMINI_TTS_38_PUBLIC === "1");
+          const geminiVoiceStyle = geminiVoiceStyleGateOpen
+            ? resolveGeminiVoiceStyle(args.geminiVoiceStyle).id
+            : "neutral";
+          // Every create-time finding lands here; T4 appends more with one line each.
+          const warnings: string[] = [];
+          if (heygenWarning) warnings.push(heygenWarning);
+          if (!geminiVoiceStyleGateOpen && args.geminiVoiceStyle && args.geminiVoiceStyle !== "neutral") {
+            warnings.push("โหมดสไตล์เสียง Gemini (geminiVoiceStyle) ยังไม่เปิดใช้งานสำหรับบัญชีนี้ ใช้เสียงปกติ (neutral) แทน");
+          }
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
           const avatarLayout =
             avatar.kind === "ok"
@@ -275,6 +290,7 @@ const handler = createMcpHandler(
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
+                ...(geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle } : {}),
                 ...(avatar.kind === "ok" && avatarLayout
                   ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                       avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
@@ -287,7 +303,8 @@ const handler = createMcpHandler(
               },
               args.idempotencyKey,
             );
-            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว", ...(heygenWarning ? { warning: heygenWarning } : {}),
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
+              ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"
                 ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
                 : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };
