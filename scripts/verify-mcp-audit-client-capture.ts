@@ -20,6 +20,15 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Throwaway DB FIRST, before any module that imports @/lib/prisma is loaded: the prisma
+// client reads DATABASE_URL once at import time, so overriding it later (after section A's
+// `import("../src/lib/mcp/audit")` pulled prisma in) left the client pointed at whatever the
+// environment preset. CI presets DATABASE_URL=file:./ci.db (an empty file) → P2021 "table
+// main.User does not exist". Same pattern as the other verify-mcp-* scripts.
+const dir = mkdtempSync(join(tmpdir(), "mcp-audit-client-"));
+process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
+execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.env });
+
 let passed = 0;
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -55,9 +64,6 @@ async function verifySanitize() {
 // ── B. recordToolCall persists the sanitized, truncated user-agent (DB) ────────────────
 async function verifyAuditRow() {
   console.log("B) recordToolCall — ToolCallAudit.userAgent carries the sanitized value");
-  const dir = mkdtempSync(join(tmpdir(), "mcp-audit-client-"));
-  process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
-  execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.env });
   const { prisma } = await import("../src/lib/prisma");
   const { recordToolCall } = await import("../src/lib/mcp/audit");
 
