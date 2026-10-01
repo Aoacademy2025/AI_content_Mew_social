@@ -28,12 +28,30 @@ function redactRequest(v: unknown): unknown {
   return v;
 }
 
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+const MAX_USER_AGENT_LEN = 200;
+
+// Client capture (T7, Global Constraints "Security and data" — the audit stores only
+// client name, version and user-agent, never secrets/scripts/raw provider bodies/media
+// URLs). The User-Agent header is untrusted input controlled by whatever MCP client sent
+// it, so strip control characters (CR/LF header-injection-style noise, stray NULs) before
+// it ever reaches a stored row or a log line, then cap length. A compact
+// `<clientName>/<clientVersion> <ua>` string built by a caller goes through the same path
+// unchanged — this function doesn't care which shape it was handed.
+export function sanitizeUserAgent(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(CONTROL_CHARS, "").trim();
+  if (!cleaned) return null;
+  return cleaned.slice(0, MAX_USER_AGENT_LEN);
+}
+
 export async function recordToolCall(entry: {
   userId?: string | null;
   toolName: string;
   status: "ok" | "denied" | "error";
   durationMs?: number;
   requestJson?: unknown;
+  userAgent?: string | null;
 }): Promise<void> {
   try {
     await prisma.toolCallAudit.create({
@@ -43,6 +61,7 @@ export async function recordToolCall(entry: {
         status: entry.status,
         durationMs: entry.durationMs ?? null,
         requestJson: entry.requestJson ? JSON.stringify(redactRequest(entry.requestJson)).slice(0, 4000) : null,
+        userAgent: sanitizeUserAgent(entry.userAgent),
       },
     });
   } catch {

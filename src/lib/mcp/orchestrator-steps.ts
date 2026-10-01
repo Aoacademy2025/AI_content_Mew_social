@@ -351,6 +351,29 @@ export function resolveMcpSubtitleDesign(
   return { design, cardLen };
 }
 
+// T7 Part B (session ruling, folded in from the T4 tier-1 review's A2): when a create
+// resolves a Brand Profile (explicit brandProfileId or the single-brand auto pick) whose
+// active revision has no usable subtitle style, resolveMcpSubtitleDesign's `base` silently
+// falls through to DEFAULT_V2_SUB above. The caller gets the default look with no signal
+// that their brand's subtitle style wasn't actually applied — unlike the multi-brand-no-id
+// case, which already warns. This does not change resolution order or the multi-brand
+// warning; it only adds the missing signal for this one path.
+export const BRAND_SUBTITLE_STYLE_MISSING_WARNING =
+  "แบรนด์นี้ยังไม่ได้ตั้งสไตล์ซับ — ใช้สไตล์ซับค่าเริ่มต้นแทน";
+
+/** `brandLookup` is the route's already-performed brand lookup (explicit brandProfileId,
+ * or the single-brand auto-pick) — `null` when no brand was looked up at all (no id and
+ * zero or several active brands; the several-active case has its own warning already).
+ * Fires only when a brand WAS found but its resolved style is null (empty/malformed
+ * `brandSubtitleDefault`), matching exactly the condition under which `base` in
+ * `resolveMcpSubtitleDesign` falls back to `DEFAULT_V2_SUB`. */
+export function brandSubtitleStyleMissingWarning(
+  brandLookup: { found: boolean; style?: SubtitleStylePresetConfig | null } | null,
+): string | null {
+  if (!brandLookup || !brandLookup.found) return null;
+  return brandLookup.style === null ? BRAND_SUBTITLE_STYLE_MISSING_WARNING : null;
+}
+
 export type ResolvedMcpSubtitleJobInput = {
   subtitleDesign?: V2SubConfig;
   subtitleCardLen?: SubtitleCardLen;
