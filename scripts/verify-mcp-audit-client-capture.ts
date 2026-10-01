@@ -54,6 +54,39 @@ async function verifySanitize() {
   const long = "A".repeat(500);
   check("truncates to 200 chars", sanitizeUserAgent(long)?.length === 200);
 
+  // PR-A security low S2: every Unicode Cc (C0 + DEL + C1) and Cf (bidi embeddings/overrides
+  // U+202A–202E, isolates U+2066–2069, LRM/RLM, ZWSP-family, BOM, soft hyphen) is stripped,
+  // plus the U+2028/U+2029 line/paragraph separators — all of them can spoof or split a log
+  // line or an admin view.
+  const BIDI_AND_FORMAT = [
+    "\u202A", "\u202B", "\u202C", "\u202D", "\u202E",
+    "\u2066", "\u2067", "\u2068", "\u2069",
+    "\u200B", "\u200E", "\u200F", "\uFEFF", "\u00AD", "\u2060",
+  ];
+  for (const ch of BIDI_AND_FORMAT) {
+    const out = sanitizeUserAgent(`Claude${ch}Code/1.0`);
+    check(`Cf U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")} is stripped`, out === "ClaudeCode/1.0", JSON.stringify(out));
+  }
+  const c1 = sanitizeUserAgent("Claude\u0085\u009BCode/1.0");
+  check("C1 controls (U+0085 NEL, U+009B CSI) are stripped", c1 === "ClaudeCode/1.0", JSON.stringify(c1));
+  const separators = sanitizeUserAgent("Claude\u2028\u2029Code/1.0");
+  check("U+2028/U+2029 line/paragraph separators are stripped", separators === "ClaudeCode/1.0", JSON.stringify(separators));
+  const spoof = sanitizeUserAgent("Claude-Code/1.0 \u202Egnp.exe\u202C");
+  check("a right-to-left override spoof is neutralised", spoof === "Claude-Code/1.0 gnp.exe", JSON.stringify(spoof));
+  check("ordinary non-ASCII text is kept", sanitizeUserAgent("ไคลเอนต์/1.0 (ทดสอบ)") === "ไคลเอนต์/1.0 (ทดสอบ)");
+
+  // Truncation counts code points, so an astral character (emoji = a UTF-16 surrogate pair)
+  // at the 200 boundary is either kept whole or dropped whole — never split into a lone
+  // surrogate.
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const emojiAtBoundary = sanitizeUserAgent("A".repeat(199) + "😀😀");
+  check("truncation at 200 code points keeps the emoji at the boundary whole",
+    emojiAtBoundary === "A".repeat(199) + "😀", JSON.stringify(emojiAtBoundary?.slice(195)));
+  check("truncation never leaves a lone surrogate", emojiAtBoundary != null && !LONE_SURROGATE.test(emojiAtBoundary));
+  const allEmoji = sanitizeUserAgent("😀".repeat(250));
+  check("an all-astral user-agent is capped at 200 code points with no lone surrogate",
+    allEmoji != null && Array.from(allEmoji).length === 200 && !LONE_SURROGATE.test(allEmoji));
+
   const longWithControl = "B".repeat(195) + "\r\n\r\n" + "C".repeat(50);
   const sanitizedLong = sanitizeUserAgent(longWithControl);
   check("sanitize happens before truncate (control chars don't eat into the 200-char budget)",
@@ -78,6 +111,10 @@ async function verifyAuditRow() {
   const row2 = await prisma.toolCallAudit.findFirst({ where: { userId: user.id, toolName: "get_video_status" } });
   check("a hostile/oversized user-agent is sanitized and truncated to <=200 chars before storage",
     row2?.userAgent != null && row2.userAgent.length <= 200 && !/[\x00-\x1F\x7F]/.test(row2.userAgent));
+
+  await recordToolCall({ userId: user.id, toolName: "get_video_options", status: "ok", userAgent: "Agent\u202E/1.0\u2066" });
+  const row5 = await prisma.toolCallAudit.findFirst({ where: { userId: user.id, toolName: "get_video_options" } });
+  check("a stored row never carries a bidi control", row5?.userAgent === "Agent/1.0", JSON.stringify(row5?.userAgent));
 
   await recordToolCall({ userId: user.id, toolName: "download_video", status: "ok" });
   const row3 = await prisma.toolCallAudit.findFirst({ where: { userId: user.id, toolName: "download_video" } });

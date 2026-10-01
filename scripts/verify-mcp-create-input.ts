@@ -71,6 +71,22 @@ check(
   "create_video_job rejects an unknown B-roll source",
 );
 
+// PR-A security low S3: brandProfileId is bounded at the schema layer (a cuid is 25 chars;
+// 64 leaves room for any id format while keeping a hostile multi-KB id out of the brand
+// lookup and the 4000-char audit requestJson).
+check(
+  createVideoJobInputSchema.safeParse({ script: "สวัสดีครับ", brandProfileId: "cmuoikpho004klc1z90uccxtv" }).success === true,
+  "create_video_job accepts a cuid brandProfileId",
+);
+check(
+  createVideoJobInputSchema.safeParse({ script: "สวัสดีครับ", brandProfileId: "b".repeat(64) }).success === true,
+  "create_video_job accepts a 64-char brandProfileId",
+);
+check(
+  createVideoJobInputSchema.safeParse({ script: "สวัสดีครับ", brandProfileId: "b".repeat(65) }).success === false,
+  "create_video_job rejects a brandProfileId longer than 64 chars before any lookup",
+);
+
 const previous = process.env.HERO_AI_IMAGE_PUBLIC;
 process.env.HERO_AI_IMAGE_PUBLIC = "1";
 check(

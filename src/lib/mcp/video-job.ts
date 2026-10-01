@@ -587,6 +587,12 @@ export const INTERNAL_JOB_FAILURE_USER_ACTION =
 export const HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX =
   "ค่าใช้จ่าย HeyGen ที่ใช้ไปแล้วคิดจากบัญชี HeyGen ของคุณโดยตรงและไม่สามารถคืนได้";
 
+/** Internal vendors behind managed, product-funded features (RunPod = Hero AI Image, OmniVoice
+ *  = Hero AI Voice). `errorProvider` exists so a customer knows which of THEIR OWN keys to fix;
+ *  these have no customer key, and their vendor names stay private (PR-A security low S5). BYOK
+ *  providers (heygen, elevenlabs, gemini, …) keep the field. */
+const MANAGED_ERROR_PROVIDERS = new Set(["runpod", "omnivoice"]);
+
 export interface FailedJobFields {
   errorCode: string;
   errorProvider?: string;
@@ -599,6 +605,9 @@ export interface FailedJobFields {
 /** The subset of VideoJob columns the derivation reads. */
 export interface FailedJobLike {
   id: string;
+  /** The job owner. Scopes the RenderJob refund query below, so a chain id list can never
+   *  read another tenant's charge state (PR-A security low S4). */
+  userId: string;
   errorCode: string | null;
   errorMessage: string | null;
   errorProvider: string | null;
@@ -638,7 +647,8 @@ function jobHadAvatar(inputJson: string): boolean {
  * `chainJobIds`: the set of VideoJob ids whose RenderJob children count toward "was a clip
  * actually charged." T6 scope is pre-P1, so this is always `[job.id]` today; T8 (the P1
  * preview+export chain) passes every job id in the chain instead — the query below already
- * takes a list so T8 needs no shape change here.
+ * takes a list so T8 needs no shape change here. Every RenderJob it reads is additionally
+ * filtered to `job.userId`, so a chain-building bug can never pull in another tenant's row.
  */
 export async function deriveFailedJobFields(
   job: FailedJobLike,
@@ -677,7 +687,7 @@ export async function deriveFailedJobFields(
   // fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
   // either way on its own — the RenderJob check is the source of truth for "was a clip spent").
   const chargedRenderJob = await prisma.renderJob.findFirst({
-    where: { parentJobId: { in: chainJobIds }, reservedQuota: true },
+    where: { userId: job.userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
     select: { id: true },
   });
   const refundPending = job.reservationRefundPending;
@@ -687,7 +697,9 @@ export async function deriveFailedJobFields(
 
   return {
     errorCode,
-    ...(job.errorProvider ? { errorProvider: job.errorProvider } : {}),
+    ...(job.errorProvider && !MANAGED_ERROR_PROVIDERS.has(job.errorProvider.toLowerCase())
+      ? { errorProvider: job.errorProvider }
+      : {}),
     message,
     userAction,
     refunded,

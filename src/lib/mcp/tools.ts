@@ -116,6 +116,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     where: { id: jobId, userId },
     select: {
       id: true,
+      userId: true,
       status: true,
       currentStep: true,
       progress: true,

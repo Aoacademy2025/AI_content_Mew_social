@@ -28,21 +28,26 @@ function redactRequest(v: unknown): unknown {
   return v;
 }
 
-const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+// Every Unicode control (Cc: C0, DEL, C1) and format character (Cf: bidi embeddings and
+// overrides U+202A–202E, isolates U+2066–2069, LRM/RLM, zero-width chars, BOM, soft hyphen),
+// plus the line/paragraph separators U+2028/U+2029 (Zl/Zp). Any of them can split or visually
+// spoof a log line or an admin view (PR-A security low S2).
+const CONTROL_AND_FORMAT_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const MAX_USER_AGENT_LEN = 200;
 
 // Client capture (T7, Global Constraints "Security and data" — the audit stores only
 // client name, version and user-agent, never secrets/scripts/raw provider bodies/media
 // URLs). The User-Agent header is untrusted input controlled by whatever MCP client sent
 // it, so strip control characters (CR/LF header-injection-style noise, stray NULs) before
-// it ever reaches a stored row or a log line, then cap length. A compact
+// it ever reaches a stored row or a log line, then cap length — counted in code points, so an
+// astral character (a UTF-16 surrogate pair) is kept or dropped whole, never split. A compact
 // `<clientName>/<clientVersion> <ua>` string built by a caller goes through the same path
 // unchanged — this function doesn't care which shape it was handed.
 export function sanitizeUserAgent(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const cleaned = raw.replace(CONTROL_CHARS, "").trim();
+  const cleaned = raw.replace(CONTROL_AND_FORMAT_CHARS, "").trim();
   if (!cleaned) return null;
-  return cleaned.slice(0, MAX_USER_AGENT_LEN);
+  return Array.from(cleaned).slice(0, MAX_USER_AGENT_LEN).join("");
 }
 
 export async function recordToolCall(entry: {

@@ -47,6 +47,7 @@ const AVATAR_SUFFIX =
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { getVideoJobStatusTool } = await import("../src/lib/mcp/tools");
+  const { deriveFailedJobFields } = await import("../src/lib/mcp/video-job");
 
   const user = await prisma.user.create({
     data: { id: "ff-user", name: "Failure Fields", email: "ff@example.com", plan: "PRO" },
@@ -219,6 +220,76 @@ async function main() {
     keptReservedQuota?.refunded === false,
     "refund state 'kept charge' via RenderJob{reservedQuota:true}: refunded=false even though fundingState=refunded (RenderJob is money truth)",
   );
+
+  // ── 3b. Owner scope on the RenderJob refund query (PR-A security low S4) ──────────────
+  // A RenderJob that names this job as parent but belongs to ANOTHER user must never decide
+  // this job's refund state — the query is scoped to the job owner, so a chain-building bug
+  // (T8 passes multi-job chains) can never read another tenant's charge state.
+  const otherUser = await prisma.user.create({
+    data: { id: "ff-other-user", name: "Other Tenant", email: "ff-other@example.com", plan: "PRO" },
+  });
+  await makeFailedJob("ff-foreign-render-job", { errorCode: "render_unknown", fundingState: "refunded" });
+  await prisma.renderJob.create({
+    data: {
+      id: "rj-foreign-tenant",
+      userId: otherUser.id,
+      parentJobId: "ff-foreign-render-job",
+      type: "RENDER",
+      status: "DONE",
+      payload: "{}",
+      reservedQuota: true,
+      reservedMinutes: 1,
+    },
+  });
+  const foreignRenderJob = await getVideoJobStatusTool(user.id, "ff-foreign-render-job");
+  ok(
+    foreignRenderJob?.refunded === true,
+    "owner scope: another tenant's reservedQuota RenderJob pointing at this job never flips refunded",
+  );
+
+  // The query still takes a LIST of chain job ids (T8 contract): a charged RenderJob under
+  // the second job of an owned chain makes the first job's failure read as not refunded.
+  await prisma.videoJob.create({
+    data: { id: "ff-chain-export", userId: user.id, status: "done", progress: 100, inputJson: baseInput() },
+  });
+  await prisma.renderJob.create({
+    data: {
+      id: "rj-chain-export",
+      userId: user.id,
+      parentJobId: "ff-chain-export",
+      type: "BURN",
+      status: "DONE",
+      payload: "{}",
+      reservedQuota: true,
+      reservedMinutes: 1,
+    },
+  });
+  const chainHead = await prisma.videoJob.findUniqueOrThrow({ where: { id: "ff-refund-settled" } });
+  const chainFields = await deriveFailedJobFields(chainHead, ["ff-refund-settled", "ff-chain-export"]);
+  ok(chainFields.refunded === false, "chain list: an owned charged RenderJob under any chain job id reads as not refunded");
+  const soloFields = await deriveFailedJobFields(chainHead, ["ff-refund-settled"]);
+  ok(soloFields.refunded === true, "chain list: the same job alone (no charged child) still reads as refunded");
+
+  // ── 3c. errorProvider: kept for BYOK providers, omitted for managed ones ─────────────
+  // runpod (Hero AI Image) and omnivoice (Hero AI Voice) are internal vendors sold under
+  // our own names; naming them helps no customer fix anything (PR-A security low S5).
+  for (const managed of ["runpod", "omnivoice"]) {
+    await makeFailedJob(`ff-managed-${managed}`, {
+      errorCode: "transient",
+      errorProvider: managed,
+      currentStep: managed === "runpod" ? "stock" : "tts",
+    });
+    const r = await getVideoJobStatusTool(user.id, `ff-managed-${managed}`);
+    ok(r?.errorCode === "transient" && !("errorProvider" in (r ?? {})), `managed provider ${managed}: errorProvider is omitted`);
+  }
+  await makeFailedJob("ff-byok-heygen", {
+    errorCode: "invalid_key",
+    errorProvider: "heygen",
+    currentStep: "avatar",
+    inputJson: avatarInput(),
+  });
+  const byokHeygen = await getVideoJobStatusTool(user.id, "ff-byok-heygen");
+  ok(byokHeygen?.errorProvider === "heygen", "BYOK provider heygen: errorProvider is kept");
 
   // ── 4. Avatar job's userAction mentions HeyGen non-refundability ──────────────────────
   await makeFailedJob("ff-avatar", {

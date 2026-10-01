@@ -48,7 +48,7 @@ export const createVideoJobInputShape = {
     .describe("โทนซับ: viral (เด้งไวรัล) | shadow (เงาเข้ม) | outline (ขอบหนา) | clean (มินิมอล)"),
   subtitleColor: z.string().regex(HEX_COLOR).optional(),
   subtitleAccentColor: z.string().regex(HEX_COLOR).optional(),
-  brandProfileId: z.string().optional()
+  brandProfileId: z.string().max(64).optional()
     .describe("ใช้สไตล์ซับของแบรนด์นี้ — ถ้ามีแบรนด์ active แบรนด์เดียว ระบบเลือกให้อัตโนมัติโดยไม่ต้องระบุ"),
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()
     .describe("stock = วิดีโอสต็อกฟรี (ค่าเริ่มต้น), hero-ai-image = ภาพ AI ทุกช่วง, automix = สต็อกผสมภาพ AI"),
