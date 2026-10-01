@@ -981,7 +981,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   try {
     const job = await prisma.videoJob.findUnique({ where: { id: jobId } });
     if (!job) return;
-    if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
+    // defense-in-depth (IDOR guard) — T6: always carries a code so get_video_status never
+    // surfaces a bare message with errorCode null.
+    if (job.userId !== userId) { await failJob(jobId, { message: "forbidden: job/user mismatch", code: "job_owner_mismatch" }); return; }
     const input = JSON.parse(job.inputJson) as CreateInput;
     // T4: the fully resolved subtitle look + card length (web route resolved it once at
     // create time from explicit args → Brand Subtitle Style → DEFAULT_V2_SUB and
@@ -1393,7 +1395,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         const res = resolveBgm(rawBgm, bgmTracks);
         if (res.kind === "resolved") input.bgmFile = res.bgmFile;
         else if (res.kind === "none") input.bgmFile = undefined;
-        else { await failJob(jobId, `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`); return; }
+        else { await failJob(jobId, { message: `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`, code: "bgm_not_found" }); return; }
       } catch {
         if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
       }
