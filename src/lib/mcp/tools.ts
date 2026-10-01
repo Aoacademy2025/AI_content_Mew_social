@@ -216,9 +216,15 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
     currentStep: chain.conflict ? null : row.currentStep,
     progress,
     videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
-    error: status === "failed" || status === "canceled"
+    // Fix round 1 (A3): a chain cancel's raw errorMessage is web-tagged/English ("canceled by
+    // user (editor v2)") or MCP-internal ("canceled by user (mcp)" — the gap marker). Neither
+    // is agent-facing copy, and the two reading differently is confusing. This is the MCP
+    // read path only — row.errorMessage itself (what's stored, what web reads) is untouched.
+    error: status === "failed"
       ? (chain.conflict ? "idempotencyKey นี้ถูกใช้แล้ว" : row.errorMessage ?? null)
-      : null,
+      : status === "canceled"
+        ? "งานนี้ถูกยกเลิกแล้ว"
+        : null,
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: output?.billingReceipt ?? null,

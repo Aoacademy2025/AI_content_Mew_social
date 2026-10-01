@@ -6,7 +6,7 @@ import { resolveProjectMediaState } from "@/lib/media-retention";
 import { parseProjectVisualContext } from "@/lib/project-look.server";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { parseFailedEditorExportRecovery } from "@/lib/editor-export-snapshot";
-import { cancelVideoJobCore } from "@/lib/mcp/video-job-cancel";
+import { cancelVideoJobCore } from "@/lib/mcp/video-job-cancel-core";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done. A terminal failed/canceled Export may additionally
@@ -111,9 +111,11 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
 
     const { id } = await ctx.params;
     // T10: the cancel core (funding/image/render settlement + project-status transition) is
-    // shared verbatim with the MCP cancel_video_job tool (@/lib/mcp/video-job-cancel). This
-    // route's behavior — response shapes, status codes — is unchanged.
-    const result = await cancelVideoJobCore(user.id, id);
+    // shared verbatim with the MCP cancel_video_job tool (@/lib/mcp/video-job-cancel-core,
+    // fix round 1 A5 — kept free of the chain-export import graph). This route's behavior —
+    // response shapes, status codes, the "[api/videos/jobs/:id]" settlement-failure log
+    // prefix (A6) — is unchanged.
+    const result = await cancelVideoJobCore(user.id, id, "[api/videos/jobs/:id]");
     if (result.kind === "not_cancelable") {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }

@@ -15,6 +15,7 @@ import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import { isTransientDbError } from "@/lib/prisma-transient-retry";
 import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import {
   MCP_CHAIN_IDEMPOTENCY_PREFIX,
   isReservedMcpChainIdempotencyKey,
@@ -480,10 +481,22 @@ export async function enqueueMcpChainExport(input: {
   }
 
   try {
-    // Same project transition the web export route makes after creating its durable job.
-    await prisma.editorProject.updateMany({
-      where: { id: plan.projectId, userId: preview.userId },
-      data: { activeExportJobId: exportJob.id, status: "exporting", lastOpenedAt: new Date() },
+    // Fix round 1 (A2): re-check the export's own status in the SAME transaction as the
+    // project write. Between this insert committing and this write running, a concurrent
+    // cancel_video_job can have already canceled this just-created export (the
+    // writeMcpChainTerminalMarker "exists" branch racing this insert) — without the
+    // re-check, this unconditional write would land the project on "exporting" pointing at
+    // an already-terminal job. The export's own cancel path re-settles the project once
+    // `activeExportJobId` is actually set, so skipping here never strands anything either way.
+    await prisma.$transaction(async (tx) => {
+      const fresh = await tx.videoJob.findUnique({ where: { id: exportJob.id }, select: { status: true } });
+      if (fresh && (VIDEO_JOB_INFLIGHT_STATUSES as readonly string[]).includes(fresh.status)) {
+        // Same project transition the web export route makes after creating its durable job.
+        await tx.editorProject.updateMany({
+          where: { id: plan.projectId, userId: preview.userId },
+          data: { activeExportJobId: exportJob.id, status: "exporting", lastOpenedAt: new Date() },
+        });
+      }
     });
   } catch {
     // The export's own finish/fail transition re-links the project; never lose the job here.

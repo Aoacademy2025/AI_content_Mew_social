@@ -2,8 +2,9 @@
 //
 // Plan: docs/plans/2026-10-01-mcp-upgrade-p0-p1.md (T10). The web DELETE
 // /api/videos/jobs/[id] cancel body is extracted into a shared core
-// (src/lib/mcp/video-job-cancel.ts: cancelVideoJobCore) so web behavior stays byte-identical.
-// A chain-aware wrapper (cancelMcpVideoJob) in the same file backs the new MCP
+// (src/lib/mcp/video-job-cancel-core.ts: cancelVideoJobCore, chain-export-free — fix round 1
+// A5) so web behavior stays byte-identical. A chain-aware wrapper (cancelMcpVideoJob, in
+// video-job-cancel.ts) backs the new MCP
 // `cancel_video_job({id})` tool: it accepts either the preview or the export id, cancels
 // whichever half is in flight, and — when the preview is done but the export was never
 // enqueued (the gap) — writes a canceled terminal marker under the chain key so neither
@@ -11,12 +12,20 @@
 //
 // Self-contained: always builds its own throwaway SQLite, even when DATABASE_URL is preset.
 //
-// Run: node --conditions=react-server --import tsx scripts/verify-mcp-cancel.ts
+// Fix round 1 adds: A1 (preview-finish race falls through, not a false not_cancelable), A2
+// (the enqueue-wins gap race never strands the project on "exporting"), A3 (MCP read-path
+// cancel copy is one fixed Thai sentence), A4 (the marker-loses "exists" branch, and a
+// handler-level web DELETE test with a stubbed getCurrentUser — node:test's mock.module,
+// hence --experimental-test-module-mocks below), A5/A6 (web DELETE's import graph and log
+// prefix restored to their pre-T10 shape).
+//
+// Run: node --conditions=react-server --experimental-test-module-mocks --import tsx scripts/verify-mcp-cancel.ts
 
 import { execSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 
 const dir = mkdtempSync(join(tmpdir(), "mcp-cancel-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
@@ -38,11 +47,39 @@ async function section(name: string, body: () => Promise<void>) {
   }
 }
 
+/**
+ * Test-only: intercept exactly ONE call to `obj[method]` whose args satisfy `when`, running
+ * `before` (handed the untouched original function) first, then always delegating to the
+ * real implementation. Reproduces a specific interleaving deterministically — no timing, no
+ * flakiness — by making the "concurrent" write actually happen against the DB first, through
+ * genuine application code, before the call under test proceeds.
+ */
+function hideOnce<Args extends unknown[], Ret>(
+  obj: Record<string, (...args: Args) => Promise<Ret>>,
+  method: string,
+  when: (args: Args) => boolean,
+  before: (original: (...args: Args) => Promise<Ret>, args: Args) => Promise<unknown>,
+): () => void {
+  const original = obj[method].bind(obj) as (...args: Args) => Promise<Ret>;
+  let used = false;
+  obj[method] = async (...args: Args) => {
+    if (!used && when(args)) {
+      used = true;
+      await before(original, args);
+    }
+    return original(...args);
+  };
+  return () => { obj[method] = original; };
+}
+
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
-  const { cancelVideoJobCore, cancelMcpVideoJob } = await import("../src/lib/mcp/video-job-cancel");
+  // Fix round 1 (A5): cancelVideoJobCore now lives in its own chain-export-free module;
+  // cancelMcpVideoJob (the chain router) stays in video-job-cancel.ts.
+  const { cancelVideoJobCore } = await import("../src/lib/mcp/video-job-cancel-core");
+  const { cancelMcpVideoJob } = await import("../src/lib/mcp/video-job-cancel");
   const { mcpChainExportKey } = await import("../src/lib/mcp/chain-key");
-  const { resolveMcpChain } = await import("../src/lib/mcp/chain-export");
+  const { resolveMcpChain, enqueueMcpChainExport } = await import("../src/lib/mcp/chain-export");
   const { getVideoJobStatusTool } = await import("../src/lib/mcp/tools");
   const { sweepStalledVideoJobs } = await import("../src/lib/mcp/video-job-watchdog");
   const { checkMinuteQuota } = await import("../src/lib/minute-limits");
@@ -126,13 +163,36 @@ async function main() {
     return prisma.videoJob.count({ where: { userId, idempotencyKey: mcpChainExportKey(previewId) } });
   }
 
+  /** A DONE chain preview with just enough output for planChainExport/enqueueMcpChainExport
+   *  to succeed for real (minimal v2 preview shape — one caption, a base video, a voice). */
+  async function makeEnqueueReadyPreview(userId: string, projectId: string) {
+    const preview = await makeChainPreview(userId, projectId, { status: "done" });
+    await prisma.videoJob.update({
+      where: { id: preview.id },
+      data: {
+        outputJson: JSON.stringify({
+          version: 2,
+          videoUrl: "/api/renders/race-base.mp4",
+          preview: {
+            captions: [{ text: "สวัสดีค่ะ", startMs: 0, endMs: 2000, tag: "hook" }],
+            config: {},
+            voiceUrl: "/api/renders/race-voice.wav",
+            audioDurationMs: 2000,
+          },
+        }),
+      },
+    });
+    await prisma.editorProject.update({ where: { id: projectId }, data: { activeJobId: preview.id, status: "post" } });
+    return preview;
+  }
+
   // ── A: plain (non-chain) job cancel — the extracted web core ──────────────────────────
   await section("A: plain job cancel (web core, byte-identical semantics)", async () => {
     // A1: queued create job, no project → canceled, no settlement needed.
     const u1 = await makeUser();
     const j1 = await makeJob(u1.id, { status: "queued" });
     const r1 = await cancelVideoJobCore(u1.id, j1.id);
-    check("A1: queued create job cancels", r1.kind === "canceled" && r1.kind === "canceled" && r1.settlementPending === false);
+    check("A1: queued create job cancels", r1.kind === "canceled" && r1.settlementPending === false);
     const row1 = await prisma.videoJob.findUniqueOrThrow({ where: { id: j1.id } });
     check("A1: status canceled, reason recorded, refund flag cleared",
       row1.status === "canceled"
@@ -189,7 +249,7 @@ async function main() {
       data: { id: "rj-inflight", userId: u7.id, parentJobId: j7.id, type: "RENDER", status: "QUEUED", payload: "{}", reservedQuota: true },
     });
     const r7 = await cancelVideoJobCore(u7.id, j7.id);
-    check("A7: cancel still reports canceled with settlementPending=true", r7.kind === "canceled" && r7.kind === "canceled" && r7.settlementPending === true);
+    check("A7: cancel still reports canceled with settlementPending=true", r7.kind === "canceled" && r7.settlementPending === true);
     const row7 = await prisma.videoJob.findUniqueOrThrow({ where: { id: j7.id } });
     check("A7: refund flag stays pending for retry when settlement is in flight", row7.reservationRefundPending === true);
 
@@ -337,13 +397,19 @@ async function main() {
   // ── F: web DELETE route — extraction kept the response byte-identical ─────────────────
   await section("F: web DELETE route delegates to the shared core, unchanged shapes", async () => {
     const routeSource = readFileSync("src/app/api/videos/jobs/[id]/route.ts", "utf8");
-    check("F1: DELETE calls the extracted shared core", routeSource.includes("cancelVideoJobCore(user.id, id)"));
+    check("F1: DELETE calls the extracted shared core with its original log prefix (A6)",
+      routeSource.includes('cancelVideoJobCore(user.id, id, "[api/videos/jobs/:id]")'));
     check("F2: the not_cancelable shape and 409 status are unchanged",
       routeSource.includes('{ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 }'));
     check("F3: the success shape is unchanged",
       routeSource.includes("{ ok: true, settlementPending: result.settlementPending }"));
     check("F4: the route no longer inlines the settlement imports (moved to the shared core)",
       !routeSource.includes("refundVideoJobFunding") && !routeSource.includes("cancelHeroVoiceGeneration"));
+    check("F5 (A5): the route imports the core from its own chain-export-free module",
+      routeSource.includes('from "@/lib/mcp/video-job-cancel-core"') && !routeSource.includes('"@/lib/mcp/video-job-cancel"'));
+    const coreSource = readFileSync("src/lib/mcp/video-job-cancel-core.ts", "utf8");
+    check("F6 (A5): the core itself never imports chain-export (web's import graph is restored)",
+      !/from\s+"@\/lib\/mcp\/chain-export"/.test(coreSource));
   });
 
   // ── G: MCP tool registration ────────────────────────────────────────────────────────
@@ -356,6 +422,232 @@ async function main() {
     check("G5: the not_cancelable shape matches the web route's", mcpRoute.includes('{ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }'));
     const descMatch = mcpRoute.match(/"cancel_video_job"[\s\S]{0,400}description:\s*"([^"]+)"/);
     check("G6: the description is Thai and factual", !!descMatch && /[ก-๙]/.test(descMatch[1]) && descMatch[1].length < 220);
+  });
+
+  // ── H: A1 — the preview-finish race falls through instead of a false not_cancelable ────
+  await section("H: A1 (fix round 1) — preview-finish race falls through", async () => {
+    // Variant 1: the preview finishes (for real) between our read and the core's updateMany,
+    // and no export has been enqueued yet — cancelMcpVideoJob must fall through to the gap
+    // marker, not report a false "already finished, cannot cancel".
+    const u1 = await makeUser();
+    const proj1 = await makeProject(u1.id);
+    const preview1 = await makeChainPreview(u1.id, proj1.id, { status: "processing", finishedAt: null });
+    await prisma.editorProject.update({ where: { id: proj1.id }, data: { activeJobId: preview1.id, status: "rendering" } });
+
+    const restore1 = hideOnce(
+      prisma.videoJob as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>,
+      "updateMany",
+      (args) => {
+        const a = args[0] as { where?: { id?: string }; data?: { status?: string } };
+        return a?.where?.id === preview1.id && a?.data?.status === "canceled";
+      },
+      async (original) => {
+        // The real race: the preview's own finish commits first, through the genuine
+        // updateMany call (unpatched), so the core's own conditional update below
+        // naturally matches zero rows — exactly like a concurrent finish winning.
+        await original({ where: { id: preview1.id }, data: { status: "done", finishedAt: new Date() } });
+      },
+    );
+    let r1: Awaited<ReturnType<typeof cancelMcpVideoJob>>;
+    try {
+      r1 = await cancelMcpVideoJob(u1.id, preview1.id);
+    } finally {
+      restore1();
+    }
+    check("H1: falls through to the gap marker instead of a false not_cancelable", r1.kind === "canceled" && r1.settlementPending === false);
+    const row1 = await prisma.videoJob.findUniqueOrThrow({ where: { id: preview1.id } });
+    check("H2: the preview itself is untouched by OUR cancel — it really finished on its own", row1.status === "done" && row1.errorMessage === null);
+    check("H3: a canceled marker now holds the chain key (nothing was ever created to settle)", await keyRowCount(u1.id, preview1.id) === 1);
+
+    // Variant 2: by the time we re-resolve, the chain's own post-finish enqueue has ALSO
+    // already run and the export is for real in flight — cancelMcpVideoJob must cancel it.
+    const u2 = await makeUser();
+    const proj2 = await makeProject(u2.id);
+    const preview2 = await makeChainPreview(u2.id, proj2.id, { status: "processing", finishedAt: null });
+    await prisma.editorProject.update({ where: { id: proj2.id }, data: { activeJobId: preview2.id, status: "rendering" } });
+
+    const restore2 = hideOnce(
+      prisma.videoJob as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>,
+      "updateMany",
+      (args) => {
+        const a = args[0] as { where?: { id?: string }; data?: { status?: string } };
+        return a?.where?.id === preview2.id && a?.data?.status === "canceled";
+      },
+      async (original) => {
+        await original({ where: { id: preview2.id }, data: { status: "done", finishedAt: new Date() } });
+        await makeChainExport(u2.id, preview2.id, proj2.id, "processing");
+      },
+    );
+    let r2: Awaited<ReturnType<typeof cancelMcpVideoJob>>;
+    try {
+      r2 = await cancelMcpVideoJob(u2.id, preview2.id);
+    } finally {
+      restore2();
+    }
+    check("H4: falls through and cancels the now-real in-flight export", r2.kind === "canceled" && r2.settlementPending === false);
+    const exportRow2 = await prisma.videoJob.findFirst({ where: { userId: u2.id, idempotencyKey: mcpChainExportKey(preview2.id) } });
+    check("H5: the export row (a real row, not a marker) is canceled", exportRow2?.status === "canceled" && exportRow2?.type === "export");
+    check("H6: exactly one row holds the key — no duplicate enqueue", await keyRowCount(u2.id, preview2.id) === 1);
+  });
+
+  // ── I: A2 — the enqueue-wins gap race never strands the project on "exporting" ─────────
+  await section("I: A2 (fix round 1) — enqueue's project write skips a canceled export", async () => {
+    const u = await makeUser();
+    const proj = await makeProject(u.id);
+    const preview = await makeEnqueueReadyPreview(u.id, proj.id);
+
+    // The project write lives inside a NEW transaction client (`tx`, a separate Prisma
+    // Client instance `enqueueMcpChainExport` constructs via `prisma.$transaction`), so a
+    // patch on `prisma.editorProject.updateMany` never sees it. Patch `$transaction` itself
+    // instead — but `enqueueMcpChainExport` itself already runs two EARLIER unrelated
+    // transactions first (createEditorProject's revision check, createVideoJob's funding
+    // reservation), so `when` matches on the target callback's own source text (tsx's
+    // transform keeps it readable) rather than taking the first `$transaction` call blindly.
+    // Before the real transaction starts (which re-reads the export's status from the
+    // committed DB), commit a real concurrent cancel of the just-inserted export — the same
+    // interleaving as K, one step later.
+    const restore = hideOnce(
+      prisma as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>,
+      "$transaction",
+      (args) => String(args[0]).includes("activeExportJobId"),
+      async () => {
+        const freshKey = await prisma.videoJob.findFirst({
+          where: { userId: u.id, idempotencyKey: mcpChainExportKey(preview.id) },
+          select: { id: true },
+        });
+        if (freshKey) await cancelVideoJobCore(u.id, freshKey.id);
+      },
+    );
+    let result: Awaited<ReturnType<typeof enqueueMcpChainExport>>;
+    try {
+      result = await enqueueMcpChainExport({ previewJobId: preview.id, userId: u.id });
+    } finally {
+      restore();
+    }
+    check("I1: the enqueue still reports the export it created", result.kind === "enqueued");
+    const exportRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: (result as { exportJobId: string }).exportJobId } });
+    check("I2: the export itself is canceled (the race's cancel won)", exportRow.status === "canceled");
+    const projAfter = await prisma.editorProject.findUniqueOrThrow({ where: { id: proj.id } });
+    check("I3: the project never lands on \"exporting\" pointing at the canceled export", projAfter.status !== "exporting");
+    check("I4: the project's activeExportJobId was never set to the canceled export", projAfter.activeExportJobId !== exportRow.id);
+  });
+
+  // ── J: A3 — MCP read-path cancel copy is one fixed Thai sentence ──────────────────────
+  await section("J: A3 (fix round 1) — get_video_status cancel copy", async () => {
+    const CANCEL_COPY = "งานนี้ถูกยกเลิกแล้ว";
+
+    // A real-row cancel (export half canceled while in flight).
+    const u1 = await makeUser();
+    const proj1 = await makeProject(u1.id);
+    const preview1 = await makeChainPreview(u1.id, proj1.id, { status: "done" });
+    const export1 = await makeChainExport(u1.id, preview1.id, proj1.id, "processing");
+    const r1 = await cancelMcpVideoJob(u1.id, preview1.id);
+    check("J1: the real-row cancel succeeded", r1.kind === "canceled");
+    const status1 = await getVideoJobStatusTool(u1.id, preview1.id) as { status?: string; error?: string | null } | null;
+    check("J2: get_video_status.error is the one fixed Thai sentence (real-row cancel)", status1?.status === "canceled" && status1?.error === CANCEL_COPY);
+    const row1 = await prisma.videoJob.findUniqueOrThrow({ where: { id: export1.id } });
+    check("J3: the stored errorMessage is UNCHANGED (web still reads this verbatim)", row1.errorMessage === "canceled by user (editor v2)");
+
+    // The gap marker.
+    const u2 = await makeUser();
+    const proj2 = await makeProject(u2.id);
+    const preview2 = await makeChainPreview(u2.id, proj2.id, { status: "done" });
+    const r2 = await cancelMcpVideoJob(u2.id, preview2.id);
+    check("J4: the gap cancel succeeded", r2.kind === "canceled");
+    const status2 = await getVideoJobStatusTool(u2.id, preview2.id) as { status?: string; error?: string | null } | null;
+    check("J5: get_video_status.error is the SAME fixed Thai sentence (gap marker)", status2?.status === "canceled" && status2?.error === CANCEL_COPY);
+    const marker2 = await prisma.videoJob.findFirst({ where: { userId: u2.id, idempotencyKey: mcpChainExportKey(preview2.id) } });
+    check("J6: the marker's own errorMessage is UNCHANGED", marker2?.errorMessage === "canceled by user (mcp)");
+
+    // A plain (non-chain) job's canceled status is untouched by A3 — only the chain path.
+    const u3 = await makeUser();
+    const job3 = await makeJob(u3.id, { status: "queued" });
+    await cancelVideoJobCore(u3.id, job3.id);
+    const status3 = await getVideoJobStatusTool(u3.id, job3.id) as { status?: string; error?: string | null } | null;
+    check("J7: a plain job's canceled status still reads its raw errorMessage (A3 is chain-only)",
+      status3?.status === "canceled" && status3?.error === "canceled by user (editor v2)");
+  });
+
+  // ── K: A4 — the marker-loses "exists" branch, reproduced deterministically ─────────────
+  await section("K: A4 (fix round 1) — the gap-cancel marker loses to a real concurrent enqueue", async () => {
+    const u = await makeUser();
+    const proj = await makeProject(u.id);
+    const preview = await makeChainPreview(u.id, proj.id, { status: "done" });
+
+    const restore = hideOnce(
+      prisma.videoJob as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>,
+      "create",
+      (args) => {
+        const a = args[0] as { data?: { idempotencyKey?: string } };
+        return a?.data?.idempotencyKey === mcpChainExportKey(preview.id);
+      },
+      async (original) => {
+        // Simulate a concurrent real enqueue winning the race: insert the real export row
+        // FIRST (through the unpatched create), so the marker's own create attempt right
+        // after this hits the genuine unique-constraint P2002 and returns "exists".
+        await original({
+          data: {
+            userId: u.id,
+            type: "export",
+            status: "processing",
+            projectId: proj.id,
+            inputJson: JSON.stringify({ mode: "export", sourceJobId: preview.id, mcpChainExport: true }),
+            idempotencyKey: mcpChainExportKey(preview.id),
+          },
+        });
+      },
+    );
+    let r: Awaited<ReturnType<typeof cancelMcpVideoJob>>;
+    try {
+      r = await cancelMcpVideoJob(u.id, preview.id);
+    } finally {
+      restore();
+    }
+    check("K1: the exists branch still cancels the real (now-visible) export", r.kind === "canceled" && r.settlementPending === false);
+    const exportRow = await prisma.videoJob.findFirst({ where: { userId: u.id, idempotencyKey: mcpChainExportKey(preview.id) } });
+    check("K2: exactly one row holds the key and it is the real export, now canceled", exportRow?.status === "canceled" && exportRow?.type === "export");
+    check("K3: no duplicate/marker row was created under the key", await keyRowCount(u.id, preview.id) === 1);
+  });
+
+  // ── L: A4 — handler-level web DELETE test (stubbed auth) ───────────────────────────────
+  await section("L: A4 (fix round 1) — web DELETE handler, stubbed auth, status codes + bodies", async () => {
+    const authed = await makeUser();
+    const other = await makeUser();
+    const owned = await makeJob(authed.id, { status: "queued" });
+    const foreign = await makeJob(other.id, { status: "processing" });
+
+    const ctx = mock.module("@/lib/clerk-auth", {
+      exports: { getCurrentUser: async () => authed },
+    });
+    let DELETE: typeof import("../src/app/api/videos/jobs/[id]/route").DELETE;
+    try {
+      ({ DELETE } = await import("../src/app/api/videos/jobs/[id]/route"));
+
+      const res1 = await DELETE(new Request("http://x/api/videos/jobs/" + owned.id, { method: "DELETE" }), {
+        params: Promise.resolve({ id: owned.id }),
+      });
+      const body1 = await res1.json();
+      check("L1: canceling an owned queued job → 200 { ok: true, settlementPending: false }",
+        res1.status === 200 && JSON.stringify(body1) === JSON.stringify({ ok: true, settlementPending: false }));
+
+      const res2 = await DELETE(new Request("http://x/api/videos/jobs/" + owned.id, { method: "DELETE" }), {
+        params: Promise.resolve({ id: owned.id }),
+      });
+      const body2 = await res2.json();
+      check("L2: re-canceling the now-terminal job → 409 not_cancelable", res2.status === 409
+        && JSON.stringify(body2) === JSON.stringify({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }));
+
+      const res3 = await DELETE(new Request("http://x/api/videos/jobs/" + foreign.id, { method: "DELETE" }), {
+        params: Promise.resolve({ id: foreign.id }),
+      });
+      const body3 = await res3.json();
+      check("L3: another user's job id → 409, byte-identical to the terminal-id shape (no oracle)",
+        res3.status === 409 && JSON.stringify(body3) === JSON.stringify(body2));
+      const foreignRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: foreign.id } });
+      check("L4: the foreign job itself is untouched", foreignRow.status === "processing");
+    } finally {
+      ctx.restore();
+    }
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

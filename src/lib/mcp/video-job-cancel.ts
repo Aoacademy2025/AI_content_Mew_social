@@ -1,120 +1,8 @@
-import { prisma } from "@/lib/prisma";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
-import { cancelHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
-import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-checkpoint";
-import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
-import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservation-settlement";
-import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveMcpChain, writeMcpChainTerminalMarker } from "@/lib/mcp/chain-export";
+import { cancelVideoJobCore, type CancelVideoJobResult } from "@/lib/mcp/video-job-cancel-core";
 
-/**
- * T10 (ADR 0063): the cancel core shared by web `DELETE /api/videos/jobs/[id]` and the MCP
- * `cancel_video_job` tool. Cancels exactly ONE owned VideoJob row (queued / processing /
- * waiting_provider) with its funding, image and render settlement, then the matching
- * EditorProject transition. No chain awareness lives here — a caller decides WHICH row id
- * (preview or export) to pass in; this is byte-identical to the web route's prior inline
- * DELETE body, just parameterized on userId instead of a session.
- */
-export type CancelVideoJobResult =
-  | { kind: "not_cancelable" }
-  | { kind: "canceled"; settlementPending: boolean };
-
-export async function cancelVideoJobCore(userId: string, jobId: string): Promise<CancelVideoJobResult> {
-  const job = await prisma.videoJob.findFirst({
-    where: { id: jobId, userId },
-    select: {
-      id: true,
-      projectId: true,
-      type: true,
-      currentStep: true,
-      providerCheckpointJson: true,
-    },
-  });
-  if (!job) return { kind: "not_cancelable" };
-
-  const res = await prisma.videoJob.updateMany({
-    where: { id: jobId, userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
-    data: {
-      status: "canceled",
-      finishedAt: new Date(),
-      errorMessage: "canceled by user (editor v2)",
-      reservationRefundPending: true,
-      reservationRefundReason: "video_user_canceled",
-    },
-  });
-  if (res.count !== 1) return { kind: "not_cancelable" };
-
-  const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
-  if (heroVoiceCheckpoint) {
-    await cancelHeroVoiceGeneration(userId, heroVoiceCheckpoint.aiGenerationJobId).catch((error) => {
-      console.error(
-        `[video-job-cancel] Hero Voice cancel settlement failed job=${job.id}`,
-        error instanceof Error ? error.message : "unknown error",
-      );
-    });
-  }
-  let settlementPending = false;
-  try {
-    await refundVideoJobFunding(job.id, userId, "user-canceled");
-  } catch (error) {
-    settlementPending = true;
-    console.error(
-      `[video-job-cancel] pre-render funding settlement failed job=${job.id}`,
-      error instanceof Error ? error.message : "unknown error",
-    );
-  }
-  try {
-    await refundSettledVideoImageBatch({
-      userId,
-      videoJobId: job.id,
-      reason: "video_user_canceled",
-    });
-  } catch (error) {
-    settlementPending = true;
-    console.error(
-      `[video-job-cancel] image settlement failed job=${job.id}`,
-      error instanceof Error ? error.message : "unknown error",
-    );
-  }
-  try {
-    const renderSettlement = await refundVideoJobTerminalRenderReservations({
-      videoJobId: job.id,
-      userId,
-      reason: "video_user_canceled",
-    });
-    if (renderSettlement.kind === "in_flight") settlementPending = true;
-  } catch (error) {
-    settlementPending = true;
-    console.error(
-      `[video-job-cancel] render settlement failed job=${job.id}`,
-      error instanceof Error ? error.message : "unknown error",
-    );
-  }
-  await prisma.videoJob.updateMany({
-    where: { id: job.id, userId, status: "canceled" },
-    data: settlementPending
-      ? { reservationRefundAttempts: { increment: 1 } }
-      : {
-          reservationRefundPending: false,
-          reservationRefundReason: null,
-          reservationRefundAttempts: { increment: 1 },
-        },
-  });
-  if (job.projectId) {
-    if (job.type === "export") {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId, activeExportJobId: job.id },
-        data: { status: "post", lastOpenedAt: new Date() },
-      });
-    } else {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId, activeJobId: job.id },
-        data: { status: "draft", lastOpenedAt: new Date() },
-      });
-    }
-  }
-  return { kind: "canceled", settlementPending };
-}
+export type { CancelVideoJobResult };
 
 /**
  * T10 (ADR 0063): route a `cancel_video_job(id)` call to the right row of an MCP chain —
@@ -123,6 +11,10 @@ export async function cancelVideoJobCore(userId: string, jobId: string): Promise
  * - Preview still in flight → cancel the preview row (byte-identical to web DELETE on a
  *   `type:"create"` job). A canceled preview can never chain, because enqueue requires
  *   `status==="done"` — no marker needed.
+ *   Fix round 1 (A1): if that cancel loses the race — the preview's own finish committed
+ *   between our read above and the core's conditional `updateMany` — re-resolve the chain
+ *   ONCE and fall through to the done-preview handling below, instead of reporting a false
+ *   "already finished, cannot cancel" while the export is about to be enqueued and run.
  * - Preview done, an export row already exists and is in flight → cancel that export row
  *   (byte-identical to web DELETE on a `type:"export"` job; its own settlement path).
  * - Preview done, export row exists but is already terminal (done/failed/canceled) →
@@ -142,13 +34,22 @@ export async function cancelVideoJobCore(userId: string, jobId: string): Promise
  *   return the exact same not_cancelable shape — no existence oracle.
  */
 export async function cancelMcpVideoJob(userId: string, jobId: string): Promise<CancelVideoJobResult> {
-  const chain = await resolveMcpChain(userId, jobId);
+  let chain = await resolveMcpChain(userId, jobId);
   if (!chain) return cancelVideoJobCore(userId, jobId);
 
-  const { preview, exportJob, conflict } = chain;
   const inFlight = (status: string) => (VIDEO_JOB_INFLIGHT_STATUSES as readonly string[]).includes(status);
 
-  if (inFlight(preview.status)) return cancelVideoJobCore(userId, preview.id);
+  if (inFlight(chain.preview.status)) {
+    const result = await cancelVideoJobCore(userId, chain.preview.id);
+    if (result.kind === "canceled") return result;
+    // A1: the preview finished before our updateMany ran. Re-resolve once — a second loss
+    // here is a real terminal/conflict state, not another race — and fall through.
+    const reresolved = await resolveMcpChain(userId, chain.preview.id);
+    if (!reresolved) return { kind: "not_cancelable" };
+    chain = reresolved;
+  }
+
+  const { preview, exportJob, conflict } = chain;
   if (preview.status !== "done") return { kind: "not_cancelable" };
 
   if (exportJob) {
