@@ -1084,27 +1084,37 @@ const CARD_CLOCK_TAIL = /[0-9๐-๙]{1,2}:[0-9๐-๙]{2}[^\S\r\n]*$/u;
 const CARD_SPAN_RESYNC_CHARS = 400;
 
 // Thai nominalizing/compound-forming prefixes that, immediately followed by more Thai
-// script with no space, almost always bind to what follows as one semantic unit — even
-// when Intl.Segmenter("th") itself offers a boundary there, because its general dictionary
-// doesn't know every specific compound. The plan's own cited defect card is exactly this:
-// "ทำการบ้าน" (do homework) segments as "ทำการ" + "บ้าน" ("operate" + "house"), not
-// "ทำ" + "การบ้าน", so cutting at that ICU boundary reads line 1 as ending in the wrong
-// word. Checked as a TRAILING STRING MATCH immediately before the candidate boundary, not
-// against the segmenter's own word unit: "ทำการ" above is one ICU segment, but it still
-// ends in "การ", which is what has to be caught. Each entry: การ (การบ้าน, การเดินทาง),
+// script with no space, bind to what follows as one semantic unit — even when
+// Intl.Segmenter("th") itself offers a boundary there. Each entry: การ (การบ้าน, การเดินทาง),
 // ความ (ความสัมพันธ์, ความเสียหาย), ผู้ (ผู้บริหาร, ผู้หญิง), นัก (นักเรียน, นักวิจัย),
-// ชาว (ชาวบ้าน, ชาวนา), ช่าง (ช่างภาพ, ช่างไฟ), เครื่อง (เครื่องบิน, เครื่องดื่ม) — all
-// bound derivational prefixes that essentially never stand as a complete thought alone.
+// ชาว (ชาวบ้าน, ชาวนา), ช่าง (ช่างภาพ, ช่างไฟ), เครื่อง (เครื่องบิน, เครื่องดื่ม).
 // ที่ is deliberately EXCLUDED: it is overwhelmingly a free function word (relative
-// pronoun / locative / ordinal marker — e.g. this same defect card's own "...อยู่ที่เด็ก
-// ซึ่ง...") rather than a bound prefix, so blocking right after it would refuse far more
-// good cuts than bad ones.
+// pronoun / locative / ordinal marker — e.g. the defect card's own "...อยู่ที่เด็กซึ่ง...")
+// rather than a bound prefix, so blocking right after it would refuse far more good cuts
+// than bad ones.
+//
+// The decision is made on the word segment that ENDS at the candidate break (the span back
+// to the previous wordBoundaries index — the ICU segment, after the garan/loanword
+// filtering wordBoundaries applies), never on a raw trailing-substring match: a suffix match
+// also refused ต้องการ|ให้, โครงการ|นี้, บทความ|นี้, หนัก|มาก, บริการ|ลูกค้า (PR-A whole-branch
+// review A1). Session ruling, no hand-written exception list:
+//   (a) the segment IS exactly a prefix (ความ|สัมพันธ์, นัก|วิจัย, ผู้|บริหาร) → refuse;
+//   (b) the segment only ENDS with a prefix → refuse only when Intl.Segmenter("th") reads
+//       prefix + the next segment as ONE word-like segment, i.e. a dictionary compound. The
+//       plan's own defect card is this case: "ทำการบ้าน" segments as "ทำการ" + "บ้าน"
+//       ("operate" + "house"), but "การบ้าน" (homework) is one ICU word, so the cut is
+//       refused; "ต้องการ" + "ให้" → "การให้" is two ICU words, so that cut stays available.
 const CARD_NOMINALIZING_PREFIXES = ["เครื่อง", "ความ", "ชาว", "ช่าง", "การ", "ผู้", "นัก"];
 const CARD_THAI_SCRIPT_CHAR = /[฀-๿]/u;
 
-function endsWithBoundThaiPrefix(fullText: string, boundary: number): boolean {
+function bindsToBoundThaiPrefix(
+  segmentBefore: string,
+  segmentAfter: string,
+  isOneWord: (value: string) => boolean,
+): boolean {
   return CARD_NOMINALIZING_PREFIXES.some((prefix) => (
-    boundary >= prefix.length && fullText.slice(boundary - prefix.length, boundary) === prefix
+    segmentBefore === prefix
+    || (segmentBefore.endsWith(prefix) && isOneWord(prefix + segmentAfter))
   ));
 }
 
@@ -1122,7 +1132,17 @@ const displayedCardText = (value: string) => value.replace(/\s+/gu, " ").trim();
 // its own characters, not on an outer document.
 export function cardCutBoundaries(fullText: string): number[] {
   const out: number[] = [];
-  for (const boundary of wordBoundaries(fullText)) {
+  const boundaries = wordBoundaries(fullText);
+  // Built only when a segment ending in a bound prefix actually needs rule (b).
+  let compoundSegmenter: WordSegmenter | null | undefined;
+  const isOneWord = (value: string): boolean => {
+    if (compoundSegmenter === undefined) compoundSegmenter = thaiWordSegmenter();
+    if (!compoundSegmenter) return false;
+    const parts = Array.from(compoundSegmenter.segment(value));
+    return parts.length === 1 && parts[0].isWordLike === true && parts[0].segment === value;
+  };
+  for (let index = 0; index < boundaries.length; index++) {
+    const boundary = boundaries[index];
     if (boundary <= 0 || boundary >= fullText.length) continue;
     let next = boundary;
     while (next < fullText.length && /\s/u.test(fullText[next])) next++;
@@ -1136,10 +1156,14 @@ export function cardCutBoundaries(fullText: string): number[] {
       && CARD_NUMERIC_TAIL.test(fullText.slice(Math.max(0, boundary - 2), boundary))) continue;
     // "08:30 น." is one value (the same rule groupTimedCaptionWords applies).
     if (fullText.startsWith("น.", next) && CARD_CLOCK_TAIL.test(fullText.slice(Math.max(0, boundary - 6), next))) continue;
-    // Fix round 1: never cut right after a bound Thai nominalizing/compound prefix when
-    // the next segment is itself Thai script with no space in between (see the constant's
-    // doc comment above — ทำการ|บ้าน, ความ|สัมพันธ์, ผู้|บริหาร, นัก|เรียน, etc.).
-    if (next === boundary && CARD_THAI_SCRIPT_CHAR.test(ch) && endsWithBoundThaiPrefix(fullText, boundary)) continue;
+    // Never cut right after a bound Thai nominalizing/compound prefix when the next segment
+    // is itself Thai script with no space in between — rules (a)/(b) in the constant's doc
+    // comment above (ความ|สัมพันธ์, ทำการ|บ้าน refused; ต้องการ|ให้, หนัก|มาก allowed).
+    if (next === boundary && CARD_THAI_SCRIPT_CHAR.test(ch) && bindsToBoundThaiPrefix(
+      fullText.slice(boundaries[index - 1], boundary),
+      fullText.slice(boundary, boundaries[index + 1] ?? fullText.length),
+      isOneWord,
+    )) continue;
     out.push(boundary);
   }
   return out;

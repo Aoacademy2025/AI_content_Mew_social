@@ -245,6 +245,61 @@ for (const effect of ["karaoke", "highlight"] as const) {
   check(cardCutBoundaries(card1).includes(card1.indexOf("ที่") + "ที่".length), "H4: ที่ is NOT treated as a blocked bound prefix (boundary right after it stays offered)");
 }
 
+// ── H5–H7) A1 (PR-A whole-branch review): the bound-prefix rule is decided by the ICU
+// segment that ENDS at the candidate break, not by a raw trailing-suffix match.
+//   (a) that segment IS exactly a bound prefix (การ/ความ/ผู้/นัก/ชาว/ช่าง/เครื่อง) and Thai
+//       follows → blocked (H2/H3 above: ความ|สัมพันธ์, นัก|วิจัย, ผู้|บริหาร);
+//   (b) the segment only ENDS with a prefix → blocked only when Intl.Segmenter("th") reads
+//       prefix + the next segment as ONE word-like segment, i.e. a dictionary compound
+//       (ทำการ|บ้าน → การบ้าน). No hand-written exception list.
+{
+  const wordSegmenter = new Intl.Segmenter("th", { granularity: "word" });
+  const oneWord = (value: string) => {
+    const parts = Array.from(wordSegmenter.segment(value));
+    return parts.length === 1 && parts[0].isWordLike === true;
+  };
+  // H5) The ICU facts rule (b) rests on — if a runtime's ICU dictionary ever disagrees,
+  // this names the cause instead of failing H1 obscurely.
+  check(oneWord("การบ้าน"), "H5: ICU reads การบ้าน (homework) as one dictionary word");
+  for (const pair of ["การให้", "การนี้", "ความนี้", "นักมาก", "การลูกค้า", "ความนั้น"]) {
+    check(!oneWord(pair), `H5: ICU does NOT read ${JSON.stringify(pair)} as one word`);
+  }
+
+  // H6) Whole words that merely END in a prefix no longer refuse a following word that does
+  // not form a compound with that prefix.
+  const allowedAfter: Array<[string, string]> = [
+    ["ทีมงานทุกคนต้องการให้โครงการนี้สำเร็จ", "ต้องการ"], // ต้องการ|ให้
+    ["ลูกค้าต้องการให้เราส่งของภายในวันนี้", "ต้องการ"], // ต้องการ|ให้
+    ["ชาวบ้านช่วยกันทำโครงการนี้มาต่อเนื่องหลายปีแล้ว", "โครงการ"], // โครงการ|นี้
+    ["โครงการนี้ใช้งบประมาณมากกว่าที่คาดไว้", "โครงการ"], // โครงการ|นี้
+    ["เรื่องราวในบทความนี้ทำให้หลายคนคิดได้", "บทความ"], // บทความ|นี้
+    ["ทุกคนในทีมทำงานหนักมากจนแทบไม่ได้พัก", "หนัก"], // หนัก|มาก
+    ["ทีมบริการลูกค้าตอบกลับภายในหนึ่งชั่วโมง", "บริการ"], // บริการ|ลูกค้า
+    ["ข้อความนั้นถูกส่งไปถึงทุกคนแล้ว", "ข้อความ"], // ข้อความ|นั้น
+  ];
+  for (const [text, word] of allowedAfter) {
+    const cut = text.indexOf(word) + word.length;
+    check(cardCutBoundaries(text).includes(cut), `H6: a break right after ${word} is allowed in ${JSON.stringify(text)}`);
+  }
+  // …and the balanced chooser actually takes it when it is the balance point (15 | 15).
+  check(
+    applyDisplayLineBreak("ทีมงานทุกคนต้องการให้โครงการนี้สำเร็จ", 80) === "ทีมงานทุกคนต้องการ\nให้โครงการนี้สำเร็จ",
+    `H6: the display break lands right after ต้องการ when that is the balance point (got ${JSON.stringify(applyDisplayLineBreak("ทีมงานทุกคนต้องการให้โครงการนี้สำเร็จ", 80))})`,
+  );
+
+  // H7) Rule (b) still refuses a real compound inside another sentence, and rule (a) still
+  // refuses every exact-prefix segment from the list.
+  const homework = "เขาทำการบ้านทุกคืน";
+  check(!cardCutBoundaries(homework).includes(homework.indexOf("บ้าน")), "H7: ทำการ|บ้าน stays refused in another sentence (การบ้าน is one ICU word)");
+  for (const [text, afterPrefix] of [
+    ["ชาวบ้านมาร่วมงานกันเยอะมาก", "บ้าน"], // ชาว|บ้าน — exact prefix segment
+    ["ช่างภาพคนนี้ถ่ายรูปสวยมาก", "ภาพ"], // ช่าง|ภาพ
+    ["เครื่องบินลำนี้ออกเดินทางแล้ว", "บิน"], // เครื่อง|บิน
+  ] as const) {
+    check(!cardCutBoundaries(text).includes(text.indexOf(afterPrefix)), `H7: an exact-prefix segment still refuses the break before ${JSON.stringify(afterPrefix)} in ${JSON.stringify(text)}`);
+  }
+}
+
 // ── I) Tie-break (fix round 1): among near-balanced candidates, prefer a boundary at a
 // space, then the later one. "ผลสำรวจของ Rocket Media Lab" has two Latin-run boundaries
 // near the balance point; the chosen one must land at the space before "Rocket", keeping
