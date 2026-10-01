@@ -19,6 +19,7 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job";
 import { createMcpVideoJob } from "@/lib/mcp/chain-export";
+import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import {
   aiAudioCeilingRefusal,
   managedAudioCeilingApplies,
@@ -365,6 +366,23 @@ const handler = createMcpHandler(
             if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
             throw e; // real DB error → runTool catch audits "error" + returns internal_error
           }
+        }, args),
+    );
+
+    server.registerTool(
+      "cancel_video_job",
+      {
+        title: "Cancel video job",
+        description: "ยกเลิกงาน (รับ id ของ preview หรือ export ก็ได้ ยกเลิกครึ่งที่กำลังทำงานอยู่) — ถ้าวิดีโอหลักเรนเดอร์เสร็จไปแล้วก่อนยกเลิก ค่าใช้จ่ายส่วนนั้นจะไม่คืน ใช้แทนการสร้างงานใหม่ซ้ำ",
+        inputSchema: { id: z.string().min(1) },
+      },
+      async (args, extra) =>
+        runTool("cancel_video_job", extra, async (p) => {
+          const result = await cancelMcpVideoJob(p.userId, args.id);
+          if (result.kind === "not_cancelable") {
+            return { error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" };
+          }
+          return { ok: true, settlementPending: result.settlementPending };
         }, args),
     );
   },

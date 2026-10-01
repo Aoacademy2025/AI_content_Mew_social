@@ -48,14 +48,22 @@ const mcpRoute = readFileSync("src/app/api/[transport]/route.ts", "utf8");
 const mcpTools = readFileSync("src/lib/mcp/tools.ts", "utf8");
 const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
 const insightsRoute = readFileSync("src/app/api/admin/insights/route.ts", "utf8");
+// T10: DELETE's cancel body (and the MCP cancel_video_job tool) now share one extracted
+// core, so the in-flight status set lives there, not inline in either route.
+const videoJobCancelCore = readFileSync("src/lib/mcp/video-job-cancel.ts", "utf8");
 assert(webStatusRoute.includes("toPublicVideoJobStatus(job.status)"), "web job status normalizes waiting_provider");
 assert(
   mcpRoute.includes("getVideoJobStatusTool") && mcpTools.includes("toPublicVideoJobStatus(job.status)"),
   "MCP job status normalizes waiting_provider through its shared tool helper",
 );
-assert(webStatusRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "DELETE accepts every shared in-flight status");
+assert(webStatusRoute.includes("cancelVideoJobCore"), "DELETE delegates to the shared cancel core");
+assert(
+  videoJobCancelCore.includes("...VIDEO_JOB_INFLIGHT_STATUSES"),
+  "the shared cancel core (web DELETE + MCP cancel_video_job) accepts every shared in-flight status",
+);
 assert((jobsRoute.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 3, "all three web in-flight limits use the shared status set");
 assert(mcpRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "MCP in-flight limit includes provider waits");
+assert(mcpRoute.includes("cancelMcpVideoJob"), "MCP cancel_video_job routes through the chain-aware cancel helper");
 assert(insightsRoute.includes("waitingProvider:"), "admin insights reports waiting-provider count separately");
 
 console.log(`\n${passed} assertions passed ✅`);

@@ -1,20 +1,12 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import {
-  parseVideoJobOutput,
-  toPublicVideoJobStatus,
-  VIDEO_JOB_INFLIGHT_STATUSES,
-} from "@/lib/mcp/video-job";
+import { parseVideoJobOutput, toPublicVideoJobStatus } from "@/lib/mcp/video-job";
 import { resolveProjectMediaState } from "@/lib/media-retention";
-import { cancelHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
-import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-checkpoint";
-import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
-import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservation-settlement";
 import { parseProjectVisualContext } from "@/lib/project-look.server";
-import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { parseFailedEditorExportRecovery } from "@/lib/editor-export-snapshot";
+import { cancelVideoJobCore } from "@/lib/mcp/video-job-cancel";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done. A terminal failed/canceled Export may additionally
@@ -118,102 +110,14 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    const job = await prisma.videoJob.findFirst({
-      where: { id, userId: user.id },
-      select: {
-        id: true,
-        projectId: true,
-        type: true,
-        currentStep: true,
-        providerCheckpointJson: true,
-      },
-    });
-    if (!job) {
+    // T10: the cancel core (funding/image/render settlement + project-status transition) is
+    // shared verbatim with the MCP cancel_video_job tool (@/lib/mcp/video-job-cancel). This
+    // route's behavior — response shapes, status codes — is unchanged.
+    const result = await cancelVideoJobCore(user.id, id);
+    if (result.kind === "not_cancelable") {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }
-    const res = await prisma.videoJob.updateMany({
-      where: { id, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
-      data: {
-        status: "canceled",
-        finishedAt: new Date(),
-        errorMessage: "canceled by user (editor v2)",
-        reservationRefundPending: true,
-        reservationRefundReason: "video_user_canceled",
-      },
-    });
-    if (res.count !== 1) {
-      return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
-    }
-    const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
-    if (heroVoiceCheckpoint) {
-      await cancelHeroVoiceGeneration(user.id, heroVoiceCheckpoint.aiGenerationJobId).catch((error) => {
-        console.error(
-          `[api/videos/jobs/:id] Hero Voice cancel settlement failed job=${job.id}`,
-          error instanceof Error ? error.message : "unknown error",
-        );
-      });
-    }
-    let settlementPending = false;
-    try {
-      await refundVideoJobFunding(job.id, user.id, "user-canceled");
-    } catch (error) {
-      settlementPending = true;
-      console.error(
-        `[api/videos/jobs/:id] pre-render funding settlement failed job=${job.id}`,
-        error instanceof Error ? error.message : "unknown error",
-      );
-    }
-    try {
-      await refundSettledVideoImageBatch({
-        userId: user.id,
-        videoJobId: job.id,
-        reason: "video_user_canceled",
-      });
-    } catch (error) {
-      settlementPending = true;
-      console.error(
-        `[api/videos/jobs/:id] image settlement failed job=${job.id}`,
-        error instanceof Error ? error.message : "unknown error",
-      );
-    }
-    try {
-      const renderSettlement = await refundVideoJobTerminalRenderReservations({
-        videoJobId: job.id,
-        userId: user.id,
-        reason: "video_user_canceled",
-      });
-      if (renderSettlement.kind === "in_flight") settlementPending = true;
-    } catch (error) {
-      settlementPending = true;
-      console.error(
-        `[api/videos/jobs/:id] render settlement failed job=${job.id}`,
-        error instanceof Error ? error.message : "unknown error",
-      );
-    }
-    await prisma.videoJob.updateMany({
-      where: { id: job.id, userId: user.id, status: "canceled" },
-      data: settlementPending
-        ? { reservationRefundAttempts: { increment: 1 } }
-        : {
-            reservationRefundPending: false,
-            reservationRefundReason: null,
-            reservationRefundAttempts: { increment: 1 },
-          },
-    });
-    if (job.projectId) {
-      if (job.type === "export") {
-        await prisma.editorProject.updateMany({
-          where: { id: job.projectId, userId: user.id, activeExportJobId: job.id },
-          data: { status: "post", lastOpenedAt: new Date() },
-        });
-      } else {
-        await prisma.editorProject.updateMany({
-          where: { id: job.projectId, userId: user.id, activeJobId: job.id },
-          data: { status: "draft", lastOpenedAt: new Date() },
-        });
-      }
-    }
-    return NextResponse.json({ ok: true, settlementPending });
+    return NextResponse.json({ ok: true, settlementPending: result.settlementPending });
   } catch (err) {
     console.error("[api/videos/jobs/:id] cancel error:", err);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });
