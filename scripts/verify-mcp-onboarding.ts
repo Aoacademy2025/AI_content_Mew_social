@@ -7,6 +7,9 @@ import {
   missingAvatarError,
 } from "../src/lib/mcp/onboarding";
 import { isInBandError } from "../src/lib/mcp/audit";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -65,9 +68,76 @@ assert(SERVER_INSTRUCTIONS.includes("คิดเงินตามจำนว�
 assert(SERVER_INSTRUCTIONS.includes("ใช้ avatar กี่วินาที") && SERVER_INSTRUCTIONS.includes("default 5"), "avatar step: must ask seconds, default 5");
 assert(SERVER_INSTRUCTIONS.includes("ต้องถามจริงทุกครั้งว่า") && SERVER_INSTRUCTIONS.includes("ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile"), "BGM step: must ask + must actually send bgmFile");
 assert(SERVER_INSTRUCTIONS.includes("อย่าสรุปว่า key เสีย"), "elevenlabs: voices-list failure ≠ key broken");
-// batch4: forbid silently defaulting — must really ask the 3 mandatory questions
-assert(SERVER_INSTRUCTIONS.includes("ห้ามตั้งค่า default เองเงียบ") && SERVER_INSTRUCTIONS.includes("3 ข้อบังคับ"), "wizard: forbid silent defaults, 3 mandatory questions");
+// batch4: forbid silently defaulting — must really ask the 4 mandatory questions
+// (pre-existing assertion said "3" but the text was already at 4 ก/ข/ค/ง items — fixed to match.)
+assert(SERVER_INSTRUCTIONS.includes("ห้ามตั้งค่า default เองเงียบ") && SERVER_INSTRUCTIONS.includes("4 ข้อบังคับ"), "wizard: forbid silent defaults, 4 mandatory questions");
 // batch5: BGM independent of avatar — never bundle "no-avatar + music" as one option
 assert(SERVER_INSTRUCTIONS.includes("BGM เป็นคำถามแยกอิสระจาก avatar") && SERVER_INSTRUCTIONS.includes("ห้ามมัด"), "wizard: BGM decoupled from avatar (ask always)");
 
-console.log(`\n${passed} assertions passed ✅`);
+// --- T11: new fields the assistant must relay (create_video_job warnings, subtitleQa,
+// editorUrl, cancel_video_job, errorCode/userAction/refunded/refundPending, cancel charging,
+// HeyGen non-refundable, brand = subtitle-only this round) ---------------------------------
+assert(SERVER_INSTRUCTIONS.includes('"warnings"') && SERVER_INSTRUCTIONS.includes("ห้ามข้ามหรือสรุปรวบ"),
+  "instructions: relay every warnings[] item from create_video_job, never skip/summarize");
+assert(SERVER_INSTRUCTIONS.includes('"subtitleQa"') && SERVER_INSTRUCTIONS.includes("เป็นคำเตือน ให้แจ้งผู้ใช้ด้วย"),
+  "instructions: relay a subtitleQa warning from get_video_status");
+assert(SERVER_INSTRUCTIONS.includes('"editorUrl"') && SERVER_INSTRUCTIONS.includes("กดลิงก์นี้เพื่อแก้ต่อในเว็บได้"),
+  "instructions: relay editorUrl with the exact phrase");
+assert(SERVER_INSTRUCTIONS.includes("cancel_video_job({id})") && SERVER_INSTRUCTIONS.includes("ห้ามสั่ง create_video_job ซ้ำ"),
+  "instructions: stop/change-mind → cancel_video_job, never re-create the same script");
+assert(SERVER_INSTRUCTIONS.includes('"errorCode"') && SERVER_INSTRUCTIONS.includes('"userAction"'),
+  "instructions: explain a failed job via errorCode + userAction");
+assert(SERVER_INSTRUCTIONS.includes("refunded=true") && SERVER_INSTRUCTIONS.includes("refundPending=true")
+  && SERVER_INSTRUCTIONS.includes("ห้ามบอกว่าคืนเงินถ้า field ไม่ได้บอกแบบนั้น"),
+  "instructions: refunded vs refundPending must be told truthfully, never assumed");
+assert(SERVER_INSTRUCTIONS.includes("ส่วนที่เรนเดอร์เสร็จแล้วยังถูกคิดตามปกติ"),
+  "instructions: cancelling after the base render keeps that charge");
+assert(SERVER_INSTRUCTIONS.includes("HeyGen") && SERVER_INSTRUCTIONS.includes("คืนไม่ได้ทุกกรณี"),
+  "instructions: HeyGen avatar spend is never refundable");
+assert(SERVER_INSTRUCTIONS.includes("brandProfileId") && SERVER_INSTRUCTIONS.includes('มีผลกับ "สไตล์ซับ" เท่านั้น'),
+  "instructions: a brand affects only subtitle style this round, not voice/B-roll/logo");
+
+function main() {
+  // --- MANAGED_GEMINI branches: the polling-cadence rule and the no-API-keys rule must
+  // survive in BOTH branches. SERVER_INSTRUCTIONS is a module-level const computed from
+  // process.env.MANAGED_GEMINI at import time, so testing both branches needs a FRESH
+  // process per branch, not a re-import in this one (a cache-busted `import("…?x")` only
+  // yields a second module instance on newer V8/Node ESM loaders — it silently returned
+  // `undefined` fields on CI's Node 22, per the PR-B review). Each child gets the env var
+  // set (or absent) before its own import, so it always sees the branch it was spawned for.
+  const POLL_RULE = "ห้าม poll รัวทุกไม่กี่วินาที";
+  const NO_KEY_RULE = "ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด";
+  const onboardingPath = fileURLToPath(new URL("../src/lib/mcp/onboarding.ts", import.meta.url));
+
+  function instructionsFor(managedGemini: "1" | undefined): string {
+    const env = { ...process.env } as Record<string, string>;
+    if (managedGemini === undefined) delete env.MANAGED_GEMINI; else env.MANAGED_GEMINI = managedGemini;
+    const code = `import(${JSON.stringify(onboardingPath)}).then((m) => process.stdout.write(m.SERVER_INSTRUCTIONS));`;
+    return execFileSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "-e", code], { env, encoding: "utf8" });
+  }
+
+  const managed = instructionsFor("1");
+  assert(managed.includes("ระบบจัดการ Gemini ให้"), "sanity: MANAGED_GEMINI=1 branch selected");
+  assert(managed.includes(POLL_RULE), "MANAGED_GEMINI=1 branch: polling-cadence rule present");
+  assert(managed.includes(NO_KEY_RULE), "MANAGED_GEMINI=1 branch: no-API-keys rule present");
+
+  const byok = instructionsFor(undefined);
+  assert(byok.includes("BYOK —"), "sanity: BYOK branch selected");
+  assert(byok.includes(POLL_RULE), "BYOK branch: polling-cadence rule present");
+  assert(byok.includes(NO_KEY_RULE), "BYOK branch: no-API-keys rule present");
+
+  // --- Version + the three tool descriptions (route.ts) -----------------------------------
+  const routeSrc = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
+  assert(routeSrc.includes('version: "0.2.0"'), "serverInfo.version is 0.2.0");
+  assert(!routeSrc.includes('version: "0.1.0"'), "serverInfo.version no longer 0.1.0");
+  assert(routeSrc.includes("ยกเลิกงานวิดีโอที่ยังไม่เสร็จ") && routeSrc.includes("ค่า HeyGen คืนไม่ได้"),
+    "cancel_video_job tool description: base-render charge + non-refundable HeyGen");
+  assert(routeSrc.includes("ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้") && routeSrc.includes("กดลิงก์นี้เพื่อแก้ต่อในเว็บได้"),
+    "get_video_status tool description: warnings/subtitleQa/editorUrl/userAction+refund");
+  assert(routeSrc.includes("แจ้งผู้ใช้ทุกข้อใน warnings") && routeSrc.includes("มีผลกับสไตล์ซับเท่านั้น"),
+    "create_video_job tool description: warnings + brand=subtitle-only");
+
+  console.log(`\n${passed} assertions passed ✅`);
+}
+
+main();

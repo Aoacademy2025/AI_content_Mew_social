@@ -2,20 +2,40 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
-import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields } from "@/lib/mcp/video-job";
+import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
+import {
+  enqueueMcpChainExportSafely,
+  resolveMcpChain,
+  type McpChain,
+  type McpChainRow,
+} from "@/lib/mcp/chain-export";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
+
+/** The app origin every absolute link MCP hands an agent is built on. */
+function mcpPublicOrigin(): string {
+  return process.env.MCP_PUBLIC_ORIGIN?.trim()
+    || process.env.NEXT_PUBLIC_APP_URL?.trim()
+    || DEFAULT_MCP_PUBLIC_ORIGIN;
+}
 
 function publicVideoUrl(value: string | null): string | null {
   if (!value) return null;
   try {
-    const origin = process.env.MCP_PUBLIC_ORIGIN?.trim()
-      || process.env.NEXT_PUBLIC_APP_URL?.trim()
-      || DEFAULT_MCP_PUBLIC_ORIGIN;
-    const url = new URL(value, origin);
+    const url = new URL(value, mcpPublicOrigin());
     return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : value;
   } catch {
     return value;
+  }
+}
+
+/** T8: absolute link that opens an Agent-created Project in the Editor (Post phase). */
+export function mcpEditorUrl(projectId: string): string | null {
+  try {
+    const url = new URL(`/video-editor?projectId=${encodeURIComponent(projectId)}`, mcpPublicOrigin());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
   }
 }
 
@@ -111,7 +131,123 @@ export async function getVideoStatusTool(userId: string, videoId: string) {
   };
 }
 
+/** Session-authored (T8 fix round 1, A2) — appended to userAction for an export-half failure. */
+const CHAIN_EXPORT_RETRY_USER_ACTION = "งานเรนเดอร์หลักเสร็จแล้ว — เปิดลิงก์ editorUrl เพื่อสั่ง export ใหม่ได้";
+
+/** Preview share of a chain's progress bar; the export fills the rest (R-T8 status mapping). */
+const CHAIN_PREVIEW_PROGRESS_SHARE = 85;
+
+function scaledProgress(progress: number, from: number, to: number): number {
+  const clamped = Math.min(100, Math.max(0, Number.isFinite(progress) ? progress : 0));
+  return from + Math.round((clamped * (to - from)) / 100);
+}
+
+/**
+ * T8 (ADR 0063): get_video_status for an MCP chain — one job from the agent's point of view,
+ * whichever of the two ids it holds. Preview 0–85, export 85–100; failure fields come from
+ * the FAILING row with both chain ids (R-T8-2). `jobId` is always the preview id, so a query
+ * by the export id returns the identical shape.
+ */
+async function chainJobStatus(userId: string, resolved: McpChain) {
+  let chain = resolved;
+  const { preview } = chain;
+  if (preview.status === "done" && !chain.exportJob && !chain.conflict) {
+    // Lost-enqueue recovery: the same idempotent enqueue the worker runs after the finish.
+    await enqueueMcpChainExportSafely({ previewJobId: preview.id, userId });
+    chain = (await resolveMcpChain(userId, preview.id)) ?? chain;
+  }
+  const exportJob = chain.exportJob;
+  const chainIds = exportJob ? [preview.id, exportJob.id] : [preview.id];
+  const inExportHalf = preview.status === "done";
+  const row: McpChainRow = inExportHalf && exportJob ? exportJob : preview;
+  const output = parseVideoJobOutput(row.outputJson);
+
+  let status: string;
+  let progress: number;
+  if (!inExportHalf) {
+    status = toPublicVideoJobStatus(preview.status);
+    progress = scaledProgress(preview.progress, 0, CHAIN_PREVIEW_PROGRESS_SHARE);
+  } else if (chain.conflict) {
+    status = "failed";
+    progress = CHAIN_PREVIEW_PROGRESS_SHARE;
+  } else if (!exportJob) {
+    status = "processing";
+    progress = CHAIN_PREVIEW_PROGRESS_SHARE;
+  } else if (exportJob.status === "done" || exportJob.status === "failed" || exportJob.status === "canceled") {
+    status = exportJob.status;
+    progress = exportJob.status === "done"
+      ? 100
+      : scaledProgress(exportJob.progress, CHAIN_PREVIEW_PROGRESS_SHARE, 100);
+  } else {
+    status = "processing";
+    progress = scaledProgress(exportJob.progress, CHAIN_PREVIEW_PROGRESS_SHARE, 100);
+  }
+
+  let failure: Awaited<ReturnType<typeof deriveFailedJobFields>> | null = null;
+  if (status === "failed") {
+    const failingRow: McpChainRow = chain.conflict
+      ? {
+          ...preview,
+          errorCode: "idempotency_conflict",
+          errorMessage: "idempotencyKey นี้ถูกใช้แล้ว",
+          errorProvider: null,
+          currentStep: null,
+        }
+      : row;
+    failure = await deriveFailedJobFields(failingRow, chainIds, {
+      exportMode: inExportHalf,
+      avatarSourceInputJson: preview.inputJson,
+    });
+  }
+  const done = status === "done";
+  // VideoJob.projectId is onDelete: SetNull, so a non-null id means the Agent-created Project
+  // still exists. A2 (fix round 1): the link also rides on an export half that failed or was
+  // canceled — the paid preview is on that Project, so the customer can export it from there.
+  const projectId = preview.projectId ?? exportJob?.projectId ?? null;
+  const exportHalfEnded = inExportHalf && (status === "failed" || status === "canceled");
+  const editorUrl = projectId && (done || exportHalfEnded) ? mcpEditorUrl(projectId) : null;
+  if (failure && inExportHalf && editorUrl) {
+    failure = { ...failure, userAction: `${failure.userAction} ${CHAIN_EXPORT_RETRY_USER_ACTION}` };
+  }
+  // Fix round 2 (PR-B advisory): a canceled export half had no refunded/refundPending — an
+  // agent following T11 could not tell the user whether money came back. `exportJob` is
+  // always present here (status "canceled" is only reached via the `exportJob.status ===
+  // "canceled"` branch above). Settlement truth spans BOTH chain rows (see
+  // `deriveSettlementFields`'s doc comment) — the export row's own fundingState is always
+  // "none", so without the preview row a kept base charge would misreport refunded: true.
+  const canceledSettlement = status === "canceled" && exportJob
+    ? await deriveSettlementFields([preview, exportJob], chainIds)
+    : null;
+  return {
+    kind: "job" as const,
+    jobId: preview.id,
+    status,
+    currentStep: chain.conflict ? null : row.currentStep,
+    progress,
+    videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
+    // Fix round 1 (A3): a chain cancel's raw errorMessage is web-tagged/English ("canceled by
+    // user (editor v2)") or MCP-internal ("canceled by user (mcp)" — the gap marker). Neither
+    // is agent-facing copy, and the two reading differently is confusing. This is the MCP
+    // read path only — row.errorMessage itself (what's stored, what web reads) is untouched.
+    error: status === "failed"
+      ? (chain.conflict ? "idempotencyKey นี้ถูกใช้แล้ว" : row.errorMessage ?? null)
+      : status === "canceled"
+        ? "งานนี้ถูกยกเลิกแล้ว"
+        : null,
+    ...(failure ? failure : {}),
+    ...(canceledSettlement ? canceledSettlement : {}),
+    subtitleQa: output?.subtitleQa ?? null,
+    billingReceipt: output?.billingReceipt ?? null,
+    ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
+    ...(exportHalfEnded && editorUrl ? { editorUrl } : {}),
+  };
+}
+
 export async function getVideoJobStatusTool(userId: string, jobId: string) {
+  // T8: an MCP chain (preview or its chained export) reads as one job. Owner-scoped: another
+  // user's id resolves to null here AND below, so it is "not found" either way.
+  const chain = await resolveMcpChain(userId, jobId);
+  if (chain) return chainJobStatus(userId, chain);
   const job = await prisma.videoJob.findFirst({
     where: { id: jobId, userId },
     select: {

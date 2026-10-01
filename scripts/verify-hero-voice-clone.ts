@@ -28,6 +28,42 @@ function walkRouteFiles(directory: string, files: string[] = []): string[] {
   return files;
 }
 
+/**
+ * Resolve a bare `@/lib/...` import specifier to its source file on disk, or
+ * null when it does not point inside `src/lib`. Only `@/lib/...` imports are
+ * expanded (one level) for clone-capability discovery below: a route that
+ * moves clone-marker-bearing code into a lib module must stay discoverable,
+ * without the discovery regex (`candidateMarker`) itself being weakened.
+ */
+function resolveLibImportPath(specifier: string): string | null {
+  if (!specifier.startsWith("@/lib/")) return null;
+  const base = path.join("src", specifier.slice("@/".length));
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, path.join(base, "index.ts"), path.join(base, "index.tsx")]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * The text a route is scanned against for clone-capability discovery: the
+ * route's own source plus the source of every `@/lib/...` module it imports
+ * (one level deep). This keeps discovery honest when marker-bearing logic
+ * (e.g. `cancelHeroVoiceGeneration`) is extracted out of a route file into a
+ * shared lib module — the route stays discoverable through its import,
+ * instead of silently falling out of `HERO_VOICE_CLONE_CANARY_ROUTE_INVENTORY`
+ * cross-checks.
+ */
+function cloneDiscoveryText(routeFilename: string, routeSource: string = read(routeFilename)): string {
+  const importPattern = /from\s+["'](@\/lib\/[^"']+)["']/g;
+  const texts = [routeSource];
+  let match: RegExpExecArray | null;
+  while ((match = importPattern.exec(routeSource))) {
+    const resolved = resolveLibImportPath(match[1]);
+    if (resolved) texts.push(read(resolved));
+  }
+  return texts.join("\n");
+}
+
 const originalEnv = {
   OMNIVOICE_ENABLED: process.env.OMNIVOICE_ENABLED,
   HERO_VOICE_CLONING_ENABLED: process.env.HERO_VOICE_CLONING_ENABLED,
@@ -350,7 +386,7 @@ for (const filename of [
 
 const candidateMarker = /heroVoiceCloneCanaryAccessDecision|isHeroVoiceCloneCanaryUser|authenticateHeroVoiceCanaryHttpRequest|isHeroVoiceCloneGenerationJob|(?:start|advance|cancel)HeroVoiceGeneration|cloneCanarySurface|heroVoiceClone(?:AudioDirectory|AudioFilePath|PartFilePath)|hero-voice-clone-audio|isUserVoiceId|user-voices|UserVoice|omnivoice-clone|voice-clone-canary/;
 const discoveredCloneRoutes = walkRouteFiles("src/app/api")
-  .filter((filename) => candidateMarker.test(read(filename)))
+  .filter((filename) => candidateMarker.test(cloneDiscoveryText(filename)))
   .map(routePath)
   .sort();
 const inventoriedRoutes = [...new Set(HERO_VOICE_CLONE_CANARY_ROUTE_INVENTORY.map((entry) => entry.route))].sort();
@@ -359,15 +395,49 @@ assert.deepEqual(
   inventoriedRoutes,
   "every clone-capable route must be explicitly classified in the policy inventory",
 );
+
+// Self-test: an extracted-core route (clone marker lives only in an imported
+// @/lib/... module, not in the route file's own text) must still be
+// discovered through the one-level import expansion above. This is a
+// regression test for exactly the T10 cancel-core extraction: moving
+// `cancelHeroVoiceGeneration` out of the route file into
+// `video-job-cancel-core.ts` must never again silently drop the route out of
+// `discoveredCloneRoutes`/the inventory cross-check.
+{
+  const extractedCoreRoute = "src/app/api/videos/jobs/[id]/route.ts";
+  const ownSource = read(extractedCoreRoute);
+  assert.doesNotMatch(
+    ownSource,
+    candidateMarker,
+    `${extractedCoreRoute} must keep its clone marker OUT of its own text — this proves the extraction is real and the self-test below is not vacuous`,
+  );
+  assert.match(
+    cloneDiscoveryText(extractedCoreRoute, ownSource),
+    candidateMarker,
+    `${extractedCoreRoute} must still be discovered as clone-capable through its @/lib/... import`,
+  );
+  assert.ok(
+    discoveredCloneRoutes.includes(routePath(extractedCoreRoute)),
+    `${routePath(extractedCoreRoute)} must appear in discoveredCloneRoutes despite the marker living only in an imported lib module`,
+  );
+  const coreModulePath = "src/lib/mcp/video-job-cancel-core.ts";
+  assert.match(
+    read(coreModulePath),
+    candidateMarker,
+    `${coreModulePath} must be the module actually carrying the clone marker for this route`,
+  );
+}
+
 for (const entry of HERO_VOICE_CLONE_CANARY_ROUTE_INVENTORY) {
   const filename = path.join("src/app", entry.route.slice(1), "route.ts");
   const source = read(filename);
   assert.match(source, new RegExp(`export async function ${entry.method}\\b`),
     `${entry.method} ${entry.route} exists`);
   if (entry.scope === "durable-stock-caller") {
-    assert.match(source, /cancelHeroVoiceGeneration/,
-      `${entry.method} ${entry.route} is classified as a stock durable caller`);
-    assert.doesNotMatch(source, /cloneCanarySurface|user-voices|omnivoice-clone/,
+    const expandedSource = cloneDiscoveryText(filename, source);
+    assert.match(expandedSource, /cancelHeroVoiceGeneration/,
+      `${entry.method} ${entry.route} is classified as a stock durable caller (directly or via an extracted @/lib/... core)`);
+    assert.doesNotMatch(expandedSource, /cloneCanarySurface|user-voices|omnivoice-clone/,
       `${entry.method} ${entry.route} does not opt into clone generation`);
   } else {
     assert.match(source, /heroVoiceCloneCanaryAccessDecision|isHeroVoiceCloneCanaryUser|authenticateHeroVoiceCanaryHttpRequest/,

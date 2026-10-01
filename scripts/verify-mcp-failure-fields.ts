@@ -273,11 +273,12 @@ async function main() {
   // ── 3c. errorProvider: kept for BYOK providers, omitted for managed ones ─────────────
   // runpod (Hero AI Image) and omnivoice (Hero AI Voice) are internal vendors sold under
   // our own names; naming them helps no customer fix anything (PR-A security low S5).
-  for (const managed of ["runpod", "omnivoice"]) {
+  // T8 (R-T8-3): matched by provider family, so a variant label never leaks the vendor.
+  for (const managed of ["runpod", "omnivoice", "runpod-hero-image", "OmniVoice-hostinger"]) {
     await makeFailedJob(`ff-managed-${managed}`, {
       errorCode: "transient",
       errorProvider: managed,
-      currentStep: managed === "runpod" ? "stock" : "tts",
+      currentStep: managed.toLowerCase().startsWith("runpod") ? "stock" : "tts",
     });
     const r = await getVideoJobStatusTool(user.id, `ff-managed-${managed}`);
     ok(r?.errorCode === "transient" && !("errorProvider" in (r ?? {})), `managed provider ${managed}: errorProvider is omitted`);
@@ -334,14 +335,15 @@ async function main() {
     orchestratorSrc.includes('code: "bgm_not_found"'),
     "orchestrator.ts: the create-path bgm-not-found failJob call now carries a code",
   );
-  // The remaining bare-string failJob calls are confined to broll-rerender/export/upload —
-  // modes the comment at the broll-rerender guard states MCP never sends. Fail loudly if a
-  // NEW bare-string failJob call appears outside those blocks (a crude but effective guard:
-  // count bare-string calls total and compare to the known, reviewed set below).
+  // The remaining bare-string failJob calls are confined to broll-rerender/upload — modes
+  // MCP never sends. T8 (R-T8-1) made the export path MCP-reachable (the server-chained
+  // export), so its 5 bare-string calls now carry codes: 12 → 7. Fail loudly if a NEW
+  // bare-string failJob call appears (a crude but effective guard: count bare-string calls
+  // total and compare to the known, reviewed set below).
   const bareStringFailJobCalls = orchestratorSrc.match(/failJob\(jobId, "[^{]/g) ?? [];
   ok(
-    bareStringFailJobCalls.length === 12,
-    `orchestrator.ts: exactly the 12 known out-of-scope (broll-rerender/export/upload) bare-string failJob calls remain — got ${bareStringFailJobCalls.length} (a new one outside those modes needs a code, per this task's scope)`,
+    bareStringFailJobCalls.length === 7,
+    `orchestrator.ts: exactly the 7 known out-of-scope (broll-rerender/upload) bare-string failJob calls remain — got ${bareStringFailJobCalls.length} (a new one outside those modes needs a code, per this task's scope)`,
   );
 
   // ── 7. T3's line-fit QA finding passes through subtitleQa unchanged ───────────────────

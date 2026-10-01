@@ -48,14 +48,32 @@ const mcpRoute = readFileSync("src/app/api/[transport]/route.ts", "utf8");
 const mcpTools = readFileSync("src/lib/mcp/tools.ts", "utf8");
 const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
 const insightsRoute = readFileSync("src/app/api/admin/insights/route.ts", "utf8");
+// T10: DELETE's cancel body (and the MCP cancel_video_job tool) now share one extracted
+// core, so the in-flight status set lives there, not inline in either route. Fix round 1
+// (A5): the core lives in its own module, free of the chain-export import graph, so the
+// web route's dependency set is unchanged from before T10.
+const videoJobCancelCore = readFileSync("src/lib/mcp/video-job-cancel-core.ts", "utf8");
 assert(webStatusRoute.includes("toPublicVideoJobStatus(job.status)"), "web job status normalizes waiting_provider");
 assert(
   mcpRoute.includes("getVideoJobStatusTool") && mcpTools.includes("toPublicVideoJobStatus(job.status)"),
   "MCP job status normalizes waiting_provider through its shared tool helper",
 );
-assert(webStatusRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "DELETE accepts every shared in-flight status");
+assert(webStatusRoute.includes("cancelVideoJobCore"), "DELETE delegates to the shared cancel core");
+assert(
+  videoJobCancelCore.includes("...VIDEO_JOB_INFLIGHT_STATUSES"),
+  "the shared cancel core (web DELETE + MCP cancel_video_job) accepts every shared in-flight status",
+);
 assert((jobsRoute.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 3, "all three web in-flight limits use the shared status set");
 assert(mcpRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "MCP in-flight limit includes provider waits");
+assert(mcpRoute.includes("cancelMcpVideoJob"), "MCP cancel_video_job routes through the chain-aware cancel helper");
 assert(insightsRoute.includes("waitingProvider:"), "admin insights reports waiting-provider count separately");
+// Fix round 1 (A5): web DELETE imports the core from its own module (no chain-export in its
+// import graph), not from the MCP router file.
+assert(
+  webStatusRoute.includes('from "@/lib/mcp/video-job-cancel-core"') && !webStatusRoute.includes('"@/lib/mcp/video-job-cancel"'),
+  "web route imports the cancel core from its own chain-export-free module",
+);
+// Fix round 1 (A6): the web route's original settlement-failure log prefix is preserved.
+assert(webStatusRoute.includes('cancelVideoJobCore(user.id, id, "[api/videos/jobs/:id]")'), "web DELETE keeps its original log prefix");
 
 console.log(`\n${passed} assertions passed ✅`);

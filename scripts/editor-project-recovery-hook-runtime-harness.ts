@@ -2837,10 +2837,98 @@ async function narrationTargetSurvivesEditingAndReload(): Promise<void> {
   legacy.runner.unmount();
 }
 
+/** T9 (ADR 0063): an Agent-created Project's draft carries `createdVia: "mcp"`. This
+ *  field has no setter — applyDraft() must still write it into effectiveDraftRef so the
+ *  *real* autosave path (an edit stages `effectiveDraftRef.current` as the draft to
+ *  PATCH, see stageExplicitUserDraftMutation) keeps carrying it. Before the T9 fix this
+ *  dropped on the very first autosave after any user edit (critic-preflight B6). */
+async function createdViaSurvivesEditingAndDropsInvalidValues(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("agent-created", 0, { script: "original script", createdVia: "mcp" });
+  const harness = createHarness({ search: "?projectId=agent-created", server });
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("edited script");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const bodies = patchBodies(harness.fetchMock);
+  assert.ok(bodies.length > 0, "the edit triggers at least one autosave PATCH");
+  assert.equal((bodies[bodies.length - 1].draft as JsonRecord).createdVia, "mcp",
+    "autosave retains createdVia:\"mcp\" after a script edit");
+  harness.runner.unmount();
+
+  const reopened = createHarness({ search: "?projectId=agent-created", server });
+  reopened.runner.mount();
+  await settle(reopened.runner);
+  reopened.runner.current.setScript("edited again after reload");
+  reopened.runner.flush();
+  reopened.clock.advance(1_000);
+  await settle(reopened.runner);
+  const reopenedBodies = patchBodies(reopened.fetchMock);
+  assert.equal((reopenedBodies[reopenedBodies.length - 1].draft as JsonRecord).createdVia, "mcp",
+    "createdVia survives a reload (applyDraft) followed by another autosave (buildDraft)");
+  reopened.runner.unmount();
+
+  const spoofedServer = new SharedEditorServer();
+  spoofedServer.setProject("spoofed-agent", 0, { script: "base", createdVia: "not-mcp" });
+  const spoofed = createHarness({ search: "?projectId=spoofed-agent", server: spoofedServer });
+  spoofed.runner.mount();
+  await settle(spoofed.runner);
+  spoofed.runner.current.setScript("edited spoofed");
+  spoofed.runner.flush();
+  spoofed.clock.advance(1_000);
+  await settle(spoofed.runner);
+  const spoofedBodies = patchBodies(spoofed.fetchMock);
+  assert.ok(spoofedBodies.length > 0, "the spoofed project also autosaves");
+  assert.equal(
+    Object.hasOwn(spoofedBodies[spoofedBodies.length - 1].draft as JsonRecord, "createdVia"),
+    false,
+    "only the literal \"mcp\" ever survives — any other createdVia value is dropped",
+  );
+  spoofed.runner.unmount();
+}
+
+/** Fix round 1 (PR-B whole-branch review, B3): resetProject() ("โปรเจกต์ใหม่" /
+ *  "เริ่มโปรเจกต์ใหม่") must clear createdVia, or a brand-new web project opened from an
+ *  Agent-created Project inherits the stale marker from effectiveDraftRef and autosaves
+ *  createdVia:"mcp" forever. */
+async function resetProjectClearsCreatedVia(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("agent-created-reset", 0, { script: "original script", createdVia: "mcp" });
+  const harness = createHarness({ search: "?projectId=agent-created-reset", server });
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectId, "agent-created-reset", "opens the Agent-created Project");
+
+  const newProjectId = await harness.runner.current.resetProject();
+  harness.runner.flush();
+  await settle(harness.runner);
+  assert.ok(newProjectId, "reset creates a brand-new project");
+  assert.notEqual(newProjectId, "agent-created-reset", "reset leaves the old project behind");
+
+  harness.runner.current.setScript("edited after reset");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+
+  const bodies = autosavePatchCalls(harness.fetchMock, newProjectId!)
+    .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+  assert.ok(bodies.length > 0, "the post-reset edit triggers at least one autosave PATCH");
+  assert.equal(
+    Object.hasOwn(bodies[bodies.length - 1].draft as JsonRecord, "createdVia"),
+    false,
+    "resetProject clears createdVia — the brand-new project never autosaves createdVia:\"mcp\"",
+  );
+  harness.runner.unmount();
+}
+
 export async function verifyRuntimeHookContract(): Promise<void> {
   activeCompiledHook = compileHook(hookSource);
   const cases: Array<[string, () => Promise<void>]> = [
     ["narration-target-edit-reload-reset", narrationTargetSurvivesEditingAndReload],
+    ["created-via-survives-editing-and-drops-invalid", createdViaSurvivesEditingAndDropsInvalidValues],
+    ["reset-project-clears-created-via", resetProjectClearsCreatedVia],
     ["two-independent-clients", twoIndependentClientsCannotOverwrite],
     ["same-tick-conflict-mutation-gate", conflictBlocksSettersBeforeRecoveryRerender],
     ["timeout-committed", timeoutCommittedIsAcknowledgedByFingerprint],

@@ -17,10 +17,9 @@ import {
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import {
-  createVideoJob,
-  VIDEO_JOB_INFLIGHT_STATUSES,
-} from "@/lib/mcp/video-job";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job";
+import { createMcpVideoJob } from "@/lib/mcp/chain-export";
+import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import {
   aiAudioCeilingRefusal,
   managedAudioCeilingApplies,
@@ -110,7 +109,7 @@ const handler = createMcpHandler(
 
     server.registerTool(
       "get_video_status",
-      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video)", inputSchema: { id: z.string().min(1) } },
+      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video) ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้; ถ้ามี editorUrl ให้ส่งลิงก์ \"กดลิงก์นี้เพื่อแก้ต่อในเว็บได้\"; ถ้า failed ให้อธิบายตาม userAction และ refunded/refundPending.", inputSchema: { id: z.string().min(1) } },
       async (args, extra) =>
         runTool("get_video_status", extra, async (p) => {
           const job = await getVideoJobStatusTool(p.userId, args.id);
@@ -144,7 +143,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId) แจ้งผู้ใช้ทุกข้อใน warnings. แบรนด์ (brandProfileId) มีผลกับสไตล์ซับเท่านั้น.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
@@ -331,8 +330,11 @@ const handler = createMcpHandler(
           const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
           if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
           try {
-            const job = await createVideoJob(
-              p.userId,
+            // T8 (ADR 0063): with the MCP Editor Project flag on for this user, this also
+            // opens an Agent-created Project and marks the job for the server-chained export.
+            // Flag off = the exact PR-A createVideoJob call.
+            const created = await createMcpVideoJob(
+              p.user,
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
@@ -350,7 +352,11 @@ const handler = createMcpHandler(
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
+              { title: args.title },
             );
+            // `mcp-chain:` keys belong to the server's chained export — same answer as a reuse.
+            if (created.kind === "reserved_key") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            const job = created.job;
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
               ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"
@@ -362,8 +368,25 @@ const handler = createMcpHandler(
           }
         }, args),
     );
+
+    server.registerTool(
+      "cancel_video_job",
+      {
+        title: "Cancel video job",
+        description: "ยกเลิกงานวิดีโอที่ยังไม่เสร็จ (ใส่ jobId ที่ได้จาก create_video_job). ยกเลิกหลังเรนเดอร์หลักเสร็จ ส่วนที่เสร็จแล้วยังถูกคิดตามปกติ; ค่า HeyGen คืนไม่ได้.",
+        inputSchema: { id: z.string().min(1) },
+      },
+      async (args, extra) =>
+        runTool("cancel_video_job", extra, async (p) => {
+          const result = await cancelMcpVideoJob(p.userId, args.id);
+          if (result.kind === "not_cancelable") {
+            return { error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" };
+          }
+          return { ok: true, settlementPending: result.settlementPending };
+        }, args),
+    );
   },
-  { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+  { serverInfo: { name: "heroai", version: "0.2.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
 );
 

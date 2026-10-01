@@ -47,9 +47,22 @@ export async function getVideoJobBillingReceipt(input: {
   videoJobId: string;
   userId: string;
 }): Promise<VideoJobBillingReceipt> {
+  return getVideoJobChainBillingReceipt({ videoJobIds: [input.videoJobId], userId: input.userId });
+}
+
+/**
+ * The same receipt across every VideoJob of one delivered video. T8 (ADR 0063): an MCP
+ * Agent-created Project delivers through a Preview job plus its server-chained Export job;
+ * the base render (preview) and the burn (export) are stages of ONE product, so the chain as
+ * a whole must hold exactly one active charge. Owner-scoped like the single-job receipt.
+ */
+export async function getVideoJobChainBillingReceipt(input: {
+  videoJobIds: string[];
+  userId: string;
+}): Promise<VideoJobBillingReceipt> {
   const active = await prisma.renderJob.findMany({
     where: {
-      parentJobId: input.videoJobId,
+      parentJobId: { in: input.videoJobIds },
       userId: input.userId,
       reservedQuota: true,
     },

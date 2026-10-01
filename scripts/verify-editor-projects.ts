@@ -268,6 +268,10 @@ async function main() {
   ok(p.title === "Launch Reel", "create trims title");
   ok(p.draft?.script === "hello", "create stores structured draft JSON");
   ok((p as unknown as { draftRevision?: number }).draftRevision === 0, "create response starts at draft revision zero");
+  ok(
+    (p as unknown as { createdVia?: string }).createdVia === undefined,
+    "T9: a project with no createdVia in its draft surfaces no createdVia field",
+  );
 
   const loadedAtZero = await projects.getEditorProject(alice.id, p.id);
   ok(
@@ -282,6 +286,29 @@ async function main() {
   const bobList = await projects.listEditorProjects(bob.id);
   ok(aliceList.length === 1 && aliceList[0].id === p.id, "list returns current user's project");
   ok(bobList.length === 0, "list does not leak projects across users");
+
+  // T9 (ADR 0063): the Agent-created Project marker is read-through from draft JSON,
+  // never from a separate column — no schema migration.
+  const agentProject = await projects.createEditorProject(alice.id, {
+    title: "Agent clip",
+    draft: { mode: "script", script: "from mcp", createdVia: "mcp" },
+  });
+  ok(
+    (agentProject as unknown as { createdVia?: string }).createdVia === "mcp",
+    "T9: create response surfaces createdVia:\"mcp\" from the draft",
+  );
+  const agentFromList = (await projects.listEditorProjects(alice.id))
+    .find((row) => row.id === agentProject.id) as unknown as { createdVia?: string } | undefined;
+  ok(agentFromList?.createdVia === "mcp", "T9: list surfaces createdVia:\"mcp\" for the Agent-created Project");
+
+  const spoofedAgentProject = await projects.createEditorProject(alice.id, {
+    title: "Not an agent",
+    draft: { mode: "script", script: "forged", createdVia: "not-mcp" },
+  });
+  ok(
+    (spoofedAgentProject as unknown as { createdVia?: string }).createdVia === undefined,
+    "T9: only the literal \"mcp\" is ever surfaced — any other value is dropped",
+  );
 
   let crossUserDenied = false;
   try { await projects.assertEditorProjectOwner(bob.id, p.id); } catch { crossUserDenied = true; }

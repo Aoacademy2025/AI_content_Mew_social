@@ -7,6 +7,10 @@ export type ProjectMenuItem = {
   updatedAt?: string;
   lastOpenedAt?: string | null;
   createdAt?: string;
+  /** T9 (ADR 0063): set by `editorProjectResponse` only when the project's draft JSON
+   *  carries `createdVia: "mcp"` (an MCP-created project, ADR 0063). Any other value is
+   *  already dropped server-side, so this field is either exactly "mcp" or absent. */
+  createdVia?: "mcp";
 };
 
 export const PROJECT_MENU_LIMIT = 8;
@@ -66,6 +70,13 @@ export function projectStatusLabel(status: string) {
 
 export function projectDeleteBlocked(status: string) {
   return status === "rendering" || status === "exporting";
+}
+
+/** T9 (ADR 0063): the exact Thai label for an Agent-created Project in the project menu.
+ *  `null` for every other project, including a tampered/foreign `createdVia` value — the
+ *  server already drops anything but the literal "mcp" (see `ProjectMenuItem`). */
+export function projectMenuAgentLabel(project: Pick<ProjectMenuItem, "createdVia">): string | null {
+  return project.createdVia === "mcp" ? "สร้างผ่าน AI agent" : null;
 }
 
 export function filterProjectMenuItems<T extends ProjectMenuItem>(

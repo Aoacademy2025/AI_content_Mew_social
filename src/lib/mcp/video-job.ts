@@ -590,8 +590,15 @@ export const HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX =
 /** Internal vendors behind managed, product-funded features (RunPod = Hero AI Image, OmniVoice
  *  = Hero AI Voice). `errorProvider` exists so a customer knows which of THEIR OWN keys to fix;
  *  these have no customer key, and their vendor names stay private (PR-A security low S5). BYOK
- *  providers (heygen, elevenlabs, gemini, …) keep the field. */
-const MANAGED_ERROR_PROVIDERS = new Set(["runpod", "omnivoice"]);
+ *  providers (heygen, elevenlabs, gemini, …) keep the field. Matched by provider FAMILY (prefix,
+ *  case-insensitive) so a writer's variant label (`runpod-hero-image`, `omnivoice-…`) can never
+ *  leak the vendor name (R-T8-3). */
+const MANAGED_ERROR_PROVIDER_FAMILIES = ["runpod", "omnivoice"] as const;
+
+function isManagedErrorProvider(provider: string): boolean {
+  const normalized = provider.trim().toLowerCase();
+  return MANAGED_ERROR_PROVIDER_FAMILIES.some((family) => normalized.startsWith(family));
+}
 
 export interface FailedJobFields {
   errorCode: string;
@@ -649,12 +656,20 @@ function jobHadAvatar(inputJson: string): boolean {
  * preview+export chain) passes every job id in the chain instead — the query below already
  * takes a list so T8 needs no shape change here. Every RenderJob it reads is additionally
  * filtered to `job.userId`, so a chain-building bug can never pull in another tenant's row.
+ *
+ * T8 `opts` (R-T8-2), both optional and absent for every pre-P1 caller:
+ *  - `exportMode`: the failing row is the export half of an MCP chain — the copy map's export
+ *    wording ("ส่งออกวิดีโอไม่สำเร็จ…"), exactly what the Editor shows for a failed export.
+ *  - `avatarSourceInputJson`: the chain preview's inputJson, so an export that fails after an
+ *    avatar preview still carries the HeyGen BYOK notice (the export row has no avatar input).
  */
 export async function deriveFailedJobFields(
   job: FailedJobLike,
   chainJobIds: string[],
+  opts: { exportMode?: boolean; avatarSourceInputJson?: string | null } = {},
 ): Promise<FailedJobFields> {
-  const hadAvatar = jobHadAvatar(job.inputJson);
+  const hadAvatar = jobHadAvatar(job.inputJson)
+    || (typeof opts.avatarSourceInputJson === "string" && jobHadAvatar(opts.avatarSourceInputJson));
   const appendAvatarNotice = (userAction: string): string =>
     hadAvatar ? `${userAction} ${HEYGEN_AVATAR_NON_REFUNDABLE_SUFFIX}` : userAction;
 
@@ -675,29 +690,16 @@ export async function deriveFailedJobFields(
       reservationRefundPending: job.reservationRefundPending,
     };
     const kind = classifyFailure(failureJob);
-    const copy = failureViewCopy(kind, failureJob, false);
+    const copy = failureViewCopy(kind, failureJob, opts.exportMode === true);
     message = copy.heading;
     userAction = appendAvatarNotice(copy.body);
   }
 
-  // refunded = !reservationRefundPending && fundingState ∈ {none, refunded}
-  //   && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}
-  // (Global Constraints "Failure fields") — a reservedQuota RenderJob means a clip was
-  // actually charged and never settled back, so the job is NOT refunded regardless of
-  // fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
-  // either way on its own — the RenderJob check is the source of truth for "was a clip spent").
-  const chargedRenderJob = await prisma.renderJob.findFirst({
-    where: { userId: job.userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
-    select: { id: true },
-  });
-  const refundPending = job.reservationRefundPending;
-  const refunded = !refundPending
-    && (job.fundingState === "none" || job.fundingState === "refunded")
-    && !chargedRenderJob;
+  const { refunded, refundPending } = await deriveSettlementFields([job], chainJobIds);
 
   return {
     errorCode,
-    ...(job.errorProvider && !MANAGED_ERROR_PROVIDERS.has(job.errorProvider.toLowerCase())
+    ...(job.errorProvider && !isManagedErrorProvider(job.errorProvider)
       ? { errorProvider: job.errorProvider }
       : {}),
     message,
@@ -705,6 +707,38 @@ export async function deriveFailedJobFields(
     refunded,
     refundPending,
   };
+}
+
+export type SettlementJobLike = Pick<FailedJobLike, "userId" | "reservationRefundPending" | "fundingState">;
+
+/**
+ * refunded = !any reservationRefundPending across `jobs` && every job's fundingState ∈
+ * {none, refunded} && no RenderJob{parentJobId ∈ chainJobIds, reservedQuota: true}
+ * (Global Constraints "Failure fields") — a reservedQuota RenderJob means a clip was
+ * actually charged and never settled back, so the chain is NOT refunded regardless of
+ * fundingState (a stale "transferred" label, per the team's money-truth rule, is not proof
+ * either way on its own — the RenderJob check is the source of truth for "was a clip spent").
+ *
+ * `jobs` takes every persisted row that could hold the chain's real funding — for a single
+ * non-chain job that is just `[job]` (the original failed-path call); for an MCP chain's
+ * export half the real charge usually sits on the *preview* row (the export row's own
+ * fundingState is always "none" — `createVideoJob`'s export calls never pass `funding`), so
+ * passing both rows here is what keeps a kept base charge (preview settled, export canceled)
+ * from reading as `refunded: true` just because the export row itself was never funded.
+ */
+export async function deriveSettlementFields(
+  jobs: SettlementJobLike[],
+  chainJobIds: string[],
+): Promise<{ refunded: boolean; refundPending: boolean }> {
+  const chargedRenderJob = await prisma.renderJob.findFirst({
+    where: { userId: jobs[0].userId, parentJobId: { in: chainJobIds }, reservedQuota: true },
+    select: { id: true },
+  });
+  const refundPending = jobs.some((job) => job.reservationRefundPending);
+  const refunded = !refundPending
+    && jobs.every((job) => job.fundingState === "none" || job.fundingState === "refunded")
+    && !chargedRenderJob;
+  return { refunded, refundPending };
 }
 
 /**
