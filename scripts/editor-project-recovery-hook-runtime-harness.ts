@@ -2889,11 +2889,46 @@ async function createdViaSurvivesEditingAndDropsInvalidValues(): Promise<void> {
   spoofed.runner.unmount();
 }
 
+/** Fix round 1 (PR-B whole-branch review, B3): resetProject() ("โปรเจกต์ใหม่" /
+ *  "เริ่มโปรเจกต์ใหม่") must clear createdVia, or a brand-new web project opened from an
+ *  Agent-created Project inherits the stale marker from effectiveDraftRef and autosaves
+ *  createdVia:"mcp" forever. */
+async function resetProjectClearsCreatedVia(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("agent-created-reset", 0, { script: "original script", createdVia: "mcp" });
+  const harness = createHarness({ search: "?projectId=agent-created-reset", server });
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectId, "agent-created-reset", "opens the Agent-created Project");
+
+  const newProjectId = await harness.runner.current.resetProject();
+  harness.runner.flush();
+  await settle(harness.runner);
+  assert.ok(newProjectId, "reset creates a brand-new project");
+  assert.notEqual(newProjectId, "agent-created-reset", "reset leaves the old project behind");
+
+  harness.runner.current.setScript("edited after reset");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+
+  const bodies = autosavePatchCalls(harness.fetchMock, newProjectId!)
+    .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+  assert.ok(bodies.length > 0, "the post-reset edit triggers at least one autosave PATCH");
+  assert.equal(
+    Object.hasOwn(bodies[bodies.length - 1].draft as JsonRecord, "createdVia"),
+    false,
+    "resetProject clears createdVia — the brand-new project never autosaves createdVia:\"mcp\"",
+  );
+  harness.runner.unmount();
+}
+
 export async function verifyRuntimeHookContract(): Promise<void> {
   activeCompiledHook = compileHook(hookSource);
   const cases: Array<[string, () => Promise<void>]> = [
     ["narration-target-edit-reload-reset", narrationTargetSurvivesEditingAndReload],
     ["created-via-survives-editing-and-drops-invalid", createdViaSurvivesEditingAndDropsInvalidValues],
+    ["reset-project-clears-created-via", resetProjectClearsCreatedVia],
     ["two-independent-clients", twoIndependentClientsCannotOverwrite],
     ["same-tick-conflict-mutation-gate", conflictBlocksSettersBeforeRecoveryRerender],
     ["timeout-committed", timeoutCommittedIsAcknowledgedByFingerprint],

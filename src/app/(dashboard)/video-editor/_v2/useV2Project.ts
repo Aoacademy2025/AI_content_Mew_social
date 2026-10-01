@@ -1469,6 +1469,11 @@ export function useV2Project() {
     setBrandSubtitleDefaultRaw(undefined);
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(nextDraft.layerVisibility));
     setHeadlineHookRaw(undefined);
+    // Fix round 1 (PR-B whole-branch review, B3): createdVia has no setXRaw of its own
+    // (T9 — it is never a user edit), so it is not touched by any of the setXRaw calls
+    // above and would otherwise survive this reset from an open Agent-created Project
+    // into the brand-new web project, autosaving createdVia:"mcp" forever.
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, "createdVia", undefined);
     setSaveStatus("idle");
     return await createServerProject(nextDraft, {
       isCurrent: isCurrentReset,
