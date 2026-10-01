@@ -1181,6 +1181,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         audioDurationMs: checkpoint.audioDurationMs,
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
         speechCoverage: checkpoint.speechCoverage,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
       });
       // The alignment already ran before the provider wait; the resume path only re-reports
       // it (ADR 0056) and replays the evidence the checkpoint carries.
@@ -1683,12 +1684,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         overlayRetimed = retimedOverlay !== null;
         if (retimedOverlay) exportOverlayConfig = retimedOverlay;
       }
+      // T3: the source (preview) job carries the resolved design, not this export job's own
+      // inputJson (an export job has no subtitleDesign/subtitleCardLen of its own — it only
+      // persists sourceJobId/subtitleOverlayConfig/editSnapshot). Read it back through the
+      // same T4 helper every other call site uses; a pre-T4 source job falls back to
+      // DEFAULT_V2_SUB, same as the render that originally burned it.
+      const exportSubtitleDesign = resolvedMcpSubtitleDesignFromInput(sourceInput ?? {});
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
         captions: finalCaptions,
         audioDurationMs: exportAudioDurationMs,
         timingSource: exportTimingSource,
         speechCoverage: exportSpeechCoverage,
+        cardLineBudget: {
+          mode: exportSubtitleDesign.cardLen,
+          size: exportSubtitleDesign.design.fontSize,
+        },
       });
       if (exportSubtitleQa.status !== "passed") {
         emitTelemetry({
@@ -2502,6 +2513,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       audioDurationMs: durMs,
       timingSource: subtitleTimingSource,
       speechCoverage: subtitleSpeechCoverage,
+      cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
     });
     if (subtitleQa.status !== "passed") {
       emitTelemetry({
