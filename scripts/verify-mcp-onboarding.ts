@@ -8,6 +8,8 @@ import {
 } from "../src/lib/mcp/onboarding";
 import { isInBandError } from "../src/lib/mcp/audit";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -95,30 +97,34 @@ assert(SERVER_INSTRUCTIONS.includes("HeyGen") && SERVER_INSTRUCTIONS.includes("�
 assert(SERVER_INSTRUCTIONS.includes("brandProfileId") && SERVER_INSTRUCTIONS.includes('มีผลกับ "สไตล์ซับ" เท่านั้น'),
   "instructions: a brand affects only subtitle style this round, not voice/B-roll/logo");
 
-async function main() {
+function main() {
   // --- MANAGED_GEMINI branches: the polling-cadence rule and the no-API-keys rule must
   // survive in BOTH branches. SERVER_INSTRUCTIONS is a module-level const computed from
-  // process.env.MANAGED_GEMINI at import time, so each branch needs its own fresh import
-  // (cache-busted via a query string) with the env var set before that import resolves.
+  // process.env.MANAGED_GEMINI at import time, so testing both branches needs a FRESH
+  // process per branch, not a re-import in this one (a cache-busted `import("…?x")` only
+  // yields a second module instance on newer V8/Node ESM loaders — it silently returned
+  // `undefined` fields on CI's Node 22, per the PR-B review). Each child gets the env var
+  // set (or absent) before its own import, so it always sees the branch it was spawned for.
   const POLL_RULE = "ห้าม poll รัวทุกไม่กี่วินาที";
   const NO_KEY_RULE = "ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด";
-  const prevManaged = process.env.MANAGED_GEMINI;
+  const onboardingPath = fileURLToPath(new URL("../src/lib/mcp/onboarding.ts", import.meta.url));
 
-  process.env.MANAGED_GEMINI = "1";
-  const managed: typeof import("../src/lib/mcp/onboarding") =
-    await import("../src/lib/mcp/onboarding?t11-managed");
-  assert(managed.SERVER_INSTRUCTIONS.includes("ระบบจัดการ Gemini ให้"), "sanity: MANAGED_GEMINI=1 branch selected");
-  assert(managed.SERVER_INSTRUCTIONS.includes(POLL_RULE), "MANAGED_GEMINI=1 branch: polling-cadence rule present");
-  assert(managed.SERVER_INSTRUCTIONS.includes(NO_KEY_RULE), "MANAGED_GEMINI=1 branch: no-API-keys rule present");
+  function instructionsFor(managedGemini: "1" | undefined): string {
+    const env = { ...process.env } as Record<string, string>;
+    if (managedGemini === undefined) delete env.MANAGED_GEMINI; else env.MANAGED_GEMINI = managedGemini;
+    const code = `import(${JSON.stringify(onboardingPath)}).then((m) => process.stdout.write(m.SERVER_INSTRUCTIONS));`;
+    return execFileSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "-e", code], { env, encoding: "utf8" });
+  }
 
-  delete process.env.MANAGED_GEMINI;
-  const byok: typeof import("../src/lib/mcp/onboarding") =
-    await import("../src/lib/mcp/onboarding?t11-byok");
-  assert(byok.SERVER_INSTRUCTIONS.includes("BYOK —"), "sanity: BYOK branch selected");
-  assert(byok.SERVER_INSTRUCTIONS.includes(POLL_RULE), "BYOK branch: polling-cadence rule present");
-  assert(byok.SERVER_INSTRUCTIONS.includes(NO_KEY_RULE), "BYOK branch: no-API-keys rule present");
+  const managed = instructionsFor("1");
+  assert(managed.includes("ระบบจัดการ Gemini ให้"), "sanity: MANAGED_GEMINI=1 branch selected");
+  assert(managed.includes(POLL_RULE), "MANAGED_GEMINI=1 branch: polling-cadence rule present");
+  assert(managed.includes(NO_KEY_RULE), "MANAGED_GEMINI=1 branch: no-API-keys rule present");
 
-  if (prevManaged === undefined) delete process.env.MANAGED_GEMINI; else process.env.MANAGED_GEMINI = prevManaged;
+  const byok = instructionsFor(undefined);
+  assert(byok.includes("BYOK —"), "sanity: BYOK branch selected");
+  assert(byok.includes(POLL_RULE), "BYOK branch: polling-cadence rule present");
+  assert(byok.includes(NO_KEY_RULE), "BYOK branch: no-API-keys rule present");
 
   // --- Version + the three tool descriptions (route.ts) -----------------------------------
   const routeSrc = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
