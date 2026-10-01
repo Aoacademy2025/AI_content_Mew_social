@@ -1136,8 +1136,11 @@ export function usePostPhaseEditor(
   const activeOverride = overrides[selected] ?? {};
 
   function applyCardLen(len: V2CardLen) {
+    // T1 advisory A1: pass the editor's current subtitle size, or the word-mode regroup
+    // always budgets at 80 regardless of cfg.fontSize (too-short cards at a small font,
+    // still-wrapping cards at a large one).
     commitCaptionChange(
-      regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText),
+      regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText, cfg.fontSize),
       {},
       0,
       len,

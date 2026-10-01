@@ -1,4 +1,5 @@
-import { getActiveCompounds } from "@/lib/thai-compounds";
+// T2: relative import — see tts-timing.ts's own import comment (Remotion bundle-safety).
+import { getActiveCompounds } from "./thai-compounds";
 
 // Thai loanwords / transliterations that Intl.Segmenter("th",{granularity:"word"})
 // mis-splits because ICU's Thai dictionary doesn't contain them — e.g. it breaks
