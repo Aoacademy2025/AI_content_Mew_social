@@ -23,6 +23,11 @@ function redactRequest(v: unknown): unknown {
     if (typeof o.narrativeSource === "string") {
       redacted.narrativeSource = `[redacted ${o.narrativeSource.length} chars]`;
     }
+    // T13: an agent media link (replace_broll_window) may carry a signed query token.
+    if (typeof o.url === "string") redacted.url = `[redacted ${o.url.length} chars]`;
+    // T14: create_video_job's presenter clip link may carry one too (clipUploadId is an
+    // owner-scoped import id, not a credential, so it stays readable).
+    if (typeof o.clipUrl === "string") redacted.clipUrl = `[redacted ${o.clipUrl.length} chars]`;
     return redacted;
   }
   return v;

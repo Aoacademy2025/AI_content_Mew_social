@@ -8,6 +8,7 @@ import { runOrchestrator } from "../src/lib/mcp/orchestrator";
 import { retryPendingVideoJobReservationRefunds } from "../src/lib/render/reservation-settlement";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
 import { hydrateServerGeminiKeyEnv } from "../src/lib/server-keys";
+import { createMediaImportLane, sweepMediaImportFiles } from "../src/lib/media-import/lane";
 
 const POLL_MS = Number(process.env.MCP_WORKER_POLL_MS ?? 4000);
 const ORPHAN_MAX_REQUEUES = Number(process.env.MCP_WORKER_ORPHAN_MAX_REQUEUES ?? 2);
@@ -38,9 +39,13 @@ const CONCURRENCY = (() => {
   return Math.min(4, Math.max(1, Math.floor(raw)));
 })();
 
+// Media Import lane (Task 12, src/lib/media-import/lane.ts): its own 2 slots, claim loop and
+// watchdog, running beside the video-job loop below — neither ever waits for the other's slots.
+const importLane = createMediaImportLane({ pollMs: POLL_MS });
+
 let running = true;
-process.on("SIGINT", () => { running = false; });
-process.on("SIGTERM", () => { running = false; });
+process.on("SIGINT", () => { running = false; void importLane.stop(); });
+process.on("SIGTERM", () => { running = false; void importLane.stop(); });
 
 async function runJob(job: { id: string; userId: string }): Promise<void> {
   console.log(`[mcp-worker] running job ${job.id} for user ${job.userId}`);
@@ -108,6 +113,17 @@ async function main() {
     console.error("[mcp-worker] reservation refund startup retry failed:", error);
   });
   startLoanwordRefresh(); // load auto-mined loanwords now + refresh every 10 min (unref'd)
+
+  // Media Import: remove download temp / staged files a previous run left behind, then start
+  // the lane. Its watchdog fails imports orphaned mid-processing once their deadline passes.
+  const swept = await sweepMediaImportFiles().catch((error: unknown) => {
+    console.error(`[mcp-worker] media import sweep failed (${error instanceof Error ? error.name : "error"})`);
+    return null;
+  });
+  if (swept && swept.tempRemoved + swept.stagedRemoved > 0) {
+    console.log(`[mcp-worker] media import sweep removed temp=${swept.tempRemoved} staged=${swept.stagedRemoved}`);
+  }
+  importLane.start();
   console.log(`[mcp-worker] started (concurrency=${CONCURRENCY})`);
 
   // Concurrency pool: keep up to CONCURRENCY orchestrations in flight. Slots are filled by
@@ -156,6 +172,7 @@ async function main() {
   // Drain: running=false stops new claims; let in-flight orchestrations settle. A PM2 deploy
   // SIGKILL may cut this short — any job still `processing` is recovered on the next boot.
   await Promise.allSettled(active);
+  await importLane.stop(); // same drain for in-flight imports; the watchdog recovers a cut-short one
   await prisma.$disconnect();
   console.log("[mcp-worker] stopped");
 }

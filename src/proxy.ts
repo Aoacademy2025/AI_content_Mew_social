@@ -25,6 +25,9 @@ const isPublicRoute = createRouteMatcher([
   "/api/telemetry(.*)",
   "/api/cron(.*)",  // protected by CRON_SECRET inside each route
   "/api/mcp(.*)",   // MCP server — authed by PAT/OAuth (Bearer) inside the route, no Clerk session
+  // Media Import upload link (G26) — the single-use link token is the credential, checked in
+  // the route. Belt and braces: the matcher below already keeps the proxy off this path.
+  "/api/mcp-uploads(.*)",
   "/api/story-film(.*)", // internal Story Film MCP — PAT/OAuth + internal cohort enforced inside the route
   "/.well-known/(.*)", // OAuth discovery metadata for MCP (fetched unauthenticated by clients)
 ]);
@@ -89,9 +92,14 @@ export const proxy = clerkMiddleware(async (auth, req) => {
   return NextResponse.next();
 });
 
+// `api/mcp-uploads/` is excluded from both patterns on purpose (Task 11, G26). When the proxy
+// runs for a request, Next tees the WHOLE body into memory (up to proxyClientMaxBodySize,
+// 510 MB) and waits for it to end before the route handler starts — so the upload route could
+// not enforce its byte cap while streaming, and Next's over-limit warning would print the URL
+// (= the upload token) to the app log. The route authenticates the link token itself.
 export const config = {
   matcher: [
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest|mp4|webm|mov)).*)",
-    "/(api|trpc)(.*)",
+    "/((?!_next|api/mcp-uploads/|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest|mp4|webm|mov)).*)",
+    "/(api(?!/mcp-uploads/)|trpc)(.*)",
   ],
 };

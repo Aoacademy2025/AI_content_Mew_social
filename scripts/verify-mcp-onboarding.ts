@@ -7,6 +7,10 @@ import {
   missingAvatarError,
 } from "../src/lib/mcp/onboarding";
 import { isInBandError } from "../src/lib/mcp/audit";
+import { MEDIA_IMPORT_LANE_ERROR_CODES } from "../src/lib/media-import/lane";
+import { UPLOAD_KIND_MAX_BYTES, MAX_ACTIVE_IMPORTS, MAX_IMPORTS_PER_HOUR, MAX_UPLOAD_LINKS_PER_HOUR, UPLOAD_TOKEN_TTL_MS } from "../src/lib/media-import/imports";
+import { MAX_PRESENTER_DIMENSION_PX } from "../src/lib/media-import/presenter-checks";
+import { durationCapSecFor } from "../src/lib/plan-limits";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -116,6 +120,54 @@ assert(SERVER_INSTRUCTIONS.includes('"export_not_free"') && SERVER_INSTRUCTIONS.
   "instructions: export_not_free → stop and hand off to editorUrl, never retry export_video");
 assert(SERVER_INSTRUCTIONS.includes('"stale_revision"') && SERVER_INSTRUCTIONS.includes("get_edit_state(jobId) ใหม่") && SERVER_INSTRUCTIONS.includes("ทำการแก้ครั้งนั้นซ้ำ"),
   "instructions: stale_revision → reload get_edit_state and redo the edit");
+
+// --- T14: Media Import + presenter-clip flow (link first, else create_upload_url + raw PUT;
+// limits that match the code; the HeyGen-clip create; replace_broll_window; every error code;
+// never a fixed total import time — an import's deadline resets when it is claimed). ---------
+const MB = 1024 * 1024;
+assert(SERVER_INSTRUCTIONS.includes("create_upload_url(kind)") && SERVER_INSTRUCTIONS.includes("HTTP PUT")
+  && SERVER_INSTRUCTIONS.includes("ไม่ใช่ multipart") && SERVER_INSTRUCTIONS.includes("https สาธารณะ"),
+  "instructions: public https link first, otherwise create_upload_url + raw-bytes HTTP PUT (not multipart)");
+assert(SERVER_INSTRUCTIONS.includes(`หมดอายุใน ${UPLOAD_TOKEN_TTL_MS / 60_000} นาที`) && SERVER_INSTRUCTIONS.includes("ใช้ได้ครั้งเดียว"),
+  "instructions: upload link is single-use and its TTL matches the code");
+assert(
+  SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${UPLOAD_KIND_MAX_BYTES.presenter / MB} MB`)
+    && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${UPLOAD_KIND_MAX_BYTES.video / MB} MB`)
+    && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${UPLOAD_KIND_MAX_BYTES.image / MB} MB`)
+    && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_PRESENTER_DIMENSION_PX} พิกเซล`)
+    && SERVER_INSTRUCTIONS.includes("แนวตั้ง")
+    && SERVER_INSTRUCTIONS.includes(`PRO ${durationCapSecFor("PRO") / 60} นาที`)
+    && SERVER_INSTRUCTIONS.includes(`BUSINESS ${durationCapSecFor("BUSINESS") / 60} นาที`),
+  "instructions: presenter/B-roll size, portrait, dimension and plan-duration limits match the code",
+);
+assert(SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_ACTIVE_IMPORTS} ไฟล์`) && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_IMPORTS_PER_HOUR} ไฟล์ต่อชั่วโมง`)
+  && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_UPLOAD_LINKS_PER_HOUR} ครั้งต่อชั่วโมง`),
+  "instructions: import caps match the code (active / per hour / upload links per hour)");
+assert(SERVER_INSTRUCTIONS.includes("create_video_job({clipUrl})") && SERVER_INSTRUCTIONS.includes("create_video_job({clipUploadId})")
+  && SERVER_INSTRUCTIONS.includes("ห้ามส่งทั้งคู่") && SERVER_INSTRUCTIONS.includes("HeyGen")
+  && SERVER_INSTRUCTIONS.includes('"fillYourself"') && SERVER_INSTRUCTIONS.includes('currentStep "import"')
+  && SERVER_INSTRUCTIONS.includes("ไม่ตัดโควต้าหรือเครดิต"),
+  "instructions: the presenter-clip create (clipUrl | clipUploadId, cutawayLayout, waiting = queued/import, failure costs nothing)");
+assert(SERVER_INSTRUCTIONS.includes("replace_broll_window(jobId, windowIndex, url | uploadId | source:\"original\")")
+  && SERVER_INSTRUCTIONS.includes("windows[].importStatus"),
+  "instructions: replace_broll_window flow");
+for (const code of [
+  ...MEDIA_IMPORT_LANE_ERROR_CODES,
+  "invalid_input", "feature_not_enabled", "too_many_active_imports", "import_hourly_limit", "upload_link_hourly_limit",
+  "storage_busy", "import_failed", "imports_pending", "window_locked_presenter_hook", "import_missing",
+  "upload_link_invalid", "server_busy",
+]) {
+  assert(SERVER_INSTRUCTIONS.includes(code), `instructions: Media Import error code ${code} is listed`);
+}
+// The BUSINESS plan's clip-length cap (10 นาที per clip) is a length limit, not a time promise.
+const mediaImportSection = SERVER_INSTRUCTIONS.slice(SERVER_INSTRUCTIONS.indexOf("Media Import"))
+  .split(`BUSINESS ${durationCapSecFor("BUSINESS") / 60} นาที`).join("");
+assert(!/10\s*นาที/.test(mediaImportSection) && SERVER_INSTRUCTIONS.includes("ห้ามสัญญาเวลารวมตายตัว"),
+  "instructions: never promise a fixed total import time (no '10 นาที' beyond the BUSINESS length cap)");
+const routeForT14 = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
+assert(routeForT14.includes("clipUrl (ลิงก์ https สาธารณะ)") && routeForT14.includes("cutawayLayout fillYourself"),
+  "create_video_job tool description: presenter clip via clipUrl/clipUploadId + fillYourself");
+
 assert(
   !/claude|anthropic|chatgpt|openai|copilot|gpt-?\d/i.test(SERVER_INSTRUCTIONS),
   "instructions: agent-neutral — never names a specific agent/LLM product (G32; 'Gemini' stays, it is a TTS provider here, not the calling agent)",

@@ -95,6 +95,9 @@ export async function createVideoJob(
     } | null;
     brandVisualAcceptanceJson?: string | null;
     funding?: { meteredMinutes: number; creditsLive: boolean };
+    /** T14 (A10): "waiting_import" parks the job until its presenter import is ready — the
+     *  worker never claims it, so it holds no render slot. Default "queued". */
+    initialStatus?: "queued" | "waiting_import";
   } = {},
 ) {
   const preparedInput = (() => {
@@ -147,7 +150,9 @@ export async function createVideoJob(
         inputJson: JSON.stringify(preparedInput),
         idempotencyKey: idempotencyKey ?? null,
         idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
-        status: "queued",
+        ...(opts.initialStatus === "waiting_import"
+          ? { status: "waiting_import", currentStep: "import" }
+          : { status: "queued" }),
         ...(funding?.allowed
           ? {
               fundingState: "reserved",
@@ -520,11 +525,18 @@ export type VideoJobFailure = {
   reservationRefundReason?: string;
 };
 
-export async function failJob(id: string, failure: string | VideoJobFailure) {
+export async function failJob(
+  id: string,
+  failure: string | VideoJobFailure,
+  /** T14: a job parked in `waiting_import` fails from there (its import failed); every other
+   *  caller fails a job the worker is running. */
+  opts: { fromStatus?: "processing" | "waiting_import" } = {},
+) {
   const normalized = typeof failure === "string" ? { message: failure } : failure;
+  const fromStatus = opts.fromStatus ?? "processing";
   const job = await withVideoJobSqliteRetry("fail job", () => prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
-      where: { id, status: "processing" },
+      where: { id, status: fromStatus },
       data: {
         status: "failed",
         errorMessage: normalized.message.slice(0, 1000),

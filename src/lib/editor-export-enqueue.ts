@@ -272,6 +272,22 @@ export async function enqueueEditorExport(input: {
 }
 
 /**
+ * The B-roll window-edit rollout gate for a re-render of `srcJob`: a Brand Visual scene edit, or
+ * the window-edit rollout (public flag, else internal testers). Shared with MCP
+ * `replace_broll_window` (T13) so it refuses before importing anything.
+ */
+export function brollWindowEditEnabled(
+  user: EditorEnqueueUser,
+  srcJob: { projectId: string | null; contentPreflightId: string | null; projectVisualContextJson: string | null },
+): boolean {
+  const brandVisualSceneEdit = Boolean(
+    srcJob.projectId && srcJob.contentPreflightId && srcJob.projectVisualContextJson,
+  );
+  return brandVisualSceneEdit
+    || isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1");
+}
+
+/**
  * The free per-window B-roll re-render (`mode:"broll-rerender"`). Reuses the source job's TTS +
  * avatar and only swaps b-roll windows, so nothing new is fetched or charged here; the render
  * route's server-trusted `rerenderOf` skip is what makes the render itself free. Validates
@@ -284,6 +300,13 @@ export async function enqueueBrollRerender(input: {
   idempotencyKey: string;
   idempotencyFingerprint?: string | null;
   rootJobId?: string;
+  /**
+   * T13 (MCP export_video with window edits; needs `rootJobId`): when this re-render finishes,
+   * the worker chains the Held Preview's export from it (`mcpExportAfterRerender`).
+   * `appliedDraftWindowEdits` are the Pending Edit Draft entries this re-render applies; the
+   * hop drops exactly those from the draft when it rebases the draft onto the re-render.
+   */
+  mcpExportAfter?: { appliedDraftWindowEdits: unknown[] };
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
@@ -303,15 +326,7 @@ export async function enqueueBrollRerender(input: {
   });
   if (!srcJob || srcJob.userId !== user.id) return refuse(404, "source_not_found", SOURCE_NOT_FOUND_MESSAGE);
   if (srcJob.status !== "done") return refuse(400, "source_not_ready", "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)");
-  const brandVisualSceneEdit = Boolean(
-    srcJob.projectId && srcJob.contentPreflightId && srcJob.projectVisualContextJson,
-  );
-  if (
-    !brandVisualSceneEdit
-    && !isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1")
-  ) {
-    return refuse(404, "not_enabled");
-  }
+  if (!brollWindowEditEnabled(user, srcJob)) return refuse(404, "not_enabled");
 
   if (input.rootJobId && !(await rootBelongsToProject(user.id, input.rootJobId, srcJob.projectId))) {
     return refuse(404, "source_not_found", SOURCE_NOT_FOUND_MESSAGE);
@@ -330,6 +345,12 @@ export async function enqueueBrollRerender(input: {
       sourceJobId,
       windowEdits: editsRes,
       ...rootLinkInput(input.rootJobId),
+      ...(input.rootJobId && input.mcpExportAfter
+        ? {
+            mcpExportAfterRerender: true,
+            mcpAppliedDraftWindowEdits: input.mcpExportAfter.appliedDraftWindowEdits,
+          }
+        : {}),
     },
     input.idempotencyKey,
     {

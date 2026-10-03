@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
+import { VIDEO_JOB_INFLIGHT_STATUSES, clipImportIdOf } from "@/lib/mcp/video-job-status";
 import { cancelHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
 import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-checkpoint";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
@@ -19,6 +19,12 @@ import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
  * just to cancel one row. The chain-aware MCP router (`cancelMcpVideoJob`) lives in
  * `video-job-cancel.ts` instead, so web DELETE's import graph (and GET's, which shares this
  * route file) stays exactly what it was before T10.
+ *
+ * PR-B fix round 1 (SEC-A6): canceling a parked clip job (`waiting_import`, T14) also fails the
+ * presenter url import it queued — `canceled`, link cleared — so the lane never fetches it, or
+ * aborts the download at its next cancel checkpoint and deletes the partial and output files.
+ * Inline (one scoped updateMany), so this module still imports nothing from the import lane.
+ * An upload import is left alone: it is the agent's own file and can be reused.
  */
 export type CancelVideoJobResult =
   | { kind: "not_cancelable" }
@@ -43,6 +49,7 @@ export async function cancelVideoJobCore(
       type: true,
       currentStep: true,
       providerCheckpointJson: true,
+      inputJson: true,
     },
   });
   if (!job) return { kind: "not_cancelable" };
@@ -58,6 +65,19 @@ export async function cancelVideoJobCore(
     },
   });
   if (res.count !== 1) return { kind: "not_cancelable" };
+
+  const clipImportId = clipImportIdOf(job.inputJson);
+  if (clipImportId) {
+    try {
+      await prisma.mediaImport.updateMany({
+        where: { id: clipImportId, userId, purpose: "presenter", source: "url", status: { in: ["pending", "processing"] } },
+        data: { status: "failed", errorCode: "canceled", sourceUrl: null },
+      });
+    } catch (error) {
+      // The lane's deadline still ends it; the job itself is canceled either way.
+      console.error(`${logPrefix} clip import cancel failed job=${job.id}`, error instanceof Error ? error.name : "unknown error");
+    }
+  }
 
   const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
   if (heroVoiceCheckpoint) {

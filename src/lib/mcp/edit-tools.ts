@@ -5,11 +5,15 @@ import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { registerGatedTool, type GatingPrincipal } from "@/lib/mcp/tool-gating";
 import { REFUSAL_COPY, resolveMcpChain, type McpChainRow } from "@/lib/mcp/chain-export";
-import { mcpExportKey } from "@/lib/mcp/chain-key";
+import { mcpExportKey, mcpRerenderKey } from "@/lib/mcp/chain-key";
 import { getVideoJobStatusTool, mcpEditorUrl } from "@/lib/mcp/tools";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import { assertMcpRenderFree, McpRenderNotFreeError } from "@/lib/mcp/render-free";
-import { enqueueEditorExport } from "@/lib/editor-export-enqueue";
+import { brollWindowEditEnabled, enqueueBrollRerender, enqueueEditorExport } from "@/lib/editor-export-enqueue";
+import { mergeWindowEdits, validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import { createUrlImport, failMediaImport, findOwnedMediaImport } from "@/lib/media-import/imports";
+import { admissionRefusal } from "@/lib/mcp/media-import-copy";
+import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { brollWindowSpans } from "@/lib/broll-spans";
@@ -41,7 +45,7 @@ import {
   type HeadlineHookFontWeight,
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
-import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
+import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
 import {
   discardPendingEditDraft,
   draftDurationMs,
@@ -52,6 +56,7 @@ import {
   updatePendingEditDraft,
   type PendingEditDraft,
   type PendingEditState,
+  type PendingEditWindowEdit,
 } from "@/lib/mcp/pending-edit-draft";
 
 /**
@@ -70,6 +75,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "set_subtitle_style",
   "set_headline_hook",
   "discard_edits",
+  "replace_broll_window",
   "export_video",
 ] as const;
 
@@ -144,6 +150,17 @@ export const setHeadlineHookInputShape = {
 
 export const discardEditsInputShape = {
   jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+} satisfies z.ZodRawShape;
+
+/** Longest agent media link accepted (the T10 fetch re-checks every hop). */
+export const MAX_MEDIA_URL_CHARS = 2_048;
+
+export const replaceBrollWindowInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  windowIndex: z.number().int().describe("ช่วง B-roll ที่จะเปลี่ยน (windows[].index จาก get_edit_state)"),
+  url: z.string().optional().describe("ลิงก์สาธารณะ https ของรูปหรือวิดีโอ (ระบบดาวน์โหลดเอง) — ส่งอย่างใดอย่างหนึ่งจาก url / uploadId / source"),
+  uploadId: z.string().optional().describe("uploadId จาก create_upload_url ที่ PUT ไฟล์เสร็จแล้ว"),
+  source: z.enum(["original"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -301,17 +318,46 @@ function windowOwner(preview: VideoJobPreviewData, index: number): "presenter" |
     : "broll";
 }
 
-function editWindows(draft: PendingEditDraft, preview: VideoJobPreviewData) {
+/** The B-roll windows the agent sees (and may address) on `preview`. */
+function previewWindowSpans(preview: VideoJobPreviewData) {
   const frames = Number((preview.config as { durationInFrames?: unknown }).durationInFrames);
   const durMs = Math.max(preview.audioDurationMs || 0, Number.isFinite(frames) && frames > 0 ? (frames / 30) * 1_000 : 0);
-  return brollWindowSpans(preview.config, durMs).map((span) => ({
-    index: span.index,
-    startMs: span.startMs,
-    endMs: span.endMs,
-    owner: windowOwner(preview, span.index),
-    replaced: draft.windowEdits.some((edit) => edit.index === span.index),
-    importStatus: null,
-  }));
+  return brollWindowSpans(preview.config, durMs);
+}
+
+type ImportView = { status: string; errorCode: string | null };
+
+/** T13: the caller's own Media Imports the draft's window edits point at (owner-scoped). */
+async function draftImportViews(userId: string, draft: PendingEditDraft): Promise<Map<string, ImportView>> {
+  const ids = [...new Set(draft.windowEdits.flatMap((edit) => (edit.importId ? [edit.importId] : [])))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.mediaImport.findMany({
+    where: { id: { in: ids }, userId },
+    select: { id: true, status: true, errorCode: true },
+  });
+  return new Map(rows.map((row) => [row.id, { status: row.status, errorCode: row.errorCode }]));
+}
+
+/** A window edit's import as the agent sees it; a vanished row reads as failed. */
+function importViewOf(edit: PendingEditWindowEdit | undefined, imports: Map<string, ImportView>): ImportView | null {
+  if (!edit?.importId) return null;
+  return imports.get(edit.importId) ?? { status: "failed", errorCode: "import_missing" };
+}
+
+function editWindows(draft: PendingEditDraft, preview: VideoJobPreviewData, imports: Map<string, ImportView>) {
+  return previewWindowSpans(preview).map((span) => {
+    const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
+    const view = importViewOf(edit, imports);
+    return {
+      index: span.index,
+      startMs: span.startMs,
+      endMs: span.endMs,
+      owner: windowOwner(preview, span.index),
+      replaced: edit !== undefined,
+      importStatus: view?.status ?? null,
+      importError: view?.status === "failed" ? view.errorCode ?? "import_failed" : null,
+    };
+  });
 }
 
 function captionsView(draft: PendingEditDraft) {
@@ -341,10 +387,10 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
-    windows: editWindows(state.draft, state.base.preview),
+    windows: editWindows(state.draft, state.base.preview, await draftImportViews(userId, state.draft)),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
   };
 }
 
@@ -671,6 +717,223 @@ export async function discardEditsTool(userId: string, jobId: unknown) {
   };
 }
 
+// ── replace_broll_window (G19, G27) ───────────────────────────────────────────────────────────
+
+/** validateWindowEdits' own per-export cap (MAX_EDITS in broll-rerender.ts). */
+const MAX_DRAFT_WINDOW_EDITS = 40;
+const BROLL_IMPORT_PURPOSES = ["broll_image", "broll_video"] as const;
+const NEXT_WINDOWS = "เรียก get_edit_state เพื่อดู windows[].index ที่แก้ได้";
+const NEXT_MEDIA = "ส่งลิงก์ https สาธารณะของรูปหรือวิดีโอ (url) หรืออัปโหลดด้วย create_upload_url แล้วส่ง uploadId";
+
+const ONE_SOURCE = editToolFailure(
+  "invalid_input",
+  "ต้องส่งอย่างใดอย่างหนึ่งเท่านั้น: url หรือ uploadId หรือ source \"original\"",
+  `${NEXT_MEDIA} หรือ source "original" เพื่อคืนภาพเดิม (อย่างใดอย่างหนึ่ง)`,
+);
+const BAD_URL = editToolFailure(
+  "invalid_input",
+  `url ไม่ถูกต้อง (ต้องเป็นลิงก์เต็มแบบ https ไม่เกิน ${MAX_MEDIA_URL_CHARS} ตัวอักษร และไม่มีชื่อผู้ใช้/รหัสผ่านในลิงก์)`,
+  NEXT_MEDIA,
+);
+const URL_NOT_HTTPS = editToolFailure(
+  "url_not_https",
+  "รับเฉพาะลิงก์ที่ขึ้นต้นด้วย https:// เท่านั้น",
+  "ส่งลิงก์ https:// ของไฟล์ หรืออัปโหลดไฟล์ด้วย create_upload_url แล้วส่ง uploadId แทน",
+);
+const NO_WINDOW = editToolFailure("invalid_input", "ไม่พบช่วง B-roll นี้ในวิดีโอตัวอย่าง", NEXT_WINDOWS);
+const WINDOW_EDIT_NOT_ENABLED = editToolFailure(
+  "feature_not_enabled",
+  "การเปลี่ยนภาพช่วง B-roll ยังไม่เปิดให้บัญชีนี้",
+  NEXT_EDITOR,
+);
+const WINDOW_LOCKED = editToolFailure(
+  "window_locked_presenter_hook",
+  "ช่วงแรกของคลิปโหมดคัตอะเวย์เป็นช่วงเปิดของพิธีกร จึงเปลี่ยนภาพช่วงนี้ไม่ได้",
+  `เลือกช่วงอื่น (windowIndex ตั้งแต่ 1) หรือ${NEXT_EDITOR}`,
+);
+const TOO_MANY_WINDOW_EDITS = editToolFailure(
+  "invalid_input",
+  `แก้ช่วง B-roll ได้ไม่เกิน ${MAX_DRAFT_WINDOW_EDITS} ช่วงต่อการส่งออกหนึ่งครั้ง`,
+  "เรียก export_video ก่อน แล้วค่อยแก้ช่วงที่เหลือ",
+);
+const ATTACH_IMPORT_FAILED = editToolFailure(
+  "import_failed",
+  "ไฟล์นี้นำเข้าไม่สำเร็จ จึงใช้แทนช่วงนี้ไม่ได้",
+  "อัปโหลดไฟล์ใหม่ด้วย create_upload_url หรือส่ง url อื่น แล้วเรียก replace_broll_window อีกครั้ง",
+);
+const ORIGINAL_UNAVAILABLE = editToolFailure(
+  "original_unavailable",
+  "ไม่พบภาพเดิมของช่วงนี้ในวิดีโอตัวอย่าง จึงคืนค่าเดิมไม่ได้",
+  NEXT_EDITOR,
+);
+
+/** Server-side "is this an https link" (T10's fetch re-validates every hop and the address). */
+function parseAgentMediaUrl(raw: unknown): { ok: true; url: string } | { ok: false; failure: EditToolFailure } {
+  if (typeof raw !== "string") return { ok: false, failure: BAD_URL };
+  const value = raw.trim();
+  if (!value || value.length > MAX_MEDIA_URL_CHARS) return { ok: false, failure: BAD_URL };
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, failure: BAD_URL };
+  }
+  if (parsed.protocol !== "https:") return { ok: false, failure: URL_NOT_HTTPS };
+  if (parsed.username || parsed.password) return { ok: false, failure: BAD_URL };
+  return { ok: true, url: parsed.href };
+}
+
+function parseRecord(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function bgVideoAt(config: unknown, index: number): Record<string, unknown> | null {
+  const bgVideos = (config as { bgVideos?: unknown } | null | undefined)?.bgVideos;
+  const raw = Array.isArray(bgVideos) ? bgVideos[index] : null;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+}
+
+/** Window 0 of an auto-layout Cutaway Mode clip is the presenter's opening hook. */
+function presenterHookLocked(root: McpChainRow, preview: VideoJobPreviewData): boolean {
+  if (preview.avatarModel !== "upload-cutaway") return false;
+  return parseRecord(root.inputJson)?.cutawayLayout !== "fillYourself";
+}
+
+function rootPreviewOf(root: McpChainRow): VideoJobPreviewData | null {
+  return parseVideoJobOutput(root.outputJson)?.preview ?? null;
+}
+
+/**
+ * `source:"original"` for one window: `null` = the current base already shows the root's own
+ * media there (drop any pending edit); otherwise an edit that restores the root's src (or hides
+ * the window when the root gave it to the presenter).
+ */
+function originalWindowEdit(
+  root: McpChainRow,
+  base: PendingEditState["base"],
+  index: number,
+): { ok: true; edit: PendingEditWindowEdit | null } | { ok: false; failure: EditToolFailure } {
+  if (base.id === root.id) return { ok: true, edit: null };
+  const rootPreview = rootPreviewOf(root);
+  const rootWindow = rootPreview ? bgVideoAt(rootPreview.config, index) : null;
+  if (!rootPreview || !rootWindow) return { ok: false, failure: ORIGINAL_UNAVAILABLE };
+  const baseWindow = bgVideoAt(base.preview.config, index);
+  if (baseWindow && baseWindow.src === rootWindow.src && baseWindow.brollEnabled === rootWindow.brollEnabled) {
+    return { ok: true, edit: null };
+  }
+  const rootSrc = typeof rootWindow.src === "string" && rootWindow.src ? rootWindow.src : null;
+  if (windowOwner(rootPreview, index) === "broll" && (!rootSrc || "error" in validateWindowEdits([{ index, src: rootSrc }]))) {
+    return { ok: false, failure: ORIGINAL_UNAVAILABLE };
+  }
+  return { ok: true, edit: { index, src: rootSrc, replacementKind: "original" } };
+}
+
+/**
+ * G19: point one B-roll window of a Held Preview at new media (a public `url`, imported by the
+ * Media Import lane; or an owned `uploadId`) or back at the root's own media
+ * (`source:"original"`). Records into the Pending Edit Draft (CAS, last-wins per window) —
+ * nothing renders until export_video. Never echoes the url.
+ */
+export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof replaceBrollWindowInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const sources = [args.url, args.uploadId, args.source].filter((value) => value !== undefined).length;
+  if (sources !== 1) return ONE_SOURCE;
+  const index = args.windowIndex;
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 0) return NO_WINDOW;
+  let url: string | null = null;
+  if (args.url !== undefined) {
+    const parsed = parseAgentMediaUrl(args.url);
+    if (!parsed.ok) return parsed.failure;
+    url = parsed.url;
+  }
+
+  const held = await resolveHeldRoot(user.id, args.jobId);
+  if (!held.ok) return held.failure;
+  const { root } = held;
+  const loaded = await loadState(user.id, root);
+  if (!loaded.ok) return loaded.failure;
+  const { base } = loaded.state;
+  if (!previewWindowSpans(base.preview).some((span) => span.index === index)) return NO_WINDOW;
+  const baseRow = await prisma.videoJob.findFirst({
+    where: { id: base.id, userId: user.id },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
+  });
+  if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
+  if (index === 0 && presenterHookLocked(root, base.preview)) return WINDOW_LOCKED;
+
+  let source: "url" | "upload" | "original";
+  let importId: string | null = null;
+  let importStatus: string | null = null;
+  if (args.uploadId !== undefined) {
+    const owned = await findOwnedMediaImport(user.id, args.uploadId, BROLL_IMPORT_PURPOSES);
+    if (!owned.ok) return owned.failure;
+    if (owned.row.status === "failed") return ATTACH_IMPORT_FAILED;
+    source = "upload";
+    importId = owned.row.id;
+    importStatus = owned.row.status;
+  } else if (url !== null) {
+    const created = await createUrlImport(user.id, url);
+    if (!created.ok) return admissionRefusal(created.code, "replace_broll_window");
+    source = "url";
+    importId = created.importId;
+    importStatus = "pending";
+  } else {
+    // A1: while a re-render of this root runs, the base it is replacing is about to change, so a
+    // restore decided against the current base could be lost when the re-render lands. Refuse
+    // instead of answering "will restore" (url/upload edits are safe: the rebase keeps them).
+    if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return ORIGINAL_DURING_RERENDER;
+    source = "original";
+  }
+
+  // Set inside the CAS mutation (a closure) when the failure is this tool's own copy.
+  const refused: { failure: EditToolFailure | null } = { failure: null };
+  const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
+    let edit: PendingEditWindowEdit | null;
+    if (importId) {
+      edit = { index, src: null, importId, replacementKind: "upload" };
+    } else {
+      const original = originalWindowEdit(root, state.base, index);
+      if (!original.ok) {
+        refused.failure = original.failure;
+        return { ok: false, code: original.failure.code, message: original.failure.message };
+      }
+      edit = original.edit;
+    }
+    const others = draft.windowEdits.filter((candidate) => candidate.index !== index);
+    draft.windowEdits = edit ? [...others, edit] : others;
+    if (draft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
+      refused.failure = TOO_MANY_WINDOW_EDITS;
+      return { ok: false, code: TOO_MANY_WINDOW_EDITS.code, message: TOO_MANY_WINDOW_EDITS.message };
+    }
+    return { ok: true, draft };
+  });
+  if (!updated.ok) {
+    // The import never made it into a draft: stop it before the lane spends a fetch on it.
+    if (source === "url" && importId) await failMediaImport(importId, "canceled");
+    return refused.failure ?? mapUpdateFailure(updated.code, updated.message, NEXT_WINDOWS);
+  }
+  return {
+    ok: true,
+    jobId: root.id,
+    windowIndex: index,
+    source,
+    ...(importId ? { importId } : {}),
+    importStatus,
+    draftRevision: updated.state.revision,
+    next: source === "original"
+      ? "ช่วงนี้จะกลับเป็นภาพเดิมตอนส่งออก — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
+      : importStatus === "ready"
+        ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
+        : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
+  };
+}
+
 // ── export_video ──────────────────────────────────────────────────────────────────────────
 
 const EXPORT_NEXT = "เรียก get_video_status({id: jobId}) ทุก ~60–90 วินาที จนได้ status \"done\" พร้อม videoUrl";
@@ -706,12 +969,261 @@ const ENQUEUE_NEXT: Record<string, string> = {
   invalid_headline_hook: NEXT_EDITOR,
 };
 
+// T13: export with pending B-roll window edits = a free re-render of the current base that
+// applies them, then (server-side, rerender-chain.ts) the Burn of that re-render.
+
+const RERENDER_NEXT = "เรียก get_video_status({id: jobId}) ทุก ~60–90 วินาที — status จะเป็น \"rerendering\" → \"exporting\" → \"done\" พร้อม videoUrl (ระบบส่งออกต่อให้เอง ไม่ต้องเรียก export_video ซ้ำ)";
+const RENDER_MAINTENANCE = editToolFailure(
+  "render_maintenance",
+  RENDER_MAINTENANCE_CUSTOMER_MESSAGE,
+  "รอสักครู่แล้วเรียก export_video อีกครั้ง",
+);
+const RERENDER_IN_PROGRESS = editToolFailure(
+  "rerender_in_progress",
+  "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังส่งออกการแก้ล่าสุดไม่ได้",
+  "เรียก get_video_status ทุก ~60–90 วินาที จนได้ status \"done\" แล้วเรียก export_video อีกครั้งเพื่อส่งออกการแก้ที่เหลือ",
+);
+const ORIGINAL_DURING_RERENDER = editToolFailure(
+  "rerender_in_progress",
+  "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังสั่งให้ช่วงนี้กลับเป็นภาพเดิมไม่ได้ — ยังไม่ได้บันทึกอะไร",
+  "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก replace_broll_window ด้วย source \"original\" อีกครั้ง",
+);
+const IMPORT_ERROR_HINT: Record<string, string> = {
+  fetch_timeout: "ดาวน์โหลดไม่ทันเวลา หรือคิวนำเข้าไม่ว่างในตอนนั้น — ส่งไฟล์เดิมใหม่ได้",
+  import_missing: "ไม่พบไฟล์นำเข้านี้แล้ว",
+  storage_busy: "พื้นที่เก็บไฟล์ของระบบเต็มชั่วคราว — รอสักครู่แล้วส่งใหม่",
+};
+
+function rerenderReply(rootJobId: string, rerenderJobId: string, draftRevision: number) {
+  return {
+    jobId: rootJobId,
+    rerenderJobId,
+    exportJobId: null,
+    status: "rerendering",
+    draftRevision,
+    message: "กำลังเรนเดอร์ช่วง B-roll ที่เปลี่ยนใหม่ (เสียงพากย์เดิม) แล้วจะส่งออกต่อให้เอง — ไม่ตัดโควต้าเพิ่ม",
+    next: RERENDER_NEXT,
+  };
+}
+
+function importFailedFailure(windowIndex: number, importError: string) {
+  const hint = IMPORT_ERROR_HINT[importError];
+  return {
+    ...editToolFailure(
+      "import_failed",
+      `ไฟล์ของช่วง B-roll windowIndex ${windowIndex} นำเข้าไม่สำเร็จ (${importError})${hint ? ` — ${hint}` : ""}`,
+      "ส่งไฟล์ใหม่ให้ช่วงนี้ด้วย replace_broll_window (url อื่น หรือ uploadId ใหม่) หรือ source \"original\" เพื่อใช้ภาพเดิม แล้วเรียก export_video อีกครั้ง",
+    ),
+    windowIndex,
+    importError,
+  };
+}
+
+function importsPendingFailure(windowIndexes: number[]) {
+  return {
+    ...editToolFailure(
+      "imports_pending",
+      `ไฟล์ของช่วง B-roll windowIndex ${windowIndexes.join(", ")} ยังนำเข้าไม่เสร็จ — ยังไม่ได้เรนเดอร์หรือตัดโควต้าอะไร`,
+      "เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะ (ทุก ~30–60 วินาที) จนทุกช่วงเป็น \"ready\" แล้วเรียก export_video อีกครั้ง",
+    ),
+    windowIndexes,
+  };
+}
+
+/**
+ * The re-render's edits from the draft's window edits, or the refusal. Readiness first (G19):
+ * a failed/missing import names its window; any import still pending/processing → imports_pending.
+ */
+async function rerenderEditsFor(
+  userId: string,
+  root: McpChainRow,
+  state: PendingEditState,
+): Promise<{ ok: true; edits: WindowEdit[] } | { ok: false; failure: unknown }> {
+  const ids = [...new Set(state.draft.windowEdits.flatMap((edit) => (edit.importId ? [edit.importId] : [])))];
+  const rows = ids.length === 0 ? [] : await prisma.mediaImport.findMany({
+    where: { id: { in: ids }, userId, purpose: { in: [...BROLL_IMPORT_PURPOSES] } },
+    select: { id: true, status: true, errorCode: true, resultSrc: true, durationMs: true },
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const ordered = [...state.draft.windowEdits].sort((a, b) => a.index - b.index);
+  const pending: number[] = [];
+  for (const edit of ordered) {
+    if (!edit.importId) continue;
+    const row = byId.get(edit.importId);
+    if (!row || row.status === "failed") {
+      return { ok: false, failure: importFailedFailure(edit.index, row?.errorCode ?? "import_missing") };
+    }
+    if (row.status !== "ready") pending.push(edit.index);
+  }
+  if (pending.length > 0) return { ok: false, failure: importsPendingFailure(pending) };
+
+  const rootPreview = rootPreviewOf(root);
+  const edits: WindowEdit[] = [];
+  for (const edit of ordered) {
+    const row = edit.importId ? byId.get(edit.importId) : undefined;
+    if (row) {
+      const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
+      edits.push({
+        index: edit.index,
+        src: row.resultSrc ?? "",
+        enabled: true,
+        replacementKind: "upload",
+        ...(seconds ? { clipDuration: seconds } : {}),
+      });
+      continue;
+    }
+    if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) {
+      return { ok: false, failure: ORIGINAL_UNAVAILABLE };
+    }
+    if (windowOwner(rootPreview, edit.index) === "presenter") {
+      edits.push({ index: edit.index, enabled: false });
+      continue;
+    }
+    const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
+    edits.push({
+      index: edit.index,
+      src: edit.src ?? "",
+      enabled: true,
+      ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+    });
+  }
+  const validated = validateWindowEdits(edits);
+  const merged = "error" in validated
+    ? validated
+    : mergeWindowEdits(((state.base.preview.config as { bgVideos?: unknown }).bgVideos ?? []) as unknown[], validated);
+  if ("error" in merged || "error" in validated) {
+    return { ok: false, failure: editToolFailure("invalid_input", "error" in merged ? merged.error : GENERIC_ERROR_COPY, NEXT_WINDOWS) };
+  }
+  return { ok: true, edits: validated };
+}
+
+/** A linked re-render of this root (any revision) still running. */
+async function linkedRerenderInFlight(userId: string, root: McpChainRow, projectId: string): Promise<boolean> {
+  const running = await prisma.videoJob.findFirst({
+    where: {
+      userId,
+      projectId,
+      type: "create",
+      status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] },
+      inputJson: { contains: `"mcpRootJobId":"${root.id}"` },
+    },
+    select: { inputJson: true },
+  });
+  return parseRecord(running?.inputJson)?.mcpRootJobId === root.id;
+}
+
+/**
+ * Every refusal of a window-edit export, in order: a linked re-render still running, import
+ * readiness (G19), then the free pre-check. Reads only — so a refused export writes nothing (A2).
+ */
+async function windowExportPreflight(
+  user: User,
+  root: McpChainRow,
+  state: PendingEditState,
+): Promise<{ ok: true; edits: WindowEdit[] } | { ok: false; failure: unknown }> {
+  if (await linkedRerenderInFlight(user.id, root, state.projectId)) return { ok: false, failure: RERENDER_IN_PROGRESS };
+  const built = await rerenderEditsFor(user.id, root, state);
+  if (!built.ok) return built;
+  try {
+    await assertMcpRenderFree({
+      userId: user.id,
+      baseVideoUrl: state.base.videoUrl,
+      rerender: { sourceConfig: state.base.preview.config },
+    });
+  } catch (error) {
+    if (error instanceof McpRenderNotFreeError) return { ok: false, failure: notFreeFailure(error) };
+    throw error;
+  }
+  return built;
+}
+
+async function exportWithWindowEdits(user: User, root: McpChainRow, initial: PendingEditState, depth: number): Promise<unknown> {
+  let state = initial;
+  // The preflight's edits for `state`; reset whenever `state` is reloaded.
+  let checked: WindowEdit[] | null = null;
+  // Replay: this revision's re-render in flight → "rerendering"; finished → finish its hop
+  // (idempotent) and answer from the result; failed/canceled (or no longer leading to an
+  // export) → pin the draft forward (CAS) so the retry gets a fresh `mcp-rerender:` key —
+  // only after the preflight passed, so a refused export never moves the revision (A2).
+  for (let attempt = 0; ; attempt += 1) {
+    const existing = await exportRowByKey(user.id, mcpRerenderKey(root.id, state.revision));
+    if (!existing) break;
+    if (isInFlight(existing.status)) return rerenderReply(root.id, existing.id, state.revision);
+    if (existing.status === "done") {
+      const hop = await continueMcpRerenderChainSafely({ userId: user.id, rerenderJobId: existing.id });
+      if (hop?.kind === "enqueued" || hop?.kind === "exists" || hop?.kind === "refused") {
+        return depth >= 1 ? STALE_REVISION : exportVideoTool(user, root.id, depth + 1);
+      }
+      if (!hop || (hop.kind === "deferred" && hop.reason === "busy")) return RENDER_MAINTENANCE;
+      if (hop.kind === "deferred") return STALE_REVISION;
+    }
+    if (attempt >= 2) return STALE_REVISION;
+    if (!checked) {
+      const preflight = await windowExportPreflight(user, root, state);
+      if (!preflight.ok) return preflight.failure;
+      checked = preflight.edits;
+    }
+    if (await savePendingEditDraft(user.id, state.projectId, state.revision, state.draft)) {
+      // Same draft and base, one revision on: the preflight still holds.
+      state = { ...state, revision: state.revision + 1, stored: true };
+    } else {
+      const reloaded = await loadState(user.id, root);
+      if (!reloaded.ok) return reloaded.failure;
+      state = reloaded.state;
+      checked = null;
+      if (state.draft.windowEdits.length === 0) {
+        return depth >= 1 ? STALE_REVISION : exportVideoTool(user, root.id, depth + 1);
+      }
+    }
+  }
+  if (!checked) {
+    const preflight = await windowExportPreflight(user, root, state);
+    if (!preflight.ok) return preflight.failure;
+    checked = preflight.edits;
+  }
+
+  const idempotencyKey = mcpRerenderKey(root.id, state.revision);
+  let result: Awaited<ReturnType<typeof enqueueBrollRerender>>;
+  try {
+    result = await enqueueBrollRerender({
+      user,
+      sourceJobId: state.base.id,
+      windowEdits: checked,
+      idempotencyKey,
+      rootJobId: root.id,
+      mcpExportAfter: { appliedDraftWindowEdits: state.draft.windowEdits },
+    });
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "P2002") {
+      // Lost a race with an identical export_video call: answer with the winner.
+      const winner = await exportRowByKey(user.id, idempotencyKey);
+      return winner ? rerenderReply(root.id, winner.id, state.revision) : STALE_REVISION;
+    }
+    if (error instanceof RenderDeployDrainError || code === "render_deploy_drain") return RENDER_MAINTENANCE;
+    throw error;
+  }
+  if (!result.ok) {
+    if (result.error === "not_enabled") return WINDOW_EDIT_NOT_ENABLED;
+    if (result.error === "invalid_edits") {
+      return editToolFailure("invalid_input", result.message ?? GENERIC_ERROR_COPY, NEXT_WINDOWS);
+    }
+    return editToolFailure(
+      result.error,
+      result.message ?? REFUSAL_COPY[result.error] ?? GENERIC_ERROR_COPY,
+      ENQUEUE_NEXT[result.error] ?? NEXT_RELOAD,
+    );
+  }
+  return rerenderReply(root.id, result.job.id, state.revision);
+}
+
 /**
  * G4/G7/G9: export the draft at its current revision as a free Burn of the project's current
  * `activeJobId`. Order: resolve → free pre-check (before any write) → replay or advance past a
  * failed attempt → `enqueueEditorExport` (the web's own enqueue, in-flight cap included).
+ * T13: with pending B-roll window edits it first re-renders them (exportWithWindowEdits).
  */
-export async function exportVideoTool(user: User, jobId: unknown) {
+export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Promise<unknown> {
   if (invalidJobId(jobId)) return UNKNOWN_JOB;
   const held = await resolveHeldRoot(user.id, jobId as string);
   if (!held.ok) return held.failure;
@@ -719,6 +1231,7 @@ export async function exportVideoTool(user: User, jobId: unknown) {
   const loaded = await loadState(user.id, root);
   if (!loaded.ok) return loaded.failure;
   let state: PendingEditState = loaded.state;
+  if (state.draft.windowEdits.length > 0) return exportWithWindowEdits(user, root, state, depth);
 
   let checkedBaseUrl: string | null = null;
   const assertFree = async (): Promise<EditToolFailure | null> => {
@@ -921,7 +1434,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "discard_edits",
     {
       title: "Discard edits",
-      description: "ล้างการแก้ทั้งหมดในดราฟต์ (การ์ดซับ/สไตล์/พาดหัว) กลับไปเป็นค่าตั้งต้นของวิดีโอตัวอย่างนี้ — ใช้เมื่อต้องการเริ่มแก้ใหม่.",
+      description: "ล้างการแก้ทั้งหมดในดราฟต์ (การ์ดซับ/สไตล์/พาดหัว/ช่วง B-roll ที่ยังไม่ส่งออก) กลับไปเป็นค่าตั้งต้นของวิดีโอตัวอย่างนี้ — ใช้เมื่อต้องการเริ่มแก้ใหม่.",
       inputSchema: discardEditsInputShape,
     },
     async (args, extra) =>
@@ -931,10 +1444,23 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
   registerGatedTool(
     server,
     principal,
+    "replace_broll_window",
+    {
+      title: "Replace B-roll window",
+      description: "เปลี่ยนภาพของช่วง B-roll 1 ช่วง (windowIndex จาก get_edit_state.windows) ในดราฟต์ของวิดีโอ exportMode \"hold\" — ส่งอย่างใดอย่างหนึ่ง: url (ลิงก์ https สาธารณะของรูป/วิดีโอ ระบบดาวน์โหลดเอง), uploadId (จาก create_upload_url ต้อง PUT ไฟล์เสร็จก่อน) หรือ source \"original\" (คืนภาพเดิม). เสียงในไฟล์ถูกปิดเสมอ (ใช้เสียงพากย์เดิม). ไฟล์นำเข้าแบบเบื้องหลัง — ดูความคืบหน้าที่ get_edit_state.windows[].importStatus. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: replaceBrollWindowInputShape,
+    },
+    async (args, extra) =>
+      runTool("replace_broll_window", extra, (p) => replaceBrollWindowTool(p.user, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
     "export_video",
     {
       title: "Export video",
-      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานส่งออกเดิม. แล้ว poll get_video_status.",
+      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). ถ้ามีช่วง B-roll ที่เปลี่ยน ระบบเรนเดอร์ช่วงเหล่านั้นใหม่ก่อน (status \"rerendering\") แล้วส่งออกต่อให้เอง — ไฟล์นำเข้าทุกช่วงต้อง \"ready\" ก่อน. เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานเดิม. แล้ว poll get_video_status.",
       inputSchema: exportVideoInputShape,
     },
     async (args, extra) =>

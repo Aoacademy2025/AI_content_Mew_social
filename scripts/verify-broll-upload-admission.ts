@@ -61,24 +61,36 @@ assert.equal(concurrent.tryAcquire("different-user").ok, true, "different users 
 if (first.ok) first.lease.release();
 assert.equal(concurrent.tryAcquire("same-user").ok, true, "release permits the user's next upload");
 
+// Task 9 (PR-B, 2026-10-03): type/size validation and the ffmpeg work both moved into
+// src/lib/media-import/broll-pipeline.ts, called by the route as validateBrollUpload(...)
+// / runBrollPipeline(...). This still proves the same order: validate, then acquire, then
+// commit admission, then (inside the pipeline) run either ffmpeg path.
 const routeSource = readFileSync(
   path.join(process.cwd(), "src/app/api/videos/broll-window/upload/route.ts"),
   "utf8",
 );
-const validationIndex = routeSource.indexOf("if (file.size > maxBytes)");
+const validationIndex = routeSource.indexOf("const validated = validateBrollUpload(file)");
 const acquireIndex = routeSource.indexOf("brollUploadAdmission.tryAcquire(user.id)");
 const commitIndex = routeSource.indexOf("admission.lease.commit()");
-// Prefix needles: the calls also pass the pinned G24 input demuxer.
-const imageWorkIndex = routeSource.indexOf("await applyKenBurns(tempInput, outPath");
-const videoWorkIndex = routeSource.indexOf("await normalizeForRemotion(outPath");
+const pipelineCallIndex = routeSource.indexOf("await runBrollPipeline(");
 assert.ok(
   validationIndex >= 0
     && validationIndex < acquireIndex
     && acquireIndex < commitIndex
-    && commitIndex < imageWorkIndex
-    && commitIndex < videoWorkIndex,
-  "the route validates first, then commits admission before either ffmpeg path",
+    && commitIndex < pipelineCallIndex,
+  "the route validates first, then commits admission before calling the pipeline",
 );
 assert.match(routeSource, /headers: \{ "Retry-After": String\(admission\.retryAfterSec\) \}/u);
+
+const pipelineSource = readFileSync(
+  path.join(process.cwd(), "src/lib/media-import/broll-pipeline.ts"),
+  "utf8",
+);
+// Prefix needles: the calls also pass the pinned G24 input demuxer.
+assert.ok(
+  pipelineSource.includes("await applyKenBurns(tempInput, outPath")
+    && pipelineSource.includes("await normalizeForRemotion(outPath"),
+  "the pipeline still runs both ffmpeg paths",
+);
 
 console.log("B-roll upload admission checks passed.");

@@ -372,6 +372,9 @@ jobs:
       - name: Verify the SSRF guard refuses IPv4-in-IPv6 and other private address forms
         run: npm run verify:safe-fetch
 
+      - name: Verify Media Import fetch pins the vetted IP, re-checks every redirect, caps bytes and times out (G23)
+        run: npm run verify:media-import-fetch
+
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 
@@ -395,6 +398,12 @@ jobs:
           ffmpeg -version | sed -n '1p'
           npm run verify:upload-probe-whitelist
           npm run verify:ffmpeg-input-hardening
+          npm run verify:media-import-broll-pipeline
+          npm run verify:media-import-presenter-checks
+          npm run verify:media-import-upload
+          npm run verify:media-import-lane
+          npm run verify:mcp-broll-window-edits
+          npm run verify:mcp-clip-import-job
 
       - name: Build
         run: npm run build

@@ -26,6 +26,8 @@ import net from "net";
  *
  * Out of scope here: this checks names, it does not pin the connection to the checked
  * address, so a DNS answer that changes between this check and `fetch()` is not covered.
+ * Media Import (`src/lib/media-import/fetch.ts`) does pin: it resolves once inside the
+ * socket's own `lookup` and classifies every answer with `ipIsPrivate` below.
  *
  * Note: legitimate inputs are either app-relative paths (handled by callers before
  * this, never reaching here) or public providers (Pexels/Pixabay/Unsplash/kie/NASA/
@@ -126,7 +128,7 @@ function ipv6IsPrivate(b: number[]): boolean {
 }
 
 /** True unless `ip` is a clean IPv4/IPv6 literal of a publicly-routable host. */
-function ipIsPrivate(ip: string): boolean {
+export function ipIsPrivate(ip: string): boolean {
   const v4 = parseIPv4(ip);
   if (v4) return ipv4IsPrivate(v4);
   const v6 = parseIPv6(ip);

@@ -17,6 +17,7 @@ const USER_ID = "render-drain-user";
 async function clean() {
   await prisma.renderJob.deleteMany({ where: { userId: USER_ID } });
   await prisma.videoJob.deleteMany({ where: { userId: USER_ID } });
+  await prisma.mediaImport.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.siteConfig.deleteMany({ where: { key: RENDER_DEPLOY_DRAIN_KEY } });
 }
@@ -106,6 +107,58 @@ async function main() {
     assert.deepEqual(empty, { videoJobs: 0, renderJobs: 0, empty: true });
     await prisma.$disconnect();
     assert.equal(queueCheckExitCode(), 0, "queue checker exits 0 only when both queues are empty");
+
+    // SEC-A5 (PR-B fix round 1): a clip job parked in waiting_import holds the drain only while
+    // its import can still finish; once the import is past its deadline (lane down) it cannot
+    // render, so the drain stops waiting for it.
+    const liveImport = await prisma.mediaImport.create({
+      data: { userId: USER_ID, purpose: "presenter", source: "url", status: "pending", deadlineAt: new Date(Date.now() + 600_000) },
+    });
+    const parked = await prisma.videoJob.create({
+      data: { userId: USER_ID, status: "waiting_import", inputJson: JSON.stringify({ script: "", mode: "upload", clipImportId: liveImport.id }) },
+    });
+    assert.deepEqual(await readRenderQueueCounts(), { videoJobs: 1, renderJobs: 0, empty: false }, "a live import holds the drain");
+    await prisma.mediaImport.update({ where: { id: liveImport.id }, data: { deadlineAt: new Date(Date.now() - 1_000) } });
+    assert.deepEqual(await readRenderQueueCounts(), { videoJobs: 0, renderJobs: 0, empty: true }, "an import past its deadline no longer holds it");
+    await prisma.$disconnect();
+    assert.equal(queueCheckExitCode(), 0, "queue checker exits 0 when only dead waiting_import jobs remain");
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: parked.id } })).status, "waiting_import", "the read changes nothing");
+    await prisma.videoJob.delete({ where: { id: parked.id } });
+
+    // S1 (PR-B fix round 1 re-review): the two job reads are not one atomic read. A settle that
+    // moves a job waiting_import → queued between them must never make it vanish from both. The
+    // client below lets the first videoJob read finish, applies that transition, and only then
+    // lets the second read run — whichever order the code issues them in.
+    const readyImport = await prisma.mediaImport.create({
+      data: { userId: USER_ID, purpose: "presenter", source: "url", status: "ready", deadlineAt: new Date(Date.now() + 600_000) },
+    });
+    const settling = await prisma.videoJob.create({
+      data: { userId: USER_ID, status: "waiting_import", inputJson: JSON.stringify({ script: "", mode: "upload", clipImportId: readyImport.id }) },
+    });
+    let firstRead: Promise<unknown> | null = null;
+    let transitioned: Promise<void> | null = null;
+    const betweenReads = <T>(read: () => Promise<T>): Promise<T> => {
+      if (!firstRead) {
+        const result = read();
+        firstRead = result;
+        transitioned = result.then(async () => {
+          await prisma.videoJob.update({ where: { id: settling.id }, data: { status: "queued" } });
+        });
+        return result.then(async (value) => { await transitioned; return value; });
+      }
+      return (transitioned ?? Promise.resolve()).then(read);
+    };
+    const racingClient = {
+      videoJob: {
+        count: (args: Parameters<typeof prisma.videoJob.count>[0]) => betweenReads(() => prisma.videoJob.count(args)),
+        findMany: (args: Parameters<typeof prisma.videoJob.findMany>[0]) => betweenReads(() => prisma.videoJob.findMany(args)),
+      },
+      renderJob: prisma.renderJob,
+      mediaImport: prisma.mediaImport,
+    } as unknown as Parameters<typeof readRenderQueueCounts>[0];
+    const racing = await readRenderQueueCounts(racingClient);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: settling.id } })).status, "queued", "fixture: the job moved between the reads");
+    assert.ok(racing.videoJobs >= 1 && !racing.empty, `a job settled waiting_import → queued between the reads is still counted (got ${JSON.stringify(racing)})`);
 
     console.log("ALL PASS");
   } finally {
