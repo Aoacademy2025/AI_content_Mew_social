@@ -52,6 +52,10 @@ export const createVideoJobInputShape = {
     .describe("ใช้สไตล์ซับของแบรนด์นี้ — ถ้ามีแบรนด์ active แบรนด์เดียว ระบบเลือกให้อัตโนมัติโดยไม่ต้องระบุ"),
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()
     .describe("stock = วิดีโอสต็อกฟรี (ค่าเริ่มต้น), hero-ai-image = ภาพ AI ทุกช่วง, automix = สต็อกผสมภาพ AI"),
+  // T6 (ADR 0064, G2): beta-gated server-side (feature_not_enabled otherwise). Omitted = the
+  // existing behaviour, byte-identical.
+  exportMode: z.enum(["auto", "hold"]).optional()
+    .describe("hold = เรนเดอร์ตัวอย่างแล้วพักไว้ให้ตรวจ/แก้ด้วย get_edit_state + set_caption_text ก่อนสั่ง export_video; auto = ส่งออกอัตโนมัติ (ค่าเริ่มต้น)"),
   idempotencyKey: z.string().max(120).optional(),
 } satisfies z.ZodRawShape;
 

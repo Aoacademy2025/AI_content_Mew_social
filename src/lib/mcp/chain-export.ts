@@ -393,8 +393,9 @@ type ChainExportPlan =
     }
   | { ok: false; code: string; message: string };
 
-/** Existing copy only (jobs route + orchestrator), keyed by the existing codes. */
-const REFUSAL_COPY: Record<string, string> = {
+/** Existing copy only (jobs route + orchestrator), keyed by the existing codes. T6 reuses it
+ *  for export_video's refusals. */
+export const REFUSAL_COPY: Record<string, string> = {
   project_required: "โปรเจกต์นี้ยังไม่พร้อมสำหรับส่งออกแบบทำงานเบื้องหลัง",
   project_not_found: "ไม่พบโปรเจกต์",
   stale_export_source: "โปรเจกต์มีวิดีโอเวอร์ชันใหม่กว่า — กรุณากลับไปใช้เวอร์ชันล่าสุดแล้วส่งออกอีกครั้ง",

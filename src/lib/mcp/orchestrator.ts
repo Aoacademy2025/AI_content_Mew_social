@@ -140,6 +140,7 @@ import {
 } from "@/lib/mcp/subtitle-quality";
 import { getVideoJobBillingReceipt, getVideoJobChainBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { enqueueMcpChainExportSafely, isMcpChainPreview } from "@/lib/mcp/chain-export";
+import { clearPendingEditDraftIfRevision } from "@/lib/mcp/pending-edit-draft";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
@@ -306,6 +307,11 @@ interface CreateInput {
    * such a job with `export_not_free` instead of charging it when no free path applies.
    */
   mcpMustBeFree?: boolean;
+  /**
+   * T6 (ADR 0064, G12): server-set on an MCP `export_video` export — the Pending Edit Draft
+   * revision it applied. On success the draft is cleared only if the project is still at it.
+   */
+  mcpPendingEditRevision?: number;
 }
 
 type SourceVideoJob = {
@@ -1808,10 +1814,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Runs while still in the burn phase, so a refusal settles this job's own burn
       // reservation through the existing catch-all (no new refund logic). Keyed on job data
       // (both rows chain-marked), never on the live flag. Web exports never carry the marker.
+      // T6 (ADR 0064): the same fail-closed rule for an export of a Held Preview chain — any
+      // export carrying the server-set `mcpRootJobId`. Its chain is the root (which holds the
+      // one Base Render charge), the export's source (the root or a free re-render of it) and
+      // this export.
+      const heldRootJobId = typeof input.mcpRootJobId === "string" && input.mcpRootJobId
+        ? input.mcpRootJobId
+        : null;
       const chainBillingReceipt = process.env.RENDER_VIA_QUEUE === "1"
-        && input.mcpChainExport === true
-        && isMcpChainPreview(src)
-        ? await getVideoJobChainBillingReceipt({ videoJobIds: [src.id, jobId], userId })
+        && ((input.mcpChainExport === true && isMcpChainPreview(src)) || heldRootJobId !== null)
+        ? await getVideoJobChainBillingReceipt({
+            videoJobIds: heldRootJobId
+              ? Array.from(new Set([heldRootJobId, src.id, jobId]))
+              : [src.id, jobId],
+            userId,
+          })
         : null;
       if (chainBillingReceipt && chainBillingReceipt.status !== "settled") {
         throw new Error(`ตรวจสอบการคิดนาที/เครดิตไม่ผ่าน (${chainBillingReceipt.code}) — ระบบหยุดก่อนส่งมอบงาน`);
@@ -1870,6 +1887,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
         ...(chainBillingReceipt ? { billingReceipt: chainBillingReceipt } : {}),
       });
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && typeof input.mcpPendingEditRevision === "number"
+        && job.projectId
+      ) {
+        // T6 (G12): the export applied this draft revision; clear the draft only if no edit
+        // landed while it ran (CAS). Best-effort: the export is already delivered, and a
+        // draft that is not cleared only means the next export re-applies the same edits.
+        await clearPendingEditDraftIfRevision(userId, job.projectId, input.mcpPendingEditRevision)
+          .catch((error) => {
+            console.warn(`[mcp-worker] job ${jobId} could not clear the pending edit draft:`, error);
+          });
+      }
       if (
         completion.transitioned
         && completion.job.status === "done"

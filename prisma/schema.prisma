@@ -461,6 +461,11 @@ model EditorProject {
   status                  String                  @default("draft") // draft|rendering|post|exporting|exported|archived
   draftJson               String?
   draftRevision           Int                     @default(0)
+  // MCP edit-before-export (ADR 0064, G10): the agent's Pending Edit Draft (JSON, null = none)
+  // and its compare-and-swap revision. The revision only ever grows (never reset), so an
+  // export key `mcp-export:<root>:<revision>` is never reused for different edits.
+  pendingEditJson         String?
+  pendingEditRevision     Int                     @default(0)
   activeJobId             String?
   activeExportJobId       String?
   latestVideoId           String?

@@ -100,6 +100,12 @@ export async function enqueueEditorExport(input: {
   /** The in-flight cap (3) applies to customer-ordered work; the auto chain skips it. */
   inflightCap?: boolean;
   projectTransition?: "always" | "while_in_flight";
+  /**
+   * T6 (ADR 0064, G12): the Pending Edit Draft revision this export applies (MCP export_video).
+   * Carried on the export's input; the worker clears the draft on success only while the
+   * project is still at this revision.
+   */
+  pendingEditRevision?: number;
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId, brandVisualAccess } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
@@ -196,6 +202,7 @@ export async function enqueueEditorExport(input: {
           exportSceneCount: input.exportSceneCount,
           ...(input.mcpChainExport ? { mcpChainExport: true } : {}),
           ...rootLinkInput(input.rootJobId),
+          ...(typeof input.pendingEditRevision === "number" ? { mcpPendingEditRevision: input.pendingEditRevision } : {}),
         },
         input.idempotencyKey,
         {
