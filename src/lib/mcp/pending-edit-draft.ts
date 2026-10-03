@@ -369,6 +369,12 @@ export async function updatePendingEditDraft(
 /**
  * G12: clear the draft after a successful export of `appliedRevision` — only if no edit landed
  * while the export ran. The clear bumps the revision so the next export gets a fresh key.
+ *
+ * T13 fix round 1 (A3): an export never renders B-roll window edits (only export_video's
+ * re-render does), so a draft that still holds some — the web exported the agent's draft — keeps
+ * them: the draft is re-seeded from the export just delivered (G11) with the window edits carried
+ * over, and the agent's next export_video applies them. If that re-seed cannot be built, the draft
+ * is left exactly as it is; window edits are never dropped silently.
  */
 export async function clearPendingEditDraftIfRevision(
   userId: string,
@@ -378,9 +384,34 @@ export async function clearPendingEditDraftIfRevision(
   if (!Number.isInteger(appliedRevision) || appliedRevision < 0 || appliedRevision > MAX_PENDING_EDIT_REVISION) {
     return false;
   }
+  const project = await prisma.editorProject.findFirst({
+    where: { id: projectId, userId, pendingEditRevision: appliedRevision },
+    select: { pendingEditJson: true },
+  });
+  if (!project) return false;
+  const stored = parsePendingEditDraft(project.pendingEditJson);
+  let next: string | null = null;
+  if (stored && stored.windowEdits.length > 0) {
+    const root = await prisma.videoJob.findFirst({
+      where: { id: stored.rootJobId, userId, projectId },
+      select: { id: true, inputJson: true, projectId: true },
+    });
+    const resolved = root ? await resolveProjectAndBase(userId, root) : null;
+    if (!root || !resolved?.ok) return false;
+    const seed = seedPendingEditDraft({
+      rootJobId: root.id,
+      rootInputJson: root.inputJson,
+      base: resolved.base,
+      latestExportSnapshot: await latestExportSnapshot(userId, projectId),
+      projectDraftJson: resolved.project.draftJson,
+    });
+    next = JSON.stringify({ ...seed, windowEdits: stored.windowEdits });
+    if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
+  }
+  // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
   const cleared = await prisma.editorProject.updateMany({
     where: { id: projectId, userId, pendingEditRevision: appliedRevision },
-    data: { pendingEditJson: null, pendingEditRevision: appliedRevision + 1 },
+    data: { pendingEditJson: next, pendingEditRevision: appliedRevision + 1 },
   });
   return cleared.count === 1;
 }

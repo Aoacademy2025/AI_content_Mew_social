@@ -884,6 +884,10 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     importId = created.importId;
     importStatus = "pending";
   } else {
+    // A1: while a re-render of this root runs, the base it is replacing is about to change, so a
+    // restore decided against the current base could be lost when the re-render lands. Refuse
+    // instead of answering "will restore" (url/upload edits are safe: the rebase keeps them).
+    if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return ORIGINAL_DURING_RERENDER;
     source = "original";
   }
 
@@ -978,6 +982,11 @@ const RERENDER_IN_PROGRESS = editToolFailure(
   "rerender_in_progress",
   "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังส่งออกการแก้ล่าสุดไม่ได้",
   "เรียก get_video_status ทุก ~60–90 วินาที จนได้ status \"done\" แล้วเรียก export_video อีกครั้งเพื่อส่งออกการแก้ที่เหลือ",
+);
+const ORIGINAL_DURING_RERENDER = editToolFailure(
+  "rerender_in_progress",
+  "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังสั่งให้ช่วงนี้กลับเป็นภาพเดิมไม่ได้ — ยังไม่ได้บันทึกอะไร",
+  "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก replace_broll_window ด้วย source \"original\" อีกครั้ง",
 );
 const IMPORT_ERROR_HINT: Record<string, string> = {
   fetch_timeout: "ดาวน์โหลดไม่ทันเวลา หรือคิวนำเข้าไม่ว่างในตอนนั้น — ส่งไฟล์เดิมใหม่ได้",
@@ -1102,11 +1111,39 @@ async function linkedRerenderInFlight(userId: string, root: McpChainRow, project
   return parseRecord(running?.inputJson)?.mcpRootJobId === root.id;
 }
 
+/**
+ * Every refusal of a window-edit export, in order: a linked re-render still running, import
+ * readiness (G19), then the free pre-check. Reads only — so a refused export writes nothing (A2).
+ */
+async function windowExportPreflight(
+  user: User,
+  root: McpChainRow,
+  state: PendingEditState,
+): Promise<{ ok: true; edits: WindowEdit[] } | { ok: false; failure: unknown }> {
+  if (await linkedRerenderInFlight(user.id, root, state.projectId)) return { ok: false, failure: RERENDER_IN_PROGRESS };
+  const built = await rerenderEditsFor(user.id, root, state);
+  if (!built.ok) return built;
+  try {
+    await assertMcpRenderFree({
+      userId: user.id,
+      baseVideoUrl: state.base.videoUrl,
+      rerender: { sourceConfig: state.base.preview.config },
+    });
+  } catch (error) {
+    if (error instanceof McpRenderNotFreeError) return { ok: false, failure: notFreeFailure(error) };
+    throw error;
+  }
+  return built;
+}
+
 async function exportWithWindowEdits(user: User, root: McpChainRow, initial: PendingEditState, depth: number): Promise<unknown> {
   let state = initial;
+  // The preflight's edits for `state`; reset whenever `state` is reloaded.
+  let checked: WindowEdit[] | null = null;
   // Replay: this revision's re-render in flight → "rerendering"; finished → finish its hop
   // (idempotent) and answer from the result; failed/canceled (or no longer leading to an
-  // export) → pin the draft forward (CAS) so the retry gets a fresh `mcp-rerender:` key.
+  // export) → pin the draft forward (CAS) so the retry gets a fresh `mcp-rerender:` key —
+  // only after the preflight passed, so a refused export never moves the revision (A2).
   for (let attempt = 0; ; attempt += 1) {
     const existing = await exportRowByKey(user.id, mcpRerenderKey(root.id, state.revision));
     if (!existing) break;
@@ -1120,30 +1157,28 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       if (hop.kind === "deferred") return STALE_REVISION;
     }
     if (attempt >= 2) return STALE_REVISION;
+    if (!checked) {
+      const preflight = await windowExportPreflight(user, root, state);
+      if (!preflight.ok) return preflight.failure;
+      checked = preflight.edits;
+    }
     if (await savePendingEditDraft(user.id, state.projectId, state.revision, state.draft)) {
+      // Same draft and base, one revision on: the preflight still holds.
       state = { ...state, revision: state.revision + 1, stored: true };
     } else {
       const reloaded = await loadState(user.id, root);
       if (!reloaded.ok) return reloaded.failure;
       state = reloaded.state;
+      checked = null;
       if (state.draft.windowEdits.length === 0) {
         return depth >= 1 ? STALE_REVISION : exportVideoTool(user, root.id, depth + 1);
       }
     }
   }
-  if (await linkedRerenderInFlight(user.id, root, state.projectId)) return RERENDER_IN_PROGRESS;
-
-  const built = await rerenderEditsFor(user.id, root, state);
-  if (!built.ok) return built.failure;
-  try {
-    await assertMcpRenderFree({
-      userId: user.id,
-      baseVideoUrl: state.base.videoUrl,
-      rerender: { sourceConfig: state.base.preview.config },
-    });
-  } catch (error) {
-    if (error instanceof McpRenderNotFreeError) return notFreeFailure(error);
-    throw error;
+  if (!checked) {
+    const preflight = await windowExportPreflight(user, root, state);
+    if (!preflight.ok) return preflight.failure;
+    checked = preflight.edits;
   }
 
   const idempotencyKey = mcpRerenderKey(root.id, state.revision);
@@ -1152,7 +1187,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
     result = await enqueueBrollRerender({
       user,
       sourceJobId: state.base.id,
-      windowEdits: built.edits,
+      windowEdits: checked,
       idempotencyKey,
       rootJobId: root.id,
       mcpExportAfter: { appliedDraftWindowEdits: state.draft.windowEdits },

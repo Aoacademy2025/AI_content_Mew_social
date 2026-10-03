@@ -272,45 +272,88 @@ export async function continueMcpRerenderChainSafely(input: {
 // ── watchdog recovery ─────────────────────────────────────────────────────────────────────
 
 const RERENDER_RECOVERY_LOOKBACK_MS = 24 * 60 * 60_000;
-const RERENDER_RECOVERY_SCAN_LIMIT = 1_000;
+/** Flagged re-renders read per sweep. */
+const RERENDER_RECOVERY_PAGE = 200;
+/** Hops attempted per sweep. */
 const RERENDER_RECOVERY_BATCH = 50;
+/** Ceiling on the export rows read to tell which of a page's re-renders are already covered. */
+const RERENDER_RECOVERY_EXPORT_SCAN = 1_000;
 
 /**
- * Lost-hop recovery for the worker's sweep: every recently finished MCP re-render that owes an
- * export and has none gets the same idempotent hop. Returns the re-render ids whose hop this
- * sweep closed (enqueued or refused-with-marker).
+ * Round-robin position (finishedAt, id) for the next sweep in this worker process. A hop that never
+ * closes (its root is gone, it keeps deferring) is only revisited after every other candidate,
+ * so it can never starve a lost hop behind it. A restart starts over from the oldest.
+ */
+let recoveryCursor: { finishedAt: Date; id: string } | null = null;
+
+/**
+ * Lost-hop recovery for the worker's sweep: every recently finished MCP re-render that is still
+ * its project's current render, owes an export and has none gets the same idempotent hop.
+ * Bounded per sweep (one page of candidates, at most a batch of hops, export lookups scoped to the
+ * page), oldest first, resuming after the last candidate it reached. Returns the re-render ids
+ * whose hop this sweep closed (enqueued or refused-with-marker).
  */
 export async function recoverLostMcpRerenderExports(now: Date = new Date()): Promise<string[]> {
   const since = new Date(now.getTime() - RERENDER_RECOVERY_LOOKBACK_MS);
-  const candidates = await prisma.videoJob.findMany({
+  const after = recoveryCursor && recoveryCursor.finishedAt >= since ? recoveryCursor : null;
+  const page = await prisma.videoJob.findMany({
     where: {
       status: "done",
       type: "create",
       inputJson: { contains: "\"mcpExportAfterRerender\":true" },
       finishedAt: { gte: since },
+      ...(after
+        ? { OR: [{ finishedAt: { gt: after.finishedAt } }, { finishedAt: after.finishedAt, id: { gt: after.id } }] }
+        : {}),
     },
-    orderBy: { finishedAt: "desc" },
-    take: RERENDER_RECOVERY_SCAN_LIMIT,
-    select: { id: true, userId: true, type: true, inputJson: true },
+    orderBy: [{ finishedAt: "asc" }, { id: "asc" }],
+    take: RERENDER_RECOVERY_PAGE,
+    select: { id: true, userId: true, type: true, inputJson: true, projectId: true, finishedAt: true },
   });
-  const rerenders = candidates.filter(isMcpExportAfterRerender);
-  if (rerenders.length === 0) return [];
+  // A full page continues after its last row next sweep; a short one reached the newest row, so
+  // the next sweep starts over from the oldest.
+  const last = page[page.length - 1];
+  recoveryCursor = page.length === RERENDER_RECOVERY_PAGE && last?.finishedAt ? { finishedAt: last.finishedAt, id: last.id } : null;
 
+  const flagged = page.filter((row) => row.projectId && isMcpExportAfterRerender(row));
+  if (flagged.length === 0) return [];
+  // A re-render the project has moved on from (superseded) owes nothing: skipped without a hop.
+  const current = await prisma.editorProject.findMany({
+    where: { activeJobId: { in: flagged.map((row) => row.id) } },
+    select: { id: true, activeJobId: true },
+  });
+  const isCurrent = new Set(current.map((project) => `${project.id}\n${project.activeJobId}`));
+  const live = flagged.filter((row) => isCurrent.has(`${row.projectId}\n${row.id}`));
+  if (live.length === 0) return [];
+
+  // Scoped to this page's re-renders (at most a hop export + a refusal marker each); the ceiling
+  // only guards a pathological page — a row it cuts off just reads as missing and its hop says
+  // "exists".
   const exports = await prisma.videoJob.findMany({
     where: {
       type: "export",
+      userId: { in: [...new Set(live.map((row) => row.userId))] },
       createdAt: { gte: since },
       inputJson: { contains: "\"mcpRootJobId\":" },
+      OR: live.map((row) => ({ inputJson: { contains: `"sourceJobId":${JSON.stringify(row.id)}` } })),
     },
+    take: RERENDER_RECOVERY_EXPORT_SCAN,
     select: { userId: true, inputJson: true },
   });
-  const covered = new Set(exports.map((row) => `${row.userId}\n${String(jobInput(row.inputJson)?.sourceJobId ?? "")}`));
-  const missing = rerenders
-    .filter((rerender) => !covered.has(`${rerender.userId}\n${rerender.id}`))
-    .slice(0, RERENDER_RECOVERY_BATCH);
+  const covered = new Set(exports.flatMap((row) => {
+    const input = jobInput(row.inputJson);
+    return typeof input?.mcpRootJobId === "string" ? [`${row.userId}\n${String(input.sourceJobId ?? "")}`] : [];
+  }));
+  const missing = live.filter((row) => !covered.has(`${row.userId}\n${row.id}`));
 
   const recovered: string[] = [];
-  for (const rerender of missing) {
+  for (const [attempt, rerender] of missing.entries()) {
+    if (attempt === RERENDER_RECOVERY_BATCH) {
+      // Batch spent: the next sweep resumes right after the last hop attempted.
+      const previous = missing[attempt - 1];
+      if (previous.finishedAt) recoveryCursor = { finishedAt: previous.finishedAt, id: previous.id };
+      break;
+    }
     const result = await continueMcpRerenderChainSafely({ userId: rerender.userId, rerenderJobId: rerender.id });
     if (result?.kind === "enqueued" || result?.kind === "refused") recovered.push(rerender.id);
   }

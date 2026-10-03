@@ -26,6 +26,9 @@
 //   J. create_video_job without the new fields is unchanged (regression).
 //   K. muting: the composition mutes every B-roll clip; the import output has no audio track.
 //   L. wiring (package.json + CI after ffmpeg is installed), G14 envelopes, no url in replies/logs/audit.
+//   M. fix round 1 (review A1–A4): original during an in-flight re-render is refused (never a silent
+//      no-op); a refused export writes nothing even after a failed re-render; a web export keeps the
+//      agent's pending window edits; the watchdog recovers a lost hop past >50 non-closing re-renders.
 //
 // Self-contained: its own throwaway SQLite and a private TMPDIR. Needs real ffmpeg + ffprobe.
 // Run: node --conditions=react-server --import tsx scripts/verify-mcp-broll-window-edits.ts
@@ -138,6 +141,7 @@ async function main() {
   const { sweepStalledVideoJobs } = fromSrc("lib/mcp/video-job-watchdog") as typeof import("../src/lib/mcp/video-job-watchdog");
   const uploadRoute = fromSrc("app/api/mcp-uploads/[token]/route") as typeof import("../src/app/api/mcp-uploads/[token]/route");
   const { RENDER_DEPLOY_DRAIN_KEY } = fromSrc("lib/render-deploy-drain") as typeof import("../src/lib/render-deploy-drain");
+  const { enqueueEditorExport } = fromSrc("lib/editor-export-enqueue") as typeof import("../src/lib/editor-export-enqueue");
 
   check("os.tmpdir() is the private test dir", os.tmpdir() === privateTmp, os.tmpdir());
 
@@ -236,6 +240,8 @@ async function main() {
   // Internal-tester emails pass the MCP Editor Project gate (and the B-roll window-edit beta).
   const tester = await makeUser("u-bwe", "qa-bwe@aoacademy.co");
   const second = await makeUser("u-bwe-2", "qa-bwe-2@aoacademy.co");
+  // Fix round 1 (M): its own rerender budget, untouched by C–I.
+  const fixer = await makeUser("u-bwe-3", "qa-bwe-3@aoacademy.co");
   const outsider = await makeUser("u-bwe-outsider", "bwe-outsider@example.com");
 
   // ── fixtures: real media (tiny) ──
@@ -835,6 +841,191 @@ async function main() {
       const exDone = await runJob(ex.id, tester.user.id);
       check(`${via}: export done → root done`, exDone.status === "done" && (await status(tester, root.id)).status === "done");
     }
+  });
+
+  // ── M ── (T13 fix round 1: review advisories A1–A4)
+  /** A ready B-roll upload owned by `who`, attached to `windowIndex` of `rootId`. */
+  async function attachReady(who: { user: { id: string }; token: string }, rootId: string, windowIndex: number, tag: string) {
+    const row = await prisma.mediaImport.create({
+      data: {
+        userId: who.user.id, purpose: "broll_video", source: "upload", status: "ready",
+        resultSrc: `/api/stocks/broll-upload-${tag}.mp4`, durationMs: 2_000, deadlineAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const reply = await callTool(who.token, NEW_TOOL, { jobId: rootId, windowIndex, uploadId: row.id });
+    if (reply.ok !== true) throw new Error(`fixture: attach ${tag} failed: ${JSON.stringify(reply)}`);
+    return row;
+  }
+  const failedRerenderRow = (who: { user: { id: string } }, rootId: string, projectId: string, revision: number) =>
+    prisma.videoJob.create({
+      data: {
+        userId: who.user.id, projectId, type: "create", status: "failed", finishedAt: new Date(),
+        idempotencyKey: `mcp-rerender:${rootId}:${revision}`,
+        inputJson: JSON.stringify({ mode: "broll-rerender", sourceJobId: rootId, mcpRootJobId: rootId, mcpMustBeFree: true, mcpExportAfterRerender: true }),
+      },
+    });
+
+  await section("M1) A1: source:\"original\" while the root's re-render is in flight → rerender_in_progress (never a silent no-op)", async () => {
+    const { root, projectId } = await heldRootVia(fixer);
+    await attachReady(fixer, root.id, 1, "m1-a");
+    const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+    check("fixture: export_video started a re-render applying window 1", exported.status === "rerendering", JSON.stringify(exported));
+    const rrId = String(exported.rerenderJobId);
+    const before = await projectRow(projectId);
+    const restore = await callTool(fixer.token, NEW_TOOL, { jobId: root.id, windowIndex: 1, source: "original" });
+    check("original during the in-flight re-render → rerender_in_progress (G14)", restore.error === "rerender_in_progress"
+      && checkFailureEnvelope(restore).length === 0 && /replace_broll_window/.test(String(restore.next)), JSON.stringify(restore));
+    const after = await projectRow(projectId);
+    check("…the refusal wrote nothing (draft + revision unchanged)", after.pendingEditJson === before.pendingEditJson
+      && after.pendingEditRevision === before.pendingEditRevision, `${before.pendingEditRevision} → ${after.pendingEditRevision}`);
+    const second0 = await attachReady(fixer, root.id, 0, "m1-b");
+    check("a NEW replacement during the in-flight re-render is still accepted (it survives the rebase)",
+      (await storedDraft(projectId))?.windowEdits.some((edit) => edit.index === 0 && edit.importId === second0.id) === true);
+
+    const rrDone = await runJob(rrId, fixer.user.id);
+    check("fixture: the re-render finished", rrDone.status === "done", String(rrDone.errorMessage));
+    const rebased = await storedDraft(projectId);
+    check("the rebase dropped only the applied window-1 edit; the window-0 edit is still pending",
+      rebased?.baseJobId === rrId && JSON.stringify(rebased.windowEdits) === JSON.stringify([{ index: 0, src: null, importId: second0.id, replacementKind: "upload" }]),
+      JSON.stringify(rebased?.windowEdits));
+    const again = await callTool(fixer.token, NEW_TOOL, { jobId: root.id, windowIndex: 1, source: "original" });
+    check("once the re-render is done, original is accepted", again.ok === true && again.source === "original", JSON.stringify(again));
+    const restored = await storedDraft(projectId);
+    check("…and recorded as an explicit restore that the next export applies",
+      restored?.windowEdits.some((edit) => edit.index === 1 && edit.src === ORIGINAL_SRC[1] && edit.replacementKind === "original") === true,
+      JSON.stringify(restored?.windowEdits));
+  });
+
+  await section("M2) A2: a refused export writes nothing, even after a failed re-render at this revision", async () => {
+    // (a) export_not_free (`second` spent its hour of free re-renders in F).
+    {
+      const { root, projectId } = await heldRootVia(second);
+      await attachReady(second, root.id, 1, "m2-a");
+      const before = await projectRow(projectId);
+      await failedRerenderRow(second, root.id, projectId, before.pendingEditRevision);
+      const jobsBefore = await jobCount(second.user.id);
+      const moneyBefore = await money(second.user.id);
+      const refused = await callTool(second.token, "export_video", { jobId: root.id });
+      check("budget spent + failed re-render at this revision → export_not_free", refused.error === "export_not_free", JSON.stringify(refused));
+      const after = await projectRow(projectId);
+      check("…the draft revision did NOT move (no pin-forward write)", after.pendingEditRevision === before.pendingEditRevision
+        && after.pendingEditJson === before.pendingEditJson, `${before.pendingEditRevision} → ${after.pendingEditRevision}`);
+      check("…no job, no charge", (await jobCount(second.user.id)) === jobsBefore && moneyKey(await money(second.user.id)) === moneyKey(moneyBefore));
+    }
+    // (b) imports_pending, then the same export succeeds once the import is ready.
+    {
+      const { root, projectId } = await heldRootVia(fixer);
+      const pending = await prisma.mediaImport.create({
+        data: { userId: fixer.user.id, purpose: "broll_video", source: "upload", status: "pending", deadlineAt: new Date(Date.now() + 60_000) },
+      });
+      const attach = await callTool(fixer.token, NEW_TOOL, { jobId: root.id, windowIndex: 1, uploadId: pending.id });
+      check("fixture: a pending upload attached", attach.ok === true && attach.importStatus === "pending", JSON.stringify(attach));
+      const before = await projectRow(projectId);
+      await failedRerenderRow(fixer, root.id, projectId, before.pendingEditRevision);
+      const refused = await callTool(fixer.token, "export_video", { jobId: root.id });
+      check("pending import + failed re-render at this revision → imports_pending", refused.error === "imports_pending", JSON.stringify(refused));
+      const after = await projectRow(projectId);
+      check("…the draft revision did NOT move", after.pendingEditRevision === before.pendingEditRevision
+        && after.pendingEditJson === before.pendingEditJson, `${before.pendingEditRevision} → ${after.pendingEditRevision}`);
+      await prisma.mediaImport.update({
+        where: { id: pending.id },
+        data: { status: "ready", resultSrc: "/api/stocks/broll-upload-m2-b.mp4", durationMs: 2_000 },
+      });
+      const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+      const rr = exported.rerenderJobId ? await prisma.videoJob.findUnique({ where: { id: String(exported.rerenderJobId) } }) : null;
+      check("once ready, the export pins forward past the failed key and re-renders",
+        exported.status === "rerendering" && rr?.idempotencyKey === `mcp-rerender:${root.id}:${before.pendingEditRevision + 1}`
+        && exported.draftRevision === before.pendingEditRevision + 1, JSON.stringify({ exported, key: rr?.idempotencyKey }));
+    }
+  });
+
+  await section("M3) A3: a web export keeps the agent's pending window edits (and the web's own caption edits)", async () => {
+    const { root, projectId } = await heldRootVia(fixer);
+    const agentCaption = await callTool(fixer.token, "set_caption_text", { jobId: root.id, index: 0, text: "เอเจนต์แก้การ์ดแรก" });
+    check("fixture: the agent edited a caption", agentCaption.ok === true, JSON.stringify(agentCaption));
+    const upload = await attachReady(fixer, root.id, 1, "m3");
+    const project = await projectRow(projectId);
+    const forWeb = draftLib.pendingEditForWeb(project);
+    check("fixture: the web Post phase loads the agent's draft", forWeb !== null && forWeb.revision === project.pendingEditRevision);
+    const stored = (await storedDraft(projectId))!;
+    const base = parseVideoJobOutput(root.outputJson)!;
+    // The web user edits card 1 on top of the agent's draft, then exports (it cannot render window edits).
+    const webDraft = { ...stored, captions: stored.captions.map((caption, index) => (index === 1 ? { ...caption, text: "เว็บแก้การ์ดสอง" } : caption)) };
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: fixer.user.id } });
+    const web = await enqueueEditorExport({
+      user,
+      brandVisualAccess: { canUse: false } as never,
+      sourceJobId: root.id,
+      subtitleOverlayConfig: draftLib.toBurnConfig(webDraft, { videoUrl: base.videoUrl!, preview: base.preview! }),
+      editorSnapshot: draftLib.toEditorSnapshotDraft(webDraft),
+      idempotencyKey: "bwe-m3-web-export",
+      expectedPendingRevision: project.pendingEditRevision,
+    });
+    check("fixture: the web export was accepted", web.ok === true, JSON.stringify(web));
+    if (!web.ok) return;
+    const webDone = await runJob(web.job.id, fixer.user.id);
+    check("fixture: the web export finished", webDone.status === "done", String(webDone.errorMessage));
+    const after = await projectRow(projectId);
+    const kept = draftLib.parsePendingEditDraft(after.pendingEditJson);
+    check("the agent's window edit is still pending after the web export", JSON.stringify(kept?.windowEdits)
+      === JSON.stringify([{ index: 1, src: null, importId: upload.id, replacementKind: "upload" }]), String(after.pendingEditJson).slice(0, 300));
+    check("…the revision still moved past the exported one (G12: the next export gets a fresh key)", after.pendingEditRevision === project.pendingEditRevision + 1,
+      `${project.pendingEditRevision} → ${after.pendingEditRevision}`);
+    check("…and the rest of the draft now matches what the web exported (agent + web caption edits)",
+      kept?.captions[0]?.text === "เอเจนต์แก้การ์ดแรก" && kept?.captions[1]?.text === "เว็บแก้การ์ดสอง" && kept?.baseJobId === after.activeJobId,
+      JSON.stringify(kept?.captions.map((caption) => caption.text)));
+    const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+    const rr = exported.rerenderJobId ? await prisma.videoJob.findUnique({ where: { id: String(exported.rerenderJobId) } }) : null;
+    const edits = rr ? (inputOf(rr).windowEdits as Json[]) : [];
+    check("the agent's next export_video still applies the window edit", exported.status === "rerendering"
+      && edits.some((edit) => edit.index === 1 && edit.src === upload.resultSrc), JSON.stringify({ exported, edits }));
+  });
+
+  await section("M4) A4: a lost hop is recovered within bounded sweeps despite >50 non-recoverable re-renders on both sides", async () => {
+    // Fixture housekeeping: M1–M3 left work queued (no worker runs here); free the in-flight cap.
+    await prisma.videoJob.updateMany({
+      where: { userId: fixer.user.id, status: { in: ["queued", "processing", "waiting_provider"] } },
+      data: { status: "canceled", finishedAt: new Date() },
+    });
+    const { root } = await heldRootVia(fixer);
+    await attachReady(fixer, root.id, 1, "m4");
+    const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+    const rrId = String(exported.rerenderJobId);
+    await prisma.siteConfig.upsert({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, create: { key: RENDER_DEPLOY_DRAIN_KEY, value: "1" }, update: { value: "1" } });
+    const rrDone = await runJob(rrId, fixer.user.id);
+    await prisma.siteConfig.update({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, data: { value: "0" } });
+    const exportsOf = () => prisma.videoJob.count({ where: { userId: fixer.user.id, type: "export", inputJson: { contains: `"sourceJobId":"${rrId}"` } } });
+    check("fixture: the re-render finished and its hop was lost", rrDone.status === "done" && (await exportsOf()) === 0);
+
+    // 60 older + 60 newer re-renders that are each their project's current render but whose hop
+    // can never close (their root is gone), plus 60 newer superseded ones.
+    const lostAt = rrDone.finishedAt!.getTime();
+    const flagged = (i: number) => JSON.stringify({ mode: "broll-rerender", sourceJobId: `m4-gone-${i}`, mcpRootJobId: `m4-gone-root-${i}`, mcpMustBeFree: true, mcpExportAfterRerender: true });
+    for (let i = 0; i < 180; i += 1) {
+      const kind = i < 60 ? "older" : i < 120 ? "newer" : "superseded";
+      const project = await prisma.editorProject.create({ data: { userId: fixer.user.id, title: `m4-${kind}-${i}` } });
+      const job = await prisma.videoJob.create({
+        data: {
+          userId: fixer.user.id, projectId: project.id, type: "create", status: "done", inputJson: flagged(i),
+          finishedAt: new Date(kind === "older" ? lostAt - 60 * 60_000 + i : lostAt + 1_000 + i),
+        },
+      });
+      if (kind !== "superseded") await prisma.editorProject.update({ where: { id: project.id }, data: { activeJobId: job.id } });
+    }
+    let sweeps = 0;
+    let recovered = false;
+    while (!recovered && sweeps < 8) {
+      sweeps += 1;
+      const sweep = await sweepStalledVideoJobs(new Date(lostAt + 5_000));
+      recovered = sweep.recoveredChainExports.includes(rrId);
+    }
+    check("the lost hop is recovered within 4 sweeps (each sweep attempts a bounded batch, round-robin)", recovered && sweeps <= 4, `recovered=${recovered} sweeps=${sweeps}`);
+    check("…exactly one export from the re-render", (await exportsOf()) === 1);
+    const source = fs.readFileSync(path.join(ROOT, "src/lib/mcp/rerender-chain.ts"), "utf8");
+    const recovery = source.slice(source.indexOf("export async function recoverLostMcpRerenderExports"));
+    check("the recovery's job queries are bounded: one page of candidates, exports scoped to that page's ids",
+      /take:\s*RERENDER_RECOVERY_PAGE/.test(recovery) && /take:\s*RERENDER_RECOVERY_EXPORT_SCAN/.test(recovery)
+      && /OR:\s*live\.map/.test(recovery), recovery.slice(0, 200));
   });
 
   // ── J ──
