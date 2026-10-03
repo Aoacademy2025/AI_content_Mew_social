@@ -115,12 +115,18 @@ async function makeFixtures(dir: string): Promise<Fixtures> {
   // ID3v2 tag in front of an ADTS stream (some taggers do this).
   fs.writeFileSync(p("id3.aac"), Buffer.concat([id3Tag(32), fs.readFileSync(p("real.aac"))]));
 
-  // Voice samples: 7 s of tone (the clone flow needs 5–15 s of non-silent audio).
-  await ff([...tone(7, 24000), "-c:a", "libmp3lame", "-b:a", "64k", p("voice.mp3")]);
-  await ff([...tone(7, 24000), p("voice.wav")]);
-  await ff([...tone(7, 24000), "-c:a", "aac", p("voice.m4a")]);
-  await ff([...tone(7, 24000), "-c:a", "libopus", p("voice-opus.webm")]);
-  await ff([...tone(7, 24000), "-c:a", "libvorbis", p("voice.ogg")]);
+  // Voice samples: 7 s of tone (the clone flow needs 5–15 s of non-silent audio), with the
+  // half-second of silence before and after that a real recording has. Not cosmetic: on
+  // ffmpeg 6.1.x (CI's ubuntu-24.04 /usr/bin/ffmpeg) the voice filter chain
+  // silenceremove→areverse→silenceremove→areverse→loudnorm never finishes on audio with no
+  // edge silence — the pre-change auto-detect command hangs exactly like the pinned one, while
+  // 4.4 (prod) and 8.x convert both byte-identically (task-2b.md §10).
+  const voiceTone = [...tone(7, 24000), "-af", "adelay=500:all=1,apad=pad_dur=0.5"];
+  await ff([...voiceTone, "-c:a", "libmp3lame", "-b:a", "64k", p("voice.mp3")]);
+  await ff([...voiceTone, p("voice.wav")]);
+  await ff([...voiceTone, "-c:a", "aac", p("voice.m4a")]);
+  await ff([...voiceTone, "-c:a", "libopus", p("voice-opus.webm")]);
+  await ff([...voiceTone, "-c:a", "libvorbis", p("voice.ogg")]);
 
   // > 120 s (the FREE clip cap) so transcribe's duration probe must work to return 403.
   await ff([...tone(121, 8000), "-ac", "1", "-c:a", "libmp3lame", "-b:a", "16k", p("long.mp3")]);
