@@ -111,7 +111,9 @@ function parseJson(raw: string | null | undefined): unknown {
   }
 }
 
-function draftDurationMs(preview: VideoJobPreviewData, captions: readonly V2Caption[]): number {
+/** Shared with T7's `set_headline_hook` so both seeding and later edits clamp against the
+ *  identical clip-duration definition (never duplicated). */
+export function draftDurationMs(preview: VideoJobPreviewData, captions: readonly V2Caption[]): number {
   return Math.max(preview.audioDurationMs || 0, captions[captions.length - 1]?.endMs ?? 0, 1_000);
 }
 
@@ -233,14 +235,19 @@ async function latestExportSnapshot(userId: string, projectId: string): Promise<
   return parseVideoJobOutput(latest?.outputJson ?? null)?.editSnapshot ?? null;
 }
 
-/**
- * Owner-scoped load of the draft for a held root's project. The base is the project's current
- * `activeJobId` (G9), which must be a finished render of this project with a preview.
- */
-export async function loadPendingEditState(
+type ResolvedProjectAndBase = {
+  ok: true;
+  project: { id: string; activeJobId: string | null; draftJson: string | null; pendingEditJson: string | null; pendingEditRevision: number };
+  base: PendingEditBase;
+};
+type ResolveProjectAndBaseResult = ResolvedProjectAndBase | { ok: false; code: "project_not_found" | "source_not_exportable" };
+
+/** Owner-scoped project + base lookup shared by `loadPendingEditState` and `discardPendingEditDraft`
+ *  (G9: the base is always the project's CURRENT `activeJobId`, a finished render with a preview). */
+async function resolveProjectAndBase(
   userId: string,
-  root: { id: string; inputJson: string; projectId: string | null },
-): Promise<PendingEditLoadResult> {
+  root: { id: string; projectId: string | null },
+): Promise<ResolveProjectAndBaseResult> {
   if (!root.projectId) return { ok: false, code: "project_not_found" };
   const project = await prisma.editorProject.findFirst({
     where: { id: root.projectId, userId, status: { not: "archived" } },
@@ -257,6 +264,20 @@ export async function loadPendingEditState(
     return { ok: false, code: "source_not_exportable" };
   }
   const base: PendingEditBase = { id: baseRow.id, videoUrl: output.videoUrl, preview };
+  return { ok: true, project, base };
+}
+
+/**
+ * Owner-scoped load of the draft for a held root's project. The base is the project's current
+ * `activeJobId` (G9), which must be a finished render of this project with a preview.
+ */
+export async function loadPendingEditState(
+  userId: string,
+  root: { id: string; inputJson: string; projectId: string | null },
+): Promise<PendingEditLoadResult> {
+  const resolved = await resolveProjectAndBase(userId, root);
+  if (!resolved.ok) return resolved;
+  const { project, base } = resolved;
 
   const stored = parsePendingEditDraft(project.pendingEditJson);
   if (stored && stored.rootJobId === root.id) {
@@ -270,6 +291,35 @@ export async function loadPendingEditState(
     projectDraftJson: project.draftJson,
   });
   return { ok: true, state: { projectId: project.id, revision: project.pendingEditRevision, draft, stored: false, base } };
+}
+
+/**
+ * T7 (G20): reset the draft to a fresh seed of the CURRENT base, discarding any stored edits.
+ * CAS write with one internal retry, same shape as `updatePendingEditDraft`.
+ */
+export async function discardPendingEditDraft(
+  userId: string,
+  root: { id: string; inputJson: string; projectId: string | null },
+): Promise<PendingEditUpdateResult> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const resolved = await resolveProjectAndBase(userId, root);
+    if (!resolved.ok) return { ok: false, code: resolved.code };
+    const { project, base } = resolved;
+    const draft = seedPendingEditDraft({
+      rootJobId: root.id,
+      rootInputJson: root.inputJson,
+      base,
+      latestExportSnapshot: await latestExportSnapshot(userId, project.id),
+      projectDraftJson: project.draftJson,
+    });
+    if (await savePendingEditDraft(userId, project.id, project.pendingEditRevision, draft)) {
+      return {
+        ok: true,
+        state: { projectId: project.id, revision: project.pendingEditRevision + 1, draft, stored: true, base },
+      };
+    }
+  }
+  return { ok: false, code: "stale_revision" };
 }
 
 /**

@@ -13,18 +13,38 @@ import { enqueueEditorExport } from "@/lib/editor-export-enqueue";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { brollWindowSpans } from "@/lib/broll-spans";
-import { SUBTITLE_FONT_WEIGHTS } from "@/lib/subtitle-font-weight";
+import { SUBTITLE_FONT_WEIGHTS, normalizeSubtitleFontWeight } from "@/lib/subtitle-font-weight";
 import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import {
   EFFECTS_DATA,
   FONTS_LIST,
   PRESETS_DATA,
   V2_CARD_LEN_OPTIONS,
+  LOCKED_COLOR_PRESETS,
+  LOCKED_ACCENT_PRESETS,
+  mergeCaptionWithNext,
+  regroupCaptions,
   resolveV2FontWeight,
+  type V2CardLen,
   type V2SubConfig,
 } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import type { SubPreset, SubTextEffect } from "@/app/(dashboard)/video-editor/_components/types";
+import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import { shiftCaptionOverrides } from "@/lib/caption-card-editing";
+import {
+  HEADLINE_HOOK_FONTS,
+  HEADLINE_HOOK_FONT_WEIGHTS,
+  HEADLINE_HOOK_PRESETS,
+  normalizeHeadlineHook,
+  type HeadlineHookConfig,
+  type HeadlineHookFontFamily,
+  type HeadlineHookFontWeight,
+  type HeadlineHookPreset,
+} from "@/lib/headline-hook";
 import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
 import {
+  discardPendingEditDraft,
+  draftDurationMs,
   loadPendingEditState,
   savePendingEditDraft,
   toBurnConfig,
@@ -41,7 +61,17 @@ import {
  * compact JSON with `next`. Registered per request through `registerGatedTool` (beta gate).
  */
 
-export const MCP_EDIT_TOOL_NAMES = ["get_edit_state", "set_caption_text", "export_video"] as const;
+export const MCP_EDIT_TOOL_NAMES = [
+  "get_edit_state",
+  "set_caption_text",
+  "merge_captions",
+  "split_caption",
+  "regroup_captions",
+  "set_subtitle_style",
+  "set_headline_hook",
+  "discard_edits",
+  "export_video",
+] as const;
 
 /** Longest caption card text the agent may write (a card is one on-screen line or two). */
 export const MAX_CAPTION_TEXT_CHARS = 500;
@@ -57,6 +87,63 @@ export const setCaptionTextInputShape = {
   jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
   index: z.number().int().describe("ลำดับการ์ดซับ (เริ่มที่ 0) ตาม captions[].index ของ get_edit_state"),
   text: z.string().describe(`ข้อความใหม่ของการ์ด (ไม่เกิน ${MAX_CAPTION_TEXT_CHARS} ตัวอักษร) — เปลี่ยนเฉพาะข้อความ เวลาเดิม`),
+} satisfies z.ZodRawShape;
+
+export const mergeCaptionsInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  index: z.number().int().describe("รวมการ์ดนี้เข้ากับการ์ดถัดไป (index ตาม get_edit_state) — ต้องไม่ใช่การ์ดสุดท้าย"),
+} satisfies z.ZodRawShape;
+
+export const splitCaptionInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  index: z.number().int().describe("การ์ดที่จะแยกเป็น 2 ใบ (index ตาม get_edit_state)"),
+  leftText: z.string().describe("ข้อความครึ่งแรกของการ์ด — ต้องเป็นข้อความต้นของการ์ดนี้พอดี (ไม่รวมครึ่งหลัง)"),
+} satisfies z.ZodRawShape;
+
+/** As a plain primitive, numeric-choice cardLen comes as a string enum (G13). */
+function nonEmptyEnum<T extends readonly string[]>(values: T): [T[number], ...T[number][]] {
+  return values as unknown as [T[number], ...T[number][]];
+}
+
+export const regroupCaptionsInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  cardLen: z.enum(nonEmptyEnum(V2_CARD_LEN_OPTIONS.map((option) => option.value)))
+    .describe("จัดกลุ่มการ์ดซับใหม่ทั้งคลิปจากต้นฉบับเดิม (ทิ้งการรวม/แยกการ์ดก่อนหน้า): sentence=1 ประโยค, 4/3/2/1=จำนวนคำสูงสุดต่อการ์ด"),
+} satisfies z.ZodRawShape;
+
+export const setSubtitleStyleInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  fontFamily: z.enum(nonEmptyEnum(FONTS_LIST.map((font) => font.value))).optional().describe("ฟอนต์ซับ (ดูค่าที่เลือกได้จาก get_edit_state.allowed.fonts)"),
+  fontSize: z.number().int().describe("ขนาดฟอนต์ 30-160 px").optional(),
+  fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์"),
+  textColor: z.string().optional().describe("สีตัวอักษร #RRGGBB (ไม่มีผลถ้า preset ล็อกสีไว้)"),
+  accentColor: z.string().optional().describe("สีเน้น HOOK/CTA #RRGGBB (ไม่มีผลถ้า preset ล็อกสีเน้นไว้)"),
+  preset: z.enum(nonEmptyEnum(PRESETS_DATA.map((preset) => preset.value))).optional().describe("สไตล์ซับ (ดูค่าที่เลือกได้จาก get_edit_state.allowed.presets)"),
+  effect: z.enum(nonEmptyEnum(EFFECTS_DATA.map((effect) => effect.value))).optional().describe("เอฟเฟกต์ตัวอักษร (ดูค่าที่เลือกได้จาก get_edit_state.allowed.effects)"),
+  shadow: z.boolean().optional().describe("เปิด/ปิดเงา"),
+  outline: z.boolean().optional().describe("เปิด/ปิดเส้นขอบ"),
+  outlineSize: z.number().int().describe("ความหนาเส้นขอบ 1-8").optional(),
+  verticalPos: z.number().int().describe("ตำแหน่งแนวตั้งของซับ 10-95 (% จากขอบบน)").optional(),
+} satisfies z.ZodRawShape;
+
+const HEADLINE_HOOK_FONT_VALUES = HEADLINE_HOOK_FONTS.map((font) => font.value);
+
+export const setHeadlineHookInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  enabled: z.boolean().optional().describe("เปิด/ปิดพาดหัว (ต้องมี headline ด้วยถึงจะเปิดได้จริง)"),
+  headline: z.string().optional().describe("ข้อความพาดหัว (ไม่เกิน 64 ตัวอักษร 2 บรรทัด — ระบบตัดให้เองถ้ายาวเกิน)"),
+  subheadline: z.string().optional().describe("ข้อความรอง (ไม่เกิน 90 ตัวอักษร 1 บรรทัด, ส่งว่างเพื่อลบ)"),
+  durationMs: z.number().int().describe("ระยะเวลาที่พาดหัวค้างอยู่ (ms)").optional(),
+  preset: z.enum(nonEmptyEnum(HEADLINE_HOOK_PRESETS)).optional().describe("สไตล์พาดหัว"),
+  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัว 10-42 (% จากขอบบน)").optional(),
+  fontFamily: z.enum(nonEmptyEnum(HEADLINE_HOOK_FONT_VALUES)).optional().describe("ฟอนต์พาดหัว"),
+  fontSize: z.number().int().describe("ขนาดฟอนต์พาดหัว 52-120 px").optional(),
+  fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์พาดหัว"),
+  subheadlineFontSize: z.number().int().describe("ขนาดฟอนต์ข้อความรอง 32-88 px").optional(),
+} satisfies z.ZodRawShape;
+
+export const discardEditsInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -129,9 +216,22 @@ async function loadState(userId: string, root: McpChainRow) {
     : { ok: false as const, failure: LOAD_FAILURE[loaded.code] };
 }
 
+/** T7: the common tail of every `updatePendingEditDraft` / `discardPendingEditDraft` failure
+ *  branch (shared with T6's `set_caption_text`, which keeps its own inline copy unchanged). */
+function mapUpdateFailure(code: string, message: string | undefined, next: string): EditToolFailure {
+  if (code === "stale_revision") return STALE_REVISION;
+  if (code === "project_not_found" || code === "source_not_exportable") {
+    return LOAD_FAILURE[code as "project_not_found" | "source_not_exportable"];
+  }
+  return editToolFailure(code, message ?? GENERIC_ERROR_COPY, next);
+}
+
+/** A flat zod shape's inferred argument type (optional fields stay optional). */
+type ShapeArgs<S extends z.ZodRawShape> = { [K in keyof S]: z.infer<S[K]> };
+
 // ── get_edit_state ────────────────────────────────────────────────────────────────────────
 
-/** What the agent may set (T7's set_subtitle_style validates against the same lists). */
+/** What the agent may set (T7's set_subtitle_style / set_headline_hook validate against these). */
 const ALLOWED = {
   fonts: FONTS_LIST.map((font) => font.value),
   presets: PRESETS_DATA.map((preset) => preset.value),
@@ -143,13 +243,37 @@ const ALLOWED = {
   outlineSize: { min: 1, max: 8 },
   verticalPos: { min: 10, max: 95 },
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
+  // headline-hook.ts's own bounds (set_headline_hook, G18).
+  headlineHook: {
+    headlineMaxChars: 64,
+    subheadlineMaxChars: 90,
+    durationMs: { min: 3_000, max: 20_000 },
+    topPercent: { min: 10, max: 42 },
+    presets: [...HEADLINE_HOOK_PRESETS],
+    fonts: HEADLINE_HOOK_FONT_VALUES,
+    fontWeight: HEADLINE_HOOK_FONT_WEIGHTS.map((weight) => String(weight)),
+    fontSize: { min: 52, max: 120 },
+    subheadlineFontSize: { min: 32, max: 88 },
+  },
 };
+
+// get_edit_state's `allowed.fonts` (and set_subtitle_style's schema) list only the canonical
+// FONTS_LIST values (e.g. "'Kanit', sans-serif"), but a seed built before this task can carry
+// the bare family name (e.g. "Kanit", from DEFAULT_V2_SUB). Accept and display both; stored
+// values are normalised to the canonical form on the next write.
+const FONT_FAMILY_BY_BARE_NAME = new Map(
+  FONTS_LIST.map((font) => [(font.value.match(/^'([^']+)'/)?.[1] ?? font.value), font.value]),
+);
+function canonicalizeFontFamily(value: string): string | null {
+  if (FONTS_LIST.some((font) => font.value === value)) return value;
+  return FONT_FAMILY_BY_BARE_NAME.get(value) ?? null;
+}
 
 function subtitleStyleView(config: V2SubConfig) {
   return {
     preset: config.preset,
     effect: config.effect,
-    fontFamily: config.fontFamily,
+    fontFamily: canonicalizeFontFamily(config.fontFamily) ?? config.fontFamily,
     fontWeight: String(resolveV2FontWeight(config)),
     fontSize: config.fontSize,
     textColor: config.textColor,
@@ -220,7 +344,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     windows: editWindows(state.draft, state.base.preview),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ข้อความการ์ดด้วย set_caption_text(jobId, index, text) ได้หลายครั้ง แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
   };
 }
 
@@ -269,6 +393,281 @@ export async function setCaptionTextTool(userId: string, args: { jobId: unknown;
     caption: { index, text: caption.text, startMs: caption.startMs, endMs: caption.endMs },
     draftRevision: updated.state.revision,
     next: "แก้การ์ดอื่นต่อด้วย set_caption_text หรือเรียก export_video(jobId) เมื่อแก้ครบ",
+  };
+}
+
+// ── merge_captions / split_caption / regroup_captions (G16) ──────────────────────────────────
+
+function invalidCaptionIndex(index: unknown): boolean {
+  return typeof index !== "number" || !Number.isInteger(index) || index < 0;
+}
+
+const NEXT_MORE_EDITS = "แก้การ์ดหรือสไตล์อื่นต่อ หรือเรียก export_video(jobId) เมื่อแก้ครบ";
+
+export async function mergeCaptionsTool(userId: string, args: ShapeArgs<typeof mergeCaptionsInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (invalidCaptionIndex(args.index)) {
+    return editToolFailure("invalid_input", "index ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป", "เรียก get_edit_state เพื่อดู index ของการ์ดซับ");
+  }
+  const index = args.index;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    if (index >= draft.captions.length - 1) {
+      return {
+        ok: false,
+        code: "invalid_input",
+        message: `รวมการ์ดลำดับที่ ${index} ไม่ได้ — ต้องไม่ใช่การ์ดสุดท้าย (มีทั้งหมด ${draft.captions.length} การ์ด)`,
+      };
+    }
+    draft.captionOverrides = shiftCaptionOverrides(draft.captionOverrides, { from: index + 2, delta: -1, dropIndex: index + 1 });
+    draft.captions = mergeCaptionWithNext(draft.captions, index);
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดู index ของการ์ดซับ");
+  const caption = updated.state.draft.captions[index];
+  return {
+    ok: true,
+    jobId: held.root.id,
+    caption: { index, text: caption.text, startMs: caption.startMs, endMs: caption.endMs },
+    cardCount: updated.state.draft.captions.length,
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+export async function splitCaptionTool(userId: string, args: ShapeArgs<typeof splitCaptionInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (invalidCaptionIndex(args.index)) {
+    return editToolFailure("invalid_input", "index ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป", "เรียก get_edit_state เพื่อดู index ของการ์ดซับ");
+  }
+  const index = args.index;
+  const leftText = typeof args.leftText === "string" ? args.leftText.trim() : "";
+  if (!leftText) {
+    return editToolFailure(
+      "split_text_mismatch",
+      "leftText ต้องไม่ว่าง และต้องเป็นข้อความต้นของการ์ดนี้พอดี",
+      "เรียก get_edit_state เพื่อดูข้อความการ์ดก่อนแยก",
+    );
+  }
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    if (index >= draft.captions.length) {
+      return {
+        ok: false,
+        code: "invalid_input",
+        message: `ไม่มีการ์ดซับลำดับที่ ${index} — มีทั้งหมด ${draft.captions.length} การ์ด (index 0 ถึง ${draft.captions.length - 1})`,
+      };
+    }
+    const caption = draft.captions[index];
+    const text = caption.text.trim();
+    if (leftText.length >= text.length || !text.startsWith(leftText)) {
+      return {
+        ok: false,
+        code: "split_text_mismatch",
+        message: "leftText ต้องเป็นข้อความต้นของการ์ดนี้พอดี (สะกดตรงตัว และสั้นกว่าทั้งใบ)",
+      };
+    }
+    const rightText = text.slice(leftText.length).trim();
+    if (!rightText) {
+      return { ok: false, code: "split_text_mismatch", message: "ตัดแล้วข้อความครึ่งหลังว่าง — ลอง leftText ที่สั้นกว่านี้" };
+    }
+    // Cut proportional to characters, exactly like the web's splitCaption (subtitle-style.ts).
+    const cutMs = caption.startMs + Math.round(((caption.endMs - caption.startMs) * leftText.length) / text.length);
+    const left = { ...caption, text: leftText, endMs: cutMs };
+    const right = { ...caption, text: rightText, startMs: cutMs };
+    draft.captionOverrides = shiftCaptionOverrides(draft.captionOverrides, { from: index + 1, delta: 1 });
+    draft.captions = [...draft.captions.slice(0, index), left, right, ...draft.captions.slice(index + 1)];
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูข้อความการ์ดก่อนแยก");
+  const left = updated.state.draft.captions[index];
+  const right = updated.state.draft.captions[index + 1];
+  return {
+    ok: true,
+    jobId: held.root.id,
+    captions: [
+      { index, text: left.text, startMs: left.startMs, endMs: left.endMs },
+      { index: index + 1, text: right.text, startMs: right.startMs, endMs: right.endMs },
+    ],
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+const CARD_LEN_VALUES = V2_CARD_LEN_OPTIONS.map((option) => option.value);
+
+export async function regroupCaptionsTool(userId: string, args: ShapeArgs<typeof regroupCaptionsInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (typeof args.cardLen !== "string" || !CARD_LEN_VALUES.includes(args.cardLen as V2CardLen)) {
+    return editToolFailure(
+      "invalid_input",
+      `cardLen ต้องเป็นหนึ่งใน ${CARD_LEN_VALUES.join(", ")}`,
+      "เรียก get_edit_state เพื่อดูค่าที่เลือกได้ (allowed.cardLen)",
+    );
+  }
+  const cardLen = args.cardLen as V2CardLen;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    // Exactly like the web's applyCardLen: regroup from the UNTOUCHED original captions (any
+    // prior merge/split is discarded, same as usePostPhaseEditor.ts), and reset per-card colour
+    // overrides (the card structure is entirely new).
+    draft.captions = regroupCaptions(draft.originalCaptions, cardLen, draft.words, draft.fullText, draft.subtitleConfig.fontSize);
+    draft.cardLen = cardLen;
+    draft.captionOverrides = {};
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อลองใหม่");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    cardLen,
+    cardCount: updated.state.draft.captions.length,
+    draftRevision: updated.state.revision,
+    next: "เรียก get_edit_state เพื่อดูการ์ดใหม่ หรือ export_video(jobId) เมื่อแก้ครบ",
+  };
+}
+
+// ── set_subtitle_style (G17) ──────────────────────────────────────────────────────────────────
+
+export async function setSubtitleStyleTool(userId: string, args: ShapeArgs<typeof setSubtitleStyleInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  let ignoredFields: string[] = [];
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    ignoredFields = [];
+    const current = draft.subtitleConfig;
+    const preset: SubPreset = args.preset !== undefined ? args.preset : current.preset;
+    const effect: SubTextEffect = args.effect !== undefined ? args.effect : current.effect;
+    const fontFamily = args.fontFamily !== undefined ? args.fontFamily : (canonicalizeFontFamily(current.fontFamily) ?? current.fontFamily);
+
+    let fontWeight = resolveV2FontWeight(current);
+    if (args.fontWeight !== undefined) {
+      const resolved = normalizeSubtitleFontWeight(Number(args.fontWeight));
+      if (resolved === null) return { ok: false, code: "invalid_input", message: "fontWeight ต้องเป็น 400, 600 หรือ 900" };
+      fontWeight = resolved;
+    }
+
+    // The web's locked-preset colour rule (subtitle-style.ts LOCKED_COLOR_PRESETS /
+    // LOCKED_ACCENT_PRESETS): the control is hidden for these presets, so a value sent anyway
+    // never takes effect — the renderer hard-codes the preset's own colour regardless
+    // (src/remotion/ShortVideoComposition.tsx).
+    const colorLocked = LOCKED_COLOR_PRESETS.includes(preset);
+    const accentLocked = LOCKED_ACCENT_PRESETS.includes(preset);
+    let textColor = current.textColor;
+    if (args.textColor !== undefined) {
+      if (colorLocked) ignoredFields.push("textColor");
+      else textColor = args.textColor;
+    }
+    let accentColor = current.accentColor;
+    if (args.accentColor !== undefined) {
+      if (accentLocked) ignoredFields.push("accentColor");
+      else accentColor = args.accentColor;
+    }
+
+    const candidate = {
+      preset,
+      effect,
+      cardLen: draft.cardLen,
+      fontFamily,
+      bold: fontWeight === 900,
+      fontWeight,
+      fontSize: args.fontSize !== undefined ? args.fontSize : current.fontSize,
+      textColor,
+      accentColor,
+      shadow: args.shadow !== undefined ? args.shadow : current.shadow,
+      outline: args.outline !== undefined ? args.outline : current.outline,
+      outlineSize: args.outlineSize !== undefined ? args.outlineSize : current.outlineSize,
+      verticalPos: args.verticalPos !== undefined ? args.verticalPos : current.verticalPos,
+    };
+    const normalized = normalizeSubtitleStylePresetConfig(candidate);
+    if (!normalized) {
+      return {
+        ok: false,
+        code: "invalid_input",
+        message: "ค่าที่ส่งไม่ถูกต้อง — เช็คช่วง fontSize (30-160), outlineSize (1-8), verticalPos (10-95) หรือรูปแบบสี #RRGGBB",
+      };
+    }
+    const { cardLen: _cardLen, ...subtitleConfig } = normalized;
+    draft.subtitleConfig = subtitleConfig as V2SubConfig;
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    subtitleStyle: subtitleStyleView(updated.state.draft.subtitleConfig),
+    ...(ignoredFields.length > 0
+      ? { ignoredFields, note: `ไม่เปลี่ยน ${ignoredFields.join(", ")} เพราะสไตล์นี้ล็อกสีไว้ (เปลี่ยน preset ก่อนถ้าต้องการกำหนดสีเอง)` }
+      : {}),
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_headline_hook (G18) ───────────────────────────────────────────────────────────────────
+
+function headlineHookPatchFields(args: ShapeArgs<typeof setHeadlineHookInputShape>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (args.enabled !== undefined) fields.enabled = args.enabled;
+  if (args.headline !== undefined) fields.headline = args.headline;
+  if (args.subheadline !== undefined) fields.subheadline = args.subheadline;
+  if (args.durationMs !== undefined) fields.durationMs = args.durationMs;
+  if (args.preset !== undefined) fields.preset = args.preset;
+  if (args.topPercent !== undefined) fields.topPercent = args.topPercent;
+  if (args.fontFamily !== undefined) fields.fontFamily = args.fontFamily;
+  if (args.fontSize !== undefined) fields.fontSize = args.fontSize;
+  if (args.fontWeight !== undefined) fields.fontWeight = Number(args.fontWeight);
+  if (args.subheadlineFontSize !== undefined) fields.subheadlineFontSize = args.subheadlineFontSize;
+  return fields;
+}
+
+export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof setHeadlineHookInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
+    const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
+    const merged = { ...(draft.headlineHook ?? {}), ...headlineHookPatchFields(args) };
+    const normalized = normalizeHeadlineHook(merged, totalDurationMs);
+    if (!normalized) return { ok: false, code: "invalid_input", message: "ค่าพาดหัวไม่ถูกต้อง" };
+    draft.headlineHook = normalized;
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    headlineHook: updated.state.draft.headlineHook ?? null,
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── discard_edits (G20) ───────────────────────────────────────────────────────────────────────
+
+export async function discardEditsTool(userId: string, jobId: unknown) {
+  if (invalidJobId(jobId)) return UNKNOWN_JOB;
+  const held = await resolveHeldRoot(userId, jobId as string);
+  if (!held.ok) return held.failure;
+  const result = await discardPendingEditDraft(userId, held.root);
+  if (!result.ok) {
+    if (result.code === "stale_revision") return STALE_REVISION;
+    return LOAD_FAILURE[result.code as "project_not_found" | "source_not_exportable"];
+  }
+  return {
+    ok: true,
+    jobId: held.root.id,
+    draftRevision: result.state.revision,
+    next: "ดราฟต์ถูกรีเซ็ตกลับไปเป็นค่าตั้งต้นของวิดีโอนี้แล้ว — เรียก get_edit_state เพื่อดูค่าปัจจุบัน",
   };
 }
 
@@ -449,6 +848,84 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("set_caption_text", extra, (p) => setCaptionTextTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "merge_captions",
+    {
+      title: "Merge captions",
+      description: "รวมการ์ดซับลำดับ index เข้ากับการ์ดถัดไปเป็นใบเดียว (ช่วงเวลารวมกัน) ในดราฟต์ของวิดีโอ exportMode \"hold\". ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: mergeCaptionsInputShape,
+    },
+    async (args, extra) =>
+      runTool("merge_captions", extra, (p) => mergeCaptionsTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "split_caption",
+    {
+      title: "Split caption",
+      description: "แยกการ์ดซับลำดับ index ออกเป็น 2 ใบ โดยตัดที่ leftText (ต้องเป็นข้อความต้นของการ์ดนี้พอดี) — เวลาตัดตามสัดส่วนตัวอักษร. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: splitCaptionInputShape,
+    },
+    async (args, extra) =>
+      runTool("split_caption", extra, (p) => splitCaptionTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "regroup_captions",
+    {
+      title: "Regroup captions",
+      description: "จัดกลุ่มการ์ดซับใหม่ทั้งคลิปจากต้นฉบับเดิมตาม cardLen (ทิ้งการรวม/แยกการ์ดที่ทำไว้ก่อนหน้า). ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: regroupCaptionsInputShape,
+    },
+    async (args, extra) =>
+      runTool("regroup_captions", extra, (p) => regroupCaptionsTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_subtitle_style",
+    {
+      title: "Set subtitle style",
+      description: "ปรับสไตล์ซับทั้งคลิป (ฟอนต์/ขนาด/น้ำหนัก/สี/preset/เอฟเฟกต์/เงา/เส้นขอบ/ตำแหน่งแนวตั้ง) ส่งเฉพาะฟิลด์ที่จะเปลี่ยน ฟิลด์ที่เว้นว่างคงค่าเดิม. บาง preset ล็อกสีไว้ (ระบบจะแจ้งถ้าค่าสีที่ส่งไม่มีผล). ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: setSubtitleStyleInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_subtitle_style", extra, (p) => setSubtitleStyleTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_headline_hook",
+    {
+      title: "Set headline hook",
+      description: "ตั้ง/ปรับพาดหัว (headline hook) ที่ค้างอยู่บนวิดีโอช่วงต้น ส่งเฉพาะฟิลด์ที่จะเปลี่ยน ฟิลด์ที่เว้นว่างคงค่าเดิม — ต้องส่ง enabled:true ด้วยถ้าต้องการให้พาดหัวแสดงจริง. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: setHeadlineHookInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_headline_hook", extra, (p) => setHeadlineHookTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "discard_edits",
+    {
+      title: "Discard edits",
+      description: "ล้างการแก้ทั้งหมดในดราฟต์ (การ์ดซับ/สไตล์/พาดหัว) กลับไปเป็นค่าตั้งต้นของวิดีโอตัวอย่างนี้ — ใช้เมื่อต้องการเริ่มแก้ใหม่.",
+      inputSchema: discardEditsInputShape,
+    },
+    async (args, extra) =>
+      runTool("discard_edits", extra, (p) => discardEditsTool(p.userId, args.jobId), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(
