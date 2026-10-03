@@ -162,6 +162,7 @@
     "verify:mcp-chain-export": "node --conditions=react-server --import tsx scripts/verify-mcp-chain-export.ts",
     "verify:mcp-cancel": "node --conditions=react-server --experimental-test-module-mocks --import tsx scripts/verify-mcp-cancel.ts",
     "verify:mcp-onboarding": "node --conditions=react-server --import tsx scripts/verify-mcp-onboarding.ts",
+    "verify:mcp-tool-gating": "node --conditions=react-server --import tsx scripts/verify-mcp-tool-gating.ts",
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
     "verify:editor-job-runtime": "tsx scripts/verify-editor-project-recovery-hook.ts",
     "verify:editor-script-loop": "tsx scripts/verify-editor-script-loop.tsx",
