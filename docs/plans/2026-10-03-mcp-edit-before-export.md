@@ -185,6 +185,7 @@ Existing code anchors (origin/main `71653011`, verified by the critic):
 | 1 | Harden `safe-fetch` IP classification | mew-worker-heavy | subagent | — | build+test, code review, security review |
 | 2 | ffprobe/ffmpeg protocol + demuxer whitelist on upload routes | mew-worker-heavy | subagent | — | build+test, code review, security review |
 | — | **PR-0 gate:** whole-branch review (`model: opus`) + `security-review` → PR → CI green → merge → Mew deploys | mew-reviewer | subagent | 1,2 | whole-branch, security |
+| 2b | Pre-existing ffmpeg / SSRF paths (PR-0b, added 2026-10-03) | mew-worker-heavy | subagent | 1,2 | build+test, code review, security review, whole-branch |
 | 3 | CI covers every MCP verify script | mew-worker | subagent | — | build+test |
 | 4 | Spike + implement per-principal tool registration | mew-worker | subagent | — | build+test, code review |
 | 5 | Chain linkage prefactor: `mcpHold`, `mcpRootJobId`, shared `enqueueEditorExport`, free-path pre-check | mew-worker-heavy | subagent | 3,4 | build+test, code review |
@@ -222,6 +223,16 @@ Branches and worktrees (Orca only):
 - [ ] Every ffprobe/ffmpeg invocation on user-supplied media in `broll-window/upload`, `upload-avatar` and the helpers they call gets `-protocol_whitelist file` plus an explicit input demuxer chosen from the extension/MIME allowlist (G24).
 - [ ] Behaviour for legitimate files is unchanged.
 - [ ] Tests: a `.m3u8` and a concat playlist renamed to `.mp4` are rejected without any network or file access outside the temp file; a normal mp4/mov/webm/jpg/png/webp still passes.
+
+### Task 2b — Pre-existing ffmpeg / SSRF paths (PR-0b, added 2026-10-03 by Mew)
+Found by the PR-0 security review (`reports/2026-10-03-mcp-edit-before-export/pr0-security-review.md`); all pre-existing on prod. Mew chose: ship PR-0 alone, fix these in a separate PR-0b. Profile `high-assurance`, risk high, 5 fix rounds. Worktree `ssrf-hardening-2`, based on PR-0's branch (reuses `src/lib/media-probe-args.ts`); merges after PR-0.
+- [ ] `/api/videos/thumbnail`: never pass a remote URL to ffmpeg. Download through the safe-fetch guard to a temp file (byte cap), then probe/decode it with G24 args. Close the relative-path folder bypass (`thumbnail/route.ts` ~L310-332).
+- [ ] Every other ffmpeg/ffprobe over user-supplied or user-fetched media gets G24 args, or rejects: `videos/upload`, `music/upload`, voice samples, transcribe / composite downloads, and the readers that later open those files (trim-audio, etc.). The review report lists the paths.
+- [ ] Fix the transcribe path traversal into ffmpeg (`transcribe/route.ts` ~L996-1009).
+- [ ] Render route: on fetch failure never hand the raw URL to Chromium (`render/route.ts` ~L112, L121). Fail instead, or re-validate every redirect hop.
+- [ ] The report's Low items: fix them when each is a few lines, otherwise list them in the task report.
+- [ ] Legitimate behaviour unchanged. No new dependency.
+- [ ] Tests extend `verify-upload-probe-whitelist.ts` or add `scripts/verify-ffmpeg-input-hardening.ts` (in CI). Each path: a hostile input is refused with no outside access; a legitimate file passes.
 
 ### Task 3 — CI covers every MCP verify script (PR-A)
 Most MCP verify scripts already run via `verify:subtitle-audio-sync` → `verify:mcp-perfect` (ci.yml L66). Not run anywhere: `verify:mcp-parity`, `verify-mcp-audit-status.ts`, `verify-mcp-orchestrator-steps.ts`, `verify-mcp-orchestrator.ts`, `verify-mcp-pipeline-timeout.ts`, `verify-mcp-token.ts`, `verify-mcp-videojob.ts`. Also confirm `verify:heygen-avatar-engines` runs.
