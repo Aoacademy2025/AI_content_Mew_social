@@ -17,6 +17,8 @@ import {
   VideoJobFundingConfirmationRequiredError,
 } from "@/lib/mcp/video-job-funding";
 import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
+import { tryConsumeRerenderRate } from "@/lib/rerender-skip-budget";
+import { MCP_EXPORT_NOT_FREE_CODE, MCP_RENDER_NOT_FREE_MESSAGE, videoJobMustBeFree } from "@/lib/mcp/render-free";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
@@ -225,25 +227,10 @@ function quotaExceededResponse(message: string, opts?: { canBuyCredits?: boolean
   );
 }
 
-// In-process sliding window capping ACCEPTED free b-roll re-renders (the `rerenderOf`
-// charge-skip). Mirrors `tryConsumeKieImageRate`: per-user, 10/hour, single-process. With
-// RENDER_VIA_QUEUE=1 every render funnels through this one Next.js route, so a per-process
-// window is the effective ceiling. A slot is consumed ONLY when a re-render is otherwise
-// valid (see the caller) — an over-limit re-render just falls through to normal charging.
-const RERENDER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const RERENDER_RATE_PER_HOUR = 10;
-const rerenderHits = new Map<string, number[]>();
-function tryConsumeRerenderRate(userId: string, now: number = Date.now()): boolean {
-  const cutoff = now - RERENDER_WINDOW_MS;
-  const recent = (rerenderHits.get(userId) ?? []).filter((t) => t > cutoff);
-  if (recent.length >= RERENDER_RATE_PER_HOUR) {
-    rerenderHits.set(userId, recent);
-    return false;
-  }
-  recent.push(now);
-  rerenderHits.set(userId, recent);
-  return true;
-}
+// The ACCEPTED free b-roll re-render cap (the `rerenderOf` charge-skip, 10/user/hour,
+// in-process) lives in `@/lib/rerender-skip-budget` (T5) so the MCP free-render pre-check reads
+// the same window. A slot is consumed ONLY when a re-render is otherwise valid (see the
+// caller) — an over-limit re-render just falls through to normal charging.
 
 export async function POST(req: Request) {
   const requestStartedAt = Date.now();
@@ -414,6 +401,28 @@ export async function POST(req: Request) {
         } catch {
           rerenderSkipCharge = false; // fail-safe: any error → normal charging, never a free bypass
         }
+      }
+    }
+
+    // T5 (ADR 0064, G4) defence in depth: a job the MCP edit path enqueued carries
+    // `inputJson.mcpMustBeFree`. It may ride ONLY the two free paths above; if neither applied,
+    // FAIL it here — before any quota check, reservation, funding transfer, supersede or
+    // enqueue — instead of charging. Read only for a service-actor render that is about to
+    // charge, so free renders and every browser request are untouched.
+    if (!burnAlreadyPaid && !rerenderSkipCharge) {
+      const serviceVideoJobId = await resolveServiceVideoJobId(userId);
+      if (serviceVideoJobId && (await videoJobMustBeFree(userId, serviceVideoJobId))) {
+        return NextResponse.json(
+          {
+            error: {
+              code: MCP_EXPORT_NOT_FREE_CODE,
+              provider: "heroai",
+              message: MCP_RENDER_NOT_FREE_MESSAGE,
+              retryable: false,
+            },
+          },
+          { status: 409 },
+        );
       }
     }
 

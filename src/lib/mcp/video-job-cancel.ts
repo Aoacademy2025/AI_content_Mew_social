@@ -1,5 +1,5 @@
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
-import { resolveMcpChain, writeMcpChainTerminalMarker } from "@/lib/mcp/chain-export";
+import { resolveMcpChain, writeMcpChainTerminalMarker, type McpHeldChain } from "@/lib/mcp/chain-export";
 import { cancelVideoJobCore, type CancelVideoJobResult } from "@/lib/mcp/video-job-cancel-core";
 
 export type { CancelVideoJobResult };
@@ -32,20 +32,21 @@ export type { CancelVideoJobResult };
  *   single-job cancel. A foreign id resolves to no chain (owner-scoped) and then to
  *   "not found" in the plain path too, so both a foreign id and an already-terminal id
  *   return the exact same not_cancelable shape — no existence oracle.
+ * - T5: a Held Preview chain (root or any linked id) → the in-flight root, else the newest
+ *   linked job if it is in flight, else not_cancelable. A held chain has no marker row.
  */
 export async function cancelMcpVideoJob(userId: string, jobId: string): Promise<CancelVideoJobResult> {
   let chain = await resolveMcpChain(userId, jobId);
   if (!chain) return cancelVideoJobCore(userId, jobId);
+  if (chain.kind === "held") return cancelHeldChain(userId, chain);
 
-  const inFlight = (status: string) => (VIDEO_JOB_INFLIGHT_STATUSES as readonly string[]).includes(status);
-
-  if (inFlight(chain.preview.status)) {
+  if (isInFlight(chain.preview.status)) {
     const result = await cancelVideoJobCore(userId, chain.preview.id);
     if (result.kind === "canceled") return result;
     // A1: the preview finished before our updateMany ran. Re-resolve once — a second loss
     // here is a real terminal/conflict state, not another race — and fall through.
     const reresolved = await resolveMcpChain(userId, chain.preview.id);
-    if (!reresolved) return { kind: "not_cancelable" };
+    if (reresolved?.kind !== "auto") return { kind: "not_cancelable" };
     chain = reresolved;
   }
 
@@ -53,7 +54,7 @@ export async function cancelMcpVideoJob(userId: string, jobId: string): Promise<
   if (preview.status !== "done") return { kind: "not_cancelable" };
 
   if (exportJob) {
-    return inFlight(exportJob.status)
+    return isInFlight(exportJob.status)
       ? cancelVideoJobCore(userId, exportJob.id)
       : { kind: "not_cancelable" };
   }
@@ -72,7 +73,25 @@ export async function cancelMcpVideoJob(userId: string, jobId: string): Promise<
   // "exists": a concurrent enqueue won the race and created the real export row (or an
   // earlier refusal/cancel already closed the chain). Cancel it normally if still in flight.
   const resolved = await resolveMcpChain(userId, preview.id);
-  return resolved?.exportJob && inFlight(resolved.exportJob.status)
+  return resolved?.exportJob && isInFlight(resolved.exportJob.status)
     ? cancelVideoJobCore(userId, resolved.exportJob.id)
     : { kind: "not_cancelable" };
+}
+
+function isInFlight(status: string): boolean {
+  return (VIDEO_JOB_INFLIGHT_STATUSES as readonly string[]).includes(status);
+}
+
+async function cancelHeldChain(userId: string, chain: McpHeldChain): Promise<CancelVideoJobResult> {
+  let { root, latest } = chain;
+  if (isInFlight(root.status)) {
+    const result = await cancelVideoJobCore(userId, root.id);
+    if (result.kind === "canceled") return result;
+    // The root finished before the core's conditional update ran: re-resolve once.
+    const reresolved = await resolveMcpChain(userId, root.id);
+    if (reresolved?.kind !== "held") return { kind: "not_cancelable" };
+    ({ root, latest } = reresolved);
+  }
+  if (root.status !== "done" || !latest || !isInFlight(latest.status)) return { kind: "not_cancelable" };
+  return cancelVideoJobCore(userId, latest.id);
 }

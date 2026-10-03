@@ -115,6 +115,9 @@ export type SubmitExportInput = {
   editorSnapshot?: EditorExportDraft;
   script?: string;
   sceneCount?: number;
+  /** T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any —
+   *  omitted when no draft was loaded. A mismatch on the server comes back as `staleRevision`. */
+  expectedPendingRevision?: number;
 };
 
 export type SubmitResult = {
@@ -137,6 +140,12 @@ export type SubmitResult = {
    * upgrade path instead of a dead-end toast.
    */
   quota?: QuotaExceededInfo;
+  /**
+   * T8 (ADR 0064, G21): the export's `expectedPendingRevision` no longer matches the project's
+   * stored revision — the MCP agent changed the draft while the web was editing. The caller
+   * reloads the draft and tells the user, rather than treating this as a generic failure.
+   */
+  staleRevision?: boolean;
 };
 
 function isHeygenProviderAction(value: unknown): value is HeygenProviderAction {
@@ -605,6 +614,9 @@ export function useV2Job(p: V2Project) {
       ...(input.editorSnapshot ? { editorSnapshot: input.editorSnapshot } : {}),
       ...(input.script ? { script: input.script } : {}),
       ...(typeof input.sceneCount === "number" ? { exportSceneCount: input.sceneCount } : {}),
+      ...(typeof input.expectedPendingRevision === "number"
+        ? { expectedPendingRevision: input.expectedPendingRevision }
+        : {}),
     };
     const attempt: OwnedSubmitAttempt = existingAttempt ?? {
       kind: "export",
@@ -647,6 +659,7 @@ export function useV2Job(p: V2Project) {
             ok: false,
             message: quota ? quotaExceededText(quota, fallback) : apiErrorMessage(d, fallback),
             ...(quota ? { quota } : {}),
+            ...(errorCode === "stale_revision" ? { staleRevision: true } : {}),
           };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {

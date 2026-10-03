@@ -9,6 +9,7 @@ import * as brollCoverage from "../src/lib/broll-coverage";
 import * as brollPlaceholders from "../src/lib/broll-placeholders";
 import * as headlineHook from "../src/lib/headline-hook";
 import { resolveMediaBaseUrl } from "../src/lib/render/media-base-url";
+import * as rerenderSkipBudget from "../src/lib/rerender-skip-budget";
 
 function compileRenderRoute(source: string): string {
   return ts.transpileModule(source, {
@@ -121,6 +122,16 @@ async function main(): Promise<void> {
       };
     }
     if (specifier === "@/lib/mcp/service-actor") return { resolveServiceVideoJobId: async () => null };
+    // T5: the free re-render budget moved to a leaf module (real one, no imports) and the
+    // MCP must-be-free gate never fires here (no service actor → never consulted).
+    if (specifier === "@/lib/rerender-skip-budget") return rerenderSkipBudget;
+    if (specifier === "@/lib/mcp/render-free") {
+      return {
+        MCP_EXPORT_NOT_FREE_CODE: "export_not_free",
+        MCP_RENDER_NOT_FREE_MESSAGE: "not free",
+        videoJobMustBeFree: async () => false,
+      };
+    }
     if (specifier === "path") return nodePath;
     if (specifier === "fs") return fsMock;
     if (specifier === "crypto") return nodeCrypto;

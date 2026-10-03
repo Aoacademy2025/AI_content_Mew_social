@@ -18,7 +18,10 @@ import {
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job";
-import { createMcpVideoJob } from "@/lib/mcp/chain-export";
+import { createMcpVideoJob, McpHoldNotEnabledError, mcpEditorProjectEnabledFor } from "@/lib/mcp/chain-export";
+import { getRequestPrincipal, runWithRequestPrincipalSlot, setRequestPrincipal } from "@/lib/mcp/request-principal";
+import { featureNotEnabledEnvelope } from "@/lib/mcp/tool-gating";
+import { registerEditTools } from "@/lib/mcp/edit-tools";
 import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import {
   aiAudioCeilingRefusal,
@@ -62,28 +65,45 @@ function principalFrom(extra: Extra) {
   return { userId: e.userId, effectivePlan: e.effectivePlan, user: e.user, userAgent: e.userAgent ?? null };
 }
 
-// Per-tool guard (PRO/BUSINESS) + audit wrapper.
+const UPGRADE_NEXT = "อัปเกรดเป็นแผน PRO หรือ BUSINESS ที่ studio.heroaiengine.com/pricing แล้วลองใหม่";
+
+/** A beta-gate refusal is an access decision: audited like the plan guard's (`denied`). */
+function auditStatusOf(result: unknown): "ok" | "denied" | "error" {
+  if ((result as { error?: unknown } | null)?.error === "feature_not_enabled") return "denied";
+  return isInBandError(result) ? "error" : "ok";
+}
+
+// Per-tool guard (PRO/BUSINESS) + audit wrapper. `opts.next` (T6 Agent-neutral tools only)
+// makes the guard's own refusals full G14 envelopes; existing tools keep their reply shape.
 async function runTool(
   toolName: string,
   extra: Extra,
   fn: (p: { userId: string; user: User }) => Promise<unknown>,
   args?: unknown,
+  opts?: { next: string },
 ) {
   const started = Date.now();
   const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
   if (!userId || !user || !effectivePlan || !mcpAccessAllowed(effectivePlan)) {
     await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent });
-    return text({ error: "plan_required", message: UPSELL });
+    return text(opts
+      ? { error: "plan_required", code: "plan_required", message: UPSELL, next: UPGRADE_NEXT }
+      : { error: "plan_required", message: UPSELL });
   }
   try {
     const result = await fn({ userId, user });
-    await recordToolCall({ userId, toolName, status: isInBandError(result) ? "error" : "ok", durationMs: Date.now() - started, requestJson: args, userAgent });
+    await recordToolCall({ userId, toolName, status: auditStatusOf(result), durationMs: Date.now() - started, requestJson: args, userAgent });
     return text(result);
   } catch {
     await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent });
-    return text({ error: "internal_error", message: "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง" });
+    const message = "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง";
+    return text(opts
+      ? { error: "internal_error", code: "internal_error", message, next: opts.next }
+      : { error: "internal_error", message });
   }
 }
+
+const EXPORT_MODE_NEXT = "เรียก create_video_job อีกครั้งโดยไม่ระบุ exportMode (วิดีโอจะส่งออกอัตโนมัติ)";
 
 const handler = createMcpHandler(
   (server) => {
@@ -149,6 +169,11 @@ const handler = createMcpHandler(
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
+          // T6 (ADR 0064, G2): exportMode is beta-gated; refused before any preflight or write.
+          if (args.exportMode !== undefined && !mcpEditorProjectEnabledFor(u)) {
+            return featureNotEnabledEnvelope(EXPORT_MODE_NEXT);
+          }
+          const hold = args.exportMode === "hold";
           try {
             await assertRenderEnqueueOpen();
           } catch (error) {
@@ -352,7 +377,7 @@ const handler = createMcpHandler(
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
-              { title: args.title },
+              { title: args.title, ...(hold ? { hold: true } : {}) },
             );
             // `mcp-chain:` keys belong to the server's chained export — same answer as a reuse.
             if (created.kind === "reserved_key") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
@@ -361,8 +386,15 @@ const handler = createMcpHandler(
               ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"
                 ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
-                : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };
+                : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)",
+              ...(hold
+                ? {
+                    exportMode: "hold",
+                    next: "poll get_video_status จนได้ status \"held\" แล้วเรียก get_edit_state(jobId) เพื่อตรวจ/แก้ซับ แล้วจึงเรียก export_video(jobId)",
+                  }
+                : {}) };
           } catch (e) {
+            if (e instanceof McpHoldNotEnabledError) return featureNotEnabledEnvelope(EXPORT_MODE_NEXT);
             if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
             throw e; // real DB error → runTool catch audits "error" + returns internal_error
           }
@@ -385,6 +417,10 @@ const handler = createMcpHandler(
           return { ok: true, settlementPending: result.settlementPending };
         }, args),
     );
+
+    // T6 (ADR 0064): the MCP edit-before-export tools, registered per request for the
+    // principal verifyToken resolved (beta-gated: absent from tools/list otherwise).
+    registerEditTools(server, getRequestPrincipal(), runTool);
   },
   { serverInfo: { name: "heroai", version: "0.2.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
@@ -419,7 +455,11 @@ const verifyToken = async (req: Request, bearerToken?: string): Promise<AuthInfo
 
   // 1. Personal Access Token
   const patPrincipal = await resolveMcpPrincipal(bearerToken);
-  if (patPrincipal) return principalAuthInfo(bearerToken!, patPrincipal, userAgent);
+  if (patPrincipal) {
+    // Hand the verified principal to the per-request server factory (request-principal.ts).
+    setRequestPrincipal(patPrincipal);
+    return principalAuthInfo(bearerToken!, patPrincipal, userAgent);
+  }
 
   // 2. Clerk OAuth access token (desktop app)
   try {
@@ -428,7 +468,10 @@ const verifyToken = async (req: Request, bearerToken?: string): Promise<AuthInfo
     if (verified) {
       const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
       const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
-      if (principal) return principalAuthInfo(bearerToken!, principal, userAgent);
+      if (principal) {
+        setRequestPrincipal(principal);
+        return principalAuthInfo(bearerToken!, principal, userAgent);
+      }
     }
   } catch {
     // not a valid Clerk OAuth token → fall through to 401
@@ -441,4 +484,10 @@ const authHandler = withMcpAuth(handler, verifyToken, {
   resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",
 });
 
-export { authHandler as GET, authHandler as POST, authHandler as DELETE };
+// T6: every request runs inside its own principal slot, so the server factory sees exactly
+// the principal verifyToken resolved for THIS request (request-principal.ts).
+function routeHandler(req: Request): Promise<Response> {
+  return runWithRequestPrincipalSlot(() => authHandler(req));
+}
+
+export { routeHandler as GET, routeHandler as POST, routeHandler as DELETE };
