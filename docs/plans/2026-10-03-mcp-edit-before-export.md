@@ -355,17 +355,17 @@ Most MCP verify scripts already run via `verify:subtitle-audio-sync` → `verify
 
 ## Acceptance Criteria
 
-- [ ] AC0 — `assertSafeFetchUrl` refuses IPv4-mapped (dotted and hex), IPv4-compatible, NAT64, 6to4 and Teredo forms that embed private addresses. Upload routes reject playlist-disguised media without outside access. Both are proven by tests in CI and shipped as PR-0.
-- [ ] AC1 — `create_video_job({exportMode:"hold"})` stops at the Base Render. Nothing is burned, the job survives polls and the watchdog, and `get_video_status` returns `held` + `previewUrl` + `editorUrl`.
-- [ ] AC2 — On a held job, text edit + merge + split + regroup + style (incl. `verticalPos`) + headline, then one `export_video`, give one clip whose burn config contains every edit. It makes no HeyGen / TTS / Gemini call and reserves or charges nothing. When the free path is unavailable, the reply is `export_not_free` and nothing is charged (tests).
-- [ ] AC3 — A window replaced from a URL and from an upload link, then exported, gives a clip with the new media in that window, muted, at no charge (tests on both paths).
-- [ ] AC4 — `create_video_job({clipUrl})` from a portrait HeyGen clip gives a finished clip with subtitles from the clip's own audio. `cutawayLayout:"fillYourself"` gives presenter-only windows. An import failure costs nothing.
-- [ ] AC5 — Media Import refuses `http:`, private addresses (direct, redirect, DNS, rebinding), over-cap files (aborted mid-stream) and type-spoofed or playlist files, each with its code. The upload link is single-use, expires in 15 min and is bound to its user and kind. Admission caps hold across processes.
-- [ ] AC6 — Non-beta accounts do not see the new tools in `tools/list`. Direct calls and the new `create_video_job` fields get `feature_not_enabled`. `create_video_job` without the new fields behaves exactly as before (regression test).
-- [ ] AC7 — CI runs every `verify-mcp-*`, `verify-media-import*` and `verify-safe-fetch` script, or lists it in the reviewed exclusion file, guarded by `verify:mcp-ci-coverage`. All three PRs are green.
-- [ ] AC8 — Every new tool's emitted JSON Schema has no `oneOf` / `anyOf` / `allOf`. Every new-tool failure carries `error` + `code` + `message` + `next`, and is audited as an in-band error.
-- [ ] AC9 — Opening `editorUrl` with a pending agent draft shows the agent's edits and the banner, including after a rerender. A web export over a changed draft gets `stale_revision`. A successful export from either side clears the draft only on a revision match.
-- [ ] AC10 — Re-export after a completed export works and is free. `discard_edits` restores the seed, and `source:"original"` restores a window (tests).
+- [x] AC0 — `assertSafeFetchUrl` refuses IPv4-mapped (dotted and hex), IPv4-compatible, NAT64, 6to4 and Teredo forms that embed private addresses. Upload routes reject playlist-disguised media without outside access. Both are proven by tests in CI and shipped as PR-0. _(Done: PR #569 + #570, prod `917e60c0`.)_
+- [x] AC1 — `create_video_job({exportMode:"hold"})` stops at the Base Render. Nothing is burned, the job survives polls and the watchdog, and `get_video_status` returns `held` + `previewUrl` + `editorUrl`. _(Done: PR #571; `verify:mcp-edit-draft`.)_
+- [x] AC2 — On a held job, text edit + merge + split + regroup + style (incl. `verticalPos`) + headline, then one `export_video`, give one clip whose burn config contains every edit. It makes no HeyGen / TTS / Gemini call and reserves or charges nothing. When the free path is unavailable, the reply is `export_not_free` and nothing is charged (tests). _(Done: PR #571; `verify:mcp-edit-tools`, `verify:mcp-chain-linkage`.)_
+- [x] AC3 — A window replaced from a URL and from an upload link, then exported, gives a clip with the new media in that window, muted, at no charge (tests on both paths). _(Done: PR #572; `verify:mcp-broll-window-edits` 200/0.)_
+- [x] AC4 — `create_video_job({clipUrl})` from a portrait HeyGen clip gives a finished clip with subtitles from the clip's own audio. `cutawayLayout:"fillYourself"` gives presenter-only windows. An import failure costs nothing. _(Done: PR #572; `verify:mcp-clip-import-job` 221/0.)_
+- [x] AC5 — Media Import refuses `http:`, private addresses (direct, redirect, DNS, rebinding), over-cap files (aborted mid-stream) and type-spoofed or playlist files, each with its code. The upload link is single-use, expires in 15 min and is bound to its user and kind. Admission caps hold across processes. _(Done: PR #572; `verify:media-import-*`.)_
+- [x] AC6 — Non-beta accounts do not see the new tools in `tools/list`. Direct calls and the new `create_video_job` fields get `feature_not_enabled`. `create_video_job` without the new fields behaves exactly as before (regression test). _(Done: PR #572; non-beta `{}` now gets an `invalid_input` envelope instead of SDK -32602 (accepted in T14 review: G2/G13 force it, scripted calls unchanged).)_
+- [x] AC7 — CI runs every `verify-mcp-*`, `verify-media-import*` and `verify-safe-fetch` script, or lists it in the reviewed exclusion file, guarded by `verify:mcp-ci-coverage`. All three PRs are green. _(Done: `verify:mcp-ci-coverage`; #569–#572 all green.)_
+- [x] AC8 — Every new tool's emitted JSON Schema has no `oneOf` / `anyOf` / `allOf`. Every new-tool failure carries `error` + `code` + `message` + `next`, and is audited as an in-band error. _(Done: T6/T13/T14 reviews.)_
+- [x] AC9 — Opening `editorUrl` with a pending agent draft shows the agent's edits and the banner, including after a rerender. A web export over a changed draft gets `stale_revision`. A successful export from either side clears the draft only on a revision match. _(Done: PR #571 + T13 fix round (web export keeps agent window edits).)_
+- [x] AC10 — Re-export after a completed export works and is free. `discard_edits` restores the seed, and `source:"original"` restores a window (tests). _(Done: PR #571/#572.)_
 - [ ] AC11 (post-deploy, Mew, internal beta) — three agents complete the whole flow from the MCP instructions alone: **Grok bot** (URL import), **Claude via the claude.ai connector** (OAuth), **Codex CLI** (PAT + upload link). Then Mew decides on `MCP_EDITOR_PROJECT_PUBLIC`.
 
 ## Out of scope
@@ -381,5 +381,48 @@ Most MCP verify scripts already run via `verify:subtitle-audio-sync` → `verify
 - #567 (Hero AI Image refund on user cancel): a separate kickoff.
 - Prod deploys: Mew decides each one.
 
+## Follow-ups (after execute, 2026-10-04)
+
+Sources: the per-task and whole-branch reviews in the execute ledger. None of these block the internal beta.
+
+**Before flipping `MCP_EDITOR_PROJECT_PUBLIC` (after AC11):**
+1. Per-user Media Import byte budget. The free-disk floor stops imports at about 5 GiB free, but one user can still drive the disk down to that floor (about 15 GB/h). This is PR-B security S2, the residual of B1.
+2. The upload PUT floor should count in-flight bytes, not only bytes already staged (T11 F1).
+3. Import lane fairness:
+   - slow-drip URLs from two principals can starve the lane, and other users' imports then expire in the queue;
+   - give the queue a longer deadline;
+   - fail claimed `processing` rows at worker boot (T12 A1/A2, security A1).
+4. A few accounts can fill the global staging budget and lock everyone out of imports (security A3).
+5. Node's 300 s `requestTimeout` effectively requires about 1.7 MB/s to upload 500 MB. Raise it for `/api/mcp-uploads/`, or document the speed (T11 A8).
+6. HTTP rate limit on PUT token probes. Suspended accounts are not re-checked across MCP (T11).
+7. Remux presenter bytes before Remotion/Chromium/composite (security A4).
+8. Signed agent URLs remain in SQLite free pages, the WAL and nightly backups (security A8).
+
+**Pre-existing, outside this plan (separate tickets):**
+- `/api/heygen/composite` records a `ChargedClip` for every output without checking that `bgVideoUrl` was a charged render. A web user could get a free burn of an arbitrary uploaded video.
+- In `/api/videos/jobs`, the upload-mode `clipUrl` check is prefix-only and does not check ownership. Names are unguessable.
+- CI's ffmpeg 6.1 hangs the voice filter on audio with no edge silence. Prod runs 4.4, so an Ubuntu 24.04 upgrade would expose it.
+
+**Low / housekeeping:**
+- T10:
+  - chmod an existing temp dir to 0700;
+  - make the sweep reuse the symlink/owner checks;
+  - set `rejectUnauthorized` explicitly.
+- Unused `ready` imports rely on the general media cleanup. A deploy does not drain imports in flight; they fail at their deadline and cost nothing (N5/N6).
+- Admin insights does not show `waiting_import` (N4).
+- `verify-hero-script-workspace-browser.mts` rewrites a tracked fixture PNG (N7).
+- Lane encodes compete with renders for CPU (security A7).
+- The clip ETA of 3–6 min in onboarding is optimistic (T14 A5).
+- The remaining T13 advisories (A5–A11, R2–R4). Earlier ones:
+  - retry when a draft reload fails;
+  - the `editorUrl` doc;
+  - the dead `jobsRouteReplaysSameUserIdempotentJob`;
+  - PR-0b R1-A1 trusted origins.
+
+**Ops notes from the deploy:**
+- Prod nginx was patched by hand on 2026-10-03 at ~19:42 UTC. The backup is `/root/nginx-backups/ai-content.bak-20261003-194230`.
+- The live file is `/etc/nginx/sites-enabled/ai-content`. It is a regular file, so keep backups out of `sites-enabled/`.
+- Certbot's port-80 server-level redirect now lives inside `location /`, so the `/api/mcp-uploads/` 403 location can win.
+
 ## Status
-interviewed 2026-10-03 | critic: FAIL → revised 2026-10-03 (B1–B7 resolved in text) | approved: 2026-10-03 (Q19 a, Q20 a) | executed: - | delivered: -
+interviewed 2026-10-03 | critic: FAIL → revised 2026-10-03 (B1–B7 resolved in text) | approved: 2026-10-03 (Q19 a, Q20 a) | executed: 2026-10-03→04 (PR-0 #569, PR-0b #570, PR-A #571, PR-B #572) | delivered: 2026-10-04 prod `269c50ad` (AC11 pending, Mew)
