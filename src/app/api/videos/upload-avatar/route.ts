@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveSafeInputDemuxer } from "@/lib/media-probe-args";
+import { probeDurationMs } from "@/lib/upload-media-probe";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
-import { execFile } from "child_process";
 
 export const runtime = "nodejs";
 export const maxDuration = 600; // 10 min — supports large green-screen video uploads
@@ -39,39 +39,9 @@ function isAllowedAvatarVideo(file: File, ext: string) {
   return ["video/mp4", "video/quicktime", "video/webm"].includes(file.type);
 }
 
-function execFileCapture(file: string, args: string[], timeout = 10_000, allowFailure = false): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
-      if (err && !allowFailure) reject(err);
-      else resolve({ stdout, stderr });
-    });
-  });
-}
-
-async function probeDurationMs(filePath: string): Promise<number | null> {
-  const ffmpeg = getFfmpegPath();
-  const ffprobe = ffmpeg.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
-  try {
-    const { stdout } = await execFileCapture(ffprobe, [
-      "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "csv=p=0",
-      filePath,
-    ]);
-    const sec = Number.parseFloat(stdout.trim());
-    if (Number.isFinite(sec) && sec > 0) return Math.round(sec * 1000);
-  } catch {}
-
-  try {
-    const { stderr } = await execFileCapture(ffmpeg, ["-i", filePath], 10_000, true);
-    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
-    if (!m) return null;
-    const fractionMs = Math.round(Number(`0.${m[4]}`) * 1000);
-    return ((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000) + fractionMs;
-  } catch {
-    return null;
-  }
-}
+// probeDurationMs lives in src/lib/upload-media-probe.ts: ffprobe, then ffmpeg's banner as
+// the fallback, both with `-protocol_whitelist file` and the pinned demuxer (G24), so a
+// playlist uploaded as .mp4 can't make the probe open other local files or URLs.
 
 async function recordAvatarUploadTelemetry(
   userId: string | null,
@@ -238,7 +208,8 @@ export async function POST(req: Request) {
 
     const writtenBytes = fs.statSync(outPath).size;
     if (writtenBytes <= 0) throw new Error("empty output file");
-    const durationMs = await probeDurationMs(outPath);
+    const inputFormat = resolveSafeInputDemuxer(outPath, ext, "video");
+    const durationMs = inputFormat ? await probeDurationMs(outPath, inputFormat) : null;
 
     await recordAvatarUploadTelemetry(userId, {
       status: "success",
