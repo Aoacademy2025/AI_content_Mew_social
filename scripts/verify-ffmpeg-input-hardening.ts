@@ -1276,6 +1276,8 @@ async function loadRenderRoute(): Promise<RenderReplay> {
     "@/lib/broll-placeholders": await import("../src/lib/broll-placeholders"),
     "@/lib/headline-hook": await import("../src/lib/headline-hook"),
     "@/lib/render/media-base-url": await import("../src/lib/render/media-base-url"),
+    // PR-A T5: the free re-render budget is a leaf module (no imports), so the real one.
+    "@/lib/rerender-skip-budget": await import("../src/lib/rerender-skip-budget"),
     path, fs, crypto: await import("node:crypto"),
   };
   const enqueued: Array<Record<string, unknown>> = [];
@@ -1310,6 +1312,12 @@ async function loadRenderRoute(): Promise<RenderReplay> {
       VideoJobFundingConfirmationRequiredError,
     },
     "@/lib/mcp/service-actor": { resolveServiceVideoJobId: async () => null },
+    // PR-A T5: the MCP must-be-free gate is only consulted for a service actor (never here).
+    "@/lib/mcp/render-free": {
+      MCP_EXPORT_NOT_FREE_CODE: "export_not_free",
+      MCP_RENDER_NOT_FREE_MESSAGE: "not free",
+      videoJobMustBeFree: async () => { throw new Error("must-be-free gate must not be consulted without a service actor"); },
+    },
     "@/lib/sanitize-caption-style": { stripDangerousCss: (value: unknown) => value },
     // runTmpCleanup's `find` only; nothing in the route may spawn ffmpeg itself.
     "child_process": { execFileSync: () => undefined, spawn: () => { throw new Error("the route must not spawn"); } },

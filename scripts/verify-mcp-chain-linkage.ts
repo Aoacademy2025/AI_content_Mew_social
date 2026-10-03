@@ -206,6 +206,21 @@ async function main() {
     if (specifier === "@/lib/sanitize-caption-style") return { stripDangerousCss: (value: unknown) => value };
     if (specifier === "child_process") return { execFileSync: () => undefined, spawn: () => { throw new Error("no spawn"); } };
     if (specifier === "@/lib/ffmpeg-path") return { getFfmpegPath: () => "ffmpeg" };
+    // PR-0b media guard. Every path here stops at the @remotion/renderer sentinel, which the
+    // route loads before it resolves any media, so none of these may be reached. They throw
+    // (not refuse) so a reordered route fails loudly instead of answering a quiet 422.
+    if (specifier === "@/lib/render-input-guard") {
+      const unreachable = (name: string) => async () => { throw new Error(`linkage-test: ${name} must not be reached`); };
+      return {
+        cacheImageLocally: unreachable("cacheImageLocally"),
+        cacheRemoteMediaLocally: unreachable("cacheRemoteMediaLocally"),
+        probeVideoDurationSec: unreachable("probeVideoDurationSec"),
+        RenderMediaRefusedError: class RenderMediaRefusedError extends Error {
+          readonly code = "render_media_unusable";
+          constructor(public readonly field: string) { super(field); }
+        },
+      };
+    }
     if (specifier === "@/lib/telemetry") return { recordTelemetryEvent: async () => undefined };
     if (specifier === "@/lib/broll-coverage") return brollCoverage;
     if (specifier === "@/lib/broll-placeholders") return brollPlaceholders;
