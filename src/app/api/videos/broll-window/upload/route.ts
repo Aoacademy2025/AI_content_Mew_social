@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
-import { execFileSync } from "child_process";
 import path from "path";
 import os from "os";
 import fs from "fs";
 import { randomUUID } from "crypto";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   applyKenBurns,
   normalizeForRemotion,
@@ -14,6 +12,8 @@ import {
   safeUnlink,
   KEN_BURNS_DURATION_SEC,
 } from "@/lib/broll-asset-lib";
+import { resolveSafeInputDemuxer } from "@/lib/media-probe-args";
+import { ffprobeDimensions, ffprobeDurationSec } from "@/lib/upload-media-probe";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import {
   brollUploadAdmission,
@@ -36,6 +36,9 @@ import {
 //     "../../etc/x" can't escape the stocks dir.
 //   • Size is capped by an early content-length precheck (DoS guard) + a per-type
 //     file.size check, mirroring /api/videos/upload-avatar.
+//   • Every ffprobe/ffmpeg run on the upload pins `-protocol_whitelist file` and an
+//     allowlisted input demuxer (G24, src/lib/media-probe-args.ts), so a playlist
+//     renamed to .mp4/.jpg can't make ffmpeg open other local files or URLs.
 
 export const runtime = "nodejs";
 export const maxDuration = 600; // 10 min — large video uploads legitimately take minutes to re-encode
@@ -65,45 +68,9 @@ function detectKind(ext: string, mime: string): "image" | "video" | null {
   return null;
 }
 
-// Same derivation as /select's ffprobeDurationSec (and tts/route.ts): ffprobe sits next
-// to ffmpeg in the same install. We own the produced file, so probe it directly.
-function ffprobeDurationSec(filePath: string): number {
-  const ffprobe = getFfmpegPath().replace(/ffmpeg(\.exe)?$/, (m) => m.replace("ffmpeg", "ffprobe"));
-  try {
-    const out = execFileSync(
-      ffprobe,
-      ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath],
-      { encoding: "utf-8", timeout: 10_000 },
-    );
-    return parseFloat(out.trim()) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-// Sibling to ffprobeDurationSec: metadata-only probe (no frame decode) so we can bound
-// pixel dimensions BEFORE applyKenBurns / normalizeForRemotion ever touch the file. A
-// tiny file can still be a decompression bomb (e.g. a 317 KB 10000×10000 PNG forces the
-// Ken Burns ffmpeg decode to ~4.5 GB RSS; an 8000×8000 mp4 does ~3 GB in
-// normalizeForRemotion) — and normalizeForRemotion runs behind the process-wide
-// normalize semaphore shared with every other user's b-roll processing, so one hostile
-// upload can stall the whole pipeline. Reject anything we can't confidently bound.
-function ffprobeDimensions(filePath: string): { width: number; height: number } | null {
-  const ffprobe = getFfmpegPath().replace(/ffmpeg(\.exe)?$/, (m) => m.replace("ffmpeg", "ffprobe"));
-  try {
-    const out = execFileSync(
-      ffprobe,
-      ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", filePath],
-      { encoding: "utf-8", timeout: 10_000 },
-    );
-    const [w, h] = out.trim().split(",").map((n) => parseInt(n, 10));
-    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
-    return { width: w, height: h };
-  } catch {
-    return null;
-  }
-}
-
+// ffprobeDimensions / ffprobeDurationSec live in src/lib/upload-media-probe.ts (shared
+// with upload-avatar and the G24 test). ffprobeDimensions is the metadata-only bomb guard
+// that bounds pixel dimensions BEFORE applyKenBurns / normalizeForRemotion decode anything.
 const MAX_DIMENSION_PX = 4096;
 
 // Stream a web File to disk (mirrors /api/videos/upload-avatar's pump loop) with
@@ -249,8 +216,10 @@ export async function POST(req: Request) {
 
       // Metadata-only probe BEFORE Ken Burns ever decodes the file — bounds pixel
       // dimensions so a small-byte-size decompression bomb can't force a multi-GB decode.
-      const imgDims = ffprobeDimensions(tempInput);
-      if (!imgDims || imgDims.width > MAX_DIMENSION_PX || imgDims.height > MAX_DIMENSION_PX) {
+      // The same pinned demuxer is used for the probe and the Ken Burns decode.
+      const inputFormat = resolveSafeInputDemuxer(tempInput, ext, "image");
+      const imgDims = inputFormat ? ffprobeDimensions(tempInput, inputFormat) : null;
+      if (!inputFormat || !imgDims || imgDims.width > MAX_DIMENSION_PX || imgDims.height > MAX_DIMENSION_PX) {
         safeUnlink(tempInput);
         return NextResponse.json(
           { error: "unsupported_type", message: "ไฟล์มีความละเอียดสูงเกินไป (สูงสุด 4096×4096)" },
@@ -259,7 +228,7 @@ export async function POST(req: Request) {
       }
 
       // Still image → 5s vertical Ken Burns motion clip (throws if ffmpeg output is bad).
-      await applyKenBurns(tempInput, outPath);
+      await applyKenBurns(tempInput, outPath, KEN_BURNS_DURATION_SEC, { inputFormat });
       if (!isValidMp4Path(outPath)) {
         safeUnlink(outPath);
         return NextResponse.json({ error: "process_failed", message: "แปลงรูปเป็นวิดีโอไม่สำเร็จ" }, { status: 502 });
@@ -284,8 +253,9 @@ export async function POST(req: Request) {
     // as the image path. normalizeForRemotion also runs behind the process-wide normalize
     // semaphore shared with all b-roll processing, so an oversized decode here would stall
     // every other user's b-roll, not just this request.
-    const vidDims = ffprobeDimensions(outPath);
-    if (!vidDims || vidDims.width > MAX_DIMENSION_PX || vidDims.height > MAX_DIMENSION_PX) {
+    const inputFormat = resolveSafeInputDemuxer(outPath, ext, "video");
+    const vidDims = inputFormat ? ffprobeDimensions(outPath, inputFormat) : null;
+    if (!inputFormat || !vidDims || vidDims.width > MAX_DIMENSION_PX || vidDims.height > MAX_DIMENSION_PX) {
       safeUnlink(outPath);
       return NextResponse.json(
         { error: "unsupported_type", message: "ไฟล์มีความละเอียดสูงเกินไป (สูงสุด 4096×4096)" },
@@ -293,14 +263,15 @@ export async function POST(req: Request) {
       );
     }
 
-    const normalizeResult = await normalizeForRemotion(outPath);
+    const normalizeResult = await normalizeForRemotion(outPath, { inputFormat });
     if (normalizeResult.status === "failed") {
       safeUnlink(outPath);
       safeUnlink(normalizedMarkerPath(outPath));
       return NextResponse.json({ error: "normalize_failed", message: "แปลงไฟล์วิดีโอไม่สำเร็จ" }, { status: 502 });
     }
 
-    const clipDuration = ffprobeDurationSec(outPath);
+    // outPath now holds our own libx264 mp4 (normalizeForRemotion swapped it in).
+    const clipDuration = ffprobeDurationSec(outPath, "mov");
     if (!clipDuration || clipDuration <= 0) {
       // Encoded fine but we couldn't measure it — fail closed rather than hand back a
       // clip the editor can't safely trim. Output name is random (no cache reuse), so
