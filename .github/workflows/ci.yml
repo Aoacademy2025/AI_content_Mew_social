@@ -361,6 +361,9 @@ jobs:
       - name: Verify cron Prisma timeouts return 503 instead of unhandled errors
         run: npm run verify:cron-route
 
+      - name: Verify the SSRF guard refuses IPv4-in-IPv6 and other private address forms
+        run: npm run verify:safe-fetch
+
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 

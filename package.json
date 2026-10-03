@@ -16,6 +16,7 @@
     "verify:deploy-maintenance": "tsx scripts/verify-deploy-maintenance-window.ts",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
     "verify:cron-route": "tsx scripts/verify-cron-route.ts",
+    "verify:safe-fetch": "tsx scripts/verify-safe-fetch.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:db-backup-r2": "tsx scripts/verify-db-backup-r2.ts",
     "verify:admin-navigation": "tsx scripts/verify-admin-navigation.ts",
