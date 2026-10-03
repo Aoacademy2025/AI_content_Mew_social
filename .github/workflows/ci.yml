@@ -106,6 +106,9 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify web Post phase loads the Pending Edit Draft + stale guard (ADR 0064, T8)
+        run: npm run verify:editor-pending-draft
+
       - name: Verify project menu (Agent-created Project label, T9)
         run: npm run verify:project-menu
 

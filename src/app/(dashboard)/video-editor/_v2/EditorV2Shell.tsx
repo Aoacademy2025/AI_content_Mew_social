@@ -35,6 +35,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useV2Project, type V2VoiceEngine } from "./useV2Project";
+import { usePendingEditDraft } from "./usePendingEditDraft";
 import { useV2Job, type SubmitResult, type V2JobState } from "./useV2Job";
 import { ApiKeyModal, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
@@ -83,6 +84,10 @@ type RetryAction = { kind: "render" } | { kind: "confirm"; minutes: number };
 
 export function EditorV2Shell() {
   const p = useV2Project();
+  // T8 (ADR 0064, G21): a standalone load of the project's Pending Edit Draft, scoped to the
+  // job the Post phase currently opens. Kept independent of useV2Project's own bootstrap/autosave
+  // state (see usePendingEditDraft's own comment for why).
+  const { pendingEdit, reloadPendingEdit } = usePendingEditDraft(p.projectId, p.activeJobId);
   const downloadFilename = resolveVideoDownloadFilename({
     projectTitle: p.projectTitle,
     script: p.mode === "script" ? p.script : null,
@@ -482,6 +487,9 @@ export function EditorV2Shell() {
     // retired legacy style is deliberately NOT threaded: no surface can show or
     // change it any more, so no surface may keep searching with it either.
     projectStylePack: p.projectStylePack,
+    // T8 (ADR 0064, G21): the agent's unexported draft for this project's current base job, if any.
+    pendingEdit,
+    onReloadPendingEdit: reloadPendingEdit,
   };
   // jobs/route.ts sends the identical { error: "missing_voice_id" } shape for
   // ElevenLabs (no voiceId, :514) and OmniVoice/Hero Voice (no omniVoiceId, :493) —

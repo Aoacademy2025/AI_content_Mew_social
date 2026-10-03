@@ -28,6 +28,7 @@ import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import type { WebPendingEdit } from "./pending-edit-view";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
@@ -101,9 +102,11 @@ export function PostPhaseMobile({
   downloadFilename,
   brollRegionPreference,
   projectStylePack,
+  pendingEdit,
+  onReloadPendingEdit,
 }: {
   job: V2JobState; script: string;
-  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string; staleRevision?: boolean }>;
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
@@ -135,6 +138,8 @@ export function PostPhaseMobile({
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
   projectStylePack?: ProjectStylePack | null;
+  pendingEdit?: WebPendingEdit | null;
+  onReloadPendingEdit?: () => Promise<WebPendingEdit | null>;
 }) {
   const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
   const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
@@ -158,6 +163,8 @@ export function PostPhaseMobile({
     canRunProjectOperation,
     surface: "mobile",
     brollEditAvailable: brollEditEnabled,
+    pendingEdit,
+    onReloadPendingEdit,
   });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -326,6 +333,11 @@ export function PostPhaseMobile({
     <div className="flex min-h-0 flex-1 flex-col">
       <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandLibraryAllowed={brandLibraryAllowed} />
       <SubtitleQaInlineBanner output={job.output} />
+      {ed.pendingEditBanner && (
+        <div className="px-4 py-2" style={{ fontSize: 11.5, color: color.warningText, background: color.bg1, borderBottom: `1px solid ${color.cardBorder}` }}>
+          {ed.pendingEditBanner}
+        </div>
+      )}
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
