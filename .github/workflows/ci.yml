@@ -395,6 +395,8 @@ jobs:
           ffmpeg -version | sed -n '1p'
           npm run verify:upload-probe-whitelist
           npm run verify:ffmpeg-input-hardening
+          npm run verify:media-import-broll-pipeline
+          npm run verify:media-import-presenter-checks
 
       - name: Build
         run: npm run build

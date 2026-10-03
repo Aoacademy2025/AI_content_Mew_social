@@ -574,8 +574,18 @@ function sourceChecks(): void {
   console.log("\n# 5. route and helper source");
   const spawnsProcesses = /from\s+["'](?:node:)?child_process["']/;
 
+  // Task 9 (PR-B, 2026-10-03): the route itself delegates to
+  // src/lib/media-import/broll-pipeline.ts, which now holds the ffprobe guard + Ken
+  // Burns / normalizeForRemotion calls these needles used to find inline in the route.
   const broll = read("src/app/api/videos/broll-window/upload/route.ts");
   check("broll-window/upload spawns no ffmpeg/ffprobe itself", !spawnsProcesses.test(broll));
+  check("broll-window/upload delegates to the shared broll-pipeline module",
+    broll.includes('from "@/lib/media-import/broll-pipeline"')
+      && broll.includes("runBrollPipeline(")
+      && broll.includes("validateBrollUpload("));
+
+  const brollPipeline = read("src/lib/media-import/broll-pipeline.ts");
+  check("broll-pipeline spawns no ffmpeg/ffprobe itself", !spawnsProcesses.test(brollPipeline));
   for (const needle of [
     'const inputFormat = resolveSafeInputDemuxer(tempInput, ext, "image")',
     "ffprobeDimensions(tempInput, inputFormat)",
@@ -584,7 +594,7 @@ function sourceChecks(): void {
     "ffprobeDimensions(outPath, inputFormat)",
     "await normalizeForRemotion(outPath, { inputFormat })",
     'ffprobeDurationSec(outPath, "mov")',
-  ]) check(`broll-window/upload: ${needle}`, broll.includes(needle));
+  ]) check(`broll-pipeline: ${needle}`, brollPipeline.includes(needle));
 
   const avatar = read("src/app/api/videos/upload-avatar/route.ts");
   check("upload-avatar spawns no ffmpeg/ffprobe itself", !spawnsProcesses.test(avatar));
