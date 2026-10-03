@@ -9,6 +9,10 @@
 //      canary file, a forced hls/concat demuxer connects to the loopback server.
 //   3. Hostile: playlists renamed to every allowed extension are rejected by the real
 //      probe/transcode helpers with zero canary reads and zero loopback connections.
+//  3b. upload-avatar end to end (fix round 1): the real POST handler (auth/DB/telemetry
+//      stubbed with node:test mock.module) answers a disguised playlist with a 415 and
+//      leaves nothing under public/renders; real mp4/mov/webm still get 200 + the same
+//      durationMs the pre-change probe produced.
 //   4. Legit: mp4/mov/webm/jpg/jpeg/png/webp, mislabelled real media and a motion-photo
 //      JPEG still pass, and their output frames equal the auto-detect (pre-change) path.
 //   5. Route source: neither route spawns ffmpeg/ffprobe itself; every call passes the
@@ -16,6 +20,7 @@
 //
 // Needs real ffmpeg AND ffprobe (CI installs them with apt).
 // Run: npm run verify:upload-probe-whitelist
+//   (= node --experimental-test-module-mocks --import tsx scripts/verify-upload-probe-whitelist.ts)
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -23,6 +28,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { mock } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
@@ -258,9 +264,10 @@ async function runTool(bin: string, args: string[]): Promise<string> {
 // ---------------------------------------------------------------------------------------
 // 2 + 3. Controls and hostile playlists
 // ---------------------------------------------------------------------------------------
-async function hostileChecks(dir: string, det: Detectors): Promise<void> {
-  console.log("\n# 2. detector controls");
-  const url = `http://127.0.0.1:${det.port}`;
+// An HLS playlist (loopback URL + local canary segment), an ffconcat naming the local
+// canary, and an ffconcat naming a loopback URL. Entries are relative to the playlist.
+function hostilePlaylists(port: number): Array<[string, string]> {
+  const url = `http://127.0.0.1:${port}`;
   const hls = [
     "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:1", "#EXT-X-MEDIA-SEQUENCE:0",
     "#EXTINF:1.0,", `${url}/seg0.ts`,
@@ -269,7 +276,12 @@ async function hostileChecks(dir: string, det: Detectors): Promise<void> {
   ].join("\n");
   const concatLocal = "ffconcat version 1.0\nfile 'canary.mp4'\n";
   const concatNet = `ffconcat version 1.0\nfile '${url}/c.mp4'\n`;
-  const playlists: Array<[string, string]> = [["hls", hls], ["concat-local", concatLocal], ["concat-net", concatNet]];
+  return [["hls", hls], ["concat-local", concatLocal], ["concat-net", concatNet]];
+}
+
+async function hostileChecks(dir: string, det: Detectors): Promise<void> {
+  console.log("\n# 2. detector controls");
+  const playlists = hostilePlaylists(det.port);
   const at = (name: string, ext: string) => path.join(dir, `evil-${name}.${ext}`);
   for (const [name, body] of playlists) fs.writeFileSync(at(name, "mp4"), body);
 
@@ -336,6 +348,134 @@ async function hostileChecks(dir: string, det: Detectors): Promise<void> {
       check(`${label}: no canary read, no loopback connection`,
         seen.connections === 0 && seen.requests === 0 && seen.canariesRead.length === 0, JSON.stringify(seen));
     }
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// 3b. upload-avatar end to end
+// ---------------------------------------------------------------------------------------
+type AvatarBody = { url?: string; durationMs?: number; error?: string; code?: string };
+type TelemetryEvent = { name: string; properties?: { code?: string; httpStatus?: number } };
+const AVATAR_MIME: Record<string, string> = { mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
+
+// The duration upload-avatar returned before G24: auto-detecting ffprobe, then the ffmpeg
+// "Duration:" banner, exactly as the old probeDurationMs did. Only for legit fixtures.
+async function preChangeDurationMs(file: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(getFfprobePath(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]);
+    const sec = Number.parseFloat(stdout.trim());
+    if (Number.isFinite(sec) && sec > 0) return Math.round(sec * 1000);
+  } catch {}
+  const banner = await execFileAsync(getFfmpegPath(), ["-i", file]).then((r) => r.stderr, (e: { stderr?: string }) => e.stderr ?? "");
+  const m = banner.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+  if (!m) return null;
+  return ((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000) + Math.round(Number(`0.${m[4]}`) * 1000);
+}
+
+async function avatarRouteChecks(tmp: string, canarySource: string): Promise<void> {
+  console.log("\n# 3b. /api/videos/upload-avatar end to end");
+  const telemetry: TelemetryEvent[] = [];
+  const mocks = [
+    mock.module("@/lib/clerk-auth", { namedExports: { getCurrentUser: async () => ({ id: "user_g24_test" }) } }),
+    mock.module("@/lib/prisma", { namedExports: { prisma: { user: { findUnique: async () => ({ plan: "PRO" }) } } } }),
+    mock.module("@/lib/telemetry", {
+      namedExports: { recordTelemetryEvent: async (_userId: unknown, event: TelemetryEvent) => { telemetry.push(event); } },
+    }),
+  ];
+  const { POST } = await import("../src/app/api/videos/upload-avatar/route");
+
+  // The route stores uploads under <cwd>/public/renders; run it from a throwaway cwd whose
+  // renders dir also holds the canaries, so the playlists' relative entries point at them.
+  const cwd = path.join(tmp, "avatar-cwd");
+  const rendersDir = path.join(cwd, "public", "renders");
+  fs.mkdirSync(rendersDir, { recursive: true });
+  const det = await startDetectors(rendersDir, canarySource);
+  const canaryNames = det.canaries.map((c) => path.basename(c));
+  const stored = () => fs.readdirSync(rendersDir).filter((f) => !canaryNames.includes(f));
+  const post = async (name: string, bytes: Buffer): Promise<{ status: number; body: AvatarBody }> => {
+    const ext = name.split(".").pop() ?? "";
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array(bytes)], name, { type: AVATAR_MIME[ext] ?? "" }));
+    const res = await POST(new Request("http://localhost/api/videos/upload-avatar", { method: "POST", body: form }));
+    return { status: res.status, body: (await res.json()) as AvatarBody };
+  };
+
+  const originalCwd = process.cwd();
+  process.chdir(cwd);
+  try {
+    const playlists = hostilePlaylists(det.port);
+    // Control: from this renders dir, the pre-change probe of a stored ffconcat reaches the canary.
+    const controlFile = path.join(rendersDir, "control-concat.mp4");
+    fs.writeFileSync(controlFile, playlists[1][1]);
+    det.arm();
+    await runTool(getFfprobePath(), ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", controlFile]);
+    const control = await det.observed();
+    fs.rmSync(controlFile);
+    check("control: a pre-change probe of an ffconcat stored in public/renders reads the canary there",
+      control.canariesRead.includes("canary.mp4"), JSON.stringify(control));
+
+    for (const [name, text] of playlists) {
+      for (const ext of ["mp4", "mov", "webm"]) {
+        const label = `upload-avatar: ${name} uploaded as .${ext}`;
+        telemetry.length = 0;
+        det.arm();
+        const { status, body } = await post(`clip-${name}.${ext}`, Buffer.from(text));
+        const seen = await det.observed();
+        check(`${label}: rejected with 415 unsupported_type`,
+          status === 415 && body.code === "unsupported_type" && body.url === undefined, `${status} ${JSON.stringify(body)}`);
+        check(`${label}: Thai error message`, /[\u0E00-\u0E7F]/.test(body.error ?? ""), body.error ?? "");
+        check(`${label}: nothing left under public/renders`, stored().length === 0, JSON.stringify(stored()));
+        check(`${label}: no canary read, no loopback connection`,
+          seen.connections === 0 && seen.requests === 0 && seen.canariesRead.length === 0, JSON.stringify(seen));
+        check(`${label}: failure telemetry (unsupported_type, 415)`,
+          telemetry.some((e) => e.name === "avatar_upload_failed" && e.properties?.code === "unsupported_type" && e.properties?.httpStatus === 415),
+          JSON.stringify(telemetry.map((e) => [e.name, e.properties?.code, e.properties?.httpStatus])));
+      }
+    }
+
+    const fixtures = path.join(tmp, "avatar-fixtures");
+    fs.mkdirSync(fixtures);
+    const mp4 = path.join(fixtures, "real.mp4");
+    const mov = path.join(fixtures, "real.mov");
+    const webm = path.join(fixtures, "real.webm");
+    await makeVideo(mp4, "mp4");
+    await makeVideo(mov, "mov");
+    await makeVideo(webm, "webm");
+    // A WebM written by a streaming muxer (as browser MediaRecorder does) has no duration
+    // header: the duration probe finds none, yet it is a real video and must still pass.
+    const liveWebm = path.join(fixtures, "live.webm");
+    const liveSrc = ["-f", "lavfi", "-i", "testsrc=size=360x640:rate=30:duration=1"];
+    await ff([...liveSrc, "-c:v", "libvpx-vp9", "-b:v", "300k", "-live", "1", "-f", "webm", liveWebm])
+      .catch(() => ff([...liveSrc, "-c:v", "libvpx", "-b:v", "300k", "-live", "1", "-f", "webm", liveWebm]));
+    const legit: Array<[string, string, string]> = [
+      ["mp4", mp4, "real.mp4"],
+      ["mov", mov, "real.mov"],
+      ["webm", webm, "real.webm"],
+      ["webm bytes named .mp4", webm, "webm-bytes.mp4"],
+      ["duration-less (live) webm", liveWebm, "live.webm"],
+    ];
+    for (const [label, file, uploadName] of legit) {
+      const before = await preChangeDurationMs(file);
+      const wantDuration = before && before > 0 ? before : undefined;
+      const bytes = fs.readFileSync(file);
+      const { status, body } = await post(uploadName, bytes);
+      const ext = uploadName.split(".").pop();
+      const storedName = body.url?.replace(/^\/api\/renders\//, "") ?? "";
+      check(`upload-avatar: ${label}: 200 with a renders url`,
+        status === 200 && new RegExp(`^avatar-upload-\\d+-[0-9a-f-]+\\.${ext}$`).test(storedName), `${status} ${JSON.stringify(body)}`);
+      check(`upload-avatar: ${label}: durationMs equals the pre-change probe`,
+        body.durationMs === wantDuration && ("durationMs" in body) === (wantDuration !== undefined),
+        `got ${body.durationMs}, before ${wantDuration}`);
+      check(`upload-avatar: ${label}: stored bytes are the upload`,
+        storedName !== "" && stored().includes(storedName) && fs.readFileSync(path.join(rendersDir, storedName)).equals(bytes));
+      if (storedName && stored().includes(storedName)) fs.rmSync(path.join(rendersDir, storedName));
+    }
+    check("upload-avatar: the duration-less webm really has no duration header (fixture sanity)",
+      (await preChangeDurationMs(liveWebm)) === null);
+  } finally {
+    process.chdir(originalCwd);
+    await det.close();
+    for (const m of mocks) m.restore();
   }
 }
 
@@ -445,7 +585,13 @@ function sourceChecks(): void {
   for (const needle of [
     'const inputFormat = resolveSafeInputDemuxer(outPath, ext, "video")',
     "probeDurationMs(outPath, inputFormat)",
+    "if (!inputFormat || (durationMs == null && !ffprobeDimensions(outPath, inputFormat))) {",
+    'return jsonError(415, "unsupported_type",',
   ]) check(`upload-avatar: ${needle}`, avatar.includes(needle));
+  const gate = avatar.indexOf("if (!inputFormat || (durationMs == null");
+  check("upload-avatar: the G24 gate deletes the file and runs before the success telemetry",
+    gate > 0 && avatar.indexOf("fs.unlinkSync(outPath)", gate) > gate
+      && avatar.indexOf("fs.unlinkSync(outPath)", gate) < avatar.indexOf('status: "success"', gate));
 
   const probe = read("src/lib/upload-media-probe.ts");
   const execCalls = (probe.match(/execFile(?:Sync|Capture)\(/g) ?? []).length - 1; // minus the helper's own declaration
@@ -488,6 +634,7 @@ async function main(): Promise<void> {
     check("detector self-test: a plain read of each canary is recorded (atime works here)",
       selfTest.canariesRead.length === det.canaries.length, JSON.stringify(selfTest));
     await hostileChecks(hostileDir, det);
+    await avatarRouteChecks(tmp, canarySource);
     await legitChecks(path.join(tmp));
     sourceChecks();
   } finally {

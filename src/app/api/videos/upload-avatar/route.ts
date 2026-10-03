@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { resolveSafeInputDemuxer } from "@/lib/media-probe-args";
-import { probeDurationMs } from "@/lib/upload-media-probe";
+import { ffprobeDimensions, probeDurationMs } from "@/lib/upload-media-probe";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
@@ -210,6 +210,24 @@ export async function POST(req: Request) {
     if (writtenBytes <= 0) throw new Error("empty output file");
     const inputFormat = resolveSafeInputDemuxer(outPath, ext, "video");
     const durationMs = inputFormat ? await probeDurationMs(outPath, inputFormat) : null;
+    // G24: a playlist (HLS / ffconcat) uploaded as .mp4/.mov/.webm parses as neither
+    // allowlisted container, so both whitelisted probes fail → delete it and reject. A real
+    // WebM from a streaming muxer (browser MediaRecorder) has no duration header, so the
+    // stream probe vouches for it and it keeps its 200 without durationMs, as before.
+    if (!inputFormat || (durationMs == null && !ffprobeDimensions(outPath, inputFormat))) {
+      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+      await recordAvatarUploadTelemetry(userId, {
+        status: "error",
+        code: "unsupported_type",
+        httpStatus: 415,
+        durationMs: Date.now() - startedAt,
+        sizeBytes: writtenBytes,
+        contentLengthBytes: safeContentLength,
+        ext,
+        mime,
+      });
+      return jsonError(415, "unsupported_type", "อ่านไฟล์วิดีโอไม่ได้ รองรับเฉพาะไฟล์ mp4 / mov / webm");
+    }
 
     await recordAvatarUploadTelemetry(userId, {
       status: "success",
