@@ -602,6 +602,10 @@ async function main(): Promise<void> {
     check("Content-Length over the 20 MB image cap → 413 file_too_large", res.status === 413 && res.body.code === "file_too_large", JSON.stringify(res));
     check("…link kept, no import row", (await prisma.mcpUploadToken.findUnique({ where: { importId: declared.importId } }))?.usedAt === null
       && (await prisma.mediaImport.count({ where: { id: declared.importId } })) === 0);
+    // N3: the link was kept, so `next` sends a smaller file to the SAME link — never a new one.
+    const declaredNext = String(res.body.next ?? "");
+    check("declared 413 next: a file of 20 MB or less to the same link, no new link", /ไม่เกิน 20 MB/.test(declaredNext) && /ลิงก์เดิม/.test(declaredNext)
+      && !/create_upload_url|ลิงก์ใหม่/.test(declaredNext), declaredNext);
 
     const streamed = await issue(owner.id, "image");
     const CHUNK = 1024 * 1024;
@@ -622,6 +626,7 @@ async function main(): Promise<void> {
     check("the body stream was cancelled (upload aborted)", cancelled);
     check("read stopped right after the cap (≤ 21 × 1 MB chunks pulled)", pulled <= 22, `pulled=${pulled}`);
     check("partial file deleted, import failed file_too_large", !fs.existsSync(staging.stagedUploadPath(streamed.importId)) && row?.status === "failed" && row?.errorCode === "file_too_large", JSON.stringify(row));
+    check("streamed 413 (link consumed) next: ask for a new link", /create_upload_url/.test(String(res2.body.next ?? "")), String(res2.body.next));
 
     const empty = await issue(owner.id, "image");
     const res3 = await put(empty.token, new Uint8Array(0));
@@ -629,6 +634,10 @@ async function main(): Promise<void> {
     const presenterCap = await issue(owner.id, "presenter");
     const res4 = await put(presenterCap.token, png, { "content-length": String(500 * 1024 * 1024 + 1) });
     check("presenter cap is 500 MB", res4.status === 413);
+    const presenterNext = String(res4.body.next ?? "");
+    check("presenter declared 413 next: a file of 500 MB or less to the same link (Thai), no new link",
+      /ไม่เกิน 500 MB/.test(presenterNext) && /ลิงก์เดิม/.test(presenterNext) && !/create_upload_url|ลิงก์ใหม่/.test(presenterNext)
+        && (await prisma.mcpUploadToken.findUnique({ where: { importId: presenterCap.importId } }))?.usedAt === null, presenterNext);
     const presenterOk = await issue(owner.id, "presenter");
     const res5 = await put(presenterOk.token, null, { "content-length": String(500 * 1024 * 1024) });
     check("presenter at exactly 500 MB declared passes the pre-check (then fails as empty body)", res5.status === 400 && res5.body.code === "empty_file", JSON.stringify(res5));

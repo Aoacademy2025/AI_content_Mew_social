@@ -72,8 +72,19 @@ function storageBusy(): Response {
   return failure(503, "storage_busy", "พื้นที่รับไฟล์ของระบบเต็มชั่วคราว", `${SAME_LINK_RETRY} (ถ้ายังไม่ได้ ให้รอไม่กี่นาที)`);
 }
 
+/** Over the cap while streaming: the link was consumed, so a new one is needed. */
 function tooLarge(kind: UploadKind): Response {
   return failure(413, "file_too_large", `ไฟล์ใหญ่เกิน ${SIZE_LABEL[kind]}`, `ลดขนาดไฟล์ให้ไม่เกิน ${SIZE_LABEL[kind]} แล้ว${NEW_LINK_NEXT}`);
+}
+
+/** Over the cap by the declared Content-Length: nothing was read and the link is kept (N3). */
+function declaredTooLarge(kind: UploadKind): Response {
+  return failure(
+    413,
+    "file_too_large",
+    `ไฟล์ใหญ่เกิน ${SIZE_LABEL[kind]}`,
+    `ลดขนาดไฟล์ให้ไม่เกิน ${SIZE_LABEL[kind]} แล้ว PUT ไฟล์ใหม่ด้วยลิงก์เดิมอีกครั้ง (ลิงก์นี้ยังใช้ได้จนหมดอายุ)`,
+  );
 }
 
 export async function PUT(request: Request, context: { params: Promise<{ token: string }> }): Promise<Response> {
@@ -98,7 +109,7 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
 
   // Honest clients declare the size: refuse over-cap before reading a byte (link kept).
   const declared = request.headers.get("content-length");
-  if (declared !== null && /^\d+$/.test(declared.trim()) && Number(declared.trim()) > maxBytes) return tooLarge(kind);
+  if (declared !== null && /^\d+$/.test(declared.trim()) && Number(declared.trim()) > maxBytes) return declaredTooLarge(kind);
   if (!request.body) return failure(400, "empty_file", "ไม่มีไฟล์ใน body ของคำขอ", "ส่งไบต์ของไฟล์เป็น body ของ HTTP PUT (ไม่ใช่ multipart) ด้วยลิงก์เดิม");
 
   // Free-disk floor before a byte lands (fails closed when statfs cannot answer).

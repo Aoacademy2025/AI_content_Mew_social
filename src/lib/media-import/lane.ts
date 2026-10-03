@@ -25,10 +25,12 @@ import {
   type MediaImportPurpose,
 } from "@/lib/media-import/imports";
 import {
+  diskHasRoomFor,
   mediaImportStagingDir,
   processStagedUpload,
   removeStagedUpload,
   stageFetchedFile,
+  stagingHasRoomFor,
 } from "@/lib/media-import/upload-staging";
 
 /**
@@ -59,6 +61,17 @@ import {
  *
  * Rows and logs carry only fixed error codes and ids — never an upstream error text, an IP, a
  * path or the agent's URL. The URL is cleared from the row once the import is finished.
+ *
+ * Disk (PR-B fix round 1, SEC-B1): before a url fetch, and again before anything is persisted,
+ * the lane checks the T11 free-disk floor (STAGING_MIN_FREE_BYTES + the purpose's byte cap) on
+ * the fetch/staging disk AND on the disk the output is written to (`public/renders/` for a
+ * presenter, `stocks/` for B-roll). Below it — or when statfs cannot answer — the import fails
+ * `storage_busy` (fail closed); nothing is downloaded or written, nothing is charged.
+ *
+ * Cancel (SEC-A6): while a url fetch runs, the lane re-reads the row every few seconds and
+ * aborts the download once the row is no longer live (a canceled clip job fails its import);
+ * the partial file is deleted. Later checkpoints (the live check after the fetch, the
+ * conditional publish) delete the staged file and any output.
  */
 
 /** G25: imports processed at once, separate from the video-job slots. */
@@ -75,6 +88,8 @@ const STALE_TEMP_MS = 2 * MEDIA_FETCH_DEADLINE_MS;
 const UPLOAD_TOKEN_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TOKEN_PRUNE_EVERY_MS = 60 * 60 * 1000;
 const SERVED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** How often a running url fetch re-reads its row (the cancel checkpoint, SEC-A6). */
+const DEFAULT_CANCEL_CHECK_MS = 3_000;
 
 /** Every errorCode the lane may write: G23 fetch codes, T11 staging codes, T9 pipeline codes. */
 export const MEDIA_IMPORT_LANE_ERROR_CODES = [
@@ -91,6 +106,7 @@ export const MEDIA_IMPORT_LANE_ERROR_CODES = [
   "not_portrait",
   "too_large_dimensions",
   "duration_exceeded",
+  "storage_busy",
 ] as const;
 export type MediaImportLaneErrorCode = (typeof MEDIA_IMPORT_LANE_ERROR_CODES)[number];
 const LANE_CODES: ReadonlySet<string> = new Set(MEDIA_IMPORT_LANE_ERROR_CODES);
@@ -209,7 +225,45 @@ type ProcessDeps = {
   processStaged: typeof processStagedUpload;
   stocksDir: string;
   log: MediaImportLaneLog;
+  cancelCheckMs: number;
 };
+
+/** The largest file a purpose may bring in (the cap of its biggest accepted kind). */
+function capFor(purpose: MediaImportPurpose): number {
+  return Math.max(...Object.values(FETCH_ACCEPT[purpose]).map((bytes) => bytes ?? 0));
+}
+
+/**
+ * SEC-B1: room above the free-disk floor for this purpose's cap on the fetch/staging disk
+ * (`stagingDisk`) and on the disk its output is written to. False — never a throw — when
+ * statfs cannot answer, so the caller fails closed.
+ */
+function laneHasRoomFor(purpose: MediaImportPurpose, stocksDir: string, stagingDisk: boolean): boolean {
+  try {
+    const cap = capFor(purpose);
+    if (stagingDisk && !stagingHasRoomFor(cap)) return false;
+    const outputDir = purpose === "presenter" ? presenterUploadDir() : stocksDir;
+    fs.mkdirSync(outputDir, { recursive: true });
+    return diskHasRoomFor(outputDir, cap);
+  } catch {
+    return false;
+  }
+}
+
+/** SEC-A6: re-read the row while it downloads; abort the fetch once it is no longer live. */
+function watchLiveness(importId: string, everyMs: number): { signal: AbortSignal; stop: () => void } {
+  const controller = new AbortController();
+  let checking = false;
+  const timer = setInterval(() => {
+    if (checking || controller.signal.aborted) return;
+    checking = true;
+    prisma.mediaImport.count({ where: { id: importId, status: "processing", deadlineAt: { gt: new Date() } } })
+      .then((live) => { if (live !== 1) controller.abort(); })
+      .catch(() => { /* a busy database is not a cancel; the next tick asks again */ })
+      .finally(() => { checking = false; });
+  }, everyMs);
+  return { signal: controller.signal, stop: () => clearInterval(timer) };
+}
 
 async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promise<void> {
   let stage: "fetch" | "process" = "process";
@@ -226,11 +280,20 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
         const remainingMs = row.deadlineAt.getTime() - Date.now();
         if (remainingMs <= 0) {
           code = "fetch_timeout";
+        } else if (!laneHasRoomFor(row.purpose, deps.stocksDir, true)) {
+          code = "storage_busy";
         } else {
-          const fetched = await deps.fetchMedia(row.sourceUrl ?? "", {
-            accept: FETCH_ACCEPT[row.purpose],
-            deadlineMs: Math.min(remainingMs, MEDIA_FETCH_DEADLINE_MS),
-          });
+          const watch = watchLiveness(row.id, deps.cancelCheckMs);
+          let fetched: FetchedMedia;
+          try {
+            fetched = await deps.fetchMedia(row.sourceUrl ?? "", {
+              accept: FETCH_ACCEPT[row.purpose],
+              deadlineMs: Math.min(remainingMs, MEDIA_FETCH_DEADLINE_MS),
+              signal: watch.signal,
+            });
+          } finally {
+            watch.stop();
+          }
           fetchedPath = fetched.path;
           if (purpose === "broll_video" && fetched.kind === "image") purpose = "broll_image";
           stage = "process";
@@ -246,6 +309,9 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
         });
         if (live !== 1) code = "fetch_timeout";
       }
+
+      // SEC-B1: the floor again before anything is persisted (the disk may have filled meanwhile).
+      if (!code && !laneHasRoomFor(purpose, deps.stocksDir, false)) code = "storage_busy";
 
       if (!code) {
         const user = await prisma.user.findUnique({ where: { id: row.userId } });
@@ -401,6 +467,8 @@ export type MediaImportLaneOptions = {
   /** Tests only: where B-roll output goes (default `<cwd>/stocks`, as the web upload). */
   stocksDir?: string;
   log?: MediaImportLaneLog;
+  /** How often a running url fetch re-reads its row to notice a cancel (default 3 s). */
+  cancelCheckMs?: number;
 };
 
 export type MediaImportLane = {
@@ -421,6 +489,7 @@ export function createMediaImportLane(options: MediaImportLaneOptions = {}): Med
     processStaged: options.processStaged ?? processStagedUpload,
     stocksDir: options.stocksDir ?? path.join(process.cwd(), "stocks"),
     log: options.log ?? consoleLog,
+    cancelCheckMs: Math.max(10, options.cancelCheckMs ?? DEFAULT_CANCEL_CHECK_MS),
   };
   const log = deps.log;
   const active = new Set<Promise<void>>();

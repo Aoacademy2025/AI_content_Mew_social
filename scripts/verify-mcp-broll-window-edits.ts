@@ -1028,6 +1028,52 @@ async function main() {
       && /OR:\s*live\.map/.test(recovery), recovery.slice(0, 200));
   });
 
+  await section("M5) a web export that finishes between the re-render's commit and its hop's rebase keeps the hop's base (R1/N1)", async () => {
+    // Review repro (prB-branch-review §4 R1): the web export clears the Pending Edit Draft while
+    // the re-render's hop has not rebased yet. Re-seeding from the export must keep the stored
+    // baseJobId, or the hop's rebase CAS misses and the applied window edit stays pending —
+    // the agent's next export_video would re-render it a second time.
+    await prisma.videoJob.updateMany({
+      where: { userId: fixer.user.id, status: { in: ["queued", "processing", "waiting_provider"] } },
+      data: { status: "canceled", finishedAt: new Date() },
+    });
+    const { root, projectId } = await heldRootVia(fixer);
+    const upload = await attachReady(fixer, root.id, 1, "m5");
+    const project = await projectRow(projectId);
+    const stored = (await storedDraft(projectId))!;
+    const base = parseVideoJobOutput(root.outputJson)!;
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: fixer.user.id } });
+    const web = await enqueueEditorExport({
+      user, brandVisualAccess: { canUse: false } as never, sourceJobId: root.id,
+      subtitleOverlayConfig: draftLib.toBurnConfig(stored, { videoUrl: base.videoUrl!, preview: base.preview! }),
+      editorSnapshot: draftLib.toEditorSnapshotDraft(stored), idempotencyKey: "bwe-m5-web-export",
+      expectedPendingRevision: project.pendingEditRevision,
+    });
+    check("the web export is enqueued against the draft revision", web.ok, JSON.stringify(web));
+    if (!web.ok) return;
+    const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+    check("export_video with a window edit starts a re-render", exported.status === "rerendering" && typeof exported.rerenderJobId === "string", JSON.stringify(exported));
+    const rrId = String(exported.rerenderJobId);
+    const preRebase = await projectRow(projectId);
+    await prisma.siteConfig.upsert({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, create: { key: RENDER_DEPLOY_DRAIN_KEY, value: "1" }, update: { value: "1" } });
+    const rrDone = await runJob(rrId, fixer.user.id);
+    await prisma.siteConfig.update({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, data: { value: "0" } });
+    check("the re-render finishes (its hop held by the drain)", rrDone.status === "done", JSON.stringify({ status: rrDone.status, error: rrDone.errorMessage }));
+    // A crash between the re-render's finish commit and its hop's rebase CAS.
+    await prisma.editorProject.update({ where: { id: projectId }, data: { pendingEditJson: preRebase.pendingEditJson, pendingEditRevision: preRebase.pendingEditRevision } });
+    const webDone = await runJob(web.job.id, fixer.user.id);
+    check("the web export finishes", webDone.status === "done", JSON.stringify({ status: webDone.status, error: webDone.errorMessage }));
+    const { continueMcpRerenderChain } = fromSrc("lib/mcp/rerender-chain") as typeof import("../src/lib/mcp/rerender-chain");
+    await continueMcpRerenderChain({ userId: fixer.user.id, rerenderJobId: rrId });
+    const afterHop = draftLib.parsePendingEditDraft((await projectRow(projectId)).pendingEditJson);
+    check("after the hop, the window edit the re-render already applied is no longer pending", (afterHop?.windowEdits.length ?? 0) === 0, JSON.stringify(afterHop?.windowEdits));
+    await prisma.videoJob.updateMany({ where: { userId: fixer.user.id, status: { in: ["queued", "processing", "waiting_provider"] } }, data: { status: "canceled", finishedAt: new Date() } });
+    const again = await callTool(fixer.token, "export_video", { jobId: root.id });
+    const rr2 = again.rerenderJobId ? await prisma.videoJob.findUnique({ where: { id: String(again.rerenderJobId) } }) : null;
+    check("the agent's next export_video does not re-render the already-applied window edit", again.status !== "rerendering",
+      JSON.stringify({ status: again.status, error: again.error, edits: rr2 ? inputOf(rr2).windowEdits : null, upload: upload.resultSrc }));
+  });
+
   // ── J ──
   await section("J) create_video_job without the new fields is unchanged (regression)", async () => {
     const plain = await callTool(tester.token, "create_video_job", { script: SCRIPT, voiceProvider: "gemini", idempotencyKey: "bwe-plain-1" });

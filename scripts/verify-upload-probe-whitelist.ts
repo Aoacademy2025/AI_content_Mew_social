@@ -42,6 +42,7 @@ import {
 } from "../src/lib/media-probe-args";
 import {
   ffprobeDimensions,
+  ffprobeDisplayDimensions,
   ffprobeDurationSec,
   getFfprobePath,
   probeDurationMs,
@@ -336,6 +337,7 @@ async function hostileChecks(dir: string, det: Detectors): Promise<void> {
 
       // Both routes gate on this probe before any transcode (415 on null).
       check(`${label}: ffprobeDimensions rejects`, ffprobeDimensions(file, demuxer) === null);
+      check(`${label}: ffprobeDisplayDimensions rejects (presenter checks, N2)`, ffprobeDisplayDimensions(file, demuxer) === null);
       if (kind === "video") {
         // upload-avatar's duration probe (ffprobe, then the ffmpeg -i fallback).
         check(`${label}: probeDurationMs rejects (ffprobe + ffmpeg fallback)`, (await probeDurationMs(file, demuxer)) === null);
@@ -519,6 +521,8 @@ async function legitChecks(dir: string): Promise<void> {
     if (!demuxer) continue;
     const dims = ffprobeDimensions(file, demuxer);
     check(`${label}: ffprobeDimensions 360x640`, dims?.width === 360 && dims?.height === 640, JSON.stringify(dims));
+    const shown = ffprobeDisplayDimensions(file, demuxer);
+    check(`${label}: ffprobeDisplayDimensions 360x640 (no rotation)`, shown?.width === 360 && shown?.height === 640, JSON.stringify(shown));
     const ms = await probeDurationMs(file, demuxer);
     check(`${label}: probeDurationMs ≈ 1000`, ms !== null && Math.abs(ms - 1000) <= 100, String(ms));
 

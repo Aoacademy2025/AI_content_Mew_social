@@ -69,10 +69,19 @@ export function stageFetchedFile(importId: string, fromPath: string): void {
  */
 export const STAGING_MIN_FREE_BYTES = 5 * 1024 ** 3;
 
+/**
+ * True when the filesystem holding `dir` has room for `maxBytes` above the floor. Throws if it
+ * cannot tell. PR-B fix round 1 (SEC-B1): the import lane also checks the disk each output is
+ * written to (`public/renders/`, `stocks/`), not only staging.
+ */
+export function diskHasRoomFor(dir: string, maxBytes: number): boolean {
+  const { bavail, bsize } = fs.statfsSync(dir);
+  return Number(bavail) * Number(bsize) >= STAGING_MIN_FREE_BYTES + maxBytes;
+}
+
 /** True when the staging filesystem has room for `maxBytes` above the floor. Throws if it cannot tell. */
 export function stagingHasRoomFor(maxBytes: number): boolean {
-  const { bavail, bsize } = fs.statfsSync(ensureStagingDir());
-  return Number(bavail) * Number(bsize) >= STAGING_MIN_FREE_BYTES + maxBytes;
+  return diskHasRoomFor(ensureStagingDir(), maxBytes);
 }
 
 export type StageResult =

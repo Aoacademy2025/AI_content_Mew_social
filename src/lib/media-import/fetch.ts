@@ -110,6 +110,11 @@ export interface MediaFetchOptions {
   deadlineMs?: number;
   /** Directory for the temp file. Default: mediaImportTempDir(). */
   tmpDir?: string;
+  /**
+   * Stops the download like the deadline does (`fetch_timeout`, partial file deleted). The
+   * import lane fires it once the row is no longer live — canceled or failed meanwhile (SEC-A6).
+   */
+  signal?: AbortSignal;
 }
 
 export interface FetchedMedia {
@@ -276,10 +281,13 @@ async function fetchMedia(rawUrl: string, options: MediaFetchOptions, hooks: Med
     failure: null,
     current: null,
   };
-  const deadline = setTimeout(() => {
+  const stop = () => {
     ctx.failure ??= "fetch_timeout";
     ctx.current?.destroy(new MediaFetchError("fetch_timeout"));
-  }, deadlineMs);
+  };
+  const deadline = setTimeout(stop, deadlineMs);
+  if (options.signal?.aborted) stop();
+  else options.signal?.addEventListener("abort", stop, { once: true });
 
   try {
     let url = parseHttpsUrl(rawUrl);
@@ -308,6 +316,7 @@ async function fetchMedia(rawUrl: string, options: MediaFetchOptions, hooks: Med
     throw new MediaFetchError(error instanceof MediaFetchError ? error.code : ctx.failure ?? "fetch_failed");
   } finally {
     clearTimeout(deadline);
+    options.signal?.removeEventListener("abort", stop);
   }
 }
 

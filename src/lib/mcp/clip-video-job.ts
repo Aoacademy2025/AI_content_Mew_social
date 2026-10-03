@@ -8,6 +8,8 @@ import {
   findOwnedMediaImport,
 } from "@/lib/media-import/imports";
 import { admissionRefusal } from "@/lib/mcp/media-import-copy";
+import { isReservedMcpChainIdempotencyKey } from "@/lib/mcp/chain-key";
+import { toPublicVideoJobStatus } from "@/lib/mcp/video-job-status";
 import { durationCapSecFor } from "@/lib/plan-limits";
 
 /**
@@ -124,6 +126,28 @@ export function parseClipJobArgs(args: ClipArgs): { ok: true; clip: ClipRequest 
   return { ok: true, clip: { source: { kind: "url", url: parsed.href }, cutawayLayout } };
 }
 
+/**
+ * T14-A2 (PR-B fix round 1): a retried clip create with an idempotencyKey already used answers
+ * `duplicate` with the existing job BEFORE any import starts — so a retry never queues a second
+ * import, never meets `too_many_active_imports` / `too_many_jobs`, and never fails or cancels
+ * anything. A server-reserved key (`mcp-chain:` …) is refused the same way. null = a fresh key.
+ */
+export async function duplicateClipJobReply(
+  userId: string,
+  idempotencyKey: string,
+): Promise<(ClipJobFailure & { jobId?: string; status?: string }) | null> {
+  const next = "เช็คงานเดิมด้วย get_video_status — ถ้าต้องการสร้างงานใหม่ ให้ใช้ idempotencyKey ใหม่";
+  if (isReservedMcpChainIdempotencyKey(idempotencyKey)) {
+    return failure("duplicate", "idempotencyKey นี้ถูกใช้แล้ว", "ใช้ idempotencyKey อื่นที่ไม่ขึ้นต้นด้วย mcp-chain:, mcp-export: หรือ mcp-rerender:");
+  }
+  const row = await prisma.videoJob.findUnique({
+    where: { userId_idempotencyKey: { userId, idempotencyKey } },
+    select: { id: true, status: true },
+  });
+  if (!row) return null;
+  return { ...failure("duplicate", "idempotencyKey นี้ถูกใช้แล้ว — งานเดิมยังอยู่", next), jobId: row.id, status: toPublicVideoJobStatus(row.status) };
+}
+
 export type StartedClipImport = { importId: string; createdHere: boolean };
 
 /**
@@ -186,6 +210,7 @@ export const CLIP_IMPORT_HINT: Record<string, string> = {
   probe_failed: "อ่านข้อมูลวิดีโอไม่ได้ — ลองส่งออกคลิปใหม่เป็น mp4 (H.264)",
   not_portrait: "คลิปต้องเป็นแนวตั้ง (สูงมากกว่ากว้าง เช่น 1080×1920)",
   too_large_dimensions: "ความละเอียดต้องไม่เกิน 4096 พิกเซลต่อด้าน",
+  storage_busy: "พื้นที่เก็บไฟล์ของระบบเต็มชั่วคราว — รอสักครู่แล้วส่งใหม่ (ไม่ได้ตัดโควต้าหรือเครดิต)",
   duration_exceeded: `คลิปยาวเกินเพดานของแผน (PRO ${durationCapSecFor("PRO") / 60} นาที, BUSINESS ${durationCapSecFor("BUSINESS") / 60} นาทีต่อคลิป)`,
   import_missing: "ไม่พบไฟล์นำเข้าของงานนี้แล้ว",
   import_failed: "ไฟล์ที่นำเข้าใช้เป็นคลิปพิธีกรไม่ได้",
@@ -197,14 +222,15 @@ function safeImportCode(code: string | null | undefined): string {
 }
 
 /**
- * G28: only the import lane's own output path may become `input.clipUrl` — a same-origin path
- * under a prefix the web upload path also allows, no traversal, no query, no scheme.
+ * G28 / T14-A4: only the import lane's own presenter output may become `input.clipUrl` — exactly
+ * the name presenterOutputFilename() writes (`presenter-import-<ms>-<uuid>.<mp4|webm>`) under
+ * `/api/renders/`, the one prefix the presenter lane serves. No subdirectory, no traversal, no
+ * encoding, no query, no scheme; anything else (a B-roll output, a render) is refused.
  */
+const PRESENTER_OUTPUT_SRC = /^\/api\/renders\/presenter-import-\d{1,16}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:mp4|webm)$/;
 export function allowlistedClipSrc(src: string | null | undefined): string | null {
-  if (typeof src !== "string" || src.length > 500) return null;
-  if (!/^\/(?:api|renders|uploads)\/[A-Za-z0-9._/-]+$/.test(src)) return null;
-  if (src.split("/").some((segment) => segment === "." || segment === "..")) return null;
-  return src;
+  if (typeof src !== "string" || src.length > 200) return null;
+  return PRESENTER_OUTPUT_SRC.test(src) ? src : null;
 }
 
 function parseInput(inputJson: string): Record<string, unknown> | null {

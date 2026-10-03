@@ -49,6 +49,7 @@ import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 import {
   abandonClipImport,
   clipFieldsRequested,
+  duplicateClipJobReply,
   parseClipJobArgs,
   settleClipImportJobSafely,
   startClipImport,
@@ -190,6 +191,12 @@ const handler = createMcpHandler(
           const clipArgs = parseClipJobArgs(args);
           if (!clipArgs.ok) return clipArgs.failure;
           const clip = clipArgs.clip;
+          // T14-A2: a clip retry with a used idempotencyKey answers with the existing job before
+          // any cap or import — a retry never queues a second import (the plain path is unchanged).
+          if (clip && args.idempotencyKey !== undefined) {
+            const duplicate = await duplicateClipJobReply(p.userId, args.idempotencyKey);
+            if (duplicate) return duplicate;
+          }
           const fillYourself = clip?.cutawayLayout === "fillYourself";
           const hold = args.exportMode === "hold";
           try {

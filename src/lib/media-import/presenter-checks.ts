@@ -23,7 +23,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { resolveSafeInputDemuxer } from "@/lib/media-probe-args";
-import { ffprobeDimensions, probeDurationMs } from "@/lib/upload-media-probe";
+import { ffprobeDisplayDimensions, probeDurationMs } from "@/lib/upload-media-probe";
 import { audioDurationLimitViolation, type AudioDurationLimitViolation } from "@/lib/plan-limits";
 import { moveFile } from "@/lib/safe-download";
 
@@ -72,7 +72,9 @@ export async function runPresenterChecks(params: {
     };
   }
 
-  const dims = ffprobeDimensions(filePath, inputFormat);
+  // N2: the displayed orientation (a ±90° rotation swaps width/height), like upload-avatar's
+  // browser check — checked before the 4096 px cap and portrait-only.
+  const dims = ffprobeDisplayDimensions(filePath, inputFormat);
   if (!dims) {
     return { ok: false, error: { code: "probe_failed", message: "อ่านข้อมูลวิดีโอไม่สำเร็จ" } };
   }

@@ -991,6 +991,7 @@ const ORIGINAL_DURING_RERENDER = editToolFailure(
 const IMPORT_ERROR_HINT: Record<string, string> = {
   fetch_timeout: "ดาวน์โหลดไม่ทันเวลา หรือคิวนำเข้าไม่ว่างในตอนนั้น — ส่งไฟล์เดิมใหม่ได้",
   import_missing: "ไม่พบไฟล์นำเข้านี้แล้ว",
+  storage_busy: "พื้นที่เก็บไฟล์ของระบบเต็มชั่วคราว — รอสักครู่แล้วส่งใหม่",
 };
 
 function rerenderReply(rootJobId: string, rerenderJobId: string, draftRevision: number) {

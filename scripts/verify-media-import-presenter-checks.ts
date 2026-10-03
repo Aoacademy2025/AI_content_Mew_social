@@ -5,6 +5,9 @@
 // Covers: ffprobe type gate, the 4096px dimension cap, portrait-only, the plan's
 // audioDurationLimitViolation duration gate, and processPresenterImport's move-on-success
 // into the same directory upload-avatar.ts writes to.
+// PR-B fix round 1 (N2): orientation is the DISPLAYED one — a ±90° rotation (display-matrix
+// side data or the legacy rotate tag) swaps width/height before the portrait and 4096 px
+// checks, like the browser's videoWidth/videoHeight; the probe keeps the G24 pins.
 //
 // Needs real ffmpeg AND ffprobe (same as verify-upload-probe-whitelist.ts).
 // Run: npx tsx scripts/verify-media-import-presenter-checks.ts
@@ -98,6 +101,50 @@ async function presenterCheckScenarios(tmp: string): Promise<void> {
   check("unsupported extension → unsupported_type",
     !unsupportedResult.ok && unsupportedResult.error.code === "unsupported_type",
     JSON.stringify(unsupportedResult));
+
+  // N2: rotation. Phones store portrait video as landscape frames plus a rotation; the
+  // browser (upload-avatar's check) shows it portrait, so the MCP check must agree.
+  const rotate = async (src: string, out: string, degrees: number) => {
+    try {
+      await ff(["-display_rotation", String(degrees), "-i", src, "-c", "copy", out]); // ffmpeg ≥ 6
+    } catch {
+      await ff(["-i", src, "-c", "copy", "-metadata:s:v:0", `rotate=${(360 - degrees) % 360}`, out]); // older ffmpeg
+    }
+    const { stdout } = await execFileAsync(getFfmpegPath().replace(/ffmpeg(\.exe)?$/i, "ffprobe$1"), [
+      "-v", "error", "-select_streams", "v:0", "-show_entries", "stream_tags=rotate:stream_side_data=rotation", "-of", "json", out,
+    ]);
+    check(`fixture ${path.basename(out)} carries a ${degrees}° rotation`, /"rotat(e|ion)"/.test(stdout), stdout.replace(/\s+/g, ""));
+  };
+  const rotLandscape90 = path.join(tmp, "landscape-rot90.mp4");
+  await rotate(landscapePath, rotLandscape90, 90);
+  const rot90 = await runPresenterChecks({ filePath: rotLandscape90, ext: "mp4", plan: "FREE" });
+  check("640x360 frames + rotate 90 → accepted as portrait (360x640)", rot90.ok && rot90.width === 360 && rot90.height === 640, JSON.stringify(rot90));
+  const rotLandscapeMinus90 = path.join(tmp, "landscape-rot270.mp4");
+  await rotate(landscapePath, rotLandscapeMinus90, 270);
+  const rot270 = await runPresenterChecks({ filePath: rotLandscapeMinus90, ext: "mp4", plan: "FREE" });
+  check("640x360 frames + rotate 270 (−90) → accepted as portrait", rot270.ok && rot270.height > rot270.width, JSON.stringify(rot270));
+  const rotPortrait90 = path.join(tmp, "portrait-rot90.mp4");
+  await rotate(portraitPath, rotPortrait90, 90);
+  const shownLandscape = await runPresenterChecks({ filePath: rotPortrait90, ext: "mp4", plan: "FREE" });
+  check("360x640 frames + rotate 90 (displayed landscape) → not_portrait", !shownLandscape.ok && shownLandscape.error.code === "not_portrait", JSON.stringify(shownLandscape));
+  const rotLandscape180 = path.join(tmp, "landscape-rot180.mp4");
+  await rotate(landscapePath, rotLandscape180, 180);
+  const upsideDown = await runPresenterChecks({ filePath: rotLandscape180, ext: "mp4", plan: "FREE" });
+  check("640x360 frames + rotate 180 (still landscape) → not_portrait", !upsideDown.ok && upsideDown.error.code === "not_portrait", JSON.stringify(upsideDown));
+  const wideFrames = path.join(tmp, "wide.mp4");
+  await ff(["-f", "lavfi", "-i", `testsrc=size=${MAX_PRESENTER_DIMENSION_PX + 4}x96:rate=1:duration=1`, "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", wideFrames]);
+  const wideRot = path.join(tmp, "wide-rot90.mp4");
+  await rotate(wideFrames, wideRot, 90);
+  const tallShown = await runPresenterChecks({ filePath: wideRot, ext: "mp4", plan: "FREE" });
+  check("a rotated portrait over 4096 px tall → still too_large_dimensions", !tallShown.ok && tallShown.error.code === "too_large_dimensions", JSON.stringify(tallShown));
+  const probeSource = fs.readFileSync(path.join(process.cwd(), "src/lib/upload-media-probe.ts"), "utf8");
+  const displayProbe = probeSource.slice(probeSource.indexOf("export function ffprobeDisplayDimensions"));
+  const displayBody = displayProbe.slice(0, displayProbe.indexOf("\n}\n") + 3);
+  check("the rotation-aware probe keeps the G24 pins (safeInputArgs: -protocol_whitelist file + a pinned -f)",
+    displayBody.includes("...safeInputArgs(demuxer)") && displayBody.includes("getFfprobePath()"), displayBody.slice(0, 300));
+  const checksSource = fs.readFileSync(path.join(process.cwd(), "src/lib/media-import/presenter-checks.ts"), "utf8");
+  check("presenter checks probe with the demuxer resolved from the file's bytes",
+    /ffprobeDisplayDimensions\(filePath, inputFormat\)/.test(checksSource) && !/ffprobeDimensions\(/.test(checksSource));
 
   // Non-media bytes named .mp4 fail closed on the probe rather than crashing.
   const garbagePath = path.join(tmp, "garbage.mp4");

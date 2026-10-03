@@ -21,6 +21,13 @@
 //      over-duration, fetch failure); a reservation, if one ever existed, is refunded.
 //   F. a waiting job holds no worker slot; it still counts toward the in-flight cap.
 //   G. cancel while waiting: the job never runs after its import is ready.
+//   K. PR-B fix round 1 SEC-B1: free-disk floor on the lane (fetch temp/staging + the output disk),
+//      fail closed storage_busy, nothing written, the clip job fails with zero net charge.
+//   L. SEC-A6 / T14-A3: cancel (MCP or web core) fails the job's url import; a claimed fetch is
+//      aborted at its next checkpoint; an upload import is the agent's own and survives.
+//   M. T14-A2: a duplicate idempotencyKey returns the existing job before any import starts.
+//   N. T14-A4: input.clipUrl only ever takes the lane's exact presenter output name.
+//   O. SEC-A5: waiting_import jobs whose import can no longer finish do not hold the deploy drain.
 //   H. audit: clipUrl redacted; no agent url in any reply, log or audit row.
 //   I. create_video_job without the new fields is unchanged (regression).
 //   J. wiring (package.json + CI after ffmpeg is installed), G14 envelopes.
@@ -256,26 +263,60 @@ async function main() {
   };
   const served = new Map<string, Buffer | Error>();
   const fetchCalls: Array<{ url: string; accept: Json }> = [];
-  const fakeFetch = async (url: string, options: { accept: Partial<Record<"image" | "video", number>> }) => {
+  /** Runs while the url is "downloading" (e.g. the disk fills up meanwhile). */
+  const duringFetch = new Map<string, () => void>();
+  /** Urls that stream until the caller aborts (or 15 s pass): the lane's cancel checkpoint. */
+  const slowUrls = new Set<string>();
+  const slowState: { startedAt: number; abortedAt: number } = { startedAt: 0, abortedAt: 0 };
+  const fakeFetch = async (url: string, options: { accept: Partial<Record<"image" | "video", number>>; signal?: AbortSignal }) => {
     fetchCalls.push({ url, accept: { ...options.accept } });
     const behavior = served.get(url);
     if (!behavior) throw new fetchMod.MediaFetchError("fetch_failed");
     if (behavior instanceof Error) throw behavior;
     if (options.accept.video === undefined) throw new fetchMod.MediaFetchError("unsupported_media");
+    duringFetch.get(url)?.();
     ensurePrivateDir(tempDir);
+    if (slowUrls.has(url)) {
+      // Like T10: a .part grows in the temp dir until the body ends or the request is destroyed.
+      const part = path.join(tempDir, `media-import-${randomUUID()}.part`);
+      fs.writeFileSync(part, behavior.subarray(0, 64), { mode: 0o600 });
+      slowState.startedAt = Date.now();
+      const aborted = await new Promise<boolean>((resolve) => {
+        if (options.signal?.aborted) return resolve(true);
+        const timer = setTimeout(() => resolve(false), 15_000);
+        options.signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(true); }, { once: true });
+      });
+      fs.rmSync(part, { force: true }); // T10 deletes its .part on abort (verify-media-import-fetch §16)
+      if (aborted) {
+        slowState.abortedAt = Date.now();
+        throw new fetchMod.MediaFetchError("fetch_timeout");
+      }
+    }
     const file = path.join(tempDir, `media-import-${randomUUID()}.mp4`);
     fs.writeFileSync(file, behavior, { mode: 0o600 });
     return { path: file, kind: "video" as const, ext: "mp4" as const, mime: "application/octet-stream", bytes: behavior.length };
   };
   const stocksDir = path.join(tmp, "stocks");
   fs.mkdirSync(stocksDir, { recursive: true });
+  // SEC-B1: statfs is real unless a section reports one directory's disk as full (or statfs broken).
+  const realStatfs = fs.statfsSync;
+  const diskFake: { fullDir: string | null; broken: boolean; asked: string[] } = { fullDir: null, broken: false, asked: [] };
+  (fs as { statfsSync: unknown }).statfsSync = (target: fs.PathLike, ...rest: unknown[]) => {
+    diskFake.asked.push(path.resolve(String(target)));
+    if (diskFake.broken) throw Object.assign(new Error("EIO"), { code: "EIO" });
+    const real = (realStatfs as (...args: unknown[]) => fs.StatsFs)(target, ...rest);
+    return diskFake.fullDir && path.resolve(String(target)) === diskFake.fullDir ? { ...real, bavail: 0 } : real;
+  };
   const laneLog: string[] = [];
+  type LaneExtra = Partial<Parameters<typeof lane.createMediaImportLane>[0]>;
+  const newLane = (extra: LaneExtra = {}) => lane.createMediaImportLane({
+    pollMs: 20, watchdogMs: 60 * 60_000, stocksDir, fetchMedia: fakeFetch,
+    log: { info: (line) => { laneLog.push(line); }, error: (line) => { laneLog.push(line); } },
+    ...extra,
+  });
   /** Run the REAL import lane (real presenter checks, fake fetch) until every live import has settled. */
-  async function runLane() {
-    const l = lane.createMediaImportLane({
-      pollMs: 20, watchdogMs: 60 * 60_000, stocksDir, fetchMedia: fakeFetch,
-      log: { info: (line) => { laneLog.push(line); }, error: (line) => { laneLog.push(line); } },
-    });
+  async function runLane(extra: LaneExtra = {}) {
+    const l = newLane(extra);
     l.start();
     const settled = await waitFor(async () => (await prisma.mediaImport.count({
       where: { status: "pending" },
@@ -685,6 +726,9 @@ async function main() {
     const waiting = await prisma.videoJob.findFirstOrThrow({ where: { userId: capper.user.id, status: "waiting_import" }, orderBy: { createdAt: "asc" } });
     const cancel = await callTool(capper.token, "cancel_video_job", { id: waiting.id });
     check("cancel_video_job on a waiting job → canceled", (await jobRow(waiting.id)).status === "canceled", JSON.stringify(cancel));
+    const canceledImport = await prisma.mediaImport.findUniqueOrThrow({ where: { id: String(inputOf(waiting).clipImportId) } });
+    check("SEC-A6: its url import is canceled with the job (failed canceled, link cleared)",
+      canceledImport.status === "failed" && canceledImport.errorCode === "canceled" && canceledImport.sourceUrl === null, JSON.stringify(canceledImport));
     check("the lane settles the remaining imports", await runLane());
     await sweepStalledVideoJobs(new Date());
     const after = await jobRow(waiting.id);
@@ -692,6 +736,345 @@ async function main() {
     const others = await prisma.videoJob.findMany({ where: { userId: capper.user.id, status: "queued" } });
     check("the other waiting jobs were promoted", others.length === 2 && others.every((row) => typeof inputOf(row).clipUrl === "string"), String(others.length));
     await clearInflight(capper.user.id);
+  });
+
+  // ── shared by K–O ──
+  const freshJobsOff = async () => {
+    await prisma.videoJob.updateMany({ where: { status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } }, data: { status: "canceled", finishedAt: new Date() } });
+  };
+  const newPresenterOutputs = () => listPresenterOutputs().filter((name) => !presenterOutputsBefore.has(name));
+  const tempLeft = () => (fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []);
+  const stagingDir = path.join(os.tmpdir(), "heroai-media-import");
+  const stagingLeft = () => (fs.existsSync(stagingDir) ? fs.readdirSync(stagingDir) : []);
+  const importOf = async (jobId: unknown) => prisma.mediaImport.findUniqueOrThrow({ where: { id: String(inputOf(await jobRow(jobId)).clipImportId) } });
+
+  // ── K ──
+  await section("K) SEC-B1: the lane keeps the free-disk floor on every disk it writes to; fails closed storage_busy, zero net charge", async () => {
+    const disk = await makeUser("u-cij-disk", "qa-cij-disk@aoacademy.co");
+    const rendersAbs = path.resolve(rendersDir);
+    const outputsBefore = newPresenterOutputs().length;
+
+    // (1) the presenter output disk (public/renders) is full before the fetch: nothing is downloaded.
+    const url1 = clipLink("disk-full-before");
+    served.set(url1, portrait);
+    const money1 = await money(disk.user.id);
+    const r1 = await callTool(disk.token, TOOL, { clipUrl: url1, idempotencyKey: "cij-disk-1" });
+    check("create accepted (waits)", typeof r1.jobId === "string" && (await jobRow(r1.jobId)).status === "waiting_import", JSON.stringify(r1));
+    diskFake.fullDir = rendersAbs;
+    diskFake.asked.length = 0;
+    const fetchesBefore = fetchCalls.length;
+    check("the lane settles it", await runLane());
+    diskFake.fullDir = null;
+    const imp1 = await importOf(r1.jobId);
+    check("output disk below the floor → import failed storage_busy", imp1.status === "failed" && imp1.errorCode === "storage_busy" && imp1.resultSrc === null, JSON.stringify(imp1));
+    check("the floor was measured on the disk the output is written to (public/renders)", diskFake.asked.includes(rendersAbs), JSON.stringify([...new Set(diskFake.asked)]));
+    check("…and on the fetch/staging disk", diskFake.asked.some((dir) => dir.startsWith(privateTmp)), JSON.stringify([...new Set(diskFake.asked)]));
+    check("checked before fetching: the url was never downloaded", fetchCalls.length === fetchesBefore && !fetchCalls.some((c) => c.url === url1));
+    check("no file written (no presenter output, no temp, no staged file)",
+      newPresenterOutputs().length === outputsBefore && tempLeft().length === 0 && stagingLeft().length === 0,
+      JSON.stringify({ outputs: newPresenterOutputs(), temp: tempLeft(), staging: stagingLeft() }));
+    await sweepStalledVideoJobs(new Date());
+    const f1 = await jobRow(r1.jobId);
+    check("the clip job fails with errorCode storage_busy (Thai hint, nothing started)", f1.status === "failed" && f1.errorCode === "storage_busy"
+      && /storage_busy/.test(f1.errorMessage ?? "") && /พื้นที่/.test(f1.errorMessage ?? ""), `${f1.status} ${f1.errorCode} ${f1.errorMessage}`);
+    const s1 = await status(disk, String(r1.jobId));
+    check("get_video_status: failed storage_busy, refunded, nothing pending", s1.status === "failed" && s1.errorCode === "storage_busy" && s1.refunded === true && s1.refundPending === false, JSON.stringify(s1));
+    check("net charge 0", (await money(disk.user.id)) === money1 && f1.fundingState === "none");
+
+    // (2) room at fetch time, the output disk fills while downloading: refused before persisting.
+    const url2 = clipLink("disk-full-after");
+    served.set(url2, portrait);
+    duringFetch.set(url2, () => { diskFake.fullDir = rendersAbs; });
+    const money2 = await money(disk.user.id);
+    const r2 = await callTool(disk.token, TOOL, { clipUrl: url2, idempotencyKey: "cij-disk-2" });
+    check("the lane settles it", await runLane());
+    diskFake.fullDir = null;
+    duringFetch.delete(url2);
+    const imp2 = await importOf(r2.jobId);
+    check("floor breached after the download → storage_busy before persisting", imp2.status === "failed" && imp2.errorCode === "storage_busy", JSON.stringify(imp2));
+    check("…the download did run", fetchCalls.some((c) => c.url === url2));
+    check("…and nothing persisted: no presenter output, the downloaded and staged files deleted",
+      newPresenterOutputs().length === outputsBefore && tempLeft().length === 0 && stagingLeft().length === 0,
+      JSON.stringify({ outputs: newPresenterOutputs(), temp: tempLeft(), staging: stagingLeft() }));
+    await sweepStalledVideoJobs(new Date());
+    const f2 = await jobRow(r2.jobId);
+    check("the clip job fails storage_busy with net charge 0", f2.status === "failed" && f2.errorCode === "storage_busy" && (await money(disk.user.id)) === money2, `${f2.status} ${f2.errorCode}`);
+
+    // (3) statfs cannot answer: fail closed.
+    const url3 = clipLink("disk-unknown");
+    served.set(url3, portrait);
+    const r3 = await callTool(disk.token, TOOL, { clipUrl: url3, idempotencyKey: "cij-disk-3" });
+    diskFake.broken = true;
+    check("the lane settles it", await runLane());
+    diskFake.broken = false;
+    const imp3 = await importOf(r3.jobId);
+    check("statfs failing → storage_busy (fail closed), never fetched", imp3.status === "failed" && imp3.errorCode === "storage_busy" && !fetchCalls.some((c) => c.url === url3), JSON.stringify(imp3));
+
+    // (4) with room, the same clip imports normally (the floor is not a blanket refusal).
+    const url4 = clipLink("disk-ok");
+    served.set(url4, portrait);
+    const r4 = await callTool(disk.token, TOOL, { clipUrl: url4, idempotencyKey: "cij-disk-4" });
+    check("the lane settles it", await runLane());
+    check("with room on every disk → ready", (await importOf(r4.jobId)).status === "ready");
+    check("storage_busy is in the lane's fixed code vocabulary", (lane.MEDIA_IMPORT_LANE_ERROR_CODES as readonly string[]).includes("storage_busy"));
+    await clearInflight(disk.user.id);
+  });
+
+  // ── L ──
+  await section("L) SEC-A6 / T14-A3: canceling (or abandoning) a waiting clip job cancels its url import", async () => {
+    const canceler = await makeUser("u-cij-cancel", "qa-cij-cancel@aoacademy.co");
+    const outputsBefore = newPresenterOutputs().length;
+
+    // (1) import still queued: canceled at once, never fetched.
+    const url1 = clipLink("cancel-queued");
+    served.set(url1, portrait);
+    const money1 = await money(canceler.user.id);
+    const r1 = await callTool(canceler.token, TOOL, { clipUrl: url1, idempotencyKey: "cij-cancel-1" });
+    const cancel1 = await callTool(canceler.token, "cancel_video_job", { id: r1.jobId });
+    const imp1 = await importOf(r1.jobId);
+    check("cancel_video_job → job canceled", (await jobRow(r1.jobId)).status === "canceled", JSON.stringify(cancel1));
+    check("…its queued url import is failed canceled at once, link cleared", imp1.status === "failed" && imp1.errorCode === "canceled" && imp1.sourceUrl === null, JSON.stringify(imp1));
+    check("the lane settles", await runLane());
+    check("…and never fetches it", !fetchCalls.some((c) => c.url === url1));
+    check("net charge 0", (await money(canceler.user.id)) === money1);
+
+    // (2) import claimed and downloading: the fetch is aborted at the lane's next checkpoint.
+    const url2 = clipLink("cancel-downloading");
+    served.set(url2, portrait);
+    slowUrls.add(url2);
+    slowState.startedAt = 0; slowState.abortedAt = 0;
+    const r2 = await callTool(canceler.token, TOOL, { clipUrl: url2, idempotencyKey: "cij-cancel-2" });
+    const l2 = newLane({ cancelCheckMs: 25 });
+    l2.start();
+    check("the lane claims it and starts downloading", await waitFor(() => slowState.startedAt > 0, 10_000));
+    const canceledAt = Date.now();
+    await callTool(canceler.token, "cancel_video_job", { id: r2.jobId });
+    const stopped = await waitFor(async () => l2.inFlight === 0 && slowState.abortedAt > 0, 20_000);
+    await l2.stop();
+    slowUrls.delete(url2);
+    check("the in-flight download was aborted promptly (≤ 3 s after the cancel)", stopped && slowState.abortedAt - canceledAt <= 3_000,
+      `aborted=${slowState.abortedAt ? slowState.abortedAt - canceledAt : "never"} ms`);
+    const imp2 = await importOf(r2.jobId);
+    check("…the import stays failed canceled", imp2.status === "failed" && imp2.errorCode === "canceled" && imp2.resultSrc === null, JSON.stringify(imp2));
+    check("…no partial, staged or output file is left",
+      tempLeft().length === 0 && stagingLeft().length === 0 && newPresenterOutputs().length === outputsBefore,
+      JSON.stringify({ temp: tempLeft(), staging: stagingLeft(), outputs: newPresenterOutputs() }));
+
+    // (3) cancel lands while the downloaded clip is being processed: its output is deleted, never published.
+    const url3 = clipLink("cancel-processing");
+    served.set(url3, portrait);
+    const r3 = await callTool(canceler.token, TOOL, { clipUrl: url3, idempotencyKey: "cij-cancel-3" });
+    const stagingMod = fromSrc("lib/media-import/upload-staging") as typeof import("../src/lib/media-import/upload-staging");
+    let canceledMidProcess = false;
+    check("the lane settles it", await runLane({
+      processStaged: async (params) => {
+        await callTool(canceler.token, "cancel_video_job", { id: r3.jobId });
+        canceledMidProcess = true;
+        return stagingMod.processStagedUpload(params);
+      },
+    }));
+    const imp3 = await importOf(r3.jobId);
+    check("canceled mid-processing → import failed canceled, no resultSrc", canceledMidProcess && imp3.status === "failed" && imp3.errorCode === "canceled" && imp3.resultSrc === null, JSON.stringify(imp3));
+    check("…its presenter output was deleted, not published", newPresenterOutputs().length === outputsBefore && stagingLeft().length === 0, JSON.stringify(newPresenterOutputs()));
+    check("…and the job stays canceled", (await jobRow(r3.jobId)).status === "canceled");
+
+    // (4) the web DELETE path shares the same core.
+    const { cancelVideoJobCore } = fromSrc("lib/mcp/video-job-cancel-core") as typeof import("../src/lib/mcp/video-job-cancel-core");
+    const url4 = clipLink("cancel-web");
+    served.set(url4, portrait);
+    const r4 = await callTool(canceler.token, TOOL, { clipUrl: url4, idempotencyKey: "cij-cancel-4" });
+    const webCancel = await cancelVideoJobCore(canceler.user.id, String(r4.jobId), "[api/videos/jobs/:id]");
+    const imp4 = await importOf(r4.jobId);
+    check("web cancel core → job canceled and its url import failed canceled", webCancel.kind === "canceled" && imp4.status === "failed" && imp4.errorCode === "canceled", JSON.stringify(imp4));
+
+    // (5) someone else cannot cancel it, and a cancel never reaches another user's import.
+    const url5 = clipLink("cancel-foreign");
+    served.set(url5, portrait);
+    const r5 = await callTool(canceler.token, TOOL, { clipUrl: url5, idempotencyKey: "cij-cancel-5" });
+    const foreign = await callTool(third.token, "cancel_video_job", { id: r5.jobId });
+    const imp5 = await importOf(r5.jobId);
+    check("another user's cancel → refused; the job and its import are untouched",
+      (await jobRow(r5.jobId)).status === "waiting_import" && imp5.status === "pending", `${JSON.stringify(foreign)} ${imp5.status}`);
+    const forged = await createVideoJob(third.user.id, { script: "", mode: "upload", clipImportId: imp5.id, previewMode: true }, "cij-cancel-forged", { initialStatus: "waiting_import" } as never);
+    await callTool(third.token, "cancel_video_job", { id: forged.id });
+    check("a job naming another user's import id cannot cancel that import", (await prisma.mediaImport.findUniqueOrThrow({ where: { id: imp5.id } })).status === "pending");
+    await callTool(canceler.token, "cancel_video_job", { id: r5.jobId });
+
+    // (6) an upload is the agent's own file: canceling the job leaves it to finish and be reused.
+    const link = await callTool(canceler.token, "create_upload_url", { kind: "presenter" });
+    const put = await putUpload(String(link.uploadUrl), portrait);
+    check("presenter PUT accepted", put.status === 202, String(put.status));
+    const r6 = await callTool(canceler.token, TOOL, { clipUploadId: link.uploadId, idempotencyKey: "cij-cancel-6" });
+    check("a pending upload → the job waits", (await jobRow(r6.jobId)).status === "waiting_import", JSON.stringify(r6));
+    await callTool(canceler.token, "cancel_video_job", { id: r6.jobId });
+    check("canceling it leaves the upload import pending", (await prisma.mediaImport.findUniqueOrThrow({ where: { id: String(link.uploadId) } })).status === "pending");
+    check("the lane settles it", await runLane());
+    check("…and it becomes ready for reuse", (await prisma.mediaImport.findUniqueOrThrow({ where: { id: String(link.uploadId) } })).status === "ready");
+
+    // (7) abandon (the job was never created): a url import this call queued is canceled; an upload is not.
+    const clipMod = fromSrc("lib/mcp/clip-video-job") as typeof import("../src/lib/mcp/clip-video-job");
+    const abandoned = await clipMod.startClipImport(canceler.user.id, { kind: "url", url: clipLink("abandon") });
+    if (!abandoned.ok) throw new Error(`fixture: ${JSON.stringify(abandoned.failure)}`);
+    await clipMod.abandonClipImport(abandoned.started);
+    const imp7 = await prisma.mediaImport.findUniqueOrThrow({ where: { id: abandoned.started.importId } });
+    check("abandonClipImport → the url import it queued is failed canceled", imp7.status === "failed" && imp7.errorCode === "canceled", JSON.stringify(imp7));
+    await clipMod.abandonClipImport({ importId: String(link.uploadId), createdHere: false });
+    check("abandonClipImport never touches the agent's upload", (await prisma.mediaImport.findUniqueOrThrow({ where: { id: String(link.uploadId) } })).status === "ready");
+    await clearInflight(canceler.user.id);
+  });
+
+  // ── M ──
+  await section("M) T14-A2: a duplicate idempotencyKey returns the existing job before any import starts", async () => {
+    const duper = await makeUser("u-cij-dup", "qa-cij-dup@aoacademy.co");
+    const url = clipLink("dup");
+    served.set(url, portrait);
+    const first = await callTool(duper.token, TOOL, { clipUrl: url, idempotencyKey: "cij-dup-1" });
+    check("first create accepted", typeof first.jobId === "string", JSON.stringify(first));
+    const imports0 = await prisma.mediaImport.count({ where: { userId: duper.user.id } });
+    const jobs0 = await prisma.videoJob.count({ where: { userId: duper.user.id } });
+    const retry = await callTool(duper.token, TOOL, { clipUrl: url, idempotencyKey: "cij-dup-1" });
+    check("retry with the same key → duplicate, naming the existing job", retry.error === "duplicate" && retry.jobId === first.jobId && retry.status === "queued"
+      && checkFailureEnvelope(retry).length === 0, JSON.stringify(retry));
+    check("…no second import, no second job", (await prisma.mediaImport.count({ where: { userId: duper.user.id } })) === imports0
+      && (await prisma.videoJob.count({ where: { userId: duper.user.id } })) === jobs0);
+
+    // At the active-import cap, a retry still answers duplicate (never too_many_active_imports).
+    const importsMod = fromSrc("lib/media-import/imports") as typeof import("../src/lib/media-import/imports");
+    for (let i = 0; i < importsMod.MAX_ACTIVE_IMPORTS; i += 1) {
+      const filler = await importsMod.createUrlImport(duper.user.id, clipLink(`dup-filler-${i}`), new Date(), "broll_video");
+      if (!filler.ok && filler.code !== "too_many_active_imports") throw new Error(`fixture: ${filler.code}`);
+    }
+    const capped = await callTool(duper.token, TOOL, { clipUrl: clipLink("dup-new"), idempotencyKey: "cij-dup-2" });
+    check("fixture: a new clip is refused at the active-import cap", capped.error === "too_many_active_imports", JSON.stringify(capped));
+    const imports1 = await prisma.mediaImport.count({ where: { userId: duper.user.id } });
+    const retryAtCap = await callTool(duper.token, TOOL, { clipUrl: url, idempotencyKey: "cij-dup-1" });
+    check("retry at the active-import cap → duplicate with the existing job, not too_many_active_imports",
+      retryAtCap.error === "duplicate" && retryAtCap.jobId === first.jobId, JSON.stringify(retryAtCap));
+    check("…and no import row was created or canceled", (await prisma.mediaImport.count({ where: { userId: duper.user.id } })) === imports1
+      && (await prisma.mediaImport.count({ where: { userId: duper.user.id, errorCode: "canceled" } })) === 0);
+
+    // At the in-flight job cap, too.
+    for (const n of [2, 3]) await createVideoJob(duper.user.id, { script: SCRIPT }, `cij-dup-plain-${n}`);
+    const retryAtJobCap = await callTool(duper.token, TOOL, { clipUrl: url, idempotencyKey: "cij-dup-1" });
+    check("retry at the in-flight job cap → duplicate, not too_many_jobs", retryAtJobCap.error === "duplicate" && retryAtJobCap.jobId === first.jobId, JSON.stringify(retryAtJobCap));
+    await clearInflight(duper.user.id);
+    await prisma.mediaImport.updateMany({ where: { userId: duper.user.id, status: { in: ["pending", "processing"] } }, data: { status: "failed", errorCode: "canceled", sourceUrl: null } });
+
+    // A server-reserved key never starts an import either.
+    const importsBefore = await prisma.mediaImport.count({ where: { userId: duper.user.id } });
+    const reserved = await callTool(duper.token, TOOL, { clipUrl: clipLink("dup-reserved"), idempotencyKey: `${mcpChainExportKey("x")}` });
+    check("a reserved mcp-chain: key → duplicate envelope, no import", reserved.error === "duplicate" && checkFailureEnvelope(reserved).length === 0
+      && (await prisma.mediaImport.count({ where: { userId: duper.user.id } })) === importsBefore, JSON.stringify(reserved));
+
+    // Keys are per user: another user's identical key is a fresh create, and never sees the first job.
+    const other = await callTool(third.token, TOOL, { clipUrl: clipLink("dup-other-user"), idempotencyKey: "cij-dup-1" });
+    check("same key, another user → a new job of its own", typeof other.jobId === "string" && other.jobId !== first.jobId && other.error === undefined, JSON.stringify(other));
+    await clearInflight(third.user.id);
+  });
+
+  // ── N ──
+  await section("N) T14-A4: input.clipUrl only ever takes the lane's exact presenter output name", async () => {
+    const { allowlistedClipSrc } = fromSrc("lib/mcp/clip-video-job") as typeof import("../src/lib/mcp/clip-video-job");
+    const presenterChecks = fromSrc("lib/media-import/presenter-checks") as typeof import("../src/lib/media-import/presenter-checks");
+    const real = [`/api/renders/${presenterChecks.presenterOutputFilename("mp4")}`, `/api/renders/${presenterChecks.presenterOutputFilename("webm")}`];
+    for (const src of real) check(`the lane's own output name is allowed: ${src.replace(/\d{6,}-[0-9a-f-]+/, "<ts>-<uuid>")}`, allowlistedClipSrc(src) === src);
+    const id = "1696300000000-123e4567-e89b-42d3-a456-426614174000";
+    const refused = [
+      `/api/renders/presenter-import-${id}.mov`,
+      `/api/renders/presenter-import-${id}.mp4.html`,
+      `/api/renders/presenter-import-${id}.mp4?x=1`,
+      `/api/renders/presenter-import-${id}.mp4#x`,
+      `/api/renders/../stocks/presenter-import-${id}.mp4`,
+      `/api/renders/./presenter-import-${id}.mp4`,
+      `/api/renders/sub/presenter-import-${id}.mp4`,
+      `/api/renders//presenter-import-${id}.mp4`,
+      `/api/renders/presenter-import-${id}.mp4/..`,
+      `/api/renders/presenter-import-..%2f${id}.mp4`,
+      `/api/renders/presenter-import-%2e%2e.mp4`,
+      `/api/renders\\presenter-import-${id}.mp4`,
+      `/api/renders/presenter-import-${id}.mp4\n`,
+      `/api/renders/presenter-import-${id.toUpperCase()}.mp4`,
+      `/api/renders/presenter-import-foreign.mp4`,
+      "/api/renders/presenter-import-.mp4",
+      "/api/renders/rj-123-base.mp4",
+      `/api/stocks/presenter-import-${id}.mp4`,
+      `/renders/presenter-import-${id}.mp4`,
+      `/uploads/presenter-import-${id}.mp4`,
+      `//evil.example/api/renders/presenter-import-${id}.mp4`,
+      `https://evil.example/api/renders/presenter-import-${id}.mp4`,
+      `api/renders/presenter-import-${id}.mp4`,
+      "",
+    ];
+    const leaked = refused.filter((src) => allowlistedClipSrc(src) !== null);
+    check(`${refused.length} near-miss / path-trick sources are all refused`, leaked.length === 0, JSON.stringify(leaked));
+    check("non-strings are refused", allowlistedClipSrc(null) === null && allowlistedClipSrc(undefined) === null);
+
+    // A ready import whose stored result sits outside the presenter prefix never becomes input.clipUrl.
+    const nUser = await makeUser("u-cij-allow", "qa-cij-allow@aoacademy.co");
+    const odd = await prisma.mediaImport.create({
+      data: { userId: nUser.user.id, purpose: "presenter", source: "upload", status: "ready", resultSrc: "/api/stocks/broll-upload-own.mp4", durationMs: 2_000, deadlineAt: new Date(Date.now() + 60_000) },
+    });
+    const reply = await callTool(nUser.token, TOOL, { clipUploadId: odd.id, idempotencyKey: "cij-allow-1" });
+    const row = await jobRow(reply.jobId);
+    check("a ready import outside /api/renders/presenter-import-… → the job fails import_failed, no clipUrl",
+      row.status === "failed" && row.errorCode === "import_failed" && !("clipUrl" in inputOf(row)), `${row.status} ${row.errorCode} ${row.inputJson}`);
+  });
+
+  // ── O ──
+  await section("O) SEC-A5: a waiting_import job whose import can no longer finish does not hold the deploy drain", async () => {
+    const { readRenderQueueCounts } = fromSrc("lib/render-deploy-drain") as typeof import("../src/lib/render-deploy-drain");
+    const drainer = await makeUser("u-cij-drain", "qa-cij-drain@aoacademy.co");
+    await freshJobsOff();
+    await prisma.renderJob.updateMany({ where: { status: { in: ["QUEUED", "RUNNING"] } }, data: { status: "DONE" } });
+    check("fixture: both queues start empty", (await readRenderQueueCounts()).empty === true, JSON.stringify(await readRenderQueueCounts()));
+    const past = new Date(Date.now() - 60_000);
+    const future = new Date(Date.now() + 10 * 60_000);
+    const imp = (status: string, deadlineAt: Date, userId = drainer.user.id) => prisma.mediaImport.create({
+      data: { userId, purpose: "presenter", source: "url", status, deadlineAt, sourceUrl: status === "pending" || status === "processing" ? "https://media.example.test/x.mp4" : null,
+        ...(status === "ready" ? { resultSrc: "/api/renders/presenter-import-1-123e4567-e89b-42d3-a456-426614174000.mp4", durationMs: 2_000 } : {}) },
+    });
+    let seq = 0;
+    const park = async (clipImportId: string) => {
+      seq += 1;
+      return createVideoJob(drainer.user.id, { script: "", mode: "upload", clipImportId, previewMode: true }, `cij-drain-${seq}`, { initialStatus: "waiting_import" } as never);
+    };
+    const counted = async () => (await readRenderQueueCounts()).videoJobs;
+
+    // The lane is down: nothing claims, nothing settles, no watchdog runs.
+    await park((await imp("pending", future)).id);
+    check("waiting on a live pending import → counted (it can still render)", (await counted()) === 1);
+    await park((await imp("processing", future)).id);
+    check("waiting on a live processing import → counted", (await counted()) === 2);
+    await park((await imp("ready", past)).id);
+    check("waiting on a ready import (not yet settled) → counted", (await counted()) === 3);
+    await park((await imp("pending", past)).id);
+    check("waiting on a pending import past its deadline (lane down) → not counted", (await counted()) === 3);
+    await park((await imp("processing", past)).id);
+    check("waiting on a processing import past its deadline → not counted", (await counted()) === 3);
+    await park((await imp("failed", future)).id);
+    check("waiting on a failed import → not counted", (await counted()) === 3);
+    await park(randomUUID());
+    check("waiting on a missing import → not counted", (await counted()) === 3);
+    await park((await imp("pending", future, third.user.id)).id);
+    check("waiting on another user's live import id → not counted", (await counted()) === 3);
+    await createVideoJob(drainer.user.id, { script: SCRIPT }, "cij-drain-plain");
+    check("a queued job still counts as before", (await counted()) === 4);
+    await freshJobsOff();
+    check("drained: empty", (await readRenderQueueCounts()).empty === true);
+
+    // End to end: an MCP clip job whose import's deadline passed while the lane was down.
+    const url = clipLink("drain-lane-down");
+    served.set(url, portrait);
+    const r = await callTool(drainer.token, TOOL, { clipUrl: url, idempotencyKey: "cij-drain-e2e" });
+    check("a fresh clip job holds the drain", (await readRenderQueueCounts()).empty === false);
+    await prisma.mediaImport.update({ where: { id: (await importOf(r.jobId)).id }, data: { deadlineAt: past } });
+    const counts = await readRenderQueueCounts();
+    check("once its import is past the deadline, the drain sees empty queues", counts.empty === true && counts.videoJobs === 0, JSON.stringify(counts));
+    check("…the job itself is unchanged: still waiting_import, still in-flight for the user's cap", (await jobRow(r.jobId)).status === "waiting_import"
+      && (await prisma.videoJob.count({ where: { userId: drainer.user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } })) === 1);
+    const cancel = await callTool(drainer.token, "cancel_video_job", { id: r.jobId });
+    check("…and still cancelable", (await jobRow(r.jobId)).status === "canceled", JSON.stringify(cancel));
+    await prisma.mediaImport.updateMany({ where: { userId: { in: [drainer.user.id, third.user.id] }, status: { in: ["pending", "processing"] } }, data: { status: "failed", errorCode: "canceled", sourceUrl: null } });
   });
 
   // ── H ──

@@ -24,7 +24,10 @@
  *     files this module names, never directories, symlinks or fresh files;
  *   - no temp file is left behind on any failure, and no error message, error property or
  *     log line carries an IP, hostname, port, temp path or upstream text;
- *   - only this script calls the test entry point (which can swap classifier and CA).
+ *   - only this script calls the test entry point (which can swap classifier and CA);
+ *   - an abort signal (the import lane's cancel checkpoint, PR-B fix round 1 SEC-A6) stops the
+ *     download mid-body or mid-headers, deletes the partial file, and an already-aborted signal
+ *     never opens a socket.
  *
  * Needs the `openssl` CLI (a throwaway self-signed cert) and an IPv6 loopback (`::1`) for
  * the "private" server. Both exist on macOS and the GitHub ubuntu runner.
@@ -846,6 +849,28 @@ async function main() {
       if (savedTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = savedTmp;
     }
+  }
+
+  section("16. abort signal — the import lane's cancel checkpoint (SEC-A6)");
+  {
+    const abortAfter = (ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    };
+    const body = await expectCode("aborted mid-body (drip) → fetch_timeout", A("/drip"), "fetch_timeout", { signal: abortAfter(300) },
+      hooks({ idleTimeoutMs: 5000, deadlineMs: 10_000 }));
+    check("mid-body abort stops the download at once, not at the deadline", !!body && body.ms >= 250 && body.ms < 2500, String(body?.ms));
+    const headers = await expectCode("aborted while waiting for headers → fetch_timeout", A("/stall-headers"), "fetch_timeout", { signal: abortAfter(300) },
+      hooks({ idleTimeoutMs: 5000, deadlineMs: 10_000 }));
+    check("header-wait abort is prompt", !!headers && headers.ms >= 250 && headers.ms < 2500, String(headers?.ms));
+    const before = deltas();
+    const pre = new AbortController();
+    pre.abort();
+    await expectCode("already-aborted signal → fetch_timeout", A("/ok.png"), "fetch_timeout", { signal: pre.signal });
+    check("…and no socket was opened", deltas().a === before.a, `${before.a} → ${deltas().a}`);
+    await expectMedia("a signal that never fires changes nothing", A("/ok.png"), { kind: "image", ext: "png", mime: "image/png", body: PNG },
+      { signal: new AbortController().signal });
   }
 
   section("15. hygiene");

@@ -53,6 +53,37 @@ export function ffprobeDimensions(filePath: string, demuxer: SafeInputDemuxer): 
   }
 }
 
+/**
+ * PR-B fix round 1 (N2): the DISPLAYED dimensions — what a player (and upload-avatar's browser
+ * check, videoWidth/videoHeight) shows. A phone stores portrait video as landscape frames plus a
+ * rotation (display-matrix side data, or the legacy `rotate` tag); at ±90° width and height
+ * swap. Same G24 pins as ffprobeDimensions. null when the probe fails or the answer is not sane.
+ */
+export function ffprobeDisplayDimensions(filePath: string, demuxer: SafeInputDemuxer): { width: number; height: number } | null {
+  try {
+    const out = execFileSync(
+      getFfprobePath(),
+      [
+        "-v", "error", ...safeInputArgs(demuxer), "-select_streams", "v:0",
+        "-show_entries", "stream=width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", filePath,
+      ],
+      { encoding: "utf-8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+    );
+    const stream = (JSON.parse(out) as {
+      streams?: Array<{ width?: unknown; height?: unknown; tags?: { rotate?: unknown }; side_data_list?: Array<{ rotation?: unknown }> }>;
+    }).streams?.[0];
+    const w = Number(stream?.width);
+    const h = Number(stream?.height);
+    if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) return null;
+    const sideRotation = stream?.side_data_list?.find((entry) => entry && entry.rotation !== undefined)?.rotation;
+    const rotation = Number(sideRotation ?? stream?.tags?.rotate ?? 0);
+    const quarterTurn = Number.isFinite(rotation) && Math.abs(rotation) % 180 > 45 && Math.abs(rotation) % 180 < 135;
+    return quarterTurn ? { width: h, height: w } : { width: w, height: h };
+  } catch {
+    return null;
+  }
+}
+
 function execFileCapture(file: string, args: string[], timeout = 10_000, allowFailure = false): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(file, args, { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout }, (err, stdout, stderr) => {

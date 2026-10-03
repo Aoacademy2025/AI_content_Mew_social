@@ -373,8 +373,9 @@ export async function updatePendingEditDraft(
  * T13 fix round 1 (A3): an export never renders B-roll window edits (only export_video's
  * re-render does), so a draft that still holds some — the web exported the agent's draft — keeps
  * them: the draft is re-seeded from the export just delivered (G11) with the window edits carried
- * over, and the agent's next export_video applies them. If that re-seed cannot be built, the draft
- * is left exactly as it is; window edits are never dropped silently.
+ * over (with the stored baseJobId, so an in-flight re-render's hop can still rebase), and the
+ * agent's next export_video applies them. If that re-seed cannot be built, the draft is left
+ * exactly as it is; window edits are never dropped silently.
  */
 export async function clearPendingEditDraftIfRevision(
   userId: string,
@@ -405,7 +406,10 @@ export async function clearPendingEditDraftIfRevision(
       latestExportSnapshot: await latestExportSnapshot(userId, projectId),
       projectDraftJson: resolved.project.draftJson,
     });
-    next = JSON.stringify({ ...seed, windowEdits: stored.windowEdits });
+    // R1/N1: keep the stored base. A re-render's hop rebases this draft only while baseJobId
+    // still names the job it started from; re-basing on the export here would make that CAS miss
+    // and leave the window edits it already applied pending, to be re-rendered a second time.
+    next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
     if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
   }
   // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.

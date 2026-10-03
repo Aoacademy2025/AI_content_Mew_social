@@ -18,6 +18,9 @@
 //      busy, the worker's video loop is untouched, and the REAL worker process boots, runs the
 //      lane (startup sweep, watchdog, a real import) and shuts down cleanly.
 //   E. wiring: package.json + CI (the G24 step, which installs ffmpeg).
+//   C12 (PR-B fix round 1, SEC-B1): the free-disk floor on the fetch/staging disk and on the
+//      disk each purpose's output is written to (stocks/ for B-roll), for url AND upload rows.
+//   C13 (SEC-A6): a url fetch gets an abort signal the lane fires once the row stops being live.
 //
 // Needs real ffmpeg + ffprobe. Run: node --conditions=react-server --import tsx scripts/verify-media-import-lane.ts
 import { execFileSync, execSync, spawn } from "node:child_process";
@@ -784,6 +787,83 @@ async function main(): Promise<void> {
       check("the agent's url is cleared", r.sourceUrl === null);
       check("nothing left in the temp or staging dir", tempFiles().length === 0 && !stagedExists(row.id));
       for (const f of stocksFiles()) fs.rmSync(path.join(stocksDir, f), { force: true });
+      logs.length = 0;
+    });
+
+    await section("C12) SEC-B1: free-disk floor on the staging disk and on the output disk (stocks/), url and upload rows", async () => {
+      await reset();
+      const realStatfs = fs.statfsSync;
+      const asked: string[] = [];
+      let fullDir: string | null = null;
+      (fs as { statfsSync: unknown }).statfsSync = (target: fs.PathLike, ...rest: unknown[]) => {
+        asked.push(path.resolve(String(target)));
+        const real = (realStatfs as (...args: unknown[]) => fs.StatsFs)(target, ...rest);
+        return fullDir && path.resolve(String(target)) === fullDir ? { ...real, bavail: 0 } : real;
+      };
+      try {
+        const stocksBefore = stocksFiles().length;
+        // url B-roll, stocks/ full: refused before the fetch.
+        behaviors.set("https://media.example/full.mp4", { serve: serveVideo(landscape) });
+        const urlRow = await addImport("ua", "broll_video", { url: "https://media.example/full.mp4" });
+        // upload B-roll, stocks/ full: refused before processing; its staged bytes are deleted.
+        const upRow = await addImport("ub", "broll_image", { bytes: png });
+        fullDir = path.resolve(stocksDir);
+        const l = newLane();
+        l.start();
+        await waitFor(async () => (await prisma.mediaImport.count({ where: { id: { in: [urlRow.id, upRow.id] }, status: "failed" } })) === 2, 30_000);
+        await l.stop();
+        fullDir = null;
+        const urlDone = await rowOf(urlRow.id);
+        const upDone = await rowOf(upRow.id);
+        check("url B-roll with stocks/ below the floor → storage_busy, never fetched", urlDone.errorCode === "storage_busy" && !fetchCalls.some((c) => c.url.endsWith("/full.mp4")), JSON.stringify(urlDone));
+        check("upload B-roll with stocks/ below the floor → storage_busy", upDone.errorCode === "storage_busy", JSON.stringify(upDone));
+        check("the floor was measured on stocks/ (the B-roll output disk) and on the staging disk",
+          asked.includes(path.resolve(stocksDir)) && asked.includes(path.resolve(stagingDir)), JSON.stringify([...new Set(asked)]));
+        check("nothing written: no stocks output, staged and temp files gone",
+          stocksFiles().length === stocksBefore && !stagedExists(upRow.id) && tempFiles().length === 0, JSON.stringify({ stocks: stocksFiles(), temp: tempFiles() }));
+        // The staging disk full (not the output disk): refused as well.
+        asked.length = 0;
+        behaviors.set("https://media.example/staging-full.png", { serve: servePng });
+        const stagingRow = await addImport("uc", "broll_image", { url: "https://media.example/staging-full.png" });
+        fullDir = path.resolve(stagingDir);
+        const l2 = newLane();
+        l2.start();
+        await waitFor(async () => (await rowOf(stagingRow.id)).status === "failed", 30_000);
+        await l2.stop();
+        fullDir = null;
+        check("staging/fetch disk below the floor → storage_busy, never fetched",
+          (await rowOf(stagingRow.id)).errorCode === "storage_busy" && !fetchCalls.some((c) => c.url.endsWith("/staging-full.png")));
+        check("storage_busy is a lane code", allCodes.has("storage_busy"));
+      } finally {
+        (fs as { statfsSync: unknown }).statfsSync = realStatfs;
+      }
+      logs.length = 0;
+    });
+
+    await section("C13) SEC-A6: a url fetch is aborted once its row stops being live (canceled or failed meanwhile)", async () => {
+      await reset();
+      let signal: AbortSignal | undefined;
+      let abortedAt = 0;
+      const hold = (url: string, options: { signal?: AbortSignal }) => new Promise<never>((_, reject) => {
+        signal = options.signal;
+        const timer = setTimeout(() => reject(new fetchMod.MediaFetchError("fetch_timeout")), 15_000);
+        options.signal?.addEventListener("abort", () => { abortedAt = Date.now(); clearTimeout(timer); reject(new fetchMod.MediaFetchError("fetch_timeout")); }, { once: true });
+        void url;
+      });
+      const row = await addImport("ud", "presenter", { url: "https://media.example/held.mp4" });
+      const l = newLane({ fetchMedia: hold, cancelCheckMs: 25 });
+      l.start();
+      check("the fetch is called with an abort signal", await waitFor(() => signal !== undefined, 10_000) && signal instanceof AbortSignal);
+      await sleep(150);
+      check("…not aborted while the row is live", signal?.aborted === false);
+      const failedAt = Date.now();
+      await imports.failMediaImport(row.id, "canceled");
+      const stopped = await waitFor(() => abortedAt > 0 && l.inFlight === 0, 10_000);
+      await l.stop();
+      check("aborted within 3 s of the row being canceled", stopped && abortedAt - failedAt <= 3_000, String(abortedAt ? abortedAt - failedAt : "never"));
+      const after = await rowOf(row.id);
+      check("…the row keeps its canceled code (a fetch error never overwrites it)", after.status === "failed" && after.errorCode === "canceled", JSON.stringify(after));
+      check("…no temp or staged file", tempFiles().length === 0 && !stagedExists(row.id));
       logs.length = 0;
     });
 

@@ -17,6 +17,7 @@ const USER_ID = "render-drain-user";
 async function clean() {
   await prisma.renderJob.deleteMany({ where: { userId: USER_ID } });
   await prisma.videoJob.deleteMany({ where: { userId: USER_ID } });
+  await prisma.mediaImport.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.siteConfig.deleteMany({ where: { key: RENDER_DEPLOY_DRAIN_KEY } });
 }
@@ -106,6 +107,22 @@ async function main() {
     assert.deepEqual(empty, { videoJobs: 0, renderJobs: 0, empty: true });
     await prisma.$disconnect();
     assert.equal(queueCheckExitCode(), 0, "queue checker exits 0 only when both queues are empty");
+
+    // SEC-A5 (PR-B fix round 1): a clip job parked in waiting_import holds the drain only while
+    // its import can still finish; once the import is past its deadline (lane down) it cannot
+    // render, so the drain stops waiting for it.
+    const liveImport = await prisma.mediaImport.create({
+      data: { userId: USER_ID, purpose: "presenter", source: "url", status: "pending", deadlineAt: new Date(Date.now() + 600_000) },
+    });
+    const parked = await prisma.videoJob.create({
+      data: { userId: USER_ID, status: "waiting_import", inputJson: JSON.stringify({ script: "", mode: "upload", clipImportId: liveImport.id }) },
+    });
+    assert.deepEqual(await readRenderQueueCounts(), { videoJobs: 1, renderJobs: 0, empty: false }, "a live import holds the drain");
+    await prisma.mediaImport.update({ where: { id: liveImport.id }, data: { deadlineAt: new Date(Date.now() - 1_000) } });
+    assert.deepEqual(await readRenderQueueCounts(), { videoJobs: 0, renderJobs: 0, empty: true }, "an import past its deadline no longer holds it");
+    await prisma.$disconnect();
+    assert.equal(queueCheckExitCode(), 0, "queue checker exits 0 when only dead waiting_import jobs remain");
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: parked.id } })).status, "waiting_import", "the read changes nothing");
 
     console.log("ALL PASS");
   } finally {
