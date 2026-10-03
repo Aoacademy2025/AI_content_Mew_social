@@ -3,11 +3,20 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import os from "os";
+import { randomUUID } from "crypto";
 import { execFile } from "child_process";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { assertSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveContainedFile, resolveLocalMediaFile } from "@/lib/contained-path";
+import {
+  resolveStoredMediaDemuxer,
+  safeInputArgs,
+  sniffSafeInputDemuxer,
+  type SafeInputDemuxer,
+} from "@/lib/media-probe-args";
+import { safeDownloadToFile, SafeDownloadError } from "@/lib/safe-download";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
@@ -23,13 +32,17 @@ async function getFfmpegPath(): Promise<string> {
   }
 }
 
-/** Capture a single frame from video at given second */
-async function captureFrame(videoPath: string, atSec: number, outPath: string): Promise<void> {
+const MAX_REMOTE_VIDEO_BYTES = 500 * 1024 * 1024;
+const REMOTE_VIDEO_TIMEOUT_MS = 90_000;
+
+/** Capture a single frame from a LOCAL video file at given second. The input is read with a
+ *  pinned demuxer and the file protocol only (G24): never pass a URL here. */
+async function captureFrame(videoPath: string, demuxer: SafeInputDemuxer, atSec: number, outPath: string): Promise<void> {
   const ffmpegPath = await getFfmpegPath();
   return new Promise<void>((resolve, reject) => {
     execFile(
       ffmpegPath,
-      ["-ss", String(atSec), "-i", videoPath, "-frames:v", "1", "-q:v", "2", "-y", outPath],
+      ["-ss", String(atSec), ...safeInputArgs(demuxer), "-i", videoPath, "-frames:v", "1", "-q:v", "2", "-y", outPath],
       { timeout: 30000 },
       (error, _stdout, stderr) => {
         if (error) {
@@ -170,6 +183,7 @@ async function suggestWithGemini(script: string, captions: string[], geminiKey: 
  * no mode        → Legacy: capture frame + auto-text (backward compat)
  */
 export async function POST(req: Request) {
+  let downloadedSource: string | null = null;
   try {
     const authUser = await getCurrentUser();
     if (!authUser)
@@ -284,22 +298,23 @@ export async function POST(req: Request) {
     const filename = `thumb-${Date.now()}.jpg`;
     const outPath = path.join(rendersDir, filename);
 
-    // Prefer stock video (no subtitles) from renderConfig, fallback to rendered video
+    // Prefer stock video (no subtitles) from renderConfig, fallback to rendered video.
+    // Every local path is confined (realpath) to public/ or stocks/, so neither "../" nor a
+    // symlink can point ffmpeg at another file.
     let sourceVideoSrc: string | null = null;
+    let sourceDemuxer: SafeInputDemuxer | null = null;
     if (video?.renderConfig) {
       try {
         const cfg = typeof video.renderConfig === "string"
           ? JSON.parse(video.renderConfig) : video.renderConfig;
         const firstSrc = cfg?.bgVideos?.[0]?.src ?? null;
-        if (firstSrc) {
+        if (typeof firstSrc === "string") {
           // bgVideos src may be /renders/stock-xxx.mp4 or /api/stocks/xxx.mp4
-          const localPath = firstSrc.startsWith("/api/stocks/")
-            ? path.join(process.cwd(), "stocks", firstSrc.slice("/api/stocks/".length))
-            : firstSrc.startsWith("/")
-              ? path.join(process.cwd(), "public", firstSrc.replace(/^\/api\/renders\//, "/renders/"))
-              : null;
-          if (localPath && fs.existsSync(localPath)) {
-            sourceVideoSrc = localPath;
+          const local = resolveLocalMediaFile(firstSrc, { stocks: true });
+          const demuxer = local.ok ? resolveStoredMediaDemuxer(local.path, ["video", "image"]) : null;
+          if (local.ok && demuxer) {
+            sourceVideoSrc = local.path;
+            sourceDemuxer = demuxer;
           }
         }
       } catch { /* ignore */ }
@@ -309,27 +324,48 @@ export async function POST(req: Request) {
     if (!sourceVideoSrc) {
       if (!videoSrc)
         return NextResponse.json({ error: "No video URL available" }, { status: 400 });
-      const isRemote = /^https?:\/\//i.test(videoSrc);
-      const p = videoSrc.startsWith("/") ? path.join(process.cwd(), "public", videoSrc.replace(/^\/api\/renders\//, "/renders/")) : videoSrc;
-      if (videoSrc.startsWith("/")) {
+      if (/^https?:\/\//i.test(videoSrc)) {
+        // ffmpeg would fetch a URL itself and follow its redirects unchecked, so the file is
+        // downloaded here (every hop re-validated, size capped) and ffmpeg reads the copy.
+        downloadedSource = path.join(os.tmpdir(), `thumb-src-${randomUUID()}`);
+        try {
+          await safeDownloadToFile(videoSrc, downloadedSource, {
+            maxBytes: MAX_REMOTE_VIDEO_BYTES,
+            timeoutMs: REMOTE_VIDEO_TIMEOUT_MS,
+          });
+        } catch (error) {
+          const reason = error instanceof SafeDownloadError ? error.reason : "failed";
+          if (reason === "unsafe_url" || reason === "redirects")
+            return NextResponse.json({ error: "URL ไม่ปลอดภัยหรือไม่รองรับ" }, { status: 400 });
+          if (reason === "too_large")
+            return NextResponse.json({ error: "Video file is too large" }, { status: 413 });
+          return NextResponse.json({ error: "Could not download video" }, { status: 502 });
+        }
+        sourceVideoSrc = downloadedSource;
+        sourceDemuxer = sniffSafeInputDemuxer(downloadedSource, ["video", "image"]);
+      } else if (videoSrc.startsWith("/")) {
         // Contain local webroot paths so a "/../.." can't escape public/ into .env / prisma/dev.db.
-        const publicDir = path.resolve(process.cwd(), "public");
-        if (path.resolve(p) !== publicDir && !path.resolve(p).startsWith(publicDir + path.sep))
+        const local = resolveContainedFile(
+          path.join(process.cwd(), "public"),
+          videoSrc.replace(/^\/api\/renders\//, "/renders/"),
+        );
+        if (!local.ok && local.reason === "outside")
           return NextResponse.json({ error: "Invalid video URL" }, { status: 400 });
+        if (!local.ok)
+          return NextResponse.json({ error: "Video file not found" }, { status: 404 });
+        sourceVideoSrc = local.path;
+        sourceDemuxer = resolveStoredMediaDemuxer(local.path, ["video", "image"]);
+      } else {
+        // Only "/…" webroot paths and http(s) URLs are video sources; a bare relative path
+        // would resolve against the server's working directory.
+        return NextResponse.json({ error: "Invalid video URL" }, { status: 400 });
       }
-      if (!isRemote && !fs.existsSync(p))
-        return NextResponse.json({ error: "Video file not found" }, { status: 404 });
-      sourceVideoSrc = p;
+      if (!sourceDemuxer)
+        return NextResponse.json({ error: "Unsupported video file" }, { status: 400 });
     }
 
-    // Capture frame via ffmpeg. A remote URL is handed to ffmpeg -i (which fetches it) → SSRF-guard
-    // so it can't reach internal/private hosts.
-    if (/^https?:\/\//i.test(sourceVideoSrc!)) {
-      try { await assertSafeFetchUrl(sourceVideoSrc!); }
-      catch { return NextResponse.json({ error: "URL ไม่ปลอดภัยหรือไม่รองรับ" }, { status: 400 }); }
-    }
     const framePath = path.join(rendersDir, `thumb-frame-${Date.now()}.jpg`);
-    await captureFrame(sourceVideoSrc!, atSec, framePath);
+    await captureFrame(sourceVideoSrc, sourceDemuxer!, atSec, framePath);
 
     // Overlay text layers (Sharp) or just use the frame
     if (mode === "render" && Array.isArray(textLayers) && textLayers.length > 0) {
@@ -360,6 +396,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ thumbnailUrl });
   } catch (error) {
     console.error("[thumbnail] error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    // Never echo the error: it carries server paths and the ffmpeg command line.
+    return NextResponse.json({ error: "Thumbnail failed" }, { status: 500 });
+  } finally {
+    if (downloadedSource) try { fs.unlinkSync(downloadedSource); } catch { /* not created */ }
   }
 }

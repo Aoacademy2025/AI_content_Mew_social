@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { bufferSafeInputDemuxer, safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
 import {
   assertHeroVoiceCanaryMutationReady,
   assertNoCanaryAccountDeletionInTransaction,
@@ -136,7 +137,18 @@ export function userVoiceIdFor(id: string): string {
   return `${USER_VOICE_PREFIX}${id}`;
 }
 
-async function toLegacyReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
+const AUDIO_INVALID_MESSAGE = "แปลงไฟล์เสียงไม่สำเร็จ — รองรับ mp3, wav, m4a และ webm";
+
+/** G24: the sample must start with an audio container signature (mp3, wav, m4a, webm/opus,
+ *  ogg, aac, flac); ffmpeg then reads it with that pinned demuxer, never auto-detection,
+ *  so a playlist or ffconcat script cannot make it open other files or URLs. */
+function voiceSampleDemuxer(audio: Buffer): SafeInputDemuxer {
+  const demuxer = bufferSafeInputDemuxer(audio, ["audio"]);
+  if (!demuxer) throw new UserVoiceError(AUDIO_INVALID_MESSAGE, 422, "USER_VOICE_AUDIO_INVALID");
+  return demuxer;
+}
+
+async function toLegacyReferenceWav(sourceBuffer: Buffer, demuxer: SafeInputDemuxer): Promise<Buffer> {
   const stamp = `${Date.now()}-${randomUUID()}`;
   const sourcePath = path.join(os.tmpdir(), `hero-user-voice-source-${stamp}`);
   const targetPath = path.join(os.tmpdir(), `hero-user-voice-reference-${stamp}.wav`);
@@ -144,7 +156,7 @@ async function toLegacyReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
   try {
     await execFileAsync(getFfmpegPath(), [
       "-y",
-      "-i", sourcePath,
+      ...safeInputArgs(demuxer), "-i", sourcePath,
       "-t", "17",
       "-vn", "-sn", "-dn",
       "-ac", "1",
@@ -164,11 +176,7 @@ async function toLegacyReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
     return wav;
   } catch (error) {
     if (error instanceof UserVoiceError) throw error;
-    throw new UserVoiceError(
-      "แปลงไฟล์เสียงไม่สำเร็จ — รองรับ mp3, wav, m4a และ webm",
-      422,
-      "USER_VOICE_AUDIO_INVALID",
-    );
+    throw new UserVoiceError(AUDIO_INVALID_MESSAGE, 422, "USER_VOICE_AUDIO_INVALID");
   } finally {
     for (const filename of [sourcePath, targetPath]) {
       try { fs.unlinkSync(filename); } catch {}
@@ -200,10 +208,11 @@ function monoPcm16Wav(pcm: Buffer): Buffer {
 /** FFmpeg receives no private pathname. The securely-read source bytes travel
  * over stdin and raw PCM returns over stdout; only our protected storage layer
  * later creates the normalized pathname. */
-function normalizeCanaryReferenceWav(source: Buffer): Promise<Buffer> {
+function normalizeCanaryReferenceWav(source: Buffer, demuxer: SafeInputDemuxer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn(getFfmpegPath(), [
       "-nostdin",
+      ...safeInputArgs(demuxer, "pipe"),
       "-i", "pipe:0",
       "-t", "17",
       "-vn", "-sn", "-dn",
@@ -272,15 +281,13 @@ async function createCanaryUserVoice(input: CreateUserVoiceInput, name: string, 
     const rawSource = readPrivateFileNoFollow(upload.rawSource);
     canaryConversionObserver?.("after-secure-input-read", upload);
     observeHeroVoiceCanaryCrashForTests("before-upload-conversion", transactionId);
+    // Sniff the exact bytes ffmpeg will receive.
+    const demuxer = voiceSampleDemuxer(rawSource);
     let wav: Buffer;
     try {
-      wav = await normalizeCanaryReferenceWav(rawSource);
+      wav = await normalizeCanaryReferenceWav(rawSource, demuxer);
     } catch {
-      throw new UserVoiceError(
-        "แปลงไฟล์เสียงไม่สำเร็จ — รองรับ mp3, wav, m4a และ webm",
-        422,
-        "USER_VOICE_AUDIO_INVALID",
-      );
+      throw new UserVoiceError(AUDIO_INVALID_MESSAGE, 422, "USER_VOICE_AUDIO_INVALID");
     }
     canaryConversionObserver?.("before-secure-output-write", upload);
     writeNewPrivateFileNoFollow(upload.normalizedWav, wav);
@@ -390,11 +397,13 @@ async function createUserVoiceUnlocked(input: CreateUserVoiceInput) {
     );
   }
 
+  const demuxer = voiceSampleDemuxer(input.audio);
+
   if (heroVoiceCanaryDeletionConfigured()) {
     return createCanaryUserVoice(input, name, refText);
   }
 
-  const wav = await toLegacyReferenceWav(input.audio);
+  const wav = await toLegacyReferenceWav(input.audio, demuxer);
   let durationMs: number;
   try {
     const { pcm, sampleRate } = pcmFromWav(wav);

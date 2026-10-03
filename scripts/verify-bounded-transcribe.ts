@@ -70,8 +70,9 @@ function scheduleSyntheticMediaCommand(
     setImmediate(() => finish(null, duration));
     return true;
   }
-  if (args.length === 2 && args[0] === "-i") {
-    const duration = String(args[1]).endsWith("short.wav") ? "00:00:01.00" : "00:03:00.00";
+  // The ffmpeg banner probe: input options (G24) then "-i <file>" and no output.
+  if (args.at(-2) === "-i") {
+    const duration = String(args.at(-1)).endsWith("short.wav") ? "00:00:01.00" : "00:03:00.00";
     setImmediate(() => finish(
       new Error("fixture ffmpeg probe has no output target"),
       "",

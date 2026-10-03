@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { decryptKey } from "@/lib/key-crypto";
 import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveContainedFile } from "@/lib/contained-path";
+import { safeInputArgs } from "@/lib/media-probe-args";
+import { admitUserMediaFile } from "@/lib/upload-media-probe";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -16,13 +19,10 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
 }
 
-// Containment guard: reject a body-supplied path that escapes public/ (path traversal).
+// Containment guard: a body-supplied path must resolve (realpath, so symlinks too) inside public/.
 function containedPublicPath(url: string): string | null {
-  const joined = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-  const publicDir = path.resolve(process.cwd(), "public");
-  const resolvedPath = path.resolve(joined);
-  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep)) return null;
-  return joined;
+  const file = resolveContainedFile(path.join(process.cwd(), "public"), url.replace(/^\/api\/renders\//, "/renders/"));
+  return file.ok ? file.path : null;
 }
 
 // Exact hostname match — the HeyGen key must never be attached to a substring lookalike.
@@ -60,17 +60,22 @@ async function safeFetchFollow(
 async function downloadFile(url: string, dest: string, heygenKey?: string) {
   if (url.startsWith("/")) {
     const src = containedPublicPath(url);
-    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
+    if (!src) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
-    return;
+  } else {
+    const res = await safeFetchFollow(url, (currentUrl) => {
+      const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
+      if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
+      return { headers };
+    });
+    if (!res.ok) throw new Error(`Download failed ${res.status}`);
+    fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
   }
-  const res = await safeFetchFollow(url, (currentUrl) => {
-    const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
-    if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
-    return { headers };
-  });
-  if (!res.ok) throw new Error(`Download failed ${res.status}`);
-  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  // G24: only a real video container with a decodable stream goes on to ffmpeg
+  // (detectChromaColor auto-detects), and the frame grab reads it with a pinned demuxer.
+  const demuxer = await admitUserMediaFile(dest, ["video"]);
+  if (!demuxer) throw new Error("Unsupported video file");
+  return demuxer;
 }
 
 // POST /api/heygen/preview-frame
@@ -106,7 +111,7 @@ export async function POST(req: Request) {
   const outPath = path.join(rendersDir, `preview-${ts}.jpg`);
 
   try {
-    await Promise.all([
+    const [avatarDemuxer, bgDemuxer] = await Promise.all([
       downloadFile(avatarVideoUrl, avatarTmp, heygenKey),
       downloadFile(bgVideoUrl, bgTmp, heygenKey),
     ]);
@@ -140,8 +145,8 @@ export async function POST(req: Request) {
     await new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
-        "-ss", "0.5", "-i", bgTmp,
-        "-ss", "0.5", "-i", avatarTmp,
+        "-ss", "0.5", ...safeInputArgs(bgDemuxer), "-i", bgTmp,
+        "-ss", "0.5", ...safeInputArgs(avatarDemuxer), "-i", avatarTmp,
         "-filter_complex", filter,
         "-map", "[out]",
         "-vframes", "1",
@@ -160,7 +165,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ imageUrl: `/renders/preview-${ts}.jpg` });
   } catch (err) {
     console.error("[preview-frame]", err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : "Failed" }, { status: 500 });
+    // Never echo the error: it carries server paths and the ffmpeg command line.
+    return NextResponse.json({ error: "Preview failed" }, { status: 500 });
   } finally {
     if (fs.existsSync(avatarTmp)) fs.unlinkSync(avatarTmp);
     if (fs.existsSync(bgTmp)) fs.unlinkSync(bgTmp);

@@ -3,9 +3,14 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import { sniffMediaBuffer, type MediaContainer } from "@/lib/media-probe-args";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
+
+// The file is served back from renders/ (and read by thumbnail tooling), so only real image
+// bytes are written, named by what they are. The editor always sends a canvas JPEG.
+const IMAGE_EXTENSION: Partial<Record<MediaContainer, string>> = { jpeg: "jpg", png: "png", webp: "webp" };
 
 /**
  * POST /api/videos/thumbnail/upload
@@ -38,12 +43,17 @@ export async function POST(req: Request) {
     if (!owns || owns.length === 0)
       return NextResponse.json({ error: "Video not found" }, { status: 404 });
 
+    const buffer = Buffer.from(await image.arrayBuffer());
+    const container = sniffMediaBuffer(buffer);
+    const ext = container ? IMAGE_EXTENSION[container] : undefined;
+    if (!ext)
+      return NextResponse.json({ error: "ไฟล์รูปปกไม่ถูกต้อง กรุณาบันทึกใหม่อีกครั้ง" }, { status: 400 });
+
     const rendersDir = path.join(process.cwd(), "public", "renders");
     fs.mkdirSync(rendersDir, { recursive: true });
 
     // Save image file
-    const buffer = Buffer.from(await image.arrayBuffer());
-    const filename = `thumb-${Date.now()}.jpg`;
+    const filename = `thumb-${Date.now()}.${ext}`;
     const outPath = path.join(rendersDir, filename);
     fs.writeFileSync(outPath, buffer);
 
@@ -62,6 +72,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ thumbnailUrl });
   } catch (error) {
     console.error("[thumbnail/upload] error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "บันทึกรูปปกไม่สำเร็จ กรุณาลองใหม่" }, { status: 500 });
   }
 }

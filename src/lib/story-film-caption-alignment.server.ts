@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveStoredMediaDemuxer, safeInputArgs } from "@/lib/media-probe-args";
 import {
   buildCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
@@ -53,9 +54,12 @@ function parseWords(raw: string): RawWord[] {
 }
 
 async function extractPresenterAudio(videoPath: string, outputPath: string) {
+  // G24: the presenter is a user upload — read it with a pinned demuxer, never auto-detect.
+  const demuxer = resolveStoredMediaDemuxer(videoPath, ["video"]);
+  if (!demuxer) throw new Error("story_film_alignment_presenter_unreadable");
   await execFileAsync(getFfmpegPath(), [
     "-hide_banner", "-loglevel", "error", "-y",
-    "-i", videoPath,
+    ...safeInputArgs(demuxer), "-i", videoPath,
     "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
     outputPath,
   ], { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });

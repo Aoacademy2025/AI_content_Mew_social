@@ -49,7 +49,8 @@ assert.match(userVoices, /runHeroVoiceCanarySerializedMutation\(\(\) => createUs
 assert.match(userVoices, /createCanaryUserVoice/u);
 assert.match(userVoices, /"-i", "pipe:0"/u);
 assert.match(userVoices, /"pipe:1"/u);
-assert.match(userVoices, /normalizeCanaryReferenceWav\(rawSource\)/u);
+// G24 (Task 2b): the raw source is normalized with the demuxer sniffed from its own bytes.
+assert.match(userVoices, /normalizeCanaryReferenceWav\(rawSource, demuxer\)/u);
 assert.match(userVoices, /writeNewPrivateFileNoFollow\(upload\.normalizedWav, wav\)/u);
 assert.match(userVoices, /after-upload-final-rename/u);
 assert.match(generation, /deletionTransactionId: null/u);

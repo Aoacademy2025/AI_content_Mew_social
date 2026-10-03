@@ -1,6 +1,11 @@
+// Metadata probes for Story Film media on disk (presenter uploads, worker artifacts, final
+// renders). Every ffprobe/ffmpeg call pins the input (G24: -protocol_whitelist file + an
+// allowlisted -f picked from the file's bytes, else its extension), so a playlist stored
+// under a media name is never opened as one; a file with no usable demuxer reads as null.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveStoredMediaDemuxer, safeInputArgs } from "@/lib/media-probe-args";
 
 const execFileAsync = promisify(execFile);
 
@@ -89,11 +94,15 @@ function durationMsFromFfmpeg(stderr: string): number | null {
 }
 
 export async function probeMediaDurationMs(filePath: string): Promise<number | null> {
+  const demuxer = resolveStoredMediaDemuxer(filePath, ["audio", "video"]);
+  if (!demuxer) return null;
+  const input = safeInputArgs(demuxer);
   const ffmpeg = getFfmpegPath();
   const ffprobe = ffmpeg.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
   try {
     const { stdout } = await execFileAsync(ffprobe, [
       "-v", "error",
+      ...input,
       "-show_entries", "format=duration",
       "-of", "csv=p=0",
       filePath,
@@ -102,7 +111,7 @@ export async function probeMediaDurationMs(filePath: string): Promise<number | n
     if (Number.isFinite(seconds) && seconds > 0) return Math.round(seconds * 1_000);
   } catch {}
   try {
-    const { stderr } = await execFileAsync(ffmpeg, ["-i", filePath], {
+    const { stderr } = await execFileAsync(ffmpeg, [...input, "-i", filePath], {
       encoding: "utf8",
       maxBuffer: 5 * 1024 * 1024,
       timeout: 20_000,
@@ -117,11 +126,15 @@ export async function probeMediaDurationMs(filePath: string): Promise<number | n
 }
 
 export async function probeVideoMedia(filePath: string): Promise<VideoMediaMetadata | null> {
+  const demuxer = resolveStoredMediaDemuxer(filePath, ["video"]);
+  if (!demuxer) return null;
+  const input = safeInputArgs(demuxer);
   const ffmpeg = getFfmpegPath();
   const ffprobe = ffmpeg.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
   try {
     const { stdout } = await execFileAsync(ffprobe, [
       "-v", "error",
+      ...input,
       "-show_entries", "format=duration:stream=codec_type,width,height,duration:stream_tags=rotate:stream_side_data=rotation",
       "-of", "json",
       filePath,
@@ -134,7 +147,7 @@ export async function probeVideoMedia(filePath: string): Promise<VideoMediaMetad
   }
 
   try {
-    const { stderr } = await execFileAsync(ffmpeg, ["-i", filePath], {
+    const { stderr } = await execFileAsync(ffmpeg, [...input, "-i", filePath], {
       encoding: "utf8",
       maxBuffer: 5 * 1024 * 1024,
       timeout: 20_000,
