@@ -378,5 +378,14 @@ jobs:
       - name: Verify the nightly DB backup copies to R2 with 30-day retention
         run: npm run verify:db-backup-r2
 
+      # Kept last before Build: once /usr/bin/ffmpeg exists, getFfmpegPath() prefers it
+      # over the bundled @ffmpeg-installer binary, so earlier steps keep their ffmpeg.
+      - name: Verify uploads probe with a file-only protocol and pinned demuxer (G24)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | sed -n '1p'
+          npm run verify:upload-probe-whitelist
+
       - name: Build
         run: npm run build
