@@ -3,7 +3,6 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-import { execFile } from "child_process";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
 import { decryptKey } from "@/lib/key-crypto";
 
@@ -32,16 +31,6 @@ function readLocalFile(url: string): Buffer | null {
 
 function localPath(url: string): string | null {
   return containedPublicPath(url);
-}
-
-function getFfmpegPath(): string {
-  const platform = process.platform;   // win32 | linux | darwin
-  const arch = process.arch;           // x64 | arm64
-  const ext = platform === "win32" ? ".exe" : "";
-  return path.join(
-    process.cwd(), "node_modules", "@ffmpeg-installer",
-    `${platform}-${arch}`, `ffmpeg${ext}`,
-  );
 }
 
 /* ── HeyGen asset upload ─────────────────────────────────── */
@@ -141,53 +130,10 @@ async function pollVideo(videoId: string, heygenKey: string, maxMs = 240_000): P
   throw new Error("HeyGen timed out (4 min)");
 }
 
-/* ── Download remote file ────────────────────────────────── */
-
-async function downloadFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
-}
-
-/* ── ffmpeg chromakey composite (child_process — no webpack issues) ── */
-
-function chromakeyComposite(bgPath: string, avatarPath: string, outPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ffmpeg = getFfmpegPath();
-    if (!fs.existsSync(ffmpeg)) {
-      return reject(new Error(`ffmpeg not found: ${ffmpeg}`));
-    }
-    const filter = [
-      "[0:v][1:v]scale2ref[bg][av]",
-      "[av]chromakey=0x00FF00:0.15:0.1[ck]",
-      "[bg][ck]overlay=0:0[out]",
-    ].join(";");
-
-    const args = [
-      "-y",
-      "-i", bgPath,
-      "-i", avatarPath,
-      "-filter_complex", filter,
-      "-map", "[out]",
-      "-map", "1:a?",
-      "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-      "-movflags", "+faststart",
-      outPath,
-    ];
-
-    console.log("[ffmpeg] running:", ffmpeg, args.join(" "));
-    execFile(ffmpeg, args, { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (stderr) console.log("[ffmpeg] stderr:", stderr.slice(-500));
-      if (err) reject(new Error(`ffmpeg failed: ${err.message}`));
-      else resolve();
-    });
-  });
-}
-
 /* ── POST /api/videos/heygen-direct ──────────────────────── */
 // Body: { mergedAudioUrl, bgVideoUrl, avatarId, mode? }
 // mode "direct"    → upload BG to HeyGen, HeyGen renders everything
-// mode "composite" → HeyGen renders on green bg → ffmpeg chromakey onto BG
+// mode "composite" → HeyGen renders on green bg → the client composites via /api/heygen/composite
 
 export async function POST(req: Request) {
   const rendersDir = path.join(process.cwd(), "public", "renders");

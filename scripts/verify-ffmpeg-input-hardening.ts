@@ -259,6 +259,7 @@ const state = {
   videoRows: [] as Array<Record<string, unknown>>,
   musicCreates: [] as Array<Record<string, unknown>>,
   heygenUploads: [] as Array<{ url: string; bytes: string }>,
+  presenterAssets: [] as Array<Record<string, unknown>>,
 };
 
 async function installMocks(): Promise<Array<{ restore: () => void }>> {
@@ -307,6 +308,16 @@ async function installMocks(): Promise<Array<{ restore: () => void }>> {
     namedExports: {
       ...ownAvatars,
       getHeyGenOwnAvatars: async () => ({ avatars: [{ avatar_id: "av1", supported_api_engines: ["avatar_iii", "avatar_iv", "avatar_v"] }] }),
+    },
+  }));
+  const storyFilm = await import("../src/lib/story-film.server");
+  mocks.push(mock.module("@/lib/story-film.server", {
+    namedExports: {
+      ...storyFilm,
+      registerStoryFilmPresenterAsset: async (_userId: string, input: Record<string, unknown>) => {
+        state.presenterAssets.push(input);
+        return { id: `presenter-${state.presenterAssets.length}`, ...input };
+      },
     },
   }));
   const keyCrypto = await import("../src/lib/key-crypto");
@@ -692,13 +703,64 @@ async function renderGuardChecks(ws: Workspace, det: Detectors, fx: Fixtures): P
     check(`render probe: stored ${name} → no duration, no access`, got === null && clean(seen), `${got} ${JSON.stringify(seen)}`);
     fs.rmSync(file);
   }
+
+  // External audio/video for Remotion's compositor: downloaded (every hop re-checked), admitted
+  // by the ingest gate, stored under renders/ — or refused. Nothing else may reach the compositor.
+  console.log("\n# 1c. render: external media → a gated local copy");
+  const cachedNames = () => fs.readdirSync(ws.renders).filter((f) => f.startsWith("render-media-"));
+  const tempLeft = () => fs.readdirSync(ws.osTmp).filter((f) => f.startsWith("render-media-"));
+  const refuse = async (label: string, url: string, kind: "audio" | "video", reasons: string[]) => {
+    const before = cachedNames().length;
+    det.arm();
+    const out = await guard.cacheRemoteMediaLocally(url, kind, ws.renders, base);
+    const seen = await det.observed();
+    check(`render media: ${label} → refused (${reasons.join("|")}), no access, nothing stored`,
+      !out.ok && reasons.includes(out.reason) && clean(seen) && cachedNames().length === before && tempLeft().length === 0,
+      `${JSON.stringify(out)} ${JSON.stringify(seen)}`);
+  };
+  for (const [name, body] of hostileAudio(det.port, path.join(ws.abs, "canary.ts"), fs.readFileSync(fx.bareMp3))) {
+    await refuse(`a public ${name} served as voice.mp3`, stub(`http://${PUBLIC_IP}/media/${name}.mp3`, bytesResponse(body, "audio/mpeg")), "audio", ["not_media"]);
+  }
+  for (const [name, body] of hostileVideo(det.port, path.join(ws.abs, "canary.ts"))) {
+    await refuse(`a public ${name} served as clip.mp4`, stub(`http://${PUBLIC_IP}/media/${name}.mp4`, bytesResponse(body, "video/mp4")), "video", ["not_media"]);
+  }
+  await refuse("a public .m3u8 playlist", stub(`http://${PUBLIC_IP}/media/list.m3u8`,
+    bytesResponse(hostileVideo(det.port, path.join(ws.abs, "canary.ts"))[0][1], "application/vnd.apple.mpegurl")), "audio", ["not_media"]);
+  await refuse("a 302 to 127.0.0.1", stub(`http://${PUBLIC_IP}/media/hop.mp3`, redirectTo(`http://127.0.0.1:${det.port}/landed.mp3`)), "audio", ["download_failed"]);
+  await refuse("a loopback URL", `http://127.0.0.1:${det.port}/x.mp3`, "audio", ["download_failed"]);
+  await refuse("upper-case HTTP:// to loopback", `HTTP://127.0.0.1:${det.port}/x.mp4`, "video", ["download_failed"]);
+  await refuse("a file:// URL", `file://${path.join(ws.outside, "secret.mp3")}`, "audio", ["unsupported_url"]);
+  await refuse("a data: URL", `data:audio/mpeg;base64,${fs.readFileSync(fx.mp3).toString("base64")}`, "audio", ["unsupported_url"]);
+  await refuse("a bare name", "Groove", "audio", ["unsupported_url"]);
+  await refuse("a jpg served as voice.mp3",stub(`http://${PUBLIC_IP}/media/pic.mp3`, bytesResponse(fs.readFileSync(fx.jpg), "image/jpeg")), "audio", ["not_media"]);
+  await refuse("an audio-only mp3 where a video was asked for", stub(`http://${PUBLIC_IP}/media/song.mp4`, bytesResponse(fs.readFileSync(fx.mp3), "video/mp4")), "video", ["not_media"]);
+
+  for (const [label, file, kind, ext] of [
+    ["public mp3 (ID3)", fx.mp3, "audio", "mp3"], ["public wav", fx.wav, "audio", "wav"], ["public m4a", fx.m4a, "audio", "m4a"],
+    ["public opus webm", fx.opusWebm, "audio", "webm"], ["public mp4", fx.mp4, "video", "mp4"], ["public webm", fx.webm, "video", "webm"],
+  ] as Array<[string, string, "audio" | "video", string]>) {
+    const bytes = fs.readFileSync(file);
+    const url = stub(`http://${PUBLIC_IP}/media/legit-${path.basename(file)}`, bytesResponse(bytes, "application/octet-stream"));
+    det.arm();
+    const out = await guard.cacheRemoteMediaLocally(url, kind, ws.renders, base);
+    const seen = await det.observed();
+    const name = out.ok ? out.src.slice(`${base}/api/renders/`.length) : "";
+    check(`render media: a ${label} → re-served from renders/ as .${ext}, same bytes`,
+      out.ok && new RegExp(`^render-media-[0-9a-f-]{36}\\.${ext}$`).test(name) && fs.readFileSync(path.join(ws.renders, name)).equals(bytes)
+        && clean(seen) && tempLeft().length === 0,
+      `${JSON.stringify(out)} ${JSON.stringify(seen)}`);
+  }
+  const hop = stub(`http://${PUBLIC_IP}/media/cdn-hop.mp3`, redirectTo(`http://${PUBLIC_IP}/media/legit-real.mp3`));
+  const viaHop = await guard.cacheRemoteMediaLocally(hop, "audio", ws.renders, base);
+  check("render media: a redirect to another public URL is followed", viaHop.ok, JSON.stringify(viaHop));
+  for (const f of cachedNames()) fs.rmSync(path.join(ws.renders, f));
 }
 
 // ---------------------------------------------------------------------------------------
 // 2. Routes
 // ---------------------------------------------------------------------------------------
 type Routes = Record<"thumbnail" | "upload" | "music" | "transcribe" | "trim" | "duration" | "composite" | "previewFrame"
-  | "previewBg" | "genThumb" | "genWithBg", RouteModule>;
+  | "previewBg" | "genThumb" | "genWithBg" | "thumbUpload", RouteModule>;
 
 function plantStoredHostiles(ws: Workspace, det: Detectors, fx: Fixtures, exts: string[]): Array<[string, string, string]> {
   // [label, url, absolute path] for each hostile body stored under public/renders and stocks.
@@ -1193,6 +1255,373 @@ async function generateWithBgChecks(ws: Workspace, det: Detectors, fx: Fixtures,
 }
 
 // ---------------------------------------------------------------------------------------
+// 2j. /api/videos/render: the route source is replayed (as scripts/verify-broll-render-route.ts
+// does) with REAL fs/path/crypto, the real render-input-guard / coverage modules and the real
+// downloader; auth, quota, DB and the queue are stubbed, and the queue stub records the payload
+// that a render worker would hand to Remotion.
+// ---------------------------------------------------------------------------------------
+type RenderReplay = RouteModule & { enqueued: Array<Record<string, unknown>>; refunds: () => number };
+
+async function loadRenderRoute(): Promise<RenderReplay> {
+  const ts = (await import("typescript")).default;
+  const real: Record<string, unknown> = {
+    "@/lib/render-input-guard": await import("../src/lib/render-input-guard"),
+    "@/lib/broll-coverage": await import("../src/lib/broll-coverage"),
+    "@/lib/broll-placeholders": await import("../src/lib/broll-placeholders"),
+    "@/lib/headline-hook": await import("../src/lib/headline-hook"),
+    "@/lib/render/media-base-url": await import("../src/lib/render/media-base-url"),
+    path, fs, crypto: await import("node:crypto"),
+  };
+  const enqueued: Array<Record<string, unknown>> = [];
+  let refunds = 0;
+  class SupersededError extends Error {}
+  class VideoJobFundingConfirmationRequiredError extends Error {}
+  class RenderDeployDrainError extends Error {
+    async refundOnce(refund: () => Promise<unknown>): Promise<void> { await refund(); }
+  }
+  const stubs: Record<string, unknown> = {
+    "next/server": {
+      NextResponse: {
+        json: (body: unknown, init: { status?: number } = {}) =>
+          new Response(JSON.stringify(body), { status: init.status ?? 200, headers: { "Content-Type": "application/json" } }),
+      },
+    },
+    "@/lib/clerk-auth": { getCurrentUser: async () => ({ id: USER_ID }) },
+    "@/lib/notifications": { createNotification: async () => undefined },
+    "@/lib/plan-limits": { limitsForPlan: () => ({ durationSec: 600 }), nextPlanFor: () => null, PLAN_LABEL: { BUSINESS: "Business" } },
+    "@/lib/prisma": { prisma: { user: { findUnique: async () => ({ plan: "BUSINESS" }) }, videoJob: { findUnique: async () => null } } },
+    "@/lib/usage-limits": { checkClipQuota: async () => ({ allowed: true }), reserveClipUsage: async () => ({ allowed: true }) },
+    "@/lib/minute-limits": { checkMinuteQuota: async () => ({ allowed: true }), minutesFromSeconds: () => 1 },
+    "@/lib/minute-credits": { reserveMinutesOrCredits: async () => ({ allowed: true, via: "minutes" }), refundReservation: async () => { refunds++; } },
+    "@/lib/credits": { serializeCreditFunding: () => null },
+    "@/lib/quota-error": { QUOTA_EXCEEDED_CODE: "QUOTA_EXCEEDED", quotaUpgradeUserAction: () => null },
+    "@/lib/clip-charge": { isBurnAlreadyPaid: async () => false, recordChargedClip: async () => undefined },
+    "@/lib/broll-rerender": { rerenderSkipEligible: () => false },
+    "@/lib/mcp/video-job": { parseVideoJobOutput: () => null },
+    "@/lib/mcp/video-job-funding": {
+      markTransferredVideoJobFundingRefunded: async () => undefined,
+      transferVideoJobFundingToRender: async () => ({ transferred: false }),
+      VideoJobFundingConfirmationRequiredError,
+    },
+    "@/lib/mcp/service-actor": { resolveServiceVideoJobId: async () => null },
+    "@/lib/sanitize-caption-style": { stripDangerousCss: (value: unknown) => value },
+    // runTmpCleanup's `find` only; nothing in the route may spawn ffmpeg itself.
+    "child_process": { execFileSync: () => undefined, spawn: () => { throw new Error("the route must not spawn"); } },
+    "@/lib/telemetry": { recordTelemetryEvent: async () => undefined },
+    "@/lib/render/run-render": { runRender: async () => { throw new Error("must not render in-process"); }, SupersededError },
+    "@/lib/render/remotion-public-dir": { prepareRemotionBundlePublicDir: () => "/tmp/public" },
+    "@/lib/render/job-store": {
+      enqueueRenderJob: async (job: Record<string, unknown>) => { enqueued.push(job); return { id: `rj-${enqueued.length}` }; },
+      supersedeScope: async () => 0,
+    },
+    "@/lib/logo-export.server": { normalizeTrustedLogoRenderInput: () => null },
+    "@/lib/render-deploy-drain": { assertRenderEnqueueOpen: async () => undefined, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE: "maintenance" },
+    "./cancel-registry": {
+      activeRenderCancel: new Map(), cancelByJobId: new Map(), renderJobDoneByUser: new Map(),
+      getActiveRenderCount: () => 0, incrementActiveRenderCount: () => undefined, decrementActiveRenderCount: () => undefined,
+      getRenderSlotQueueLength: () => 0, activeRemotionBundleNames: () => [] as string[],
+    },
+    "@remotion/renderer": { makeCancelSignal: () => ({ cancel: () => undefined, cancelSignal: undefined }) },
+  };
+  const requireMock = (specifier: string): unknown => {
+    if (specifier in real) return real[specifier];
+    if (specifier in stubs) return stubs[specifier];
+    throw new Error(`unhandled render route import: ${specifier}`);
+  };
+  const source = fs.readFileSync(path.join(REPO, "src/app/api/videos/render/route.ts"), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+    fileName: "src/app/api/videos/render/route.ts",
+  }).outputText;
+  const routeModule = { exports: {} as Record<string, unknown> };
+  new Function("require", "module", "exports", compiled)(requireMock, routeModule, routeModule.exports);
+  return { POST: routeModule.exports.POST as RouteModule["POST"], enqueued, refunds: () => refunds };
+}
+
+async function renderRouteChecks(ws: Workspace, det: Detectors, fx: Fixtures): Promise<void> {
+  console.log("\n# 2j. /api/videos/render (audio/video handed to Remotion's compositor)");
+  const env = ["RENDER_VIA_QUEUE", "MINUTE_QUOTA", "CREDITS_LIVE", "RENDER_TMP_ROOT", "NEXTAUTH_URL", "RENDER_INTERNAL_BASE_URL", "TMPDIR"] as const;
+  const saved = Object.fromEntries(env.map((k) => [k, process.env[k]]));
+  Object.assign(process.env, { RENDER_VIA_QUEUE: "1", MINUTE_QUOTA: "0", CREDITS_LIVE: "0", RENDER_TMP_ROOT: ws.osTmp });
+  delete process.env.NEXTAUTH_URL;
+  delete process.env.RENDER_INTERNAL_BASE_URL;
+  try {
+    const rr = await loadRenderRoute();
+    const base = "http://localhost";
+    const cachedNames = () => fs.readdirSync(ws.renders).filter((f) => f.startsWith("render-media-")).sort();
+    const tempLeft = () => fs.readdirSync(ws.osTmp).filter((f) => f.startsWith("render-media-"));
+    fs.copyFileSync(fx.voiceMp3, path.join(ws.renders, "rr-voice.mp3"));
+    fs.copyFileSync(fx.mp3, path.join(ws.music, "rr-bgm.mp3"));
+    const brollPath = path.join(ws.renders, "rr-broll.mp4");
+    await ff(["-f", "lavfi", "-i", "testsrc=size=360x640:rate=30:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", brollPath]);
+    const localVoice = "/api/renders/rr-voice.mp3";
+    const localBgm = "/music/rr-bgm.mp3";
+
+    type Payload = { resolvedShortConfig?: Record<string, unknown>; resolvedSubtitleConfig?: Record<string, unknown>; avatarVideoUrl?: unknown };
+    const send = async (body: JsonBody) => {
+      const enqueuedBefore = rr.enqueued.length;
+      const refundsBefore = rr.refunds();
+      det.arm();
+      const res = await postJson(rr, "/api/videos/render", { fps: 30, jobScopeId: "t2b-render", ...body });
+      const seen = await det.observed();
+      const job = rr.enqueued.length > enqueuedBefore ? rr.enqueued.at(-1) : undefined;
+      return { res, seen, payload: job?.payload as Payload | undefined, refunded: rr.refunds() > refundsBefore };
+    };
+    const short = (cfg: JsonBody): JsonBody => ({
+      shortVideoConfig: { backgroundColors: ["#101010"], bgVideos: [], keywordPopups: [], voiceVolume: 1, durationInFrames: 30, ...cfg },
+    });
+    const isCopy = (src: unknown, bytes: Buffer, ext: string) => {
+      if (typeof src !== "string" || !src.startsWith(`${base}/api/renders/render-media-`) || !src.endsWith(`.${ext}`)) return false;
+      return fs.readFileSync(path.join(ws.renders, src.slice(`${base}/api/renders/`.length))).equals(bytes);
+    };
+
+    // The voice is required: anything that cannot be fetched safely and admitted fails the render.
+    const absCanary = path.join(ws.abs, "canary.ts");
+    const hostile = hostileAudio(det.port, absCanary, fs.readFileSync(fx.bareMp3))
+      .map(([name, body]) => [name, stub(`http://${PUBLIC_IP}/rr/${name}.mp3`, bytesResponse(body, "audio/mpeg"))] as [string, string]);
+    const refusedSrcs: Array<[string, string]> = [
+      ...hostile.map(([name, url]) => [`a public ${name} as .mp3`, url] as [string, string]),
+      ["a public .m3u8", stub(`http://${PUBLIC_IP}/rr/list.m3u8`, bytesResponse(hostileVideo(det.port, absCanary)[0][1], "application/vnd.apple.mpegurl"))],
+      ["a 302 to 127.0.0.1", stub(`http://${PUBLIC_IP}/rr/hop.mp3`, redirectTo(`http://127.0.0.1:${det.port}/landed.mp3`))],
+      ["a loopback URL", `http://127.0.0.1:${det.port}/voice.mp3`],
+      ["a file:// URL", `file://${path.join(ws.outside, "secret.mp3")}`],
+      ["a data: URL", `data:audio/mpeg;base64,${fs.readFileSync(fx.mp3).toString("base64")}`],
+      ["our own origin outside the media folders", "/api/videos/render-status"],
+      ["a scheme-relative //host URL", `//127.0.0.1:${det.port}/voice.mp3`],
+      ["an encoded ../ out of renders/", "/api/renders/%2e%2e%2f%2e%2e%2foutside%2fsecret.mp3"],
+    ];
+    for (const [label, voiceFile] of refusedSrcs) {
+      const r = await send(short({ voiceFile }));
+      check(`render: voiceFile = ${label} → 422, nothing queued, refunded, no access`,
+        r.res.status === 422 && r.res.body.code === "render_media_unusable" && r.res.body.field === "voiceFile"
+          && typeof r.res.body.error === "string" && !r.payload && r.refunded && clean(r.seen) && noServerPath(ws, r.res.body),
+        `${r.res.status} ${JSON.stringify(r.res.body).slice(0, 160)} ${JSON.stringify(r.seen)}`);
+    }
+    // Music is decorative: the same inputs drop the track and the render goes on.
+    for (const [label, bgmFile] of refusedSrcs) {
+      const r = await send(short({ voiceFile: localVoice, bgmFile }));
+      const cfg = r.payload?.resolvedShortConfig;
+      check(`render: bgmFile = ${label} → dropped, render queued, no access`,
+        r.res.status === 200 && cfg !== undefined && cfg.bgmFile === undefined && cfg.voiceFile === `${base}${localVoice}` && clean(r.seen),
+        `${r.res.status} ${JSON.stringify(cfg?.bgmFile)} ${JSON.stringify(r.seen)}`);
+    }
+    check("render: no refused download is left on disk", cachedNames().length === 0 && tempLeft().length === 0, JSON.stringify([cachedNames(), tempLeft()]));
+
+    // Our own media: exactly the values the route produced before.
+    let r = await send(short({ voiceFile: localVoice, bgmFile: localBgm }));
+    check("render: own voice + library music → unchanged URLs, no download",
+      r.res.status === 200 && r.payload?.resolvedShortConfig?.voiceFile === `${base}${localVoice}`
+        && r.payload?.resolvedShortConfig?.bgmFile === `${base}/api/music/rr-bgm.mp3` && cachedNames().length === 0,
+      JSON.stringify(r.payload?.resolvedShortConfig ?? r.res.body).slice(0, 200));
+    r = await send(short({ voiceFile: `${base}${localVoice}` }));
+    check("render: own voice as an absolute own-origin URL → unchanged", r.res.status === 200 && r.payload?.resolvedShortConfig?.voiceFile === `${base}${localVoice}`);
+
+    // A legitimate public file is downloaded once, admitted, and the compositor gets the copy.
+    const voiceBytes = fs.readFileSync(fx.voiceMp3);
+    const bgmBytes = fs.readFileSync(fx.m4a);
+    const publicVoice = stub(`http://${PUBLIC_IP}/cdn/voice.mp3`, bytesResponse(voiceBytes, "audio/mpeg"));
+    const publicBgm = stub(`http://${PUBLIC_IP}/cdn/bed.m4a`, bytesResponse(bgmBytes, "audio/mp4"));
+    r = await send(short({ voiceFile: publicVoice, bgmFile: publicBgm }));
+    check("render: a public mp3 voice + m4a music → local copies under renders/ with the same bytes",
+      r.res.status === 200 && isCopy(r.payload?.resolvedShortConfig?.voiceFile, voiceBytes, "mp3")
+        && isCopy(r.payload?.resolvedShortConfig?.bgmFile, bgmBytes, "m4a") && clean(r.seen) && tempLeft().length === 0,
+      JSON.stringify(r.payload?.resolvedShortConfig ?? r.res.body).slice(0, 240));
+
+    // Normal b-roll path: an external b-roll entry is dropped by coverage without being fetched;
+    // the local clip covers the timeline; the external voice is still downloaded and admitted.
+    let brollFetches = 0;
+    const externalBroll = stub(`http://${PUBLIC_IP}/rr/broll.m3u8`, () => {
+      brollFetches++;
+      return bytesResponse(hostileVideo(det.port, absCanary)[0][1])();
+    });
+    r = await send({
+      shortVideoConfig: {
+        bgVideos: [
+          { src: "/api/renders/rr-broll.mp4", start: 0, end: 0.5, sourceIndex: 0 },
+          { src: externalBroll, start: 0.5, end: 1, sourceIndex: 1 },
+        ],
+        keywordPopups: [], voiceVolume: 1, durationInFrames: 30, voiceFile: publicVoice,
+      },
+    });
+    const segs = (r.payload?.resolvedShortConfig?.bgVideos ?? []) as Array<{ src: string }>;
+    check("render: an external b-roll entry never reaches the payload and is never fetched",
+      r.res.status === 200 && segs.length > 0 && segs.every((s) => s.src === `${base}/api/renders/rr-broll.mp4`)
+        && brollFetches === 0 && clean(r.seen) && isCopy(r.payload?.resolvedShortConfig?.voiceFile, voiceBytes, "mp3"),
+      `${r.res.status} ${JSON.stringify(segs.map((s) => s.src))} fetches=${brollFetches} ${JSON.stringify(r.seen)}`);
+    r = await send({
+      shortVideoConfig: {
+        bgVideos: [{ src: externalBroll, start: 0, end: 1, sourceIndex: 0 }],
+        keywordPopups: [], voiceVolume: 1, durationInFrames: 30, voiceFile: localVoice,
+      },
+    });
+    check("render: only external b-roll → 422 coverage (as before), never fetched",
+      r.res.status === 422 && r.res.body.error === "broll_coverage_incomplete" && brollFetches === 0 && clean(r.seen),
+      `${r.res.status} ${JSON.stringify(r.res.body).slice(0, 120)}`);
+
+    // Burn (subtitle overlay): the source video is required, music is best-effort.
+    fs.copyFileSync(fx.mp4, path.join(ws.renders, "rr-base.mp4"));
+    const overlay = (cfg: JsonBody): JsonBody => ({ subtitleOverlayConfig: { keywordPopups: [], durationInFrames: 30, ...cfg } });
+    for (const [label, videoUrl] of [
+      ["a public HLS as .mp4", stub(`http://${PUBLIC_IP}/rr/base-hls.mp4`, bytesResponse(hostileVideo(det.port, absCanary)[0][1], "video/mp4"))],
+      ["a public ffconcat as .mp4", stub(`http://${PUBLIC_IP}/rr/base-concat.mp4`, bytesResponse(hostileVideo(det.port, absCanary)[2][1], "video/mp4"))],
+      ["a 302 to 127.0.0.1", stub(`http://${PUBLIC_IP}/rr/base-hop.mp4`, redirectTo(`http://127.0.0.1:${det.port}/landed.mp4`))],
+      ["a file:// URL", `file://${path.join(ws.outside, "secret.mp4")}`],
+    ]) {
+      r = await send(overlay({ videoUrl }));
+      check(`render (burn): videoUrl = ${label} → 422, nothing queued, no access`,
+        r.res.status === 422 && r.res.body.field === "subtitleOverlayConfig.videoUrl" && !r.payload && clean(r.seen),
+        `${r.res.status} ${JSON.stringify(r.res.body).slice(0, 120)} ${JSON.stringify(r.seen)}`);
+    }
+    r = await send(overlay({ videoUrl: "/api/renders/rr-base.mp4", bgmFile: hostile[0][1] }));
+    check("render (burn): own base video → unchanged; a hostile bgm → dropped",
+      r.res.status === 200 && r.payload?.resolvedSubtitleConfig?.videoUrl === `${base}/api/renders/rr-base.mp4`
+        && r.payload?.resolvedSubtitleConfig?.bgmFile === undefined && clean(r.seen),
+      JSON.stringify(r.payload?.resolvedSubtitleConfig ?? r.res.body).slice(0, 200));
+    const mp4Bytes = fs.readFileSync(fx.mp4);
+    r = await send(overlay({ videoUrl: stub(`http://${PUBLIC_IP}/cdn/base.mp4`, bytesResponse(mp4Bytes, "video/mp4")), bgmFile: localBgm }));
+    check("render (burn): a public mp4 → a local copy with the same bytes; own music unchanged",
+      r.res.status === 200 && isCopy(r.payload?.resolvedSubtitleConfig?.videoUrl, mp4Bytes, "mp4")
+        && r.payload?.resolvedSubtitleConfig?.bgmFile === `${base}/api/music/rr-bgm.mp3`,
+      JSON.stringify(r.payload?.resolvedSubtitleConfig ?? r.res.body).slice(0, 200));
+
+    // Legacy avatar composition (OffthreadVideo of avatarVideoUrl).
+    r = await send({ avatarVideoUrl: stub(`http://${PUBLIC_IP}/rr/avatar.mp4`, bytesResponse(hostileVideo(det.port, absCanary)[0][1], "video/mp4")) });
+    check("render (avatar): a public HLS avatarVideoUrl → 422, no access",
+      r.res.status === 422 && r.res.body.field === "avatarVideoUrl" && !r.payload && clean(r.seen), `${r.res.status} ${JSON.stringify(r.seen)}`);
+    r = await send({ avatarVideoUrl: "/api/renders/rr-base.mp4" });
+    check("render (avatar): own avatar video → unchanged", r.res.status === 200 && r.payload?.avatarVideoUrl === "/api/renders/rr-base.mp4",
+      JSON.stringify(r.payload?.avatarVideoUrl ?? r.res.body));
+    check("render: no temp download left in the OS temp dir", tempLeft().length === 0, JSON.stringify(tempLeft()));
+    for (const f of cachedNames()) fs.rmSync(path.join(ws.renders, f));
+  } finally {
+    for (const k of env) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// 2k. /api/videos/thumbnail/upload — the edited thumbnail is written to renders/ and served.
+// ---------------------------------------------------------------------------------------
+async function thumbnailUploadChecks(ws: Workspace, det: Detectors, fx: Fixtures, route: RouteModule): Promise<void> {
+  console.log("\n# 2k. /api/videos/thumbnail/upload");
+  state.videoRows = [{ 1: 1 }];
+  const thumbs = () => fs.readdirSync(ws.renders).filter((f) => f.startsWith("thumb-")).sort();
+  const upload = async (bytes: Buffer, name = "thumbnail.jpg", type = "image/jpeg") => {
+    const form = new FormData();
+    form.append("image", new File([new Uint8Array(bytes)], name, { type }));
+    form.append("videoId", "video-1");
+    const res = await route.POST(new Request("http://localhost/api/videos/thumbnail/upload", { method: "POST", body: form }));
+    return { status: res.status, body: (await res.json()) as JsonBody };
+  };
+  for (const [name, body] of [
+    ...hostileVideo(det.port, path.join(ws.abs, "canary.ts")),
+    ["html", Buffer.from("<html><script>alert(1)</script></html>")],
+    ["svg", fs.readFileSync(path.join(REPO, "public", "logo.svg"))],
+    ["mp4", fs.readFileSync(fx.mp4)],
+  ] as Array<[string, Buffer]>) {
+    const before = thumbs();
+    const res = await upload(body);
+    check(`thumbnail/upload: ${name} bytes as thumbnail.jpg → 400, nothing written`,
+      res.status === 400 && typeof res.body.error === "string" && JSON.stringify(thumbs()) === JSON.stringify(before),
+      `${res.status} ${JSON.stringify(res.body)}`);
+  }
+  const jpg = fs.readFileSync(fx.jpg);
+  const res = await upload(jpg);
+  const url = String(res.body.thumbnailUrl ?? "");
+  check("thumbnail/upload: a real canvas JPEG → 200, stored as thumb-<ts>.jpg byte-for-byte",
+    res.status === 200 && /^\/api\/renders\/thumb-\d+\.jpg$/.test(url) && fs.readFileSync(path.join(ws.renders, url.slice("/api/renders/".length))).equals(jpg),
+    `${res.status} ${JSON.stringify(res.body)}`);
+  // A failure inside the handler answers with a fixed message, not the exception text.
+  fs.renameSync(ws.renders, `${ws.renders}.moved`);
+  fs.writeFileSync(ws.renders, "not a directory");
+  const failed = await upload(jpg);
+  fs.rmSync(ws.renders);
+  fs.renameSync(`${ws.renders}.moved`, ws.renders);
+  check("thumbnail/upload: an internal error → 500 with a fixed Thai message (no exception text, no path)",
+    failed.status === 500 && typeof failed.body.error === "string" && /[฀-๿]/.test(String(failed.body.error))
+      && !/Error|EEXIST|ENOTDIR|\//.test(String(failed.body.error)) && noServerPath(ws, failed.body),
+    `${failed.status} ${JSON.stringify(failed.body)}`);
+  state.videoRows = [];
+}
+
+// ---------------------------------------------------------------------------------------
+// 2l. Story Film presenter: upload gate + the metadata probes (video-media-probe.server).
+// ---------------------------------------------------------------------------------------
+async function storyFilmChecks(ws: Workspace, det: Detectors, fx: Fixtures): Promise<void> {
+  console.log("\n# 2l. Story Film presenter upload + video-media-probe");
+  const probe = await import("../src/lib/video-media-probe.server");
+  const upload = await import("../src/lib/story-film-presenter-upload.server");
+  const absCanary = path.join(ws.abs, "canary.ts");
+  // Pre-change: the same ffprobe call with auto-detection.
+  const preVideo = async (file: string) => probe.parseFfprobeVideoMetadata(await runTool(SYSTEM_FFPROBE, ["-v", "error",
+    "-show_entries", "format=duration:stream=codec_type,width,height,duration:stream_tags=rotate:stream_side_data=rotation", "-of", "json", file]));
+  const preDuration = async (file: string) => {
+    const seconds = Number.parseFloat((await runTool(SYSTEM_FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file])).trim());
+    return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1_000) : null;
+  };
+  for (const [label, file] of [["mp4", fx.mp4], ["mov", fx.mov], ["webm", fx.webm]]) {
+    const stored = path.join(ws.renders, `sf-real.${path.extname(file).slice(1)}`);
+    fs.copyFileSync(file, stored);
+    const got = await probe.probeVideoMedia(stored);
+    const want = await preVideo(stored);
+    check(`probeVideoMedia: real ${label} → same metadata as before`, want !== null && JSON.stringify(got) === JSON.stringify(want), `${JSON.stringify(got)} vs ${JSON.stringify(want)}`);
+    fs.rmSync(stored);
+  }
+  for (const [label, file] of [["mp3", fx.mp3], ["wav", fx.wav], ["m4a", fx.m4a], ["aac", fx.aac], ["mp4", fx.mp4]]) {
+    const stored = path.join(ws.renders, `sf-real-audio.${path.extname(file).slice(1)}`);
+    fs.copyFileSync(file, stored);
+    const got = await probe.probeMediaDurationMs(stored);
+    const want = await preDuration(stored);
+    check(`probeMediaDurationMs: real ${label} → same duration as before (${want})`, want !== null && got === want, `got ${got}`);
+    fs.rmSync(stored);
+  }
+  for (const [name, body] of hostileAudio(det.port, absCanary, fs.readFileSync(fx.bareMp3))) {
+    for (const ext of ["mp4", "mp3", "wav", "m4a"]) {
+      const stored = path.join(ws.renders, `sf-${name}.${ext}`);
+      fs.writeFileSync(stored, body);
+      det.arm();
+      const video = /mp4/.test(ext) ? await probe.probeVideoMedia(stored) : null;
+      const duration = await probe.probeMediaDurationMs(stored);
+      const seen = await det.observed();
+      // A resyncing demuxer may still find the mp3 frames after the text ("hls-then-mp3"); what
+      // matters is that the playlist is never opened.
+      check(`story-film probes: stored ${name} .${ext} → no playlist access`, video === null && clean(seen) && (duration === null || name === "hls-then-mp3"),
+        `${JSON.stringify(video)} ${duration} ${JSON.stringify(seen)}`);
+      fs.rmSync(stored);
+    }
+  }
+
+  const presenterFiles = () => fs.readdirSync(ws.renders).filter((f) => f.startsWith("story-film-presenter-")).sort();
+  const send = (bytes: Buffer, name: string, type: string) => {
+    const form = new FormData();
+    form.append("video", new File([new Uint8Array(bytes)], name, { type }));
+    return upload.uploadStoryFilmPresenter(new Request("http://localhost/api/ai-studio/story-films/upload-presenter", { method: "POST", body: form }), USER_ID)
+      .then((asset) => ({ ok: true as const, asset }), (error: { status?: number; message?: string }) => ({ ok: false as const, status: error.status, message: error.message }));
+  };
+  for (const [name, body] of hostileVideo(det.port, absCanary)) {
+    const before = state.presenterAssets.length;
+    det.arm();
+    const out = await send(body, "presenter.mp4", "video/mp4");
+    const seen = await det.observed();
+    check(`presenter upload: ${name} as presenter.mp4 → 422, nothing stored or registered, no access`,
+      !out.ok && out.status === 422 && presenterFiles().length === 0 && state.presenterAssets.length === before && clean(seen),
+      `${JSON.stringify(out)} ${JSON.stringify(seen)}`);
+  }
+  const mp4 = fs.readFileSync(fx.mp4);
+  const ok = await send(mp4, "presenter.mp4", "video/mp4");
+  const stored = presenterFiles();
+  const registered = state.presenterAssets.at(-1);
+  const expected = await preVideo(path.join(ws.renders, stored[0] ?? "missing"));
+  check("presenter upload: a real 9:16 mp4 with audio → stored byte-for-byte, registered with the same metadata as before",
+    ok.ok && stored.length === 1 && fs.readFileSync(path.join(ws.renders, stored[0])).equals(mp4) && expected !== null
+      && registered?.width === expected.width && registered?.height === expected.height && registered?.durationMs === expected.durationMs
+      && registered?.hasAudio === true && registered?.url === `/api/renders/${stored[0]}`,
+    `${JSON.stringify(ok).slice(0, 200)} ${JSON.stringify(expected)}`);
+  for (const f of stored) fs.rmSync(path.join(ws.renders, f));
+}
+
+// ---------------------------------------------------------------------------------------
 // 3. Source: readers this script cannot drive end to end.
 // ---------------------------------------------------------------------------------------
 function sourceChecks(): void {
@@ -1212,6 +1641,18 @@ function sourceChecks(): void {
   const render = src("src/app/api/videos/render/route.ts");
   check("render: image cache + duration probe come from the tested lib",
     render.includes('from "@/lib/render-input-guard"') && !render.includes("async function cacheImageLocally") && !render.includes("async function probeVideoDurationSec"));
+  const storyRender = src("src/lib/story-film-render.server.ts");
+  check("story-film render: the presenter, scene-video, narration and music inputs are pinned",
+    /"-ss", seconds\(segment\.startMs\),\s*\.\.\.pinnedInput\(segment\.sourcePath, \["video"\]\)/.test(storyRender)
+      && /"-stream_loop", "-1",\s*\.\.\.pinnedInput\(segment\.sourcePath, \["video"\]\)/.test(storyRender)
+      && /\.\.\.pinnedInput\(plan\.narrationPath, \["audio", "video"\]\)/.test(storyRender)
+      && /"-stream_loop", "-1",\s*\.\.\.pinnedInput\(plan\.musicPath, \["audio"\]\)/.test(storyRender));
+  const alignment = src("src/lib/story-film-caption-alignment.server.ts");
+  check("story-film alignment: the presenter video is read with pinned input options",
+    /resolveStoredMediaDemuxer\(videoPath, \["video"\]\)/.test(alignment) && /\.\.\.safeInputArgs\(demuxer\),\s*"-i", videoPath/.test(alignment));
+  const direct = src("src/app/api/videos/heygen-direct/route.ts");
+  check("heygen-direct: the unused un-hardened downloadFile / chromakeyComposite are gone",
+    !/function downloadFile|function chromakeyComposite|from "child_process"/.test(direct));
 }
 
 async function main(): Promise<void> {
@@ -1271,6 +1712,7 @@ async function main(): Promise<void> {
       previewBg: await import("../src/app/api/heygen/preview-bg/route"),
       genThumb: await import("../src/app/api/videos/generate-thumbnail/route"),
       genWithBg: await import("../src/app/api/heygen/generate-with-bg/route"),
+      thumbUpload: await import("../src/app/api/videos/thumbnail/upload/route"),
     };
     await thumbnailChecks(ws, det, fx, routes.thumbnail);
     await videoUploadChecks(ws, det, fx, routes.upload);
@@ -1281,6 +1723,9 @@ async function main(): Promise<void> {
     await heygenChecks(ws, det, fx, routes);
     await generateThumbnailChecks(ws, det, fx, routes.genThumb);
     await generateWithBgChecks(ws, det, fx, routes.genWithBg);
+    await renderRouteChecks(ws, det, fx);
+    await thumbnailUploadChecks(ws, det, fx, routes.thumbUpload);
+    await storyFilmChecks(ws, det, fx);
     sourceChecks();
   } finally {
     process.chdir(originalCwd);

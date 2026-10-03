@@ -128,6 +128,13 @@ async function main(): Promise<void> {
       return {
         cacheImageLocally: async () => "",
         probeVideoDurationSec: async () => { probeSpawnCount += 1; return null; },
+        // External voice / music is refused here (no network in this harness); coverage
+        // runs first, so the external-b-roll cases below still answer with the 422 coverage error.
+        cacheRemoteMediaLocally: async () => ({ ok: false, reason: "download_failed" }),
+        RenderMediaRefusedError: class RenderMediaRefusedError extends Error {
+          readonly code = "render_media_unusable";
+          constructor(public readonly field: string) { super(field); }
+        },
       };
     }
     if (specifier === "@/lib/sanitize-caption-style") return { stripDangerousCss: (value: unknown) => value };

@@ -2,6 +2,7 @@
 // follows redirects on its own, and nothing re-checks where they lead). Every hop goes
 // through assertSafeFetchUrl with redirects handled here, and the body is capped while it
 // streams, not after it is buffered.
+import { once } from "events";
 import fs from "fs";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
@@ -79,10 +80,9 @@ export async function safeDownloadToFile(url: string, dest: string, opts: SafeDo
       if (done) break;
       bytes += value.byteLength;
       if (bytes > opts.maxBytes) throw new SafeDownloadError("too_large", "File is too large");
-      if (!out.write(value)) await new Promise<void>((resolve, reject) => {
-        out.once("drain", resolve);
-        out.once("error", reject);
-      });
+      // events.once removes both its listeners when either fires (a hand-rolled
+      // once("drain") + once("error") pair left one "error" listener behind per wait).
+      if (!out.write(value)) await once(out, "drain");
     }
     await new Promise<void>((resolve, reject) => {
       out.once("error", reject);
@@ -96,5 +96,17 @@ export async function safeDownloadToFile(url: string, dest: string, opts: SafeDo
     if (created) try { fs.unlinkSync(dest); } catch {}
     if (error instanceof SafeDownloadError) throw error;
     throw new SafeDownloadError("failed", "Download failed");
+  }
+}
+
+/** Move a finished temp file into place: rename, or copy + unlink when the temp dir is on
+ *  another filesystem. The copy never overwrites an existing file. */
+export function moveFile(from: string, to: string): void {
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+    fs.unlinkSync(from);
   }
 }

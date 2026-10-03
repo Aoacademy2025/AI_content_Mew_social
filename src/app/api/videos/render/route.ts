@@ -22,7 +22,13 @@ import fs from "fs";
 import { randomBytes } from "crypto";
 import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync } from "child_process";
-import { cacheImageLocally, probeVideoDurationSec } from "@/lib/render-input-guard";
+import {
+  cacheImageLocally,
+  cacheRemoteMediaLocally,
+  probeVideoDurationSec,
+  RenderMediaRefusedError,
+  type RemoteMediaKind,
+} from "@/lib/render-input-guard";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   BrollCoverageError,
@@ -78,6 +84,12 @@ function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, exc
 }
 
 export const maxDuration = 60; // only needs to start the background job, not wait for it
+
+const RENDER_MEDIA_REFUSED_MESSAGE: Record<string, string> = {
+  voiceFile: "ใช้ไฟล์เสียงพากย์นี้ไม่ได้ — ต้องเป็นไฟล์เสียงในระบบ หรือลิงก์ http(s) ไปยังไฟล์เสียงจริง (mp3, wav, m4a, ogg, aac, flac)",
+  "subtitleOverlayConfig.videoUrl": "ใช้ไฟล์วิดีโอต้นฉบับนี้ไม่ได้ — ต้องเป็นวิดีโอในระบบ หรือลิงก์ http(s) ไปยังไฟล์ mp4/webm จริง",
+  avatarVideoUrl: "ใช้ไฟล์วิดีโอ Avatar นี้ไม่ได้ — ต้องเป็นวิดีโอในระบบ หรือลิงก์ http(s) ไปยังไฟล์ mp4/webm จริง",
+};
 export const runtime = "nodejs";
 
 // Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
@@ -816,11 +828,55 @@ export async function POST(req: Request) {
       }
     }
 
+    // PR-0b: every audio/video src below is opened by Remotion's compositor, whose ffmpeg
+    // auto-detects the format and follows http, hls and concat by itself. Our own stored
+    // media passes unchanged, but only from the folders we serve media from; anything else
+    // must be an http(s) URL, which is downloaded (every hop re-checked, byte cap), admitted
+    // by the ingest gate and replaced by our own copy under renders/ (render-input-guard).
+    // Returns null when the src may not reach the compositor.
+    const ownOrigins = new Set([reqUrl.origin, new URL(baseUrl).origin, new URL(mediaBaseUrl).origin]);
+    const ownMediaDirs: Array<[string, string]> = [
+      ["/api/renders/", rendersDir],
+      ["/renders/", rendersDir],
+      ["/api/stocks/", stocksDir],
+      ["/api/music/", musicDir],
+      ["/music/", musicDir],
+      ["/uploads/", path.join(process.cwd(), "public", "uploads")],
+    ];
+    async function renderMediaSrc(src: string, kind: RemoteMediaKind): Promise<string | null> {
+      let own: URL | null = null;
+      if (src.startsWith("/") && !src.startsWith("//")) {
+        own = new URL(src, mediaBaseUrl);
+      } else {
+        try {
+          const parsed = new URL(src);
+          if ((parsed.protocol === "http:" || parsed.protocol === "https:") && ownOrigins.has(parsed.origin)) own = parsed;
+        } catch {}
+      }
+      if (own) {
+        const pathname = own.pathname;
+        const dir = ownMediaDirs.find(([prefix]) => pathname.startsWith(prefix));
+        return dir && withinDir(dir[1], pathname.slice(dir[0].length)) ? src : null;
+      }
+      const cached = await cacheRemoteMediaLocally(src, kind, rendersDir, mediaBaseUrl);
+      if (cached.ok) return cached.src;
+      console.warn(`[render] refusing external ${kind} (${cached.reason})`);
+      return null;
+    }
+
+    // A required input (voice, the video under a burn, the legacy avatar video): refused → 422.
+    async function requiredMediaSrc(src: string, kind: RemoteMediaKind, field: string): Promise<string> {
+      if (!src) return src;
+      const guarded = await renderMediaSrc(src, kind);
+      if (guarded === null) throw new RenderMediaRefusedError(field);
+      return guarded;
+    }
+
     // BGM is decorative + best-effort: NEVER fail the whole render over music. Return
     // the value only if it's a real playable asset, else drop it (render with no music).
     // Guards against a stray bgm value (e.g. a bare track name "Groove" the MCP client
     // sent) that isn't an internal path → would otherwise crash Remotion's <Audio>.
-    function safeBgmOrDrop(bgm: string | undefined | null): string | undefined {
+    async function safeBgmOrDrop(bgm: string | undefined | null): Promise<string | undefined> {
       if (!bgm) return undefined;
       const localPath = toLocalFilePathIfInternal(bgm);
       if (localPath) {
@@ -828,7 +884,12 @@ export async function POST(req: Request) {
         console.warn(`[render] dropping bgm (file missing): ${bgm}`);
         return undefined;
       }
-      if (bgm.startsWith("http://") || bgm.startsWith("https://")) return bgm; // external, trust
+      if (bgm.startsWith("http://") || bgm.startsWith("https://")) {
+        const guarded = await renderMediaSrc(bgm, "audio");
+        if (guarded) return guarded;
+        console.warn("[render] dropping bgm (not our media and not safely fetchable)");
+        return undefined;
+      }
       console.warn(`[render] dropping bgm (not a playable src): ${bgm}`);
       return undefined;
     }
@@ -855,19 +916,22 @@ export async function POST(req: Request) {
     // windows left empty keep the brand background, and no fill is stretched over them.
     const brollDisabled = Boolean(shortVideoConfig?.backgroundColors?.length);
     if (isShortVideo && shortVideoConfig && brollDisabled) {
+      // External b-roll never reaches the compositor: an entry without a local file is
+      // dropped by the coverage pass (it is never fetched), here and in the branch below.
+      const filledWindows = await prepareFilledWindowRenderAssets(shortVideoConfig.bgVideos, fps, {
+        resolveAsset: (src) => {
+          const resolvedSrc = toAbsolute(resolveStockUrl(src));
+          return { src: resolvedSrc, localPath: toLocalFilePathIfInternal(resolvedSrc) };
+        },
+        isUsableLocalFile: (localPath) =>
+          fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500,
+        probeDurationSec: probeVideoDurationSec,
+      });
       resolvedShortConfig = {
         ...shortVideoConfig,
-        voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
-        bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
-        bgVideos: await prepareFilledWindowRenderAssets(shortVideoConfig.bgVideos, fps, {
-          resolveAsset: (src) => {
-            const resolvedSrc = toAbsolute(resolveStockUrl(src));
-            return { src: resolvedSrc, localPath: toLocalFilePathIfInternal(resolvedSrc) };
-          },
-          isUsableLocalFile: (localPath) =>
-            fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500,
-          probeDurationSec: probeVideoDurationSec,
-        }),
+        voiceFile: await requiredMediaSrc(toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)), "audio", "voiceFile"),
+        bgmFile: await safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
+        bgVideos: filledWindows,
         headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
@@ -925,8 +989,8 @@ export async function POST(req: Request) {
 
       resolvedShortConfig = {
         ...shortVideoConfig,
-        voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
-        bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
+        voiceFile: await requiredMediaSrc(toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)), "audio", "voiceFile"),
+        bgmFile: await safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
         bgVideos: coverage.segments,
         headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
       };
@@ -946,9 +1010,12 @@ export async function POST(req: Request) {
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
-      const resolvedUrl = videoUrl?.startsWith("/") ? `${mediaBaseUrl}${videoUrl}` : videoUrl;
+      const absoluteVideoUrl = videoUrl?.startsWith("/") ? `${mediaBaseUrl}${videoUrl}` : videoUrl;
+      const resolvedUrl = absoluteVideoUrl
+        ? await requiredMediaSrc(String(absoluteVideoUrl), "video", "subtitleOverlayConfig.videoUrl")
+        : absoluteVideoUrl;
       const resolvedBgm = subtitleOverlayConfig.bgmFile
-        ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
+        ? await safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
       resolvedSubtitleConfig = {
         ...subtitleOverlayConfig,
@@ -973,6 +1040,12 @@ export async function POST(req: Request) {
       }
     }
 
+    // Legacy AvatarComposition mounts avatarVideoUrl in an OffthreadVideo (only when no
+    // short-video / overlay config is sent, exactly as run-render picks the composition).
+    const resolvedAvatarVideoUrl = isAvatarMode && !isShortVideo && !isSubtitleOverlay
+      ? await requiredMediaSrc(String(avatarVideoUrl), "video", "avatarVideoUrl")
+      : avatarVideoUrl ?? null;
+
     // FREE-tier watermark: only add the overlay for FREE plan renders.
     // Paid plans (PRO / BUSINESS) must never be watermarked. Default false when plan unknown.
     const watermark = dbUser.plan === "FREE";
@@ -990,7 +1063,7 @@ export async function POST(req: Request) {
       resolvedScenes,
       audioUrl: audioUrl ?? null,
       captionsData,
-      avatarVideoUrl: avatarVideoUrl ?? null,
+      avatarVideoUrl: resolvedAvatarVideoUrl,
       captionStyleId,
       // Strip url()/expression()/@import from the unvalidated style before it reaches
       // Remotion inline styles (covers both the queue payload and the legacy path).
@@ -1407,6 +1480,16 @@ export async function POST(req: Request) {
           actualMinutes: error.actualMinutes,
         },
         { status: 409 },
+      );
+    }
+    if (error instanceof RenderMediaRefusedError) {
+      return NextResponse.json(
+        {
+          error: RENDER_MEDIA_REFUSED_MESSAGE[error.field] ?? RENDER_MEDIA_REFUSED_MESSAGE.voiceFile,
+          code: error.code,
+          field: error.field,
+        },
+        { status: 422 },
       );
     }
     if (error instanceof BrollCoverageError) {

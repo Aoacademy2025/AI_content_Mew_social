@@ -8,6 +8,7 @@ import path from "node:path";
 import { prisma } from "@/lib/prisma";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
+import { resolveStoredMediaDemuxer, safeInputArgs, type MediaKind } from "@/lib/media-probe-args";
 import {
   captionsForStoryFilmEditorial,
   fallbackStoryFilmCaptionTrack,
@@ -72,6 +73,15 @@ function parsePayload(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+// G24: a stored presenter upload, scene video, narration or music file is read with a pinned
+// demuxer, so a playlist stored under a media name is never opened as one. (Keyframe images
+// keep `-loop 1`, an image2-only option the sniffed png_pipe/webp_pipe demuxers reject.)
+function pinnedInput(filePath: string, kinds: readonly MediaKind[]): string[] {
+  const demuxer = resolveStoredMediaDemuxer(filePath, kinds);
+  if (!demuxer) throw new Error("story_film_media_unreadable");
+  return [...safeInputArgs(demuxer), "-i", filePath];
 }
 
 function runFfmpeg(args: string[], timeout = 10 * 60_000) {
@@ -282,7 +292,7 @@ async function renderSegment(segment: RenderSegment, destination: string) {
     await runFfmpeg([
       "-y",
       "-ss", seconds(segment.startMs),
-      "-i", segment.sourcePath,
+      ...pinnedInput(segment.sourcePath, ["video"]),
       ...commonOutput,
     ]);
     return;
@@ -291,7 +301,7 @@ async function renderSegment(segment: RenderSegment, destination: string) {
     await runFfmpeg([
       "-y",
       "-stream_loop", "-1",
-      "-i", segment.sourcePath,
+      ...pinnedInput(segment.sourcePath, ["video"]),
       ...commonOutput,
     ]);
     return;
@@ -384,9 +394,9 @@ async function ensureStoryFilmBaseMaster(plan: StoryFilmRenderPlan, temporaryDir
     await runFfmpeg([
       "-y",
       "-i", silentMaster,
-      "-i", plan.narrationPath,
+      ...pinnedInput(plan.narrationPath, ["audio", "video"]),
       "-stream_loop", "-1",
-      "-i", plan.musicPath,
+      ...pinnedInput(plan.musicPath, ["audio"]),
       "-filter_complex",
       `[1:a]atrim=0:${durationSec},asetpts=PTS-STARTPTS[voice];[2:a]volume=0.12,atrim=0:${durationSec},asetpts=PTS-STARTPTS,afade=t=out:st=${fadeStart.toFixed(3)}:d=${fadeDuration.toFixed(3)}[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a]`,
       "-map", "0:v:0",

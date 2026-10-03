@@ -5,6 +5,7 @@ import fs from "fs";
 import os from "os";
 import { randomUUID } from "crypto";
 import { admitUserMediaFile } from "@/lib/upload-media-probe";
+import { moveFile } from "@/lib/safe-download";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
@@ -31,17 +32,6 @@ function isAllowedVideo(file: File, ext: string): boolean {
 }
 
 const UNSUPPORTED = "Unsupported file type — only mp4/mov/webm video is accepted";
-
-/** rename, or copy + unlink when the temp dir is on another filesystem. */
-function moveFile(from: string, to: string): void {
-  try {
-    fs.renameSync(from, to);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
-    fs.unlinkSync(from);
-  }
-}
 
 export async function POST(req: Request) {
   let tempPath: string | null = null;

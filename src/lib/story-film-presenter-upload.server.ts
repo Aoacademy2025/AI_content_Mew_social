@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { registerStoryFilmPresenterAsset } from "@/lib/story-film.server";
+import { admitUserMediaFile } from "@/lib/upload-media-probe";
 import { probeVideoMedia } from "@/lib/video-media-probe.server";
 
 const MAX_BYTES = 500 * 1024 * 1024;
@@ -101,6 +102,11 @@ export async function uploadStoryFilmPresenter(
 
     const writtenBytes = fs.statSync(outputPath).size;
     if (writtenBytes !== file.size) throw new Error("uploaded byte count mismatch");
+    // Ingest gate (G24): a real video signature with a decodable stream, read with a pinned
+    // demuxer — the render and caption alignment read this file again later.
+    if (!(await admitUserMediaFile(outputPath, ["video"]))) {
+      fail(422, "อ่าน duration หรือขนาดวิดีโอไม่ได้ กรุณาเลือกไฟล์ใหม่");
+    }
     const metadata = await probeVideoMedia(outputPath);
     if (!metadata) fail(422, "อ่าน duration หรือขนาดวิดีโอไม่ได้ กรุณาเลือกไฟล์ใหม่");
     if (!metadata.hasAudio) fail(422, "วิดีโอ Presenter ต้องมีเสียงบรรยาย");

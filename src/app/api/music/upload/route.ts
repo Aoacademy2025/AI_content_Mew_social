@@ -6,6 +6,7 @@ import fs from "fs";
 import os from "os";
 import { randomUUID } from "crypto";
 import { admitUserMediaFile } from "@/lib/upload-media-probe";
+import { moveFile } from "@/lib/safe-download";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50MB per upload
 const MAX_FORM_OVERHEAD_BYTES = 2 * 1024 * 1024;
@@ -46,17 +47,6 @@ function jsonError(status: number, code: string, error: string) {
 }
 
 const UNSUPPORTED_MESSAGE = "ไฟล์ต้องเป็น mp3, wav, ogg, aac หรือ m4a";
-
-/** rename, or copy + unlink when the temp dir is on another filesystem. */
-function moveFile(from: string, to: string): void {
-  try {
-    fs.renameSync(from, to);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
-    fs.unlinkSync(from);
-  }
-}
 
 async function writeFileStream(file: File, outPath: string) {
   // Exclusive create, default mode (nginx serves public/music straight from disk).
