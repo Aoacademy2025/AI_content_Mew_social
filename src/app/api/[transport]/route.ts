@@ -46,6 +46,14 @@ import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/l
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
+import {
+  abandonClipImport,
+  clipFieldsRequested,
+  parseClipJobArgs,
+  settleClipImportJobSafely,
+  startClipImport,
+  type StartedClipImport,
+} from "@/lib/mcp/clip-video-job";
 import { mcpBrollJobFields, mcpBrollSource } from "@/lib/mcp/broll-source";
 import { mcpBrollCreateRefusal } from "@/lib/mcp/broll-source.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
@@ -105,6 +113,7 @@ async function runTool(
 }
 
 const EXPORT_MODE_NEXT = "เรียก create_video_job อีกครั้งโดยไม่ระบุ exportMode (วิดีโอจะส่งออกอัตโนมัติ)";
+const CLIP_FIELDS_NEXT = "เรียก create_video_job อีกครั้งพร้อม script โดยไม่ระบุ clipUrl / clipUploadId / cutawayLayout";
 
 const handler = createMcpHandler(
   (server) => {
@@ -164,16 +173,24 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId) แจ้งผู้ใช้ทุกข้อใน warnings. แบรนด์ (brandProfileId) มีผลกับสไตล์ซับเท่านั้น.",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId) แจ้งผู้ใช้ทุกข้อใน warnings. แบรนด์ (brandProfileId) มีผลกับสไตล์ซับเท่านั้น. มีคลิปพิธีกรแนวตั้งอยู่แล้ว (เช่น ทำจาก HeyGen): ส่ง clipUrl (ลิงก์ https สาธารณะ) หรือ clipUploadId (จาก create_upload_url kind presenter) แทน script — ระบบนำเข้าคลิปก่อน (status queued) แล้วทำซับจากเสียงในคลิปและสลับ B-roll; cutawayLayout fillYourself = ไม่ใส่ B-roll อัตโนมัติ (ใส่เองด้วย replace_broll_window). นำเข้าไม่สำเร็จ = งาน failed พร้อม errorCode และไม่ตัดโควต้า.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
           // T6 (ADR 0064, G2): exportMode is beta-gated; refused before any preflight or write.
-          if (args.exportMode !== undefined && !mcpEditorProjectEnabledFor(u)) {
-            return featureNotEnabledEnvelope(EXPORT_MODE_NEXT);
+          // T14 (G2): so are the presenter-clip fields (clipUrl / clipUploadId / cutawayLayout).
+          const clipRequested = clipFieldsRequested(args);
+          if ((args.exportMode !== undefined || clipRequested) && !mcpEditorProjectEnabledFor(u)) {
+            return featureNotEnabledEnvelope(clipRequested ? CLIP_FIELDS_NEXT : EXPORT_MODE_NEXT);
           }
+          // T14: server-side either/or rules (the schema stays flat, G13). clip === null is the
+          // plain script job, exactly as before; a script-less call needs a clip.
+          const clipArgs = parseClipJobArgs(args);
+          if (!clipArgs.ok) return clipArgs.failure;
+          const clip = clipArgs.clip;
+          const fillYourself = clip?.cutawayLayout === "fillYourself";
           const hold = args.exportMode === "hold";
           try {
             await assertRenderEnqueueOpen();
@@ -185,7 +202,7 @@ const handler = createMcpHandler(
           }
           const fullAvatarDurationViolation = avatarFullDurationViolation({
             mode: args.avatarMode,
-            durationSec: estimateClipSecV2(args.script),
+            durationSec: estimateClipSecV2(args.script ?? ""),
           });
           if (fullAvatarDurationViolation) {
             return {
@@ -196,7 +213,8 @@ const handler = createMcpHandler(
               estimatedDurationSec: fullAvatarDurationViolation.durationSec,
             };
           }
-          const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
+          // A clip job speaks with the clip's own audio: no TTS, so no voice gates (T14).
+          const useEleven = !clip && (args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs"));
           // Same plan gate the web create path runs (#301) — refuse before the job row
           // exists instead of letting the pipeline die at the TTS step with no CTA.
           const voicePlan = useEleven ? voiceProviderPlanViolation("elevenlabs", u.plan) : null;
@@ -217,7 +235,7 @@ const handler = createMcpHandler(
           // here than it is in the editor.
           // MCP exposes only gemini and elevenlabs (createVideoJobInputShape), so there is
           // no Hero Voice branch to write here.
-          if (managedAudioCeilingApplies(useEleven ? "elevenlabs" : "gemini", geminiKeyMode)) {
+          if (!clip && managedAudioCeilingApplies(useEleven ? "elevenlabs" : "gemini", geminiKeyMode)) {
             const audioRefusal = aiAudioCeilingRefusal(
               await checkAiAudioCeiling(u.id, { enforce: true }),
               u.plan,
@@ -232,12 +250,14 @@ const handler = createMcpHandler(
           }
           const brollSource = mcpBrollSource(args.brollSource);
           const brollFields = mcpBrollJobFields(brollSource);
-          const needsStockKey = stockVideoProvidersMayBeUsed({
+          // T14 fillYourself: every window stays with the presenter (auto B-roll off, HERO-44's
+          // stockSource "none"), so no stock key and no B-roll source gate apply.
+          const needsStockKey = !fillYourself && stockVideoProvidersMayBeUsed({
             stockSource: brollFields.stockSource ?? "stock",
             autoMixProviders: brollFields.autoMixProviders,
           });
           if (needsStockKey && !u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
-          const brollRefusal = await mcpBrollCreateRefusal(u, brollSource);
+          const brollRefusal = fillYourself ? null : await mcpBrollCreateRefusal(u, brollSource);
           if (brollRefusal) return brollRefusal;
           // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the
           // same guard in /api/videos/jobs (web). See @/lib/key-preflight for the
@@ -294,8 +314,18 @@ const handler = createMcpHandler(
           // Every create-time finding lands here; T4 appends more with one line each.
           const warnings: string[] = [];
           if (heygenWarning) warnings.push(heygenWarning);
-          if (!geminiVoiceStyleGateOpen && args.geminiVoiceStyle && args.geminiVoiceStyle !== "neutral") {
+          if (!clip && !geminiVoiceStyleGateOpen && args.geminiVoiceStyle && args.geminiVoiceStyle !== "neutral") {
             warnings.push("โหมดสไตล์เสียง Gemini (geminiVoiceStyle) ยังไม่เปิดใช้งานสำหรับบัญชีนี้ ใช้เสียงปกติ (neutral) แทน");
+          }
+          if (clip) {
+            const ignored = (["script", "voiceProvider", "voiceId", "geminiVoiceName", "geminiVoiceStyle"] as const)
+              .filter((key) => args[key] !== undefined);
+            if (ignored.length) {
+              warnings.push(`งานจากคลิปพิธีกรใช้เสียงและคำพูดในคลิปเอง จึงไม่ใช้ ${ignored.join(", ")} ที่ส่งมา`);
+            }
+            if (fillYourself && args.brollSource !== undefined) {
+              warnings.push("cutawayLayout \"fillYourself\" ไม่ใส่ B-roll อัตโนมัติ จึงไม่ใช้ brollSource ที่ส่งมา — ใส่ B-roll เองด้วย replace_broll_window");
+            }
           }
           // T4: Brand Subtitle Style — owner-checked, active-only (resolveMcpBrandSubtitleStyle).
           // A foreign or inactive brandProfileId refuses identically (never reveals which it was).
@@ -355,13 +385,35 @@ const handler = createMcpHandler(
           // queue (there is no global render queue). Adjustable.
           const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
           if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
+          // T14: queue the presenter import (or find the caller's own upload) last, so a refusal
+          // above never leaves an import behind. Nothing is reserved here (G5).
+          let clipImport: StartedClipImport | null = null;
+          if (clip) {
+            const started = await startClipImport(p.userId, clip.source);
+            if (!started.ok) return started.failure;
+            clipImport = started.started;
+          }
           try {
             // T8 (ADR 0063): with the MCP Editor Project flag on for this user, this also
             // opens an Agent-created Project and marks the job for the server-chained export.
             // Flag off = the exact PR-A createVideoJob call.
             const created = await createMcpVideoJob(
               p.user,
-              {
+              clip && clipImport
+                // T14 (A10, G28): an upload-mode job parked until the import is ready; it carries
+                // only the import id — input.clipUrl is set later from the import's own output.
+                ? {
+                    script: "", title: args.title, mode: "upload", clipImportId: clipImport.importId,
+                    cutawayLayout: clip.cutawayLayout,
+                    ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
+                    ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
+                    ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
+                    subtitleDesign: resolvedSubtitleDesign,
+                    subtitleCardLen: resolvedSubtitleCardLen,
+                    ...(fillYourself ? { stockSource: "none" } : brollFields),
+                    ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
+                  }
+                : {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
                 ...(geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle } : {}),
@@ -378,11 +430,31 @@ const handler = createMcpHandler(
                 ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
-              { title: args.title, ...(hold ? { hold: true } : {}) },
+              { title: args.title, ...(hold ? { hold: true } : {}), ...(clip ? { waitingImport: true } : {}) },
             );
             // `mcp-chain:` keys belong to the server's chained export — same answer as a reuse.
-            if (created.kind === "reserved_key") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            if (created.kind === "reserved_key") {
+              await abandonClipImport(clipImport);
+              return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            }
             const job = created.job;
+            if (clip) {
+              // An upload that is already ready starts at once; otherwise the job waits (no slot).
+              await settleClipImportJobSafely(job.id, p.userId);
+              return { jobId: job.id, status: "queued",
+                message: "รับคลิปแล้ว — กำลังนำเข้าคลิปพิธีกร เมื่อพร้อมงานจะเข้าคิวสร้างวิดีโอเอง",
+                ...(warnings.length ? { warning: warnings[0], warnings } : {}),
+                nextStep: "นำเข้าคลิปก่อน (สถานะ queued, currentStep \"import\") แล้วจึงสร้างวิดีโอ ~3–6 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น). ถ้านำเข้าไม่สำเร็จ งานจะ failed พร้อม errorCode และไม่ตัดโควต้า",
+                cutawayLayout: clip.cutawayLayout,
+                ...(hold
+                  ? {
+                      exportMode: "hold",
+                      next: fillYourself
+                        ? "poll get_video_status จนได้ status \"held\" แล้วใส่ B-roll เองทีละช่วงด้วย replace_broll_window (ดู windows จาก get_edit_state) แล้วจึงเรียก export_video(jobId)"
+                        : "poll get_video_status จนได้ status \"held\" แล้วเรียก get_edit_state(jobId) เพื่อตรวจ/แก้ แล้วจึงเรียก export_video(jobId)",
+                    }
+                  : {}) };
+            }
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
               ...(warnings.length ? { warning: warnings[0], warnings } : {}),
               nextStep: avatar.kind === "ok"
@@ -395,7 +467,9 @@ const handler = createMcpHandler(
                   }
                 : {}) };
           } catch (e) {
-            if (e instanceof McpHoldNotEnabledError) return featureNotEnabledEnvelope(EXPORT_MODE_NEXT);
+            // T14: the job was not created — stop a url import this call queued.
+            await abandonClipImport(clipImport);
+            if (e instanceof McpHoldNotEnabledError) return featureNotEnabledEnvelope(clip ? CLIP_FIELDS_NEXT : EXPORT_MODE_NEXT);
             if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
             throw e; // real DB error → runTool catch audits "error" + returns internal_error
           }

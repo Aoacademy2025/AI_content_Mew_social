@@ -136,6 +136,12 @@ function genericStepCopy(step: string | null | undefined, exportMode: boolean): 
         heading: "ประกอบ Avatar กับวิดีโอไม่สำเร็จ",
         body: "วิดีโอพื้นหลังยังอยู่ แต่ขั้นประกอบ Avatar ยังไม่สำเร็จ — กลับไปลองใหม่ได้",
       };
+    case "import":
+      // T14: an MCP clip job whose presenter clip import failed — it never reached a render.
+      return {
+        heading: "นำเข้าคลิปพิธีกรไม่สำเร็จ",
+        body: "ระบบยังไม่ได้เริ่มสร้างวิดีโอ และไม่ได้ตัดโควต้าหรือเครดิต — แก้ไฟล์ตามรหัสข้อผิดพลาด (เช่น คลิปต้องเป็นแนวตั้ง และยาวไม่เกินเพดานแผน) แล้วสร้างใหม่อีกครั้ง",
+      };
     case "burn":
     case "save":
       return {

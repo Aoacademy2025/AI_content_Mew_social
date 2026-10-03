@@ -210,6 +210,7 @@
     "verify:media-import-fetch": "tsx scripts/verify-media-import-fetch.ts",
     "verify:media-import-lane": "node --conditions=react-server --import tsx scripts/verify-media-import-lane.ts",
     "verify:mcp-broll-window-edits": "node --conditions=react-server --import tsx scripts/verify-mcp-broll-window-edits.ts",
+    "verify:mcp-clip-import-job": "node --conditions=react-server --import tsx scripts/verify-mcp-clip-import-job.ts",
     "verify:omnivoice": "tsx scripts/verify-omnivoice.ts",
     "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py services/omnivoice-runpod/server.py services/omnivoice-runpod/text_utils.py services/omnivoice-runpod/voice_similarity.py services/omnivoice-runpod/voice_library.py services/omnivoice-runpod/credits.py services/omnivoice-runpod/engine_indextts.py",
     "verify:comfyui-z-image-runpod": "python3 -m unittest discover -s services/comfyui-z-image-runpod -p 'test_model_manifest.py' && python3 -m py_compile services/comfyui-z-image-runpod/test_model_manifest.py",

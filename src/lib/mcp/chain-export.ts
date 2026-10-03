@@ -122,11 +122,13 @@ export async function createMcpVideoJob(
   user: { id: string; email?: string | null },
   input: Record<string, unknown>,
   idempotencyKey: string | undefined,
-  opts: { title?: string; hold?: boolean } = {},
+  /** `waitingImport` (T14, A10): the job starts parked in `waiting_import` until its presenter
+   *  clip import is ready (settleClipImportJob). Beta-only, like `hold`. */
+  opts: { title?: string; hold?: boolean; waitingImport?: boolean } = {},
 ): Promise<CreateMcpVideoJobResult> {
   if (isReservedMcpChainIdempotencyKey(idempotencyKey)) return { kind: "reserved_key" };
   if (!mcpEditorProjectEnabledFor(user)) {
-    if (opts.hold) throw new McpHoldNotEnabledError();
+    if (opts.hold || opts.waitingImport) throw new McpHoldNotEnabledError();
     return { kind: "created", job: await createVideoJob(user.id, input, idempotencyKey), projectId: null };
   }
 
@@ -142,7 +144,7 @@ export async function createMcpVideoJob(
         ? { ...input, previewMode: true, mcpHold: true }
         : { ...input, previewMode: true, mcpChainExport: true },
       idempotencyKey,
-      { projectId: project.id },
+      { projectId: project.id, ...(opts.waitingImport ? { initialStatus: "waiting_import" as const } : {}) },
     );
   } catch (error) {
     await prisma.editorProject.deleteMany({ where: { id: project.id, userId: user.id } }).catch(() => {});

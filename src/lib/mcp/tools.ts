@@ -12,6 +12,7 @@ import {
   type McpHeldChain,
 } from "@/lib/mcp/chain-export";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
+import { settleClipImportJobSafely } from "@/lib/mcp/clip-video-job";
 import { continueMcpRerenderChainSafely, isMcpExportAfterRerender } from "@/lib/mcp/rerender-chain";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
@@ -340,6 +341,9 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
 }
 
 export async function getVideoJobStatusTool(userId: string, jobId: string) {
+  // T14 (A10): a clip job parked in waiting_import moves on the moment its presenter import
+  // has finished — the agent's poll never waits for the worker's next watchdog pass.
+  await settleClipImportJobSafely(jobId, userId);
   // T8: an MCP chain (preview or its chained export) reads as one job. Owner-scoped: another
   // user's id resolves to null here AND below, so it is "not found" either way.
   // T5: a Held Preview and every job linked to it read as one job under the root id.

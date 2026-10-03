@@ -403,6 +403,7 @@ jobs:
           npm run verify:media-import-upload
           npm run verify:media-import-lane
           npm run verify:mcp-broll-window-edits
+          npm run verify:mcp-clip-import-job
 
       - name: Build
         run: npm run build

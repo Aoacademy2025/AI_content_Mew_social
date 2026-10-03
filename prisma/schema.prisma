@@ -1108,7 +1108,7 @@ model VideoJob {
   brandVisualAcceptanceJson    String?
   videoId                      String?
   type                         String         @default("create")
-  status                       String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
+  status                       String         @default("queued") // queued|processing|waiting_provider|waiting_import|done|failed|canceled
   currentStep                  String?
   progress                     Int            @default(0)
   inputJson                    String

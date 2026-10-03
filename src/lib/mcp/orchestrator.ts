@@ -2334,6 +2334,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           fullText: upFullText,
         },
       });
+      // T14: an MCP clip job (create_video_job + clipUrl/clipUploadId) is an upload preview;
+      // like the other preview finishes, hand off to the server-chained export only after the
+      // finish committed. Web upload jobs never carry the marker. A Held Preview never chains.
+      if (input.mcpChainExport === true && input.mcpHold !== true) {
+        await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
+      }
       return;
     }
 

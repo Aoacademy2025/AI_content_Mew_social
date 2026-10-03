@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { failJob, withVideoJobSqliteRetry } from "@/lib/mcp/video-job";
 import { recoverLostMcpChainExports } from "@/lib/mcp/chain-export";
 import { recoverLostMcpRerenderExports } from "@/lib/mcp/rerender-chain";
+import { settleWaitingClipImportJobs } from "@/lib/mcp/clip-video-job";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 /**
@@ -80,13 +81,15 @@ export function stalledVideoJobMessage(staleMs: number = VIDEO_JOB_STALE_MS): st
  * a poll time. Safe to run on every worker poll: both passes are guarded by the state they
  * observed, so a concurrent orchestration always wins and a repeat sweep is a no-op.
  *
+ * Also settles MCP clip jobs parked in `waiting_import` (T14) whose presenter import finished.
+ *
  * Rows with a live `providerCheckpointJson` are exempt entirely — HeyGen / Hero Voice work
  * owns its own 2 h provider deadline. `queued` rows are exempt too: a long queue is backlog,
  * not a stall. Composite-bound steps get the longer deadline above.
  */
 export async function sweepStalledVideoJobs(
   now: Date = new Date(),
-): Promise<{ failed: string[]; repairedPoll: string[]; recoveredChainExports: string[] }> {
+): Promise<{ failed: string[]; repairedPoll: string[]; recoveredChainExports: string[]; settledImportJobs: string[] }> {
   // Read at the SHORTEST deadline, then apply each row's own deadline in JS. One query, and
   // adding a longer-deadline step can never accidentally widen what the query returns.
   const candidates = await withVideoJobSqliteRetry("watchdog scan stalled", () => prisma.videoJob.findMany({
@@ -191,5 +194,15 @@ export async function sweepStalledVideoJobs(
     console.error("[video-job-watchdog] rerender export recovery failed:", error instanceof Error ? error.name : "unknown");
   }
 
-  return { failed, repairedPoll, recoveredChainExports };
+  // T14 (A10): MCP clip jobs parked in waiting_import while their presenter import runs — move
+  // each one whose import has finished to queued (ready) or failed (refund-safe, zero charge).
+  // get_video_status settles the same way on read, so a lost pass only costs a minute.
+  let settledImportJobs: string[] = [];
+  try {
+    settledImportJobs = await settleWaitingClipImportJobs();
+  } catch (error) {
+    console.error("[video-job-watchdog] clip import settle failed:", error instanceof Error ? error.name : "unknown");
+  }
+
+  return { failed, repairedPoll, recoveredChainExports, settledImportJobs };
 }

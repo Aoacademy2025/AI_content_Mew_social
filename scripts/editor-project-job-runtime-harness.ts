@@ -2106,7 +2106,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
           throw Object.assign(new Error("duplicate"), { code: "P2002" });
         },
         parseVideoJobOutput: () => null,
-        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
+        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider", "waiting_import"],
       };
     }
     if (specifier === "@/lib/usage-limits") return { checkClipQuota: async () => ({ allowed: true }) };
@@ -2339,7 +2339,7 @@ async function runExactReplayRouteScenario(input: {
         },
         parseVideoJobOutput: () => null,
         VideoJobFundingError,
-        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
+        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider", "waiting_import"],
       };
     }
     if (specifier === "@/lib/minute-limits") {

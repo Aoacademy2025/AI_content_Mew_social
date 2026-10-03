@@ -183,7 +183,8 @@ export type UrlImportAdmissionCode = Exclude<AdmissionCode, "upload_link_hourly_
 /**
  * `replace_broll_window(url)`'s admission (T13, G23/G25): queue a url B-roll import for the
  * import lane — "pending", fresh deadline (the lane resets it again when it claims the row).
- * Queued as broll_video; the lane accepts an image or a video and records what the bytes were.
+ * Queued as broll_video (the lane accepts an image or a video and records what the bytes were),
+ * or as presenter for a create_video_job clip (T14: video only, T9's presenter checks).
  * The url is only stored for the lane's guarded fetch (G23 is enforced there, at connect time)
  * and is cleared when the import finishes. Same caps and budget as an upload, counted in one
  * write-first transaction (see the module comment).
@@ -192,6 +193,9 @@ export async function createUrlImport(
   userId: string,
   sourceUrl: string,
   now: Date = new Date(),
+  /** T14: "presenter" for create_video_job's clipUrl (the lane then applies T9's presenter
+   *  checks); B-roll links keep the default. */
+  purpose: "broll_video" | "presenter" = "broll_video",
 ): Promise<{ ok: true; importId: string } | { ok: false; code: UrlImportAdmissionCode }> {
   const importId = randomUUID();
   try {
@@ -201,14 +205,14 @@ export async function createUrlImport(
         data: {
           id: importId,
           userId,
-          purpose: "broll_video",
+          purpose,
           source: "url",
           status: "pending",
           sourceUrl,
           deadlineAt: new Date(now.getTime() + IMPORT_DEADLINE_MS),
         },
       });
-      await assertImportCapacity(tx, userId, now, "broll_video", importId);
+      await assertImportCapacity(tx, userId, now, purpose, importId);
     });
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid" && error.code !== "upload_link_hourly_limit") {
