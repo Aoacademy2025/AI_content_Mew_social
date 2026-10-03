@@ -16,7 +16,7 @@ import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 
 /** The app origin every absolute link MCP hands an agent is built on. */
-function mcpPublicOrigin(): string {
+export function mcpPublicOrigin(): string {
   return process.env.MCP_PUBLIC_ORIGIN?.trim()
     || process.env.NEXT_PUBLIC_APP_URL?.trim()
     || DEFAULT_MCP_PUBLIC_ORIGIN;

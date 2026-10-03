@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/nextjs";
 
 import {
   beforeSendSentryEvent,
+  beforeSendSentryTransaction,
   beforeSentryBreadcrumb,
   parseSentrySampleRate,
   sentryDataCollection,
@@ -37,6 +38,7 @@ Sentry.init({
       : [],
   dataCollection: sentryDataCollection,
   beforeSend: beforeSendSentryEvent,
+  beforeSendTransaction: beforeSendSentryTransaction,
   beforeBreadcrumb: beforeSentryBreadcrumb,
 });
 

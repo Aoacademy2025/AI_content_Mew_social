@@ -22,6 +22,7 @@ import { createMcpVideoJob, McpHoldNotEnabledError, mcpEditorProjectEnabledFor }
 import { getRequestPrincipal, runWithRequestPrincipalSlot, setRequestPrincipal } from "@/lib/mcp/request-principal";
 import { featureNotEnabledEnvelope } from "@/lib/mcp/tool-gating";
 import { registerEditTools } from "@/lib/mcp/edit-tools";
+import { registerMediaImportTools } from "@/lib/mcp/media-import-tools";
 import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import {
   aiAudioCeilingRefusal,
@@ -420,7 +421,9 @@ const handler = createMcpHandler(
 
     // T6 (ADR 0064): the MCP edit-before-export tools, registered per request for the
     // principal verifyToken resolved (beta-gated: absent from tools/list otherwise).
+    // T11 (ADR 0065): create_upload_url, same gate.
     registerEditTools(server, getRequestPrincipal(), runTool);
+    registerMediaImportTools(server, getRequestPrincipal(), runTool);
   },
   { serverInfo: { name: "heroai", version: "0.2.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },

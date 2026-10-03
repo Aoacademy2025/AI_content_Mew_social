@@ -10,6 +10,11 @@ type SentryDataCollection = NonNullable<
   Parameters<typeof Sentry.init>[0]["dataCollection"]
 >;
 
+/** @sentry/nextjs does not re-export TransactionEvent; take it from init's own hook. */
+type TransactionEvent = Parameters<
+  NonNullable<Parameters<typeof Sentry.init>[0]["beforeSendTransaction"]>
+>[0];
+
 const SENSITIVE_KEY =
   /(?:authorization|cookie|token|secret|password|passwd|api[-_]?key|session|credential|private[-_]?key|webhook[-_]?secret)/i;
 
@@ -20,7 +25,13 @@ const PATH_QUERY_IN_TEXT =
 const EMAIL_IN_TEXT = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER_IN_TEXT = /\b(Bearer\s+)[A-Z0-9._~+/=-]+/gi;
 const KNOWN_SECRET_IN_TEXT =
-  /\b(?:lin_api_|sk_(?:live|test)_|rk_(?:live|test)_|whsec_|heroai_pat_)[A-Z0-9_-]+\b/gi;
+  /\b(?:lin_api_|sk_(?:live|test)_|rk_(?:live|test)_|whsec_|heroai_pat_|heroai_up_)[A-Z0-9_-]+\b/gi;
+// The Media Import upload link carries its single-use token as a path segment
+// (`/api/mcp-uploads/<token>`, Task 11) — scrub the segment wherever the path shows up. A
+// segment starting with a bracket is left alone: that is the route's own `[token]` name (in
+// parameterized transaction names and stack-frame file paths) or an already-scrubbed
+// `[Filtered]`, so the scrub is idempotent and never breaks source-map lookups.
+const MCP_UPLOAD_TOKEN_SEGMENT = /(\/api\/mcp-uploads\/)[^/?#\s"'<>()[\]{}]+/gi;
 
 export const sentryDataCollection: SentryDataCollection = {
   userInfo: false,
@@ -58,25 +69,50 @@ export function parseSentrySampleRate(
   return parsed;
 }
 
+/** Pure: replaces the upload-link token segment and any bare upload token with [Filtered]. */
+export function redactMcpUploadTokens(value: string): string {
+  return value
+    .replace(MCP_UPLOAD_TOKEN_SEGMENT, "$1[Filtered]")
+    .replace(KNOWN_SECRET_IN_TEXT, "[Filtered]");
+}
+
 function withoutQueryString(value: string): string {
+  let stripped: string;
   try {
     const url = new URL(value);
     url.search = "";
     url.hash = "";
-    return url.toString();
+    stripped = url.toString();
   } catch {
     const queryStart = value.indexOf("?");
-    return queryStart >= 0 ? value.slice(0, queryStart) : value;
+    stripped = queryStart >= 0 ? value.slice(0, queryStart) : value;
   }
+  return redactMcpUploadTokens(stripped);
 }
 
 export function sanitizeSentryText(value: string): string {
-  return value
-    .replace(URL_IN_TEXT, (url) => withoutQueryString(url))
-    .replace(PATH_QUERY_IN_TEXT, "$1$2")
-    .replace(EMAIL_IN_TEXT, "[Email]")
-    .replace(BEARER_IN_TEXT, "$1[Filtered]")
-    .replace(KNOWN_SECRET_IN_TEXT, "[Filtered]");
+  return redactMcpUploadTokens(
+    value
+      .replace(URL_IN_TEXT, (url) => withoutQueryString(url))
+      .replace(PATH_QUERY_IN_TEXT, "$1$2")
+      .replace(EMAIL_IN_TEXT, "[Email]")
+      .replace(BEARER_IN_TEXT, "$1[Filtered]"),
+  );
+}
+
+/** Every string inside `value` passed through redactMcpUploadTokens (depth-bounded, in place). */
+function redactUploadTokensDeep(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.includes("mcp-uploads") || value.includes("heroai_up_") ? redactMcpUploadTokens(value) : value;
+  }
+  if (!value || typeof value !== "object" || depth > 8) return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) value[i] = redactUploadTokensDeep(value[i], depth + 1);
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) record[key] = redactUploadTokensDeep(record[key], depth + 1);
+  return value;
 }
 
 function sanitizeValue(value: unknown, key?: string, depth = 0): unknown {
@@ -211,7 +247,18 @@ export function beforeSendSentryEvent(event: ErrorEvent): ErrorEvent | null {
       .filter((breadcrumb): breadcrumb is Breadcrumb => breadcrumb !== null);
   }
 
-  return event;
+  // Last pass: the upload-link token must not survive in ANY field (transaction name, trace
+  // context, stack-frame metadata...), not just the ones sanitized above.
+  return redactUploadTokensDeep(event) as ErrorEvent;
+}
+
+/**
+ * Performance events (5% of traces) carry the raw request path in the transaction name,
+ * request.url and span descriptions/attributes. Only the upload-link token is scrubbed here;
+ * everything else in a transaction is left as Sentry recorded it.
+ */
+export function beforeSendSentryTransaction(event: TransactionEvent): TransactionEvent | null {
+  return redactUploadTokensDeep(event) as TransactionEvent;
 }
 
 export function beforeSentryBreadcrumb(

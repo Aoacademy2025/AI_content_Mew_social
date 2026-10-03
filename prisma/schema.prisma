@@ -84,6 +84,8 @@ model User {
   contents                        Content[]
   videos                          Video[]
   mcpTokens                       McpToken[]
+  mcpUploadTokens                 McpUploadToken[]
+  mediaImports                    MediaImport[]
   videoJobs                       VideoJob[]
   images                          GeneratedImage[]
   notifications                   Notification[]
@@ -436,6 +438,50 @@ model McpToken {
   createdAt  DateTime  @default(now())
 
   @@index([userId])
+}
+
+// MCP Media Import (ADR 0065, plan docs/plans/2026-10-03-mcp-edit-before-export.md G22-G28).
+// One row per file an agent brings in — from a public link (source "url") or a one-time
+// upload link (source "upload"). Status: pending → processing → ready | failed.
+//   • url:    created "pending"; the import lane (mcp-video-worker) claims it.
+//   • upload: created "processing" by PUT /api/mcp-uploads/<token> while the bytes stream
+//             in, then "pending" once the whole file is staged, for the same lane.
+// `deadlineAt` is the wall-clock limit of the current phase; the lane's watchdog fails rows
+// past it. The admission caps (G25) count these rows in the DB, so they hold across the web
+// and worker processes (src/lib/media-import/imports.ts).
+model MediaImport {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose    String // broll_image | broll_video | presenter
+  source     String // url | upload
+  status     String   @default("pending") // pending | processing | ready | failed
+  resultSrc  String? // server-generated /api/stocks/… or /api/renders/… once ready
+  errorCode  String?
+  durationMs Int?
+  deadlineAt DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+}
+
+// Single-use upload link for Media Import (G26). Only the SHA-256 of the raw token is stored;
+// the raw token exists solely in the create_upload_url reply. The link expires 15 minutes
+// after `issuedAt`; `usedAt` is set atomically by the PUT that consumes it. `importId` is the
+// MediaImport id (= the agent's uploadId) that the PUT creates — reserved at issue time.
+model McpUploadToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // image | video | presenter
+  issuedAt  DateTime  @default(now())
+  usedAt    DateTime?
+  importId  String    @unique
+
+  @@index([userId, issuedAt])
 }
 
 model AvatarPreset {
