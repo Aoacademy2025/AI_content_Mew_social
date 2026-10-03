@@ -53,6 +53,7 @@ function refuse(status: number, error: string, message?: string): EditorEnqueueR
 
 const SOURCE_NOT_FOUND_MESSAGE = "ไม่พบวิดีโอต้นฉบับ";
 const TOO_MANY_JOBS_MESSAGE = "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่";
+const STALE_PENDING_REVISION_MESSAGE = "AI agent แก้ไขคลิปนี้ไปแล้วระหว่างที่คุณกำลังแก้ — กรุณาโหลดฉบับล่าสุดแล้วลองใหม่";
 
 async function inflightCapReached(userId: string): Promise<boolean> {
   const inflight = await prisma.videoJob.count({ where: { userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
@@ -106,6 +107,15 @@ export async function enqueueEditorExport(input: {
    * project is still at this revision.
    */
   pendingEditRevision?: number;
+  /**
+   * T8 (ADR 0064, G21): the web Post phase's CAS guard. When the editor loaded a Pending Edit
+   * Draft, it sends back the revision it loaded; a mismatch here means the MCP agent changed the
+   * draft while the web was editing, so the export is refused (`stale_revision`) rather than
+   * silently overwriting or racing the agent's edit. Independent of `pendingEditRevision` above
+   * (which only drives the G12 clear-on-export and is set by the MCP `export_video` tool) so this
+   * guard never changes behaviour for that caller.
+   */
+  expectedPendingRevision?: number;
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId, brandVisualAccess } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
@@ -166,6 +176,21 @@ export async function enqueueEditorExport(input: {
   if (input.rootJobId && !(await rootBelongsToProject(user.id, input.rootJobId, sourceProjectId))) {
     return refuse(404, "source_not_found", SOURCE_NOT_FOUND_MESSAGE);
   }
+  // T8 (ADR 0064, G21): once a loaded draft's revision is confirmed still current, it becomes
+  // the export's `pendingEditRevision` too — reusing the SAME G12 clear-on-match trigger the MCP
+  // `export_video` tool drives (orchestrator.ts), rather than adding a second clear path. The web
+  // never sends `pendingEditRevision` itself; only the MCP tool does.
+  let effectivePendingEditRevision = input.pendingEditRevision;
+  if (typeof input.expectedPendingRevision === "number") {
+    const currentProject = await prisma.editorProject.findFirst({
+      where: { id: sourceProjectId, userId: user.id },
+      select: { pendingEditRevision: true },
+    });
+    if (!currentProject || currentProject.pendingEditRevision !== input.expectedPendingRevision) {
+      return refuse(409, "stale_revision", STALE_PENDING_REVISION_MESSAGE);
+    }
+    effectivePendingEditRevision = input.expectedPendingRevision;
+  }
   if (input.inflightCap !== false && (await inflightCapReached(user.id))) {
     return refuse(429, "too_many_jobs", TOO_MANY_JOBS_MESSAGE);
   }
@@ -202,7 +227,7 @@ export async function enqueueEditorExport(input: {
           exportSceneCount: input.exportSceneCount,
           ...(input.mcpChainExport ? { mcpChainExport: true } : {}),
           ...rootLinkInput(input.rootJobId),
-          ...(typeof input.pendingEditRevision === "number" ? { mcpPendingEditRevision: input.pendingEditRevision } : {}),
+          ...(typeof effectivePendingEditRevision === "number" ? { mcpPendingEditRevision: effectivePendingEditRevision } : {}),
         },
         input.idempotencyKey,
         {

@@ -127,6 +127,8 @@ type Body = {
   sourceJobId?: unknown; windowEdits?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
+  // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
+  expectedPendingRevision?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -354,6 +356,7 @@ export async function POST(req: Request) {
           idempotencyFingerprint,
           exportScript: str(body.script, 20000),
           exportSceneCount: num(body.exportSceneCount, 1, 1000),
+          expectedPendingRevision: num(body.expectedPendingRevision, 0, 2_147_483_647),
         });
         if (!result.ok) return editorEnqueueRefusalResponse(result);
         return queuedJobResponse(result.job.id, idempotencyKey, idempotencyFingerprint, legacyClient);

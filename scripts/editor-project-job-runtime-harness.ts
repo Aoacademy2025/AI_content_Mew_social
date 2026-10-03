@@ -561,6 +561,12 @@ function mountEditorShell(input: {
     }
     if (specifier === "./useV2Project") return { useV2Project: input.getProject };
     if (specifier === "./useV2Job") return { useV2Job: () => jobApi };
+    // T8 (ADR 0064, G21): this harness replays the Shell's wiring, not the Pending Edit Draft
+    // fetch itself (that's `scripts/verify-editor-pending-draft.ts`'s job) — the default "no
+    // draft" posture here matches every test's fixtures, which predate this feature.
+    if (specifier === "./usePendingEditDraft") {
+      return { usePendingEditDraft: () => ({ pendingEdit: null, reloadPendingEdit: async () => null }) };
+    }
     if (specifier === "./Step1Script") return { Step1Script: marker("Step1Script") };
     if (specifier === "./Step2Elements") return { Step2Elements: marker("Step2Elements") };
     if (specifier === "./RenderingScreen") return { RenderingScreen: marker("RenderingScreen") };

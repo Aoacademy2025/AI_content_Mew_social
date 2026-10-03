@@ -354,3 +354,47 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
 export function toEditorSnapshotDraft(draft: PendingEditDraft): EditorExportDraft {
   return structuredClone(editorFields(draft));
 }
+
+/** T8 (ADR 0064, G21): the fields the web Post phase needs, projected from the stored draft —
+ *  only when it still targets the project's current base (`activeJobId`). `rootJobId`, `logoOverlay`
+ *  and `windowEdits` are MCP-only concerns and are never surfaced here: the web keeps its own logo
+ *  from the project (per the plan, "logo stays from the project"), and web edits never touch
+ *  windowEdits. A project with no stored draft, or a draft seeded for a different base job
+ *  (the agent edited an earlier render than the one the project now points at), reads as `null` —
+ *  the web Post phase then behaves exactly as it does today. */
+export type PendingEditForWeb = {
+  revision: number;
+  draft: {
+    captions: V2Caption[];
+    originalCaptions: V2Caption[];
+    words?: NonNullable<VideoJobPreviewData["words"]>;
+    fullText?: string;
+    cardLen: V2CardLen;
+    subtitleConfig: V2SubConfig;
+    captionOverrides: V2CardOverrides;
+    headlineHook?: HeadlineHookConfig;
+  };
+};
+
+export function pendingEditForWeb(project: {
+  activeJobId: string | null;
+  pendingEditJson: string | null;
+  pendingEditRevision: number;
+}): PendingEditForWeb | null {
+  if (!project.activeJobId) return null;
+  const draft = parsePendingEditDraft(project.pendingEditJson);
+  if (!draft || draft.baseJobId !== project.activeJobId) return null;
+  return {
+    revision: project.pendingEditRevision,
+    draft: {
+      captions: draft.captions,
+      originalCaptions: draft.originalCaptions,
+      ...(draft.words ? { words: draft.words } : {}),
+      ...(draft.fullText !== undefined ? { fullText: draft.fullText } : {}),
+      cardLen: draft.cardLen,
+      subtitleConfig: draft.subtitleConfig,
+      captionOverrides: draft.captionOverrides,
+      ...(draft.headlineHook ? { headlineHook: draft.headlineHook } : {}),
+    },
+  };
+}
