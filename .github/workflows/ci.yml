@@ -372,6 +372,9 @@ jobs:
       - name: Verify the SSRF guard refuses IPv4-in-IPv6 and other private address forms
         run: npm run verify:safe-fetch
 
+      - name: Verify Media Import fetch pins the vetted IP, re-checks every redirect, caps bytes and times out (G23)
+        run: npm run verify:media-import-fetch
+
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 
