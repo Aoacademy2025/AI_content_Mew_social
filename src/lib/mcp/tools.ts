@@ -4,11 +4,14 @@ import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
 import {
+  currentHeldPreviewRow,
   enqueueMcpChainExportSafely,
   resolveMcpChain,
-  type McpChain,
+  type McpAutoChain,
   type McpChainRow,
+  type McpHeldChain,
 } from "@/lib/mcp/chain-export";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 
@@ -148,13 +151,14 @@ function scaledProgress(progress: number, from: number, to: number): number {
  * the FAILING row with both chain ids (R-T8-2). `jobId` is always the preview id, so a query
  * by the export id returns the identical shape.
  */
-async function chainJobStatus(userId: string, resolved: McpChain) {
+async function chainJobStatus(userId: string, resolved: McpAutoChain) {
   let chain = resolved;
   const { preview } = chain;
   if (preview.status === "done" && !chain.exportJob && !chain.conflict) {
     // Lost-enqueue recovery: the same idempotent enqueue the worker runs after the finish.
     await enqueueMcpChainExportSafely({ previewJobId: preview.id, userId });
-    chain = (await resolveMcpChain(userId, preview.id)) ?? chain;
+    const reresolved = await resolveMcpChain(userId, preview.id);
+    if (reresolved?.kind === "auto") chain = reresolved;
   }
   const exportJob = chain.exportJob;
   const chainIds = exportJob ? [preview.id, exportJob.id] : [preview.id];
@@ -243,10 +247,80 @@ async function chainJobStatus(userId: string, resolved: McpChain) {
   };
 }
 
+function isInFlightJobStatus(status: string): boolean {
+  return (VIDEO_JOB_INFLIGHT_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * T5 (ADR 0064, G8): get_video_status for a Held Preview — one job under the root id, whichever
+ * linked id the agent holds. Until the root finishes it reads like the root itself. After
+ * that the NEWEST linked job (by createdAt) decides: none or a finished re-render → `held`;
+ * a re-render in flight → `rerendering`; an export in flight → `exporting`; a finished export
+ * → `done` with that export's videoUrl; `failed` / `canceled` carry the failure / settlement
+ * fields of that job. `previewUrl` (the current preview) and `editorUrl` ride every reply
+ * once the root has finished. Nothing here enqueues: a Held Preview never chains (G6).
+ */
+async function heldChainStatus(userId: string, chain: McpHeldChain) {
+  const { root, latest } = chain;
+  const rootDone = root.status === "done";
+  const row: McpChainRow = rootDone && latest ? latest : root;
+  const output = parseVideoJobOutput(row.outputJson);
+  const chainIds = row.id === root.id ? [root.id] : [root.id, row.id];
+  const isExport = row.type === "export";
+
+  let status: string;
+  if (!rootDone) status = toPublicVideoJobStatus(root.status);
+  else if (!latest) status = "held";
+  else if (isInFlightJobStatus(latest.status)) status = isExport ? "exporting" : "rerendering";
+  else if (latest.status === "done") status = isExport ? "done" : "held";
+  else status = toPublicVideoJobStatus(latest.status);
+  const progress = status === "held" || status === "done" ? 100 : row.progress;
+
+  const editorUrl = rootDone && root.projectId ? mcpEditorUrl(root.projectId) : null;
+  const previewOutput = rootDone
+    ? parseVideoJobOutput((await currentHeldPreviewRow(userId, root)).outputJson)
+    : null;
+  const previewUrl = publicVideoUrl(previewOutput?.videoUrl ?? null);
+
+  let failure: Awaited<ReturnType<typeof deriveFailedJobFields>> | null = null;
+  if (status === "failed") {
+    failure = await deriveFailedJobFields(row, chainIds, {
+      exportMode: isExport,
+      avatarSourceInputJson: root.inputJson,
+    });
+    if (editorUrl) failure = { ...failure, userAction: `${failure.userAction} ${CHAIN_EXPORT_RETRY_USER_ACTION}` };
+  }
+  const canceledSettlement = status === "canceled"
+    ? await deriveSettlementFields(row.id === root.id ? [root] : [root, row], chainIds)
+    : null;
+  const done = status === "done";
+  return {
+    kind: "job" as const,
+    jobId: root.id,
+    status,
+    currentStep: row.currentStep,
+    progress,
+    videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
+    error: status === "failed"
+      ? row.errorMessage ?? null
+      : status === "canceled"
+        ? "งานนี้ถูกยกเลิกแล้ว"
+        : null,
+    ...(failure ? failure : {}),
+    ...(canceledSettlement ? canceledSettlement : {}),
+    subtitleQa: output?.subtitleQa ?? null,
+    billingReceipt: output?.billingReceipt ?? null,
+    ...(done ? { videoId: output?.videoId ?? null } : {}),
+    ...(rootDone ? { previewUrl, editorUrl } : {}),
+  };
+}
+
 export async function getVideoJobStatusTool(userId: string, jobId: string) {
   // T8: an MCP chain (preview or its chained export) reads as one job. Owner-scoped: another
   // user's id resolves to null here AND below, so it is "not found" either way.
+  // T5: a Held Preview and every job linked to it read as one job under the root id.
   const chain = await resolveMcpChain(userId, jobId);
+  if (chain?.kind === "held") return heldChainStatus(userId, chain);
   if (chain) return chainJobStatus(userId, chain);
   const job = await prisma.videoJob.findFirst({
     where: { id: jobId, userId },

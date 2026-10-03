@@ -293,6 +293,19 @@ interface CreateInput {
    * marks the chain so the release gate checks the whole chain's single charge.
    */
   mcpChainExport?: boolean;
+  /**
+   * T5 (ADR 0064, G6): set ONLY by the server (`createMcpVideoJob` with `hold`). Marks an MCP
+   * Held Preview: it never chains — the finish hooks below, get_video_status and the watchdog
+   * all skip it — and waits for the agent's Pending Edit Draft to be exported.
+   */
+  mcpHold?: boolean;
+  /** T5 (G7): server-set on every job spawned after a Held Preview — the root's job id. */
+  mcpRootJobId?: string;
+  /**
+   * T5 (G4): server-set on every MCP-enqueued render/export job. /api/videos/render FAILS
+   * such a job with `export_not_free` instead of charging it when no free path applies.
+   */
+  mcpMustBeFree?: boolean;
 }
 
 type SourceVideoJob = {
@@ -1267,7 +1280,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // T8 (ADR 0063): an MCP chain preview hands off to its server-chained export only
         // AFTER the finish above committed. Never throws (a throw here would refund a done
         // preview); a lost enqueue is recovered by get_video_status / the watchdog.
-        if (input.mcpChainExport === true) await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
+        // T5 (G6): a Held Preview never chains.
+        if (input.mcpChainExport === true && input.mcpHold !== true) {
+          await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
+        }
         return;
       }
 
@@ -3018,7 +3034,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         },
       });
       // T8 (ADR 0063): see the avatar-resume site — enqueue only after the finish committed.
-      if (input.mcpChainExport === true) await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
+      // T5 (G6): a Held Preview never chains.
+      if (input.mcpChainExport === true && input.mcpHold !== true) {
+        await enqueueMcpChainExportSafely({ previewJobId: jobId, userId });
+      }
       return;
     }
 

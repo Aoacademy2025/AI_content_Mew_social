@@ -238,6 +238,10 @@ const shellPath = "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx";
 const shellSource = readFileSync(shellPath, "utf8");
 const jobsRoutePath = "src/app/api/videos/jobs/route.ts";
 const jobsRouteSource = readFileSync(jobsRoutePath, "utf8");
+// T5: the route's export / B-roll re-render branches live in this module now. The exact-replay
+// scenario loads the REAL module against the route's own symbol table (see its requireMock).
+const editorExportEnqueuePath = "src/lib/editor-export-enqueue.ts";
+const editorExportEnqueueSource = readFileSync(editorExportEnqueuePath, "utf8");
 
 // useV2Job computes its `maxAiImages` disclose-then-charge ceiling from the REAL
 // ./estimate module rather than a stub — the number it sends the server must match
@@ -2140,6 +2144,12 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/logo-export.server") {
       return { createDurableExportWithStagedLogo: async () => { throw new Error("unused"); } };
     }
+    if (specifier === "@/lib/editor-export-enqueue") {
+      return {
+        enqueueEditorExport: async () => { throw new Error("unused"); },
+        enqueueBrollRerender: async () => { throw new Error("unused"); },
+      };
+    }
     if (specifier === "@/lib/runpod-image-cost.server") {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
@@ -2520,6 +2530,11 @@ async function runExactReplayRouteScenario(input: {
     // Pure module (voice style id/direction helpers, no deps) — run the real
     // normalizer so exact-replay sees production style coercion.
     if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
+    // T5: the export / B-roll re-render enqueue moved out of the route. Load the REAL module
+    // against this same table, so its source lookup still touches the "source-job" gate.
+    if (specifier === "@/lib/editor-export-enqueue") {
+      return loadPlainModule(editorExportEnqueueSource, editorExportEnqueuePath, requireMock);
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
