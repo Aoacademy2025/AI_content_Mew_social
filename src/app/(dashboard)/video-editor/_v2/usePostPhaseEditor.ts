@@ -1024,7 +1024,10 @@ export function usePostPhaseEditor(
     setCfg(draft.subtitleConfig);
     setCardLen(draft.cardLen);
     setOverrides(cloneOverrides(draft.captionOverrides));
-    if (draft.headlineHook) setHeadlineOverrideState(draft.headlineHook);
+    // Set unconditionally (not `if (draft.headlineHook)`): a discard/reseed can legitimately
+    // remove the headline, and the override must follow the draft back to `undefined` instead
+    // of keeping the previous revision's stale value.
+    setHeadlineOverrideState(draft.headlineHook);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 

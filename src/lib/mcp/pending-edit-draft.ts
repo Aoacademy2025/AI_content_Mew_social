@@ -94,7 +94,7 @@ export type PendingEditUpdateResult =
   | { ok: false; code: string; message?: string };
 
 /** Revision value the CAS refuses to grow past (Int column). */
-const MAX_PENDING_EDIT_REVISION = 2_147_483_646;
+export const MAX_PENDING_EDIT_REVISION = 2_147_483_646;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)

@@ -28,13 +28,21 @@ export function usePendingEditDraft(
     const requestId = (requestRef.current += 1);
     try {
       const res = await authenticatedFetch(`/api/editor-projects/${projectId}`, { cache: "no-store" });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        // A failed reload must drop the stale draft/revision it already held — otherwise a
+        // 409 stale_revision → reload → (transient failure) → export retry would resend the
+        // same now-stale revision and loop on 409 forever instead of surfacing "no draft
+        // loaded" (which the next successful reload or export call can recover from cleanly).
+        if (requestRef.current === requestId) setPendingEdit(null);
+        return null;
+      }
       const d = await res.json().catch(() => null);
       const next = normalizeWebPendingEdit((d as { project?: { pendingEdit?: unknown } } | null)?.project?.pendingEdit);
       // Drop a stale response that resolved after a newer request already started.
       if (requestRef.current === requestId) setPendingEdit(next);
       return next;
     } catch {
+      if (requestRef.current === requestId) setPendingEdit(null);
       return null;
     }
   }, [projectId]);

@@ -264,6 +264,54 @@ async function main() {
     );
   });
 
+  await section(
+    "E) PR-A fix round: headline override resync is unconditional (no stale headline after discard/reseed)",
+    async () => {
+      const hookSource = readFileSync(
+        "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+        "utf8",
+      );
+      const resyncEffectMatch = hookSource.match(
+        /useEffect\(\(\) => \{\s*if \(!pendingEdit[\s\S]*?\}, \[pendingEdit\]\);/,
+      );
+      check("usePostPhaseEditor still defines the pendingEdit resync effect", !!resyncEffectMatch);
+      const resyncEffect = resyncEffectMatch![0];
+      check(
+        "the resync effect no longer guards the headline override behind `if (draft.headlineHook)`"
+        + " (that guard left a stale override standing after a discard/reseed removed the headline)",
+        !/if\s*\(\s*draft\.headlineHook\s*\)\s*setHeadlineOverrideState/.test(resyncEffect),
+      );
+      check(
+        "the resync effect sets the headline override unconditionally from the draft"
+        + " (so a headline-less draft correctly clears a stale override back to undefined)",
+        /setHeadlineOverrideState\(draft\.headlineHook\);/.test(resyncEffect),
+      );
+    },
+  );
+
+  await section(
+    "F) PR-A fix round: a failed reload drops the stale draft instead of looping on 409 forever",
+    async () => {
+      const hookSource = readFileSync(
+        "src/app/(dashboard)/video-editor/_v2/usePendingEditDraft.ts",
+        "utf8",
+      );
+      const reloadFnMatch = hookSource.match(
+        /const reloadPendingEdit = useCallback\(async \(\)[\s\S]*?\n {2}\}, \[projectId\]\);/,
+      );
+      check("usePendingEditDraft still defines reloadPendingEdit", !!reloadFnMatch);
+      const reloadFn = reloadFnMatch![0];
+      check(
+        "a non-ok response clears pendingEdit instead of leaving the stale revision in place",
+        /if \(!res\.ok\) \{[\s\S]*?setPendingEdit\(null\)[\s\S]*?return null;\s*\}/.test(reloadFn),
+      );
+      check(
+        "a thrown fetch error also clears pendingEdit (not just a silent null return)",
+        /\} catch \{[\s\S]*?setPendingEdit\(null\)[\s\S]*?return null;\s*\}/.test(reloadFn),
+      );
+    },
+  );
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 }

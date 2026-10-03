@@ -2163,6 +2163,11 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
+    // PR-A fix round: jobs/route.ts now imports MAX_PENDING_EDIT_REVISION instead of
+    // hardcoding its own copy of the bound. pending-edit-draft.ts pulls in prisma/video-job/
+    // headline-hook/etc., none of which this scenario exercises, so stub just the constant
+    // the route actually uses (kept byte-equal to the real module's value).
+    if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
@@ -2541,6 +2546,11 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/editor-export-enqueue") {
       return loadPlainModule(editorExportEnqueueSource, editorExportEnqueuePath, requireMock);
     }
+    // PR-A fix round: jobs/route.ts now imports MAX_PENDING_EDIT_REVISION instead of
+    // hardcoding its own copy of the bound. pending-edit-draft.ts pulls in prisma/video-job/
+    // headline-hook/etc., none of which this scenario exercises, so stub just the constant
+    // the route actually uses (kept byte-equal to the real module's value).
+    if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

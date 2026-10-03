@@ -41,6 +41,7 @@ import {
   enqueueEditorExport,
   type EditorEnqueueRefusal,
 } from "@/lib/editor-export-enqueue";
+import { MAX_PENDING_EDIT_REVISION } from "@/lib/mcp/pending-edit-draft";
 import {
   fingerprintVideoJobRequest,
   legacyVideoJobKeyPrefix,
@@ -356,7 +357,7 @@ export async function POST(req: Request) {
           idempotencyFingerprint,
           exportScript: str(body.script, 20000),
           exportSceneCount: num(body.exportSceneCount, 1, 1000),
-          expectedPendingRevision: num(body.expectedPendingRevision, 0, 2_147_483_647),
+          expectedPendingRevision: num(body.expectedPendingRevision, 0, MAX_PENDING_EDIT_REVISION),
         });
         if (!result.ok) return editorEnqueueRefusalResponse(result);
         return queuedJobResponse(result.job.id, idempotencyKey, idempotencyFingerprint, legacyClient);

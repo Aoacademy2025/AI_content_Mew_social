@@ -587,6 +587,12 @@ async function main() {
       unlocked.ok === true && unlocked.ignoredFields === undefined && (unlocked.subtitleStyle as Json).textColor === "#ABCDEF",
       JSON.stringify(unlocked));
 
+    // T7 advisory b (PR-A fix round): snapshot the revision BEFORE the loop. The previous
+    // assertion compared `projectRow().pendingEditRevision` to `(await storedDraft(...),
+    // (await projectRow()).pendingEditRevision)` — a comma-operator expression that discards
+    // storedDraft's result and re-reads projectRow() a second time, so it was really comparing
+    // the same post-loop value to itself and would pass even if a refusal had written.
+    const revisionBeforeRefusals = (await projectRow(projectId)).pendingEditRevision;
     for (const [label, args] of [
       ["fontSize too small", { jobId: root.id, fontSize: 10 }],
       ["fontSize too large", { jobId: root.id, fontSize: 500 }],
@@ -598,8 +604,10 @@ async function main() {
       const refused = await callTool(tester.token, "set_subtitle_style", args);
       check(`${label} → invalid_input`, refused.error === "invalid_input" && checkFailureEnvelope(refused).length === 0, JSON.stringify(refused));
     }
-    check("refusals wrote nothing (revision unchanged by the bad calls)",
-      (await projectRow(projectId)).pendingEditRevision === (await storedDraft(projectId), (await projectRow(projectId)).pendingEditRevision));
+    check(
+      "refusals wrote nothing (revision unchanged by the bad calls)",
+      (await projectRow(projectId)).pendingEditRevision === revisionBeforeRefusals,
+    );
 
     // Font-family canonicalization (T6 deviation #4): a draft stored with the legacy BARE
     // family name reads back canonical, and any style edit upgrades it going forward even when
@@ -619,6 +627,29 @@ async function main() {
       (upgraded.subtitleStyle as Json).fontFamily === "'Kanit', sans-serif"
         && draftLib.parsePendingEditDraft((await projectRow(projectId)).pendingEditJson)?.subtitleConfig.fontFamily === "'Kanit', sans-serif",
       JSON.stringify(upgraded.subtitleStyle));
+
+    // T7 advisory a (PR-A fix round): regroup_captions passes the CURRENT subtitleConfig.fontSize
+    // into regroupCaptions's Card Line Budget, not a hardcoded 80 — every earlier regroup_captions
+    // test in section E ran before any set_subtitle_style call, so this was never exercised.
+    // At this draft's actual (Thai-segmented) word timeline, cardLen:"3" fits 3 words per card
+    // within maxCardCharsFor(80)'s 24-char budget (3 cards total); maxCardCharsFor(160)'s tighter
+    // 12-char budget forces an early split inside the 3rd group, producing a 4th card — a
+    // difference only possible if the current fontSize actually reaches groupTimedCaptionWords
+    // instead of a hardcoded 80.
+    const beforeMaxSize = await callTool(tester.token, "regroup_captions", { jobId: root.id, cardLen: "3" });
+    check(
+      "cardLen=3 at the default fontSize (80) groups into 3 cards",
+      beforeMaxSize.ok === true && beforeMaxSize.cardCount === 3,
+      JSON.stringify(beforeMaxSize),
+    );
+    const atMaxFontSize = await callTool(tester.token, "set_subtitle_style", { jobId: root.id, fontSize: 160 });
+    check("fontSize set to the allowed max (160)", atMaxFontSize.ok === true && (atMaxFontSize.subtitleStyle as Json).fontSize === 160, JSON.stringify(atMaxFontSize));
+    const regroupedAtMaxSize = await callTool(tester.token, "regroup_captions", { jobId: root.id, cardLen: "3" });
+    check(
+      "the SAME cardLen=3 call at fontSize=160 instead produces 4 cards (tighter Card Line Budget forces an extra split)",
+      regroupedAtMaxSize.ok === true && regroupedAtMaxSize.cardCount === 4,
+      JSON.stringify(regroupedAtMaxSize),
+    );
   });
 
   // ── H: set_headline_hook ──
