@@ -82,9 +82,11 @@ type QueueCountClient = Pick<Prisma.TransactionClient, "videoJob" | "renderJob" 
  * in-flight cap and can still be canceled; the watchdog / get_video_status settle it as before.
  */
 export async function readRenderQueueCounts(client: QueueCountClient = prisma, now: Date = new Date()): Promise<RenderQueueCounts> {
-  const [runnable, parked, renderJobs] = await Promise.all([
+  // S1: parked FIRST, then runnable. A job only moves waiting_import → queued, so one that
+  // settles between the two reads is counted twice (safe) — never in neither.
+  const parked = await client.videoJob.findMany({ where: { status: "waiting_import" }, select: { userId: true, inputJson: true } });
+  const [runnable, renderJobs] = await Promise.all([
     client.videoJob.count({ where: { status: { in: VIDEO_JOB_INFLIGHT_STATUSES.filter((status) => status !== "waiting_import") } } }),
-    client.videoJob.findMany({ where: { status: "waiting_import" }, select: { userId: true, inputJson: true } }),
     client.renderJob.count({ where: { status: { in: ["QUEUED", "RUNNING"] } } }),
   ]);
   const videoJobs = runnable + await countParkedJobsThatCanStillRun(client, parked, now);
