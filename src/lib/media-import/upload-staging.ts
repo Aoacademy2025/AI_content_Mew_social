@@ -49,6 +49,19 @@ function ensureStagingDir(): string {
   return dir;
 }
 
+/**
+ * Free-disk floor for staging (security review A1): an upload is admitted only while the staging
+ * filesystem — the root disk prod SQLite lives on — would keep at least this much free after
+ * the kind's full byte cap lands. Below it the PUT refuses with 503 `storage_busy`, link kept.
+ */
+export const STAGING_MIN_FREE_BYTES = 5 * 1024 ** 3;
+
+/** True when the staging filesystem has room for `maxBytes` above the floor. Throws if it cannot tell. */
+export function stagingHasRoomFor(maxBytes: number): boolean {
+  const { bavail, bsize } = fs.statfsSync(ensureStagingDir());
+  return Number(bavail) * Number(bsize) >= STAGING_MIN_FREE_BYTES + maxBytes;
+}
+
 export type StageResult =
   | { ok: true; bytes: number }
   | { ok: false; reason: "too_large" | "empty" | "incomplete" };

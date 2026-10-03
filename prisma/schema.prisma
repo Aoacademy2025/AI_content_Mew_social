@@ -465,6 +465,8 @@ model MediaImport {
 
   @@index([userId, status])
   @@index([userId, createdAt])
+  // Global staging budget at admission (live rows across all users).
+  @@index([status, deadlineAt])
 }
 
 // Single-use upload link for Media Import (G26). Only the SHA-256 of the raw token is stored;

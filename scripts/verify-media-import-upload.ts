@@ -4,13 +4,17 @@
 //
 // Covers, against a throwaway SQLite file:
 //   A. wiring: proxy matcher skips /api/mcp-uploads/ (compiled with Next's own matcher code),
-//      explicit public-route entry, nginx location + redacted access log, Sentry redaction
+//      explicit public-route entry, nginx locations (every response path — maintenance 503,
+//      nginx's own errors, plain http — logged redacted, never redirected), Sentry redaction
 //      (errors AND transactions), route.ts registers the tool.
 //   B. create_upload_url: gated (beta only, listed + agent-neutral), reply shape, 15-min expiry,
-//      only the SHA-256 of the token persisted (raw token absent from every DB byte).
+//      only the SHA-256 of the token persisted (raw token absent from every DB byte), the link
+//      is always https on the configured origin (fix round 1, S3).
 //   C. PUT: single-use (sequential and racing), 15-minute expiry, bound to its user and kind,
 //      over-cap aborted (Content-Length and mid-stream), empty body, identical refusal for
-//      unknown / malformed / used / expired links, admission re-checked with the link kept.
+//      unknown / malformed / used / expired links, admission re-checked with the link kept;
+//      fix round 1: global staged-bytes budget + free-disk floor (S1), rows past their
+//      deadline hold no slot (R-A4), DB unavailable before staging → 503 envelope (R-A1).
 //   D. admission caps across TWO real processes on one SQLite file (3 active, 30/hour,
 //      10 links/hour): exactly the cap is admitted, never more.
 //   E. IDOR (G27): missing, foreign and wrong-purpose ids get one identical `invalid_input`.
@@ -50,6 +54,45 @@ async function section(name: string, body: () => Promise<void>): Promise<void> {
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const MINUTE = 60_000;
+
+/** Minimal nginx config parser: blocks with their header, own directives and children. */
+type NginxBlock = { header: string; directives: string[]; children: NginxBlock[] };
+function parseNginx(source: string): NginxBlock {
+  const root: NginxBlock = { header: "", directives: [], children: [] };
+  const stack = [root];
+  let buffer = "";
+  let quote: string | null = null;
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      buffer += ch;
+      if (ch === "\\") { buffer += source[i + 1] ?? ""; i += 1; } else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; buffer += ch; continue; }
+    if (ch === "#") { while (i < source.length && source[i] !== "\n") i += 1; buffer += " "; continue; }
+    if (ch === "{") {
+      const block: NginxBlock = { header: buffer.trim().replace(/\s+/g, " "), directives: [], children: [] };
+      stack[stack.length - 1].children.push(block);
+      stack.push(block);
+      buffer = "";
+    } else if (ch === "}") {
+      stack.pop();
+      buffer = "";
+    } else if (ch === ";") {
+      const directive = buffer.trim().replace(/\s+/g, " ");
+      if (directive) stack[stack.length - 1].directives.push(directive);
+      buffer = "";
+    } else {
+      buffer += ch;
+    }
+  }
+  return root;
+}
+/** A block's directives including those of its nested `if` blocks. */
+function allDirectives(block: NginxBlock): string[] {
+  return [...block.directives, ...block.children.flatMap(allDirectives)];
+}
 
 // ── child mode: one "process" racing for admission ─────────────────────────────────────────
 
@@ -221,19 +264,53 @@ async function main(): Promise<void> {
     check("explicit public-route entry for /api/mcp-uploads(.*)", proxySource.includes(`"/api/mcp-uploads(.*)"`));
   });
 
-  await section("A2) nginx: streaming location, 510M, maintenance guard, redacted access log", async () => {
+  await section("A2) nginx: streaming location, 510M, maintenance guard, every response path logged redacted", async () => {
     const nginx = fs.readFileSync(path.join(ROOT, "deploy/nginx.conf"), "utf8");
-    const block = nginx.match(/location \^~ \/api\/mcp-uploads\/ \{([\s\S]*?)\n {4}\}/)?.[1] ?? "";
-    check("location ^~ /api/mcp-uploads/ exists", block.length > 0);
-    check("client_max_body_size 510M", /client_max_body_size 510M;/.test(block));
-    check("proxy_request_buffering off", /proxy_request_buffering off;/.test(block));
-    check("maintenance barrier", block.includes("if (-f /var/www/ai-content/.deploy-maintenance)"));
-    check("service-auth headers stripped", block.includes(`proxy_set_header x-heroai-service-secret "";`) && block.includes(`proxy_set_header x-heroai-act-as "";`));
-    check("access_log uses the redacted format", /access_log \S+ heroai_mcp_upload_redacted;/.test(block));
+    const conf = parseNginx(nginx);
+    const servers = conf.children.filter((b) => b.header === "server");
+    const https = servers.find((b) => b.directives.some((d) => d.startsWith("listen 443")));
+    const plain = servers.find((b) => b.directives.some((d) => d === "listen 80"));
+    check("both server blocks found", !!https && !!plain);
+    const location = https?.children.find((b) => b.header === "location ^~ /api/mcp-uploads/");
+    const block = location ? allDirectives(location) : [];
+    check("location ^~ /api/mcp-uploads/ exists", !!location);
+    check("client_max_body_size 510M", block.includes("client_max_body_size 510M"));
+    check("proxy_request_buffering off", block.includes("proxy_request_buffering off"));
+    const maintenance = location?.children.find((b) => b.header === "if (-f /var/www/ai-content/.deploy-maintenance)");
+    check("maintenance barrier", !!maintenance && maintenance.directives.some((d) => d.startsWith("return 503")));
+    check("service-auth headers stripped", block.includes(`proxy_set_header x-heroai-service-secret ""`) && block.includes(`proxy_set_header x-heroai-act-as ""`));
+    check("access_log uses the redacted format", block.some((d) => /^access_log \S+ heroai_mcp_upload_redacted$/.test(d)));
     const format = nginx.match(/log_format heroai_mcp_upload_redacted([\s\S]*?);\n/)?.[1] ?? "";
     check("log_format heroai_mcp_upload_redacted is defined before the server blocks",
       format.length > 0 && nginx.indexOf("log_format heroai_mcp_upload_redacted") < nginx.indexOf("server {"));
-    check("redacted format never logs the request line / URI", format.length > 0 && !/\$(request|request_uri|uri|document_uri|args|query_string|http_referer)\b/.test(format), format);
+    const leaksRequest = /\$(request|request_uri|uri|document_uri|args|query_string|http_referer)\b/;
+    check("redacted format never logs the request line / URI", format.length > 0 && !leaksRequest.test(format), format);
+
+    // Fix round 1 (S2/R-A2): no response path for an upload URL may end in a location that logs
+    // the request line — nginx writes the access log with the FINAL location's settings.
+    const upload503 = location?.directives.find((d) => d.startsWith("error_page"));
+    check("the location sets its own error_page (drops the server's `error_page 503 /maintenance.html` redirect)",
+      upload503 === "error_page 503 @mcp_upload_unavailable", String(upload503));
+    const named = https?.children.find((b) => b.header === "location @mcp_upload_unavailable");
+    check("named 503 location exists and answers itself (return with a body, so no further redirect)",
+      !!named && named.directives.some((d) => /^return 503 '\{.*"code":"maintenance".*\}'$/.test(d)), JSON.stringify(named?.directives));
+    const httpLocation = plain?.children.find((b) => b.header === "location ^~ /api/mcp-uploads/");
+    check("port 80: upload URLs are refused in place (403 with a body), never redirected to https",
+      !!httpLocation && httpLocation.directives.some((d) => /^return 403 '\{.*"code":"https_required".*\}'$/.test(d))
+        && !allDirectives(httpLocation).some((d) => d.startsWith("return 30")), JSON.stringify(httpLocation?.directives));
+    const uploadBlocks = ([["443", location], ["443", named], ["80", httpLocation]] as const)
+      .filter((entry): entry is readonly [string, NginxBlock] => !!entry[1]);
+    for (const [port, block] of uploadBlocks) {
+      const b = { ...block, header: `port ${port} ${block.header}` };
+      const ds = allDirectives(block);
+      check(`${b.header}: access_log is the redacted format and nothing else`,
+        ds.filter((d) => d.startsWith("access_log")).length > 0 && ds.filter((d) => d.startsWith("access_log")).every((d) => /^access_log \S+ heroai_mcp_upload_redacted$/.test(d)));
+      check(`${b.header}: error_log raised to crit (nginx error lines quote the request line)`,
+        ds.some((d) => /^error_log \S+ crit$/.test(d)));
+      check(`${b.header}: every error_page stays inside a redacted named location`,
+        ds.filter((d) => d.startsWith("error_page")).every((d) => / @mcp_upload_\w+$/.test(d)));
+      check(`${b.header}: never echoes the request URI`, !ds.some((d) => leaksRequest.test(d)));
+    }
   });
 
   await section("A3) Sentry: the token path segment and the token prefix are redacted (errors + transactions)", async () => {
@@ -353,6 +430,47 @@ async function main(): Promise<void> {
     staging.removeStagedUpload(issued.importId);
     await prisma.mediaImport.deleteMany({});
     await prisma.mcpUploadToken.deleteMany({});
+  });
+
+  await section("B3) the upload link is always https, on the configured origin (fix round 1, S3)", async () => {
+    await reset();
+    const env = process.env as Record<string, string | undefined>;
+    const savedOrigin = env.MCP_PUBLIC_ORIGIN;
+    const savedNodeEnv = env.NODE_ENV;
+    type Reply = { uploadUrl?: string; code?: string; error?: string; message?: string; next?: string };
+    const attempt = async (origin: string, nodeEnv: string) => {
+      env.MCP_PUBLIC_ORIGIN = origin;
+      env.NODE_ENV = nodeEnv;
+      const before = await prisma.mcpUploadToken.count();
+      const reply = (await tools.createUploadUrlTool(owner.id, { kind: "image" })) as Reply;
+      return { reply, issuedRow: (await prisma.mcpUploadToken.count()) > before };
+    };
+    try {
+      const { checkFailureEnvelope } = await import("./mcp-agent-neutral-checks");
+      for (const nodeEnv of ["production", "development"]) {
+        const http = await attempt("http://studio.test", nodeEnv);
+        check(`${nodeEnv}: an http:// public origin → refused upload_unavailable (G14, Thai), no link issued`,
+          http.reply.code === "upload_unavailable" && checkFailureEnvelope(http.reply).length === 0 && /[฀-๿]/u.test(String(http.reply.message)) && !http.issuedRow,
+          JSON.stringify(http.reply));
+        const odd = await attempt("ftp://studio.test", nodeEnv);
+        check(`${nodeEnv}: a non-web origin → refused, no link issued`, odd.reply.code === "upload_unavailable" && !odd.issuedRow, JSON.stringify(odd.reply));
+      }
+      const prodLoopback = await attempt("http://localhost:3000", "production");
+      check("production: even http://localhost is refused", prodLoopback.reply.code === "upload_unavailable" && !prodLoopback.issuedRow, JSON.stringify(prodLoopback.reply));
+      const devLoopback = await attempt("http://localhost:3000", "development");
+      check("development: http://localhost (never leaves the machine) still works for local testing",
+        String(devLoopback.reply.uploadUrl).startsWith("http://localhost:3000/api/mcp-uploads/heroai_up_"), JSON.stringify(devLoopback.reply));
+      const secure = await attempt("https://studio.test/some/base/path", "production");
+      check("https origin → https link on exactly that origin",
+        String(secure.reply.uploadUrl).startsWith("https://studio.test/api/mcp-uploads/heroai_up_"), JSON.stringify(secure.reply));
+      const toolSource = fs.readFileSync(path.join(ROOT, "src/lib/mcp/media-import-tools.ts"), "utf8");
+      check("the link origin comes from configuration only (no request Host / forwarded headers)",
+        !/headers|x-forwarded|\bhost\b/i.test(toolSource.replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, "")));
+    } finally {
+      env.MCP_PUBLIC_ORIGIN = savedOrigin;
+      env.NODE_ENV = savedNodeEnv;
+    }
+    await reset();
   });
 
   // ── C. PUT ───────────────────────────────────────────────────────────────────────────────
@@ -576,6 +694,121 @@ async function main(): Promise<void> {
       JSON.stringify(reply));
     await prisma.mediaImport.deleteMany({});
     await prisma.mcpUploadToken.deleteMany({});
+  });
+
+  await section("C10) storage (fix round 1, S1): global staged-bytes budget + free-disk floor, link kept", async () => {
+    await reset();
+    const presenterLink = await issue(owner.id, "presenter");
+    // 20 live presenter imports elsewhere reserve 20 × 500 MB = 10,000 MiB of the 10 GiB budget.
+    const fillers = await prisma.mediaImport.createManyAndReturn({
+      data: Array.from({ length: 20 }, (_, i) => ({
+        userId: [other.id, outsider.id, downgraded.id][i % 3], purpose: "presenter", source: "upload",
+        status: i % 2 ? "pending" : "processing", deadlineAt: new Date(Date.now() + 10 * MINUTE),
+      })),
+    });
+    const refusedIssue = await lib.issueUploadToken(owner.id, "presenter");
+    check("tool: one more presenter would pass the budget → storage_busy, no link row",
+      !refusedIssue.ok && refusedIssue.code === "storage_busy" && (await prisma.mcpUploadToken.count({ where: { userId: owner.id } })) === 1, JSON.stringify(refusedIssue));
+    const envelope = await tools.createUploadUrlTool(owner.id, { kind: "presenter" }) as { code?: string; message?: string; next?: string };
+    check("tool reply is a G14 storage_busy envelope (Thai, retry hint)", envelope.code === "storage_busy" && /[฀-๿]/u.test(String(envelope.message)) && /[฀-๿]/u.test(String(envelope.next)), JSON.stringify(envelope));
+    check("tool: a 20 MB image still fits the budget", (await lib.issueUploadToken(owner.id, "image")).ok);
+    const refusedPut = await put(presenterLink.token, portrait);
+    check("PUT: over budget → 503 storage_busy with a retry hint", refusedPut.status === 503 && refusedPut.body.code === "storage_busy" && typeof refusedPut.body.next === "string", JSON.stringify(refusedPut));
+    check("…link kept, no import row, nothing staged",
+      (await prisma.mcpUploadToken.findUnique({ where: { importId: presenterLink.importId } }))?.usedAt === null
+        && !(await prisma.mediaImport.findUnique({ where: { id: presenterLink.importId } }))
+        && !fs.existsSync(staging.stagedUploadPath(presenterLink.importId)));
+    await prisma.mediaImport.update({ where: { id: fillers[0].id }, data: { deadlineAt: new Date(Date.now() - MINUTE) } });
+    const afterExpiry = await put(presenterLink.token, portrait);
+    check("a filler past its deadline frees its reservation → the same link now works", afterExpiry.status === 202, JSON.stringify(afterExpiry));
+    staging.removeStagedUpload(presenterLink.importId);
+    await reset();
+
+    // Free-disk floor, measured with statfs on the staging dir before admission.
+    const realStatfs = fs.statfsSync;
+    const floor = staging.STAGING_MIN_FREE_BYTES;
+    check("floor is 5 GiB", floor === 5 * 1024 ** 3);
+    const disk = staging.stagingHasRoomFor(lib.UPLOAD_KIND_MAX_BYTES.presenter);
+    check("real statfs on this host's staging dir: room for a presenter upload", disk === true);
+    const fakeFree = (free: number) => {
+      (fs as { statfsSync: unknown }).statfsSync = (target: fs.PathLike) => {
+        const real = realStatfs(target);
+        return { ...real, bsize: 1, bavail: free };
+      };
+    };
+    const link = await issue(owner.id, "video");
+    try {
+      fakeFree(floor + lib.UPLOAD_KIND_MAX_BYTES.video - 1);
+      const low = await put(link.token, landscape);
+      check("free < floor + the kind's cap → 503 storage_busy", low.status === 503 && low.body.code === "storage_busy", JSON.stringify(low));
+      check("…link kept, no import row, nothing staged",
+        (await prisma.mcpUploadToken.findUnique({ where: { importId: link.importId } }))?.usedAt === null
+          && (await prisma.mediaImport.count()) === 0 && !fs.existsSync(staging.stagedUploadPath(link.importId)));
+      (fs as { statfsSync: unknown }).statfsSync = () => { throw Object.assign(new Error("EIO"), { code: "EIO" }); };
+      const broken = await put(link.token, landscape);
+      check("statfs failing → fail closed (503 storage_busy), link kept", broken.status === 503 && broken.body.code === "storage_busy"
+        && (await prisma.mcpUploadToken.findUnique({ where: { importId: link.importId } }))?.usedAt === null, JSON.stringify(broken));
+      fakeFree(floor + lib.UPLOAD_KIND_MAX_BYTES.video);
+      const exact = await put(link.token, landscape);
+      check("free = floor + cap → accepted with the same link", exact.status === 202, JSON.stringify(exact));
+    } finally {
+      (fs as { statfsSync: unknown }).statfsSync = realStatfs;
+    }
+    staging.removeStagedUpload(link.importId);
+    await reset();
+  });
+
+  await section("C11) rows past their deadline hold no slot (fix round 1, R-A4)", async () => {
+    await reset();
+    await prisma.mediaImport.createMany({
+      data: Array.from({ length: 3 }, (_, i) => ({
+        userId: owner.id, purpose: "broll_image", source: "upload", status: i ? "pending" : "processing",
+        deadlineAt: new Date(Date.now() - MINUTE),
+      })),
+    });
+    const issued = await lib.issueUploadToken(owner.id, "image");
+    check("3 stale active rows (deadline passed, no watchdog yet) → a new link is still issued", issued.ok, JSON.stringify(issued));
+    if (issued.ok) {
+      const res = await put(issued.token, png);
+      check("…and its PUT is admitted", res.status === 202, JSON.stringify(res));
+      staging.removeStagedUpload(issued.importId);
+    }
+    await prisma.mediaImport.updateMany({ where: { userId: owner.id }, data: { deadlineAt: new Date(Date.now() + MINUTE), createdAt: new Date(Date.now() - 2 * 60 * MINUTE) } });
+    const busy = await lib.issueUploadToken(owner.id, "image");
+    check("rows still inside their deadline do count → too_many_active_imports", !busy.ok && busy.code === "too_many_active_imports", JSON.stringify(busy));
+    await reset();
+  });
+
+  await section("C12) DB unavailable before staging → 503 G14 envelope, link kept (fix round 1, R-A1)", async () => {
+    await reset();
+    const link = await issue(owner.id, "image");
+    const busyError = () => Object.assign(new Error("SQLITE_BUSY: database is locked"), { code: "P1008" });
+    const delegates: Array<[string, Record<string, unknown>, string]> = [
+      ["token lookup", prisma.mcpUploadToken as unknown as Record<string, unknown>, "findUnique"],
+      ["user lookup", prisma.user as unknown as Record<string, unknown>, "findUnique"],
+      ["admission transaction", prisma as unknown as Record<string, unknown>, "$transaction"],
+    ];
+    const { checkFailureEnvelope } = await import("./mcp-agent-neutral-checks");
+    for (const [label, target, method] of delegates) {
+      const original = target[method];
+      target[method] = async () => { throw busyError(); };
+      let res: PutResult;
+      try {
+        res = await putWithHeaders(link.token, png);
+      } finally {
+        target[method] = original;
+      }
+      check(`${label} throws → 503 server_busy envelope (Thai, retry with the same link), no-store`,
+        res.status === 503 && res.body.code === "server_busy" && checkFailureEnvelope(res.body).length === 0
+          && /[฀-๿]/u.test(String(res.body.message)) && /ลิงก์เดิม/u.test(String(res.body.next)) && res.cacheControl === "no-store",
+        JSON.stringify(res));
+    }
+    check("…link never consumed, no import row",
+      (await prisma.mcpUploadToken.findUnique({ where: { importId: link.importId } }))?.usedAt === null && (await prisma.mediaImport.count()) === 0);
+    const retry = await put(link.token, png);
+    check("DB back → the same link works", retry.status === 202, JSON.stringify(retry));
+    staging.removeStagedUpload(link.importId);
+    await reset();
   });
 
   // ── D. across processes ──────────────────────────────────────────────────────────────────

@@ -55,7 +55,38 @@ const ADMISSION_REFUSAL: Record<AdmissionCode, { message: string; next: string }
     message: `ขอลิงก์อัปโหลดครบ ${MAX_UPLOAD_LINKS_PER_HOUR} ครั้งในหนึ่งชั่วโมงแล้ว`,
     next: "ใช้ลิงก์ที่ขอไว้แล้วที่ยังไม่หมดอายุ หรือส่งลิงก์สาธารณะ (url) แทน หรือรอสักพักแล้วลองใหม่",
   },
+  storage_busy: {
+    message: "พื้นที่รับไฟล์ของระบบเต็มชั่วคราว",
+    next: "รอสักครู่ (ไม่กี่นาที) แล้วเรียก create_upload_url อีกครั้ง",
+  },
 };
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * The origin upload links are issued on: the configured public origin only (MCP_PUBLIC_ORIGIN /
+ * NEXT_PUBLIC_APP_URL — never anything from the incoming request), and only when it is https.
+ * The token rides in the path, so a cleartext link would expose a live credential on the wire
+ * and in the port-80 log. Sole exception: a loopback http origin outside production, so local
+ * development can exercise the tool (such a link never leaves the machine).
+ */
+function uploadLinkOrigin(): URL | null {
+  let origin: URL;
+  try {
+    origin = new URL(mcpPublicOrigin());
+  } catch {
+    return null;
+  }
+  if (origin.protocol === "https:") return origin;
+  if (origin.protocol === "http:" && process.env.NODE_ENV !== "production" && LOOPBACK_HOSTS.has(origin.hostname)) return origin;
+  return null;
+}
+
+const UPLOAD_UNAVAILABLE = editToolFailure(
+  "upload_unavailable",
+  "ตอนนี้ระบบยังสร้างลิงก์อัปโหลดที่ปลอดภัยไม่ได้",
+  "ส่งลิงก์สาธารณะ (https) ของไฟล์แทน หรือแจ้งทีมงานให้ตรวจการตั้งค่า",
+);
 
 export function admissionRefusal(code: AdmissionCode) {
   const copy = ADMISSION_REFUSAL[code];
@@ -63,10 +94,15 @@ export function admissionRefusal(code: AdmissionCode) {
 }
 
 export async function createUploadUrlTool(userId: string, args: { kind: UploadKind }) {
+  // Checked before issuing, so a misconfigured origin never mints (or counts) a link.
+  const origin = uploadLinkOrigin();
+  if (!origin) {
+    console.error("[mcp-uploads] public origin is not https; upload links are disabled");
+    return UPLOAD_UNAVAILABLE;
+  }
   const issued = await issueUploadToken(userId, args.kind);
   if (!issued.ok) return admissionRefusal(issued.code);
-  const uploadUrl = new URL(`/api/mcp-uploads/${issued.token}`, mcpPublicOrigin());
-  if (uploadUrl.protocol !== "https:" && uploadUrl.protocol !== "http:") throw new Error("invalid public origin");
+  const uploadUrl = new URL(`/api/mcp-uploads/${issued.token}`, origin);
   return {
     uploadId: issued.importId,
     uploadUrl: uploadUrl.toString(),

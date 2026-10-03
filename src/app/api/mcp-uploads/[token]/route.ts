@@ -10,7 +10,12 @@ import {
   markUploadStaged,
   type UploadKind,
 } from "@/lib/media-import/imports";
-import { removeStagedUpload, stageUploadBody, stagedContainerFor } from "@/lib/media-import/upload-staging";
+import {
+  removeStagedUpload,
+  stageUploadBody,
+  stagedContainerFor,
+  stagingHasRoomFor,
+} from "@/lib/media-import/upload-staging";
 
 /**
  * PUT /api/mcp-uploads/<token> — the single-use Media Import upload link (Task 11, G26,
@@ -20,10 +25,12 @@ import { removeStagedUpload, stageUploadBody, stagedContainerFor } from "@/lib/m
  * abort anything.
  *
  * Flow: token → still usable (unused, < 15 min) → user still PRO/BUSINESS + beta → declared
- * size within the kind's cap → admission (consume link + create MediaImport, atomically,
- * re-checking the G25 caps) → stream the body to the private staging file with the cap
- * enforced while reading → bytes must be the link's kind (sniffed, never Content-Type) →
- * MediaImport "pending" for the import lane (Task 12).
+ * size within the kind's cap → free-disk floor (statfs) → admission (consume link + create
+ * MediaImport, atomically, re-checking the G25 caps and the global staging budget) → stream
+ * the body to the private staging file with the cap enforced while reading → bytes must be
+ * the link's kind (sniffed, never Content-Type) → MediaImport "pending" for the import lane
+ * (Task 12). Every refusal before admission keeps the link, including a database that is
+ * momentarily unavailable (503 `server_busy`).
  *
  * Never logs the token or the URL (A13); nginx logs this location with a redacted format and
  * Sentry scrubs the path segment (src/lib/sentry-config.ts).
@@ -53,6 +60,18 @@ function linkInvalid(): Response {
 const SIZE_LABEL: Record<UploadKind, string> = { image: "20 MB", video: "200 MB", presenter: "500 MB" };
 const ACCEPTS: Record<UploadKind, string> = { image: "jpg, png หรือ webp", video: "mp4, mov หรือ webm", presenter: "mp4, mov หรือ webm" };
 
+const SAME_LINK_RETRY = "ลิงก์ยังใช้ได้จนหมดอายุ — รอสักครู่ (ประมาณ 30 วินาที) แล้ว PUT ไฟล์เดิมด้วยลิงก์เดิมอีกครั้ง";
+
+/** The database could not answer before anything was admitted: nothing changed, link kept. */
+function serverBusy(): Response {
+  return failure(503, "server_busy", "ระบบไม่ว่างชั่วคราว ยังรับไฟล์ไม่ได้ในตอนนี้", SAME_LINK_RETRY);
+}
+
+/** Staging space is short (disk floor or the global budget): nothing changed, link kept. */
+function storageBusy(): Response {
+  return failure(503, "storage_busy", "พื้นที่รับไฟล์ของระบบเต็มชั่วคราว", `${SAME_LINK_RETRY} (ถ้ายังไม่ได้ ให้รอไม่กี่นาที)`);
+}
+
 function tooLarge(kind: UploadKind): Response {
   return failure(413, "file_too_large", `ไฟล์ใหญ่เกิน ${SIZE_LABEL[kind]}`, `ลดขนาดไฟล์ให้ไม่เกิน ${SIZE_LABEL[kind]} แล้ว${NEW_LINK_NEXT}`);
 }
@@ -61,25 +80,47 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
   const { token } = await context.params;
   const now = new Date();
 
-  const link = await findUsableUploadToken(token, now);
-  if (!link) return linkInvalid();
+  let link: Awaited<ReturnType<typeof findUsableUploadToken>>;
+  let entitled: boolean;
+  try {
+    link = await findUsableUploadToken(token, now);
+    if (!link) return linkInvalid();
+    // Bound to its user: that user must still be allowed to use the feature right now.
+    const user = await prisma.user.findUnique({ where: { id: link.userId } });
+    entitled = !!user && mcpAccessAllowed(principalFromUser(user).effectivePlan) && mcpEditorProjectEnabledFor(user);
+  } catch (error) {
+    console.error("[mcp-uploads] database unavailable before admission:", error instanceof Error ? error.name : "unknown");
+    return serverBusy();
+  }
+  if (!entitled) return linkInvalid();
   const kind = link.kind as UploadKind;
   const maxBytes = UPLOAD_KIND_MAX_BYTES[kind];
-
-  // Bound to its user: that user must still be allowed to use the feature right now.
-  const user = await prisma.user.findUnique({ where: { id: link.userId } });
-  if (!user || !mcpAccessAllowed(principalFromUser(user).effectivePlan) || !mcpEditorProjectEnabledFor(user)) {
-    return linkInvalid();
-  }
 
   // Honest clients declare the size: refuse over-cap before reading a byte (link kept).
   const declared = request.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared.trim()) && Number(declared.trim()) > maxBytes) return tooLarge(kind);
   if (!request.body) return failure(400, "empty_file", "ไม่มีไฟล์ใน body ของคำขอ", "ส่งไบต์ของไฟล์เป็น body ของ HTTP PUT (ไม่ใช่ multipart) ด้วยลิงก์เดิม");
 
-  const admitted = await admitUpload(link, now);
+  // Free-disk floor before a byte lands (fails closed when statfs cannot answer).
+  let room = false;
+  try {
+    room = stagingHasRoomFor(maxBytes);
+  } catch (error) {
+    console.error("[mcp-uploads] staging space check failed:", error instanceof Error ? error.name : "unknown");
+  }
+  if (!room) return storageBusy();
+
+  let admitted: Awaited<ReturnType<typeof admitUpload>>;
+  try {
+    admitted = await admitUpload(link, now);
+  } catch (error) {
+    // The admission transaction rolled back: the link is still unused.
+    console.error("[mcp-uploads] database unavailable at admission:", error instanceof Error ? error.name : "unknown");
+    return serverBusy();
+  }
   if (!admitted.ok) {
     if (admitted.code === "upload_link_invalid") return linkInvalid();
+    if (admitted.code === "storage_busy") return storageBusy();
     const refusal = admissionRefusal(admitted.code);
     return failure(429, refusal.code, refusal.message, "รอให้ไฟล์ที่กำลังนำเข้าเสร็จหรือรอสักพัก แล้ว PUT ด้วยลิงก์เดิมอีกครั้ง (ลิงก์ยังใช้ได้จนหมดอายุ)");
   }

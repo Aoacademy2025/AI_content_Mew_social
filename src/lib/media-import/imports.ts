@@ -19,6 +19,11 @@ import { MAX_BROLL_IMAGE_BYTES, MAX_BROLL_VIDEO_BYTES } from "@/lib/media-import
  * The counts inside therefore see every admission that won before them, and an over-cap
  * result throws, rolling the write back. Counting OUTSIDE the transaction is exactly the bug
  * scripts/verify-media-import-upload.ts §D catches (two real processes, one SQLite file).
+ *
+ * "Active" means pending/processing AND still inside `deadlineAt`: a row past its deadline is
+ * one the watchdog (Task 12) fails, so it holds neither a user's slot nor staging budget — a
+ * stalled lane can never lock a user out. The disk itself is guarded separately by the
+ * free-space floor the PUT checks before staging (upload-staging.ts).
  */
 
 export const UPLOAD_KINDS = ["image", "video", "presenter"] as const;
@@ -42,11 +47,24 @@ export const UPLOAD_KIND_MAX_BYTES: Record<UploadKind, number> = {
   presenter: MAX_PRESENTER_IMPORT_BYTES,
 };
 
+const PURPOSE_MAX_BYTES: Record<MediaImportPurpose, number> = {
+  broll_image: MAX_BROLL_IMAGE_BYTES,
+  broll_video: MAX_BROLL_VIDEO_BYTES,
+  presenter: MAX_PRESENTER_IMPORT_BYTES,
+};
+
 // G25 — accepted by Mew 2026-10-03.
 export const MAX_ACTIVE_IMPORTS = 3;
 export const MAX_IMPORTS_PER_HOUR = 30;
 export const MAX_UPLOAD_LINKS_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Global staging budget (all users): every active import reserves its purpose's byte cap, and
+ * one more is admitted only while the sum stays within this — e.g. 20 presenter clips at once.
+ * Bounds what can be parked on the disk prod SQLite shares (security review A1).
+ */
+export const MAX_STAGED_IMPORT_BYTES = 10 * 1024 ** 3;
 
 /** G26: an upload link dies 15 minutes after it was issued. */
 export const UPLOAD_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -56,6 +74,11 @@ export const UPLOAD_RECEIVE_DEADLINE_MS = 15 * 60 * 1000;
 export const IMPORT_DEADLINE_MS = 10 * 60 * 1000;
 
 export const MEDIA_IMPORT_ACTIVE_STATUSES = ["pending", "processing"] as const;
+
+/** Rows that still hold a slot: pending/processing and not yet past their deadline. */
+function liveImportsWhere(now: Date) {
+  return { status: { in: [...MEDIA_IMPORT_ACTIVE_STATUSES] }, deadlineAt: { gt: now } };
+}
 
 /** `heroai_up_` + 32 random bytes (256 bits) as base64url. Only its SHA-256 is stored. */
 export const UPLOAD_TOKEN_PREFIX = "heroai_up_";
@@ -73,7 +96,7 @@ export function hashUploadToken(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-export type AdmissionCode = "too_many_active_imports" | "import_hourly_limit" | "upload_link_hourly_limit";
+export type AdmissionCode = "too_many_active_imports" | "import_hourly_limit" | "upload_link_hourly_limit" | "storage_busy";
 
 class AdmissionRefused extends Error {
   constructor(readonly code: AdmissionCode | "upload_link_invalid") {
@@ -81,16 +104,26 @@ class AdmissionRefused extends Error {
   }
 }
 
-/** Throws AdmissionRefused when one more import would break a G25 cap. */
-async function assertImportCapacity(tx: Prisma.TransactionClient, userId: string, now: Date): Promise<void> {
-  const active = await tx.mediaImport.count({
-    where: { userId, status: { in: [...MEDIA_IMPORT_ACTIVE_STATUSES] } },
-  });
+/** Throws AdmissionRefused when one more import of `purpose` would break a G25 cap or the budget. */
+async function assertImportCapacity(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date,
+  purpose: MediaImportPurpose,
+): Promise<void> {
+  const active = await tx.mediaImport.count({ where: { userId, ...liveImportsWhere(now) } });
   if (active >= MAX_ACTIVE_IMPORTS) throw new AdmissionRefused("too_many_active_imports");
   const lastHour = await tx.mediaImport.count({
     where: { userId, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } },
   });
   if (lastHour >= MAX_IMPORTS_PER_HOUR) throw new AdmissionRefused("import_hourly_limit");
+  const reserved = await tx.mediaImport.groupBy({ by: ["purpose"], where: liveImportsWhere(now), _count: { _all: true } });
+  const reservedBytes = reserved.reduce(
+    // An unknown purpose reserves the largest cap.
+    (sum, group) => sum + (PURPOSE_MAX_BYTES[group.purpose as MediaImportPurpose] ?? MAX_PRESENTER_IMPORT_BYTES) * group._count._all,
+    0,
+  );
+  if (reservedBytes + PURPOSE_MAX_BYTES[purpose] > MAX_STAGED_IMPORT_BYTES) throw new AdmissionRefused("storage_busy");
 }
 
 export type IssuedUploadToken = {
@@ -106,7 +139,8 @@ export type IssuedUploadToken = {
 
 /**
  * `create_upload_url`'s admission + issue (G25/G26). Refuses when the user already asked for
- * 10 links this hour, or when one more import would break the active / hourly import caps.
+ * 10 links this hour, or when one more import would break the active / hourly import caps or
+ * the global staging budget.
  */
 export async function issueUploadToken(
   userId: string,
@@ -125,7 +159,7 @@ export async function issueUploadToken(
         where: { userId, issuedAt: { gt: new Date(now.getTime() - HOUR_MS) } },
       });
       if (linksThisHour > MAX_UPLOAD_LINKS_PER_HOUR) throw new AdmissionRefused("upload_link_hourly_limit");
-      await assertImportCapacity(tx, userId, now);
+      await assertImportCapacity(tx, userId, now, UPLOAD_KIND_PURPOSE[kind]);
     });
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid") return { ok: false, code: error.code };
@@ -173,7 +207,7 @@ export async function admitUpload(
         data: { usedAt: now },
       });
       if (consumed.count !== 1) throw new AdmissionRefused("upload_link_invalid");
-      await assertImportCapacity(tx, link.userId, now);
+      await assertImportCapacity(tx, link.userId, now, purpose);
       await tx.mediaImport.create({
         data: {
           id: link.importId,
