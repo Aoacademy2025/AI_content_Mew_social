@@ -70,7 +70,11 @@ export const MAX_STAGED_IMPORT_BYTES = 10 * 1024 ** 3;
 export const UPLOAD_TOKEN_TTL_MS = 15 * 60 * 1000;
 /** Watchdog bound for a row whose bytes are still streaming in (status "processing"). */
 export const UPLOAD_RECEIVE_DEADLINE_MS = 15 * 60 * 1000;
-/** G23: total wall-clock budget of one import once it is queued for the import lane. */
+/**
+ * G23: wall-clock budget of one import phase in the import lane — waiting in the queue
+ * ("pending", set when it is queued), then again from the moment the lane claims it
+ * ("processing", reset at claim by lane.ts so a long queue wait cannot eat the fetch budget).
+ */
 export const IMPORT_DEADLINE_MS = 10 * 60 * 1000;
 
 export const MEDIA_IMPORT_ACTIVE_STATUSES = ["pending", "processing"] as const;
@@ -243,7 +247,8 @@ export async function markUploadStaged(importId: string, now: Date = new Date())
 export async function failMediaImport(importId: string, errorCode: string): Promise<void> {
   await prisma.mediaImport.updateMany({
     where: { id: importId, status: { in: [...MEDIA_IMPORT_ACTIVE_STATUSES] } },
-    data: { status: "failed", errorCode },
+    // A finished import keeps no copy of the agent's link (it may carry a signed token).
+    data: { status: "failed", errorCode, sourceUrl: null },
   });
 }
 

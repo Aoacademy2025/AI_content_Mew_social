@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sniffMediaFile, type MediaContainer } from "@/lib/media-probe-args";
+import { moveFile } from "@/lib/safe-download";
 import { runBrollPipeline } from "@/lib/media-import/broll-pipeline";
 import { processPresenterImport } from "@/lib/media-import/presenter-checks";
 import type { MediaImportPurpose, UploadKind } from "@/lib/media-import/imports";
@@ -47,6 +48,18 @@ function ensureStagingDir(): string {
   }
   if ((stat.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
   return dir;
+}
+
+/**
+ * Hand a finished download (T10's `fetchMediaToTempFile`, source "url") to the same staging
+ * slot an upload uses, so the import lane runs both sources through `processStagedUpload`.
+ * The caller owns `fromPath` (a 0600 file in T10's private temp dir); it is renamed into place
+ * (an exclusive copy + unlink when the two dirs are on different filesystems).
+ */
+export function stageFetchedFile(importId: string, fromPath: string): void {
+  const dest = stagedUploadPath(importId);
+  ensureStagingDir();
+  moveFile(fromPath, dest);
 }
 
 /**

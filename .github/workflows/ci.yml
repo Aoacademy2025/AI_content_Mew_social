@@ -401,6 +401,7 @@ jobs:
           npm run verify:media-import-broll-pipeline
           npm run verify:media-import-presenter-checks
           npm run verify:media-import-upload
+          npm run verify:media-import-lane
 
       - name: Build
         run: npm run build

@@ -449,24 +449,30 @@ model McpToken {
 // `deadlineAt` is the wall-clock limit of the current phase; the lane's watchdog fails rows
 // past it. The admission caps (G25) count these rows in the DB, so they hold across the web
 // and worker processes (src/lib/media-import/imports.ts).
+// The lane (src/lib/media-import/lane.ts) sets `claimedAt` when it takes a pending row and
+// clears `sourceUrl` (the agent's link, for source "url") once the import is ready or failed.
 model MediaImport {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   purpose    String // broll_image | broll_video | presenter
   source     String // url | upload
-  status     String   @default("pending") // pending | processing | ready | failed
+  sourceUrl  String? // source "url" only: the https link the lane fetches (G23)
+  status     String    @default("pending") // pending | processing | ready | failed
   resultSrc  String? // server-generated /api/stocks/… or /api/renders/… once ready
   errorCode  String?
   durationMs Int?
   deadlineAt DateTime
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  claimedAt  DateTime? // when the import lane claimed it (null = not yet in the lane)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([userId, status])
   @@index([userId, createdAt])
   // Global staging budget at admission (live rows across all users).
   @@index([status, deadlineAt])
+  // The import lane's global claim scan: pending rows, oldest first (T11 review A4).
+  @@index([status, createdAt])
 }
 
 // Single-use upload link for Media Import (G26). Only the SHA-256 of the raw token is stored;
