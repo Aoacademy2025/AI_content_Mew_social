@@ -97,6 +97,30 @@ assert(SERVER_INSTRUCTIONS.includes("HeyGen") && SERVER_INSTRUCTIONS.includes("�
 assert(SERVER_INSTRUCTIONS.includes("brandProfileId") && SERVER_INSTRUCTIONS.includes('มีผลกับ "สไตล์ซับ" เท่านั้น'),
   "instructions: a brand affects only subtitle style this round, not voice/B-roll/logo");
 
+// --- T7: edit-before-export flow (hold → get_edit_state → small-tool edits → export_video
+// once; re-export always free; export_not_free / stale_revision explained) — agent-neutral,
+// never names a specific agent product (G32). -----------------------------------------------
+assert(
+  SERVER_INSTRUCTIONS.includes('create_video_job(exportMode:"hold")')
+    && SERVER_INSTRUCTIONS.includes("get_edit_state(jobId)")
+    && SERVER_INSTRUCTIONS.includes("export_video(jobId) ครั้งเดียวเมื่อแก้ครบ"),
+  "instructions: edit-before-export flow is hold → get_edit_state → small edits → export_video once",
+);
+assert(
+  ["set_caption_text", "merge_captions", "split_caption", "regroup_captions", "set_subtitle_style", "set_headline_hook", "discard_edits"]
+    .every((name) => SERVER_INSTRUCTIONS.includes(name)),
+  "instructions: name all 7 edit tools (6 new + set_caption_text) and discard_edits",
+);
+assert(SERVER_INSTRUCTIONS.includes("ไม่เคยตัดเงินเพิ่ม"), "instructions: re-export is always free, no matter how many times");
+assert(SERVER_INSTRUCTIONS.includes('"export_not_free"') && SERVER_INSTRUCTIONS.includes("ห้ามลองเรียก export_video ซ้ำ") && SERVER_INSTRUCTIONS.includes("editorUrl"),
+  "instructions: export_not_free → stop and hand off to editorUrl, never retry export_video");
+assert(SERVER_INSTRUCTIONS.includes('"stale_revision"') && SERVER_INSTRUCTIONS.includes("get_edit_state(jobId) ใหม่") && SERVER_INSTRUCTIONS.includes("ทำการแก้ครั้งนั้นซ้ำ"),
+  "instructions: stale_revision → reload get_edit_state and redo the edit");
+assert(
+  !/claude|anthropic|chatgpt|openai|copilot|gpt-?\d/i.test(SERVER_INSTRUCTIONS),
+  "instructions: agent-neutral — never names a specific agent/LLM product (G32; 'Gemini' stays, it is a TTS provider here, not the calling agent)",
+);
+
 function main() {
   // --- MANAGED_GEMINI branches: the polling-cadence rule and the no-API-keys rule must
   // survive in BOTH branches. SERVER_INSTRUCTIONS is a module-level const computed from

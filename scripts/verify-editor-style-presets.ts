@@ -339,10 +339,14 @@ async function main() {
   // T2 (MCP upgrade plan) advisory A1: applyCardLen used to call regroupCaptions without a
   // size, so the web word-mode regroup always budgeted at 80 regardless of the editor's
   // own configured subtitle size (cfg.fontSize). It must pass it through.
+  // (T8, PR-A: the words/fullText source became effectiveWords/effectiveFullText so an
+  // MCP-authored Pending Edit Draft's regrouped text wins over the raw preview's — the
+  // assertion below was updated to match that call shape while still proving the same
+  // thing: cfg.fontSize flows through as the 5th argument.)
   const applyCardLenMatch = postPhaseEditorSource.match(/function applyCardLen\([\s\S]*?\n {2}\}/);
   ok(!!applyCardLenMatch, "usePostPhaseEditor still defines applyCardLen");
   ok(
-    /regroupCaptions\(originalCapsRef\.current, len, preview\?\.words, preview\?\.fullText, cfg\.fontSize\)/.test(
+    /regroupCaptions\(originalCapsRef\.current, len, effectiveWords, effectiveFullText, cfg\.fontSize\)/.test(
       applyCardLenMatch![0],
     ),
     "A1: applyCardLen passes the editor's current subtitle size into regroupCaptions's Card Line Budget",

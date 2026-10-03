@@ -76,8 +76,16 @@ const durableExportStart = jobsRoute.indexOf('if (body.mode === "export")');
 const durableExportEnd = jobsRoute.indexOf("\n    const projectId =", durableExportStart);
 assert.ok(durableExportStart >= 0 && durableExportEnd > durableExportStart, "durable Export route source is missing");
 const durableExportRoute = jobsRoute.slice(durableExportStart, durableExportEnd);
-const sourceGuardIndex = durableExportRoute.indexOf("assertCurrentEditorExportSource(");
-const durableCreateIndex = durableExportRoute.indexOf("createVideoJob(");
+// T5: the route's Export branch delegates to the enqueue it shares with the MCP chain; the
+// source guard and the durable create live in that function.
+assert.match(durableExportRoute, /enqueueEditorExport\(/u, "durable Export must use the shared enqueue");
+const editorExportEnqueue = fs.readFileSync("src/lib/editor-export-enqueue.ts", "utf8");
+const enqueueExportStart = editorExportEnqueue.indexOf("export async function enqueueEditorExport(");
+const enqueueExportEnd = editorExportEnqueue.indexOf("export async function enqueueBrollRerender(", enqueueExportStart);
+assert.ok(enqueueExportStart >= 0 && enqueueExportEnd > enqueueExportStart, "shared Export enqueue source is missing");
+const durableExportEnqueue = editorExportEnqueue.slice(enqueueExportStart, enqueueExportEnd);
+const sourceGuardIndex = durableExportEnqueue.indexOf("assertCurrentEditorExportSource(");
+const durableCreateIndex = durableExportEnqueue.indexOf("createVideoJob(");
 assert.ok(sourceGuardIndex >= 0, "durable Export must assert the project's current preview source");
 assert.ok(
   durableCreateIndex > sourceGuardIndex,

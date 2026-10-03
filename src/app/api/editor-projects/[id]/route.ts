@@ -5,6 +5,8 @@ import {
   getEditorProjectWithMediaState,
 } from "@/lib/editor-projects";
 import { patchEditorProjectForUser } from "@/lib/editor-project-patch";
+import { prisma } from "@/lib/prisma";
+import { pendingEditForWeb } from "@/lib/mcp/pending-edit-draft";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -14,7 +16,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const { id } = await ctx.params;
     const project = await getEditorProjectWithMediaState(user.id, id);
     if (!project) return NextResponse.json({ error: "not_found" }, { status: 404 });
-    return NextResponse.json({ project });
+
+    // T8 (ADR 0064, G21): surface the agent's unexported draft, scoped to this project's
+    // CURRENT base job — a separate, minimal lookup so this stays additive and avoids
+    // importing the MCP module into editor-projects.ts (see its own circular-import note).
+    const pendingEditRow = await prisma.editorProject.findFirst({
+      where: { id, userId: user.id },
+      select: { activeJobId: true, pendingEditJson: true, pendingEditRevision: true },
+    });
+    const pendingEdit = pendingEditRow ? pendingEditForWeb(pendingEditRow) : null;
+
+    return NextResponse.json({ project: { ...project, pendingEdit } });
   } catch (error) {
     console.error("[api/editor-projects/:id] get error:", error);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });

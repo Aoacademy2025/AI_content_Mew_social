@@ -238,6 +238,10 @@ const shellPath = "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx";
 const shellSource = readFileSync(shellPath, "utf8");
 const jobsRoutePath = "src/app/api/videos/jobs/route.ts";
 const jobsRouteSource = readFileSync(jobsRoutePath, "utf8");
+// T5: the route's export / B-roll re-render branches live in this module now. The exact-replay
+// scenario loads the REAL module against the route's own symbol table (see its requireMock).
+const editorExportEnqueuePath = "src/lib/editor-export-enqueue.ts";
+const editorExportEnqueueSource = readFileSync(editorExportEnqueuePath, "utf8");
 
 // useV2Job computes its `maxAiImages` disclose-then-charge ceiling from the REAL
 // ./estimate module rather than a stub — the number it sends the server must match
@@ -557,6 +561,12 @@ function mountEditorShell(input: {
     }
     if (specifier === "./useV2Project") return { useV2Project: input.getProject };
     if (specifier === "./useV2Job") return { useV2Job: () => jobApi };
+    // T8 (ADR 0064, G21): this harness replays the Shell's wiring, not the Pending Edit Draft
+    // fetch itself (that's `scripts/verify-editor-pending-draft.ts`'s job) — the default "no
+    // draft" posture here matches every test's fixtures, which predate this feature.
+    if (specifier === "./usePendingEditDraft") {
+      return { usePendingEditDraft: () => ({ pendingEdit: null, reloadPendingEdit: async () => null }) };
+    }
     if (specifier === "./Step1Script") return { Step1Script: marker("Step1Script") };
     if (specifier === "./Step2Elements") return { Step2Elements: marker("Step2Elements") };
     if (specifier === "./RenderingScreen") return { RenderingScreen: marker("RenderingScreen") };
@@ -2140,6 +2150,12 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/logo-export.server") {
       return { createDurableExportWithStagedLogo: async () => { throw new Error("unused"); } };
     }
+    if (specifier === "@/lib/editor-export-enqueue") {
+      return {
+        enqueueEditorExport: async () => { throw new Error("unused"); },
+        enqueueBrollRerender: async () => { throw new Error("unused"); },
+      };
+    }
     if (specifier === "@/lib/runpod-image-cost.server") {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
@@ -2147,6 +2163,11 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
+    // PR-A fix round: jobs/route.ts now imports MAX_PENDING_EDIT_REVISION instead of
+    // hardcoding its own copy of the bound. pending-edit-draft.ts pulls in prisma/video-job/
+    // headline-hook/etc., none of which this scenario exercises, so stub just the constant
+    // the route actually uses (kept byte-equal to the real module's value).
+    if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
@@ -2520,6 +2541,16 @@ async function runExactReplayRouteScenario(input: {
     // Pure module (voice style id/direction helpers, no deps) — run the real
     // normalizer so exact-replay sees production style coercion.
     if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
+    // T5: the export / B-roll re-render enqueue moved out of the route. Load the REAL module
+    // against this same table, so its source lookup still touches the "source-job" gate.
+    if (specifier === "@/lib/editor-export-enqueue") {
+      return loadPlainModule(editorExportEnqueueSource, editorExportEnqueuePath, requireMock);
+    }
+    // PR-A fix round: jobs/route.ts now imports MAX_PENDING_EDIT_REVISION instead of
+    // hardcoding its own copy of the bound. pending-edit-draft.ts pulls in prisma/video-job/
+    // headline-hook/etc., none of which this scenario exercises, so stub just the constant
+    // the route actually uses (kept byte-equal to the real module's value).
+    if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

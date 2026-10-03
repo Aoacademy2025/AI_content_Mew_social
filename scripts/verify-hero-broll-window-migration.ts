@@ -157,7 +157,14 @@ assert.ok(
 );
 assert.match(route, /brand_look_scene_rerolled/,
   "a delivered post-phase Scene Reroll must emit the V1 leading-metric event");
-assert.match(jobsRoute, /projectVisualPin:\s*srcJob\.projectVisualContextJson/,
+// T5: the route's broll-rerender branch delegates to the enqueue it shares with the MCP chain.
+assert.match(jobsRoute, /enqueueBrollRerender\(/,
+  "the broll-rerender route must use the shared enqueue");
+const editorExportEnqueue = fs.readFileSync("src/lib/editor-export-enqueue.ts", "utf8");
+const brollRerenderEnqueue = editorExportEnqueue.slice(
+  editorExportEnqueue.indexOf("export async function enqueueBrollRerender("),
+);
+assert.match(brollRerenderEnqueue, /projectVisualPin:\s*srcJob\.projectVisualContextJson/,
   "a broll-rerender child must inherit the source job's immutable visual pin");
 assert.match(
   generateConfigRoute,

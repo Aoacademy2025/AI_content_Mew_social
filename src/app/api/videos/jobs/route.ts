@@ -4,7 +4,6 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import {
   createVideoJob,
-  parseVideoJobOutput,
   VideoJobFundingError,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
@@ -34,15 +33,15 @@ import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { parseAutoMixReceiptImageCeiling } from "@/lib/automix-plan";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
-import {
-  assertCurrentEditorExportSource,
-  assertEditorProjectOwner,
-} from "@/lib/editor-projects";
-import { validateWindowEdits } from "@/lib/broll-rerender";
+import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { BrandAssetError } from "@/lib/brand-assets.server";
 import { BrandProfileLibraryError } from "@/lib/brand-profile-library.server";
-import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
-import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
+import {
+  enqueueBrollRerender,
+  enqueueEditorExport,
+  type EditorEnqueueRefusal,
+} from "@/lib/editor-export-enqueue";
+import { MAX_PENDING_EDIT_REVISION } from "@/lib/mcp/pending-edit-draft";
 import {
   fingerprintVideoJobRequest,
   legacyVideoJobKeyPrefix,
@@ -79,7 +78,6 @@ import { QUOTA_EXCEEDED_CODE, quotaUpgradeUserAction } from "@/lib/quota-error";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   prepareProjectVisualPin,
@@ -130,6 +128,8 @@ type Body = {
   sourceJobId?: unknown; windowEdits?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
+  // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
+  expectedPendingRevision?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -224,6 +224,36 @@ async function replayIdempotentVideoJob(
   });
 }
 
+/** An in-band refusal from the shared editor enqueue (T5), in this route's existing shape. */
+function editorEnqueueRefusalResponse(refusal: EditorEnqueueRefusal) {
+  return NextResponse.json(
+    { error: refusal.error, ...(refusal.message ? { message: refusal.message } : {}) },
+    { status: refusal.status },
+  );
+}
+
+/** The accepted response of an export / B-roll re-render enqueue. */
+function queuedJobResponse(
+  jobId: string,
+  idempotencyKey: string,
+  idempotencyFingerprint: string,
+  legacyClient: boolean,
+) {
+  return NextResponse.json({
+    jobId,
+    status: "queued",
+    idempotencyKey,
+    idempotencyFingerprint,
+    ...(legacyClient
+      ? {
+          legacyClient: true,
+          reloadRecommended: true,
+          warning: LEGACY_CLIENT_WARNING,
+        }
+      : {}),
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
@@ -288,69 +318,16 @@ export async function POST(req: Request) {
     // `rerenderOf` skip (not any client flag) is what makes the render itself free; here we only
     // validate shape + ownership up-front and enqueue. The orchestrator re-checks authoritatively.
     if (body.mode === "broll-rerender") {
-      const sourceJobId = str(body.sourceJobId, 120);
-      if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
-      const editsRes = validateWindowEdits(body.windowEdits);
-      if ("error" in editsRes) return NextResponse.json({ error: "invalid_edits", message: editsRes.error }, { status: 400 });
-
-      const srcJob = await prisma.videoJob.findUnique({
-        where: { id: sourceJobId },
-        select: {
-          userId: true,
-          status: true,
-          projectId: true,
-          contentPreflightId: true,
-          projectVisualContextJson: true,
-          brandVisualAcceptanceJson: true,
-        },
-      });
-      if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
-      if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)" }, { status: 400 });
-      const brandVisualSceneEdit = Boolean(
-        srcJob.projectId && srcJob.contentPreflightId && srcJob.projectVisualContextJson,
-      );
-      if (
-        !brandVisualSceneEdit
-        && !isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1")
-      ) {
-        return NextResponse.json({ error: "not_enabled" }, { status: 404 });
-      }
-
-      const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
-      if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
-
       try {
-        // Inherit the SOURCE job's projectId (server-trusted — never body.projectId) so the
-        // new job re-links the EditorProject on finish (finishJob sets activeJobId only when
-        // job.projectId is set); otherwise reopening the project reverts to the pre-edit video.
-        // srcJob.userId === user.id is already verified above, so this preserves the IDOR guard.
-        const job = await createVideoJob(
-          user.id,
-          { mode: "broll-rerender", previewMode: true, sourceJobId, windowEdits: editsRes },
-          idempotencyKey,
-          {
-            projectId: srcJob.projectId,
-            idempotencyFingerprint,
-            projectVisualPin: srcJob.projectVisualContextJson ? {
-              contentPreflightId: srcJob.contentPreflightId,
-              projectVisualContextJson: srcJob.projectVisualContextJson,
-            } : null,
-            brandVisualAcceptanceJson: srcJob.brandVisualAcceptanceJson,
-          },
-        );
-        return NextResponse.json({
-          jobId: job.id,
-          status: "queued",
+        const result = await enqueueBrollRerender({
+          user,
+          sourceJobId: str(body.sourceJobId, 120),
+          windowEdits: body.windowEdits,
           idempotencyKey,
           idempotencyFingerprint,
-          ...(legacyClient
-            ? {
-                legacyClient: true,
-                reloadRecommended: true,
-                warning: LEGACY_CLIENT_WARNING,
-              }
-            : {}),
         });
+        if (!result.ok) return editorEnqueueRefusalResponse(result);
+        return queuedJobResponse(result.job.id, idempotencyKey, idempotencyFingerprint, legacyClient);
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
           return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint, legacyClient))
@@ -366,126 +343,24 @@ export async function POST(req: Request) {
     // ── Durable export (mode: "export") ──────────────────────────────────────
     // The browser submits the burn config plus a compact native editor snapshot. The route
     // validates it and joins it to server-owned preview metadata before the worker owns the
-    // long burn + Gallery save + project transition.
+    // long burn + Gallery save + project transition (T5: shared with the MCP chain export
+    // through `enqueueEditorExport`).
     if (body.mode === "export") {
-      const sourceJobId = str(body.sourceJobId, 120);
-      if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
-      if (!body.subtitleOverlayConfig || typeof body.subtitleOverlayConfig !== "object" || Array.isArray(body.subtitleOverlayConfig)) {
-        return NextResponse.json({ error: "invalid_export", message: "ข้อมูลซับสำหรับส่งออกไม่ถูกต้อง" }, { status: 400 });
-      }
-      const rawLogoOverlay = (body.subtitleOverlayConfig as Record<string, unknown>).logoOverlay;
-      const subtitleOverlayConfig: Record<string, unknown> = { ...body.subtitleOverlayConfig };
-      delete subtitleOverlayConfig.logoOverlay;
-
-      const srcJob = await prisma.videoJob.findUnique({
-        where: { id: sourceJobId },
-        select: {
-          userId: true,
-          status: true,
-          outputJson: true,
-          projectId: true,
-          contentPreflightId: true,
-          projectVisualContextJson: true,
-        },
-      });
-      if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
-      if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม" }, { status: 400 });
-      if (!srcJob.projectId) return NextResponse.json({ error: "project_required", message: "โปรเจกต์นี้ยังไม่พร้อมสำหรับส่งออกแบบทำงานเบื้องหลัง" }, { status: 400 });
-      const sourceProjectId = srcJob.projectId;
-      await assertCurrentEditorExportSource(user.id, sourceProjectId, sourceJobId);
-      const parsed = parseVideoJobOutput(srcJob.outputJson);
-      if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
-      const editSnapshot = body.editorSnapshot === undefined
-        ? undefined
-        : createEditorExportSnapshot({
-            draft: body.editorSnapshot,
-            sourcePreview: parsed.preview,
-            videoUrl: subtitleOverlayConfig.videoUrl,
-          });
-      if (body.editorSnapshot !== undefined && !editSnapshot) {
-        return NextResponse.json({ error: "invalid_editor_snapshot", message: "ข้อมูลสถานะล่าสุดของหน้าตัดต่อไม่ถูกต้อง" }, { status: 400 });
-      }
-
-      const rawHeadlineHook = subtitleOverlayConfig.headlineHook;
-      if (rawHeadlineHook !== undefined) {
-        const overlayDurationFrames = Number(subtitleOverlayConfig.durationInFrames);
-        const overlayDurationMs = Number.isFinite(overlayDurationFrames) && overlayDurationFrames > 0
-          ? (overlayDurationFrames / 30) * 1_000
-          : 0;
-        const headlineHook = normalizeHeadlineHook(
-          rawHeadlineHook,
-          Math.max(parsed.preview.audioDurationMs, overlayDurationMs),
-        );
-        if (!headlineHook) {
-          return NextResponse.json({ error: "invalid_headline_hook", message: "ข้อมูลพาดหัวเปิดคลิปไม่ถูกต้อง" }, { status: 400 });
-        }
-        if (headlineHook.enabled) subtitleOverlayConfig.headlineHook = headlineHook;
-        else delete subtitleOverlayConfig.headlineHook;
-      }
-
-      const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
-      if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
-
       try {
-        const job = await createDurableExportWithStagedLogo({
-          staging: {
-            userId: user.id,
-            plan: user.plan,
-            // R12: the logo overlay stays a PRO/BUSINESS-plan feature. Wave 1b
-            // opened PINNING to every plan, so the bare pin no longer implies
-            // funded logo use — this reads the ADMITTED predicate, exactly
-            // like the render path below.
-            brandVisualAllowed: brandVisualAccess.canUse
-              || await projectHasAdmittedPersistedPin({ userId: user.id, projectId: sourceProjectId }),
-            projectId: sourceProjectId,
-            rawLogoOverlay: rawLogoOverlay,
-          },
-          createDurableJob: async (trustedLogo) => {
-            if (trustedLogo) subtitleOverlayConfig.logoOverlay = trustedLogo;
-            return createVideoJob(
-              user.id,
-              {
-                mode: "export",
-                sourceJobId,
-                subtitleOverlayConfig,
-                ...(editSnapshot ? { editSnapshot } : {}),
-                exportScript: str(body.script, 20000),
-                exportSceneCount: num(body.exportSceneCount, 1, 1000),
-              },
-              idempotencyKey,
-              {
-                projectId: sourceProjectId,
-                type: "export",
-                idempotencyFingerprint,
-                projectVisualPin: srcJob.projectVisualContextJson
-                  ? {
-                      contentPreflightId: srcJob.contentPreflightId,
-                      projectVisualContextJson: srcJob.projectVisualContextJson,
-                    }
-                  : null,
-              },
-            );
-          },
-          afterDurableJobCreated: async (durableJob) => {
-            await prisma.editorProject.updateMany({
-              where: { id: sourceProjectId, userId: user.id },
-              data: { activeExportJobId: durableJob.id, status: "exporting", lastOpenedAt: new Date() },
-            });
-          },
-        });
-        return NextResponse.json({
-          jobId: job.id,
-          status: "queued",
+        const result = await enqueueEditorExport({
+          user,
+          brandVisualAccess,
+          sourceJobId: str(body.sourceJobId, 120),
+          subtitleOverlayConfig: body.subtitleOverlayConfig,
+          editorSnapshot: body.editorSnapshot,
           idempotencyKey,
           idempotencyFingerprint,
-          ...(legacyClient
-            ? {
-                legacyClient: true,
-                reloadRecommended: true,
-                warning: LEGACY_CLIENT_WARNING,
-              }
-            : {}),
+          exportScript: str(body.script, 20000),
+          exportSceneCount: num(body.exportSceneCount, 1, 1000),
+          expectedPendingRevision: num(body.expectedPendingRevision, 0, MAX_PENDING_EDIT_REVISION),
         });
+        if (!result.ok) return editorEnqueueRefusalResponse(result);
+        return queuedJobResponse(result.job.id, idempotencyKey, idempotencyFingerprint, legacyClient);
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
           return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint, legacyClient))

@@ -1,0 +1,3 @@
+{
+  "scripts/verify-mcp-orchestrator.ts": "Fails on 'subtitle quality gate: rejects changed words/numbers before rendering' — that behavior was removed by ADR 0056 (2026-08-31): subtitle QA is now a report, not a gate; BLOCKING_SUBTITLE_CODES (src/lib/mcp/subtitle-quality.ts) is only empty_script/empty_captions. All other assertions in this file pass; not an environment issue."
+}

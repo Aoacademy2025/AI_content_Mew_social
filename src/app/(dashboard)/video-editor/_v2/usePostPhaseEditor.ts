@@ -82,6 +82,7 @@ import {
   clearPendingBrollApply, readPendingBrollApply, writePendingBrollApply,
   type PendingBrollApply,
 } from "@/lib/broll-apply-recovery";
+import { PENDING_EDIT_BANNER_TEXT, type WebPendingEdit } from "./pending-edit-view";
 
 export type ExportState =
   | { phase: "idle" }
@@ -149,6 +150,7 @@ const ignoreHeadlineHookChange = (_next: HeadlineHookConfig | undefined) => {
 };
 const ignoreProjectSaveRetry = () => undefined;
 const alwaysReadyForProjectOperation = () => true;
+const ignoreReloadPendingEdit = async () => null;
 type LayerVisibilityChange = EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility);
 
 const ignoreLayerVisibilityChange = (_next: LayerVisibilityChange) => {
@@ -156,7 +158,7 @@ const ignoreLayerVisibilityChange = (_next: LayerVisibilityChange) => {
 };
 
 export type UsePostPhaseEditorOptions = {
-  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string; staleRevision?: boolean }>;
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
@@ -180,6 +182,13 @@ export type UsePostPhaseEditorOptions = {
   canRunProjectOperation?: () => boolean;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
   brollEditAvailable?: boolean;
+  /** T8 (ADR 0064, G21): the Pending Edit Draft the Shell loaded for this project, scoped to the
+   *  job this editor currently opens — `undefined`/`null` when there is none (today's behaviour,
+   *  unchanged). */
+  pendingEdit?: WebPendingEdit | null;
+  /** Re-fetch the draft after a `stale_revision` export refusal, or after the initial async
+   *  load resolves late. Omitted = no pending-draft support (defaults to a no-op). */
+  onReloadPendingEdit?: () => Promise<WebPendingEdit | null>;
 };
 
 function subtitleConfigFromBrandDefault(
@@ -215,16 +224,26 @@ export function usePostPhaseEditor(
     canRunProjectOperation = alwaysReadyForProjectOperation,
     initialSubtitleConfig,
     brollEditAvailable = false,
+    pendingEdit = null,
+    onReloadPendingEdit = ignoreReloadPendingEdit,
   } = options;
   const preview = job.output?.preview ?? null;
   const editSnapshot = job.output?.editSnapshot;
+  // T8 (ADR 0064, G21): when the Shell already loaded a draft for this exact base job, it wins
+  // over the normal source (editSnapshot / the raw preview) for every field it carries. The web
+  // never writes back to this draft — only a successful export clears it (G12, server-side).
+  const pendingDraft = pendingEdit?.draft ?? null;
+  const effectiveFullText = pendingDraft?.fullText ?? preview?.fullText;
+  const effectiveWords = pendingDraft?.words ?? preview?.words;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
-  const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
+  const [captions, setCaptions] = useState<V2Caption[]>(() => pendingDraft?.captions ?? preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(() => (
-    editSnapshot?.subtitleConfig as V2SubConfig | undefined
-  ) ?? subtitleConfigFromBrandDefault(initialSubtitleConfig));
+    pendingDraft?.subtitleConfig
+    ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
+    ?? subtitleConfigFromBrandDefault(initialSubtitleConfig)
+  ));
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
@@ -237,11 +256,17 @@ export function usePostPhaseEditor(
   });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
-  const originalCapsRef = useRef<V2Caption[]>(editSnapshot?.originalCaptions ?? preview?.captions ?? []);
-  const [cardLen, setCardLen] = useState<V2CardLen>(editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen ?? "sentence");
+  const originalCapsRef = useRef<V2Caption[]>(
+    pendingDraft?.originalCaptions ?? editSnapshot?.originalCaptions ?? preview?.captions ?? [],
+  );
+  const [cardLen, setCardLen] = useState<V2CardLen>(
+    pendingDraft?.cardLen ?? editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen ?? "sentence",
+  );
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
-  const [overrides, setOverrides] = useState<V2CardOverrides>(() => editSnapshot?.captionOverrides ?? {});
+  const [overrides, setOverrides] = useState<V2CardOverrides>(() => (
+    pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {}
+  ));
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
@@ -263,13 +288,20 @@ export function usePostPhaseEditor(
   ), [captions, preview?.audioDurationMs]);
   const headlineSourceText = useMemo(() => (
     script.trim()
-    || preview?.fullText?.trim()
+    || effectiveFullText?.trim()
     || captions.map((caption) => caption.text).join(" ").trim()
-  ), [captions, preview?.fullText, script]);
+  ), [captions, effectiveFullText, script]);
+  // T8: a draft-seeded headline wins ONCE, on first load — `headlineOverride` is local state
+  // (not re-derived from `pendingDraft` on every render) so a later user edit, which updates the
+  // `headlineHook` prop via `onHeadlineHookChange`, is never permanently shadowed by the agent's
+  // original value (`pendingDraft` itself never changes after mount).
+  const [headlineOverride, setHeadlineOverrideState] = useState<HeadlineHookConfig | undefined>(
+    () => pendingDraft?.headlineHook,
+  );
   const resolvedHeadlineHook = useMemo(() => (
-    normalizeHeadlineHookDraft(headlineHook, totalDurationMs)
+    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs)
     ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
-  ), [headlineHook, headlineSourceText, totalDurationMs]);
+  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs]);
   const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
   const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
@@ -280,6 +312,7 @@ export function usePostPhaseEditor(
       { ...resolvedHeadlineHook, ...patch },
       totalDurationMs,
     );
+    setHeadlineOverrideState(next ?? undefined);
     onHeadlineHookChange(next ?? undefined);
   }
 
@@ -970,9 +1003,33 @@ export function usePostPhaseEditor(
   // เพิ่ม/ลบ/รวม/แยก ไม่ย้ายสีของการ์ดไปผิดใบ
   const historyRef = useRef<CaptionHistoryState<CaptionEditSnapshot>>({ past: [], future: [] });
   const historyIdRef = useRef(0);
-  const committedRef = useRef<V2Caption[]>(cloneCaptions(preview?.captions ?? []));
+  const committedRef = useRef<V2Caption[]>(cloneCaptions(pendingDraft?.captions ?? preview?.captions ?? []));
   const [historyLen, setHistoryLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
+
+  // T8 (ADR 0064, G21): apply a (re)loaded draft once per distinct revision. This covers BOTH
+  // the normal case — `pendingEdit` arrives asynchronously after this hook's first render, so the
+  // lazy `useState` initializers above already ran without it — and the 409 `stale_revision`
+  // reload, where a NEW draft (bumped revision) must overwrite local edits with the agent's
+  // latest. The ref guard is keyed on revision, not object identity, so a re-render that hands
+  // back an equal-revision draft is a no-op (never clobbers in-progress typing).
+  const appliedPendingRevisionRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!pendingEdit || appliedPendingRevisionRef.current === pendingEdit.revision) return;
+    appliedPendingRevisionRef.current = pendingEdit.revision;
+    const draft = pendingEdit.draft;
+    setCaptions(cloneCaptions(draft.captions));
+    originalCapsRef.current = cloneCaptions(draft.originalCaptions);
+    committedRef.current = cloneCaptions(draft.captions);
+    setCfg(draft.subtitleConfig);
+    setCardLen(draft.cardLen);
+    setOverrides(cloneOverrides(draft.captionOverrides));
+    // Set unconditionally (not `if (draft.headlineHook)`): a discard/reseed can legitimately
+    // remove the headline, and the override must follow the draft back to `undefined` instead
+    // of keeping the previous revision's stale value.
+    setHeadlineOverrideState(draft.headlineHook);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
+  }, [pendingEdit]);
 
   function syncHistoryCounts(history: CaptionHistoryState<CaptionEditSnapshot>) {
     setHistoryLen(history.past.length);
@@ -1140,7 +1197,7 @@ export function usePostPhaseEditor(
     // always budgets at 80 regardless of cfg.fontSize (too-short cards at a small font,
     // still-wrapping cards at a large one).
     commitCaptionChange(
-      regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText, cfg.fontSize),
+      regroupCaptions(originalCapsRef.current, len, effectiveWords, effectiveFullText, cfg.fontSize),
       {},
       0,
       len,
@@ -1278,7 +1335,7 @@ export function usePostPhaseEditor(
       return;
     }
 
-    const narrationMasterText = preview?.fullText?.trim() || script.trim();
+    const narrationMasterText = effectiveFullText?.trim() || script.trim();
     const captionPreflight = captionExportPreflight(
       captions,
       effectiveLayerVisibility.subtitles,
@@ -1348,8 +1405,20 @@ export function usePostPhaseEditor(
         },
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
+        ...(pendingEdit ? { expectedPendingRevision: pendingEdit.revision } : {}),
       });
-      if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
+      if (!result.ok) {
+        // T8 (ADR 0064, G21): the AI agent changed the draft while the web was editing. Reload
+        // it (it becomes the new baseline, via the resync effect above) and tell the user in
+        // Thai, rather than treating this as a generic export failure.
+        if (result.staleRevision) {
+          toast.error("AI agent แก้ไขคลิปนี้ไปแล้วระหว่างที่คุณกำลังแก้ — กำลังโหลดฉบับล่าสุดให้ใหม่");
+          setExp({ phase: "idle" });
+          await onReloadPendingEdit();
+          return;
+        }
+        throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
+      }
       const submittedBrollSummary = brollAppliedSummariesRef.current.get(exportSource.jobId);
       if (submittedBrollSummary) {
         trackEvent("editor_broll_export_submitted", {
@@ -1459,6 +1528,8 @@ export function usePostPhaseEditor(
     preview,
     logo,
     stylePresets,
+    // T8 (ADR 0064, G21): the exact Thai banner text when a draft was loaded, else null.
+    pendingEditBanner: pendingDraft ? PENDING_EDIT_BANNER_TEXT : null,
     layerVisibility: editorLayerVisibility,
     layerAvailability,
     setLayerEnabled,

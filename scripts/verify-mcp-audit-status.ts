@@ -63,7 +63,15 @@ assert(
   videoJobCancelCore.includes("...VIDEO_JOB_INFLIGHT_STATUSES"),
   "the shared cancel core (web DELETE + MCP cancel_video_job) accepts every shared in-flight status",
 );
-assert((jobsRoute.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 3, "all three web in-flight limits use the shared status set");
+// T5: the export and B-roll re-render limits moved with their enqueue into a module the web
+// route and the MCP chain share; one cap helper there serves both.
+const editorExportEnqueue = readFileSync("src/lib/editor-export-enqueue.ts", "utf8");
+assert(
+  (jobsRoute.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 1
+    && (editorExportEnqueue.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 1
+    && (editorExportEnqueue.match(/await inflightCapReached\(user\.id\)/g) ?? []).length === 2,
+  "all three web in-flight limits use the shared status set",
+);
 assert(mcpRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "MCP in-flight limit includes provider waits");
 assert(mcpRoute.includes("cancelMcpVideoJob"), "MCP cancel_video_job routes through the chain-aware cancel helper");
 assert(insightsRoute.includes("waitingProvider:"), "admin insights reports waiting-provider count separately");

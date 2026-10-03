@@ -150,7 +150,9 @@ function verifyDurableSnapshotContract(): void {
 
   const wires = [
     ["src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts", "editorSnapshot:"],
-    ["src/app/api/videos/jobs/route.ts", "createEditorExportSnapshot({"],
+    // T5: the route's Export branch hands the draft to the enqueue it shares with the MCP chain.
+    ["src/app/api/videos/jobs/route.ts", "editorSnapshot: body.editorSnapshot"],
+    ["src/lib/editor-export-enqueue.ts", "createEditorExportSnapshot({"],
     ["src/lib/mcp/orchestrator.ts", "editSnapshot: input.editSnapshot"],
     ["src/lib/mcp/video-job.ts", "parseEditorExportSnapshot(raw.editSnapshot)"],
     ["src/app/api/videos/jobs/[id]/route.ts", "parseFailedEditorExportRecovery("],

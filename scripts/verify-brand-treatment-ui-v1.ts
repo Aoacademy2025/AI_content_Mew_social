@@ -367,8 +367,11 @@ async function main() {
   );
 
   const videoJobsRouteSourceForLogo = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
+  // T5: the durable export's logo staging moved with the export enqueue into a shared module
+  // (the jobs route and the MCP chain both call it).
+  const editorExportEnqueueSourceForLogo = readFileSync("src/lib/editor-export-enqueue.ts", "utf8");
   assert.match(
-    videoJobsRouteSourceForLogo,
+    editorExportEnqueueSourceForLogo,
     /brandVisualAllowed: brandVisualAccess\.canUse\s*\n\s*\|\| await projectHasAdmittedPersistedPin\(\{ userId: user\.id, projectId: sourceProjectId \}\)/,
     "R12: export logo staging must read the ADMITTED pin, not the bare one — the logo overlay is not widened by wave 1b",
   );

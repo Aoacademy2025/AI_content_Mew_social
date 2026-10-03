@@ -65,6 +65,11 @@ jobs:
       - name: Verify acoustic subtitle and export release gates
         run: npm run verify:subtitle-audio-sync
 
+      - name: MCP verify (all)
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/heroai-mcp-verify.db?connection_limit=1
+        run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:mcp-all && npm run verify:mcp-ci-coverage
+
       - name: Verify concurrent AI image materialization
         run: node --conditions=react-server --import tsx scripts/verify-stock-image-isolation.ts
 
@@ -100,6 +105,9 @@ jobs:
 
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
+
+      - name: Verify web Post phase loads the Pending Edit Draft + stale guard (ADR 0064, T8)
+        run: npm run verify:editor-pending-draft
 
       - name: Verify project menu (Agent-created Project label, T9)
         run: npm run verify:project-menu

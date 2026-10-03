@@ -29,6 +29,7 @@ import { avatarFadeApplies } from "@/lib/avatar-fade";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import type { WebPendingEdit } from "./pending-edit-view";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
@@ -95,9 +96,11 @@ export function PostPhase({
   downloadFilename,
   brollRegionPreference,
   projectStylePack,
+  pendingEdit,
+  onReloadPendingEdit,
 }: {
   job: V2JobState; script: string;
-  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string; staleRevision?: boolean }>;
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
@@ -129,6 +132,8 @@ export function PostPhase({
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
   projectStylePack?: ProjectStylePack | null;
+  pendingEdit?: WebPendingEdit | null;
+  onReloadPendingEdit?: () => Promise<WebPendingEdit | null>;
 }) {
   const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
   const rightTabsId = useId();
@@ -155,6 +160,8 @@ export function PostPhase({
     canRunProjectOperation,
     surface: "desktop",
     brollEditAvailable: brollEditEnabled,
+    pendingEdit,
+    onReloadPendingEdit,
   });
   const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
     setRightTab(next);
@@ -199,6 +206,11 @@ export function PostPhase({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandLibraryAllowed={brandLibraryAllowed} />
       <SubtitleQaInlineBanner output={job.output} />
+      {ed.pendingEditBanner && (
+        <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.warningText, background: color.bg1, borderBottom: `1px solid ${color.cardBorder}` }}>
+          {ed.pendingEditBanner}
+        </div>
+      )}
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
