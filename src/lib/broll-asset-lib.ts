@@ -6,6 +6,7 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { pickPixabayVariant } from "@/lib/broll-source-quality";
 import { kieCreateTask, kiePollResult, buildKieImageInput, type KieImageModel } from "@/lib/kie-client";
+import { safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -81,16 +82,29 @@ export function normalizedMarkerPath(filePath: string): string {
 
 export type NormalizeResult = { status: "skipped" | "normalized" | "failed"; durationMs: number };
 
-export async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> {
+/**
+ * Input options for an ffmpeg run in this file. Every input is a local file, so the
+ * protocol whitelist is always on; `inputFormat` (a G24 demuxer from
+ * resolveSafeInputDemuxer) is passed by callers that hand us user-uploaded bytes, and
+ * pins the demuxer so a playlist disguised as media is never opened as one.
+ */
+export type FfmpegInputOptions = { inputFormat?: SafeInputDemuxer };
+
+function ffmpegInputArgs({ inputFormat }: FfmpegInputOptions): string[] {
+  return inputFormat ? safeInputArgs(inputFormat) : ["-protocol_whitelist", "file"];
+}
+
+export async function normalizeForRemotion(filePath: string, options: FfmpegInputOptions = {}): Promise<NormalizeResult> {
   const startedAt = Date.now();
   const marker = normalizedMarkerPath(filePath);
   if (fs.existsSync(marker)) return { status: "skipped", durationMs: 0 }; // already normalized in a previous run
   const ffmpeg = getFfmpegPath();
+  const inputArgs = ffmpegInputArgs(options);
   const tmp = `${filePath}.norm.mp4`;
   try {
     safeUnlink(tmp);
     await withNormalizeSlot(() => execFileAsync(ffmpeg, [
-      "-y", "-i", filePath,
+      "-y", ...inputArgs, "-i", filePath,
       "-an",                              // B-roll is muted in render anyway
       // Downscale oversized sources (e.g. Pixabay 4K) to fit a 1080×1920 box
       // BEFORE the libx264 re-encode. A full 4096×2160 normalize on the GPU-less
@@ -284,8 +298,10 @@ export async function applyKenBurns(
   imagePath: string,
   outPath: string,
   durationSec: number = KEN_BURNS_DURATION_SEC,
+  options: FfmpegInputOptions = {},
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
+  const inputArgs = ffmpegInputArgs(options);
   const resolvedDurationSec = Number.isFinite(durationSec) && durationSec > 0
     ? Math.min(601, Math.ceil(durationSec * TARGET_FPS) / TARGET_FPS)
     : KEN_BURNS_DURATION_SEC;
@@ -300,7 +316,7 @@ export async function applyKenBurns(
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [
-    "-y", "-loop", "1", "-i", imagePath,
+    "-y", ...inputArgs, "-loop", "1", "-i", imagePath,
     "-vf", zoompan,
     "-t", String(resolvedDurationSec),
     "-an",

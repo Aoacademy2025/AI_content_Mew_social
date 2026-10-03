@@ -68,8 +68,9 @@ const routeSource = readFileSync(
 const validationIndex = routeSource.indexOf("if (file.size > maxBytes)");
 const acquireIndex = routeSource.indexOf("brollUploadAdmission.tryAcquire(user.id)");
 const commitIndex = routeSource.indexOf("admission.lease.commit()");
-const imageWorkIndex = routeSource.indexOf("await applyKenBurns(tempInput, outPath)");
-const videoWorkIndex = routeSource.indexOf("await normalizeForRemotion(outPath)");
+// Prefix needles: the calls also pass the pinned G24 input demuxer.
+const imageWorkIndex = routeSource.indexOf("await applyKenBurns(tempInput, outPath");
+const videoWorkIndex = routeSource.indexOf("await normalizeForRemotion(outPath");
 assert.ok(
   validationIndex >= 0
     && validationIndex < acquireIndex
