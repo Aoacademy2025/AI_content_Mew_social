@@ -59,6 +59,8 @@ export function buildPreviewBgFfmpegArgs(opts: {
   halfRes: boolean;
   inputPath: string;
   outPath: string;
+  /** Input options placed right before -i (G24: protocol whitelist + pinned demuxer). */
+  inputArgs?: readonly string[];
 }): string[] {
   const vf = opts.halfRes ? `${opts.keyChain},scale=540:-2` : opts.keyChain;
   return [
@@ -66,6 +68,7 @@ export function buildPreviewBgFfmpegArgs(opts: {
     // maxSec as an INPUT option (before -i) so ffmpeg stops reading past it — faster than
     // decoding + keying the full clip then truncating the output.
     ...(opts.maxSec != null ? ["-t", String(opts.maxSec)] : []),
+    ...(opts.inputArgs ?? []),
     "-i", opts.inputPath,
     "-vf", vf,
     "-c:v", "libvpx-vp9",

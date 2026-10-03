@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { resolveContainedFile } from "@/lib/contained-path";
+import { resolveStoredMediaDemuxer, safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -25,9 +27,9 @@ function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
   });
 }
 
-function probeDuration(ffmpeg: string, filePath: string): Promise<number> {
+function probeDuration(ffmpeg: string, filePath: string, demuxer: SafeInputDemuxer): Promise<number> {
   return new Promise((resolve, reject) => {
-    execFile(ffmpeg, ["-i", filePath], { maxBuffer: 1024 * 1024 }, (_err, _stdout, stderr) => {
+    execFile(ffmpeg, [...safeInputArgs(demuxer), "-i", filePath], { maxBuffer: 1024 * 1024 }, (_err, _stdout, stderr) => {
       const match = stderr?.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       if (match) resolve(parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]));
       else reject(new Error("Could not probe duration"));
@@ -61,32 +63,35 @@ export async function POST(req: Request) {
   if (effectiveDurationSecs <= 0 && effectiveTailSecs <= 0)
     return NextResponse.json({ error: "durationSecs or tailSecs required" }, { status: 400 });
 
+  if (typeof audioUrl !== "string") return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
   const normalizedUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
-  const srcPath = path.join(process.cwd(), "public", normalizedUrl);
-  // Containment guard: reject any audioUrl that escapes the public webroot (path traversal).
-  const publicDir = path.resolve(process.cwd(), "public");
-  const resolvedSrc = path.resolve(srcPath);
-  if (resolvedSrc !== publicDir && !resolvedSrc.startsWith(publicDir + path.sep))
-    return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
-  if (!fs.existsSync(srcPath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
+  // Containment guard: the file must resolve (realpath, so symlinks too) inside public/.
+  const src = resolveContainedFile(path.join(process.cwd(), "public"), normalizedUrl);
+  if (!src.ok && src.reason === "outside") return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
+  if (!src.ok) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
+  const srcPath = src.path;
+  // G24: read with a pinned demuxer (its own bytes, else its own extension), never auto-detect.
+  const demuxer = resolveStoredMediaDemuxer(srcPath, ["audio", "video"]);
+  if (!demuxer) return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
+  const ext = path.extname(audioUrl) || ".mp3";
+  const input = [...safeInputArgs(demuxer), "-i", srcPath];
 
   const ffmpeg = getFfmpegPath();
   if (!fs.existsSync(ffmpeg)) return NextResponse.json({ error: "ffmpeg not found" }, { status: 500 });
 
   const ts = Date.now();
-  const ext = path.extname(audioUrl) || ".mp3";
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
 
   try {
-    const totalDur = await probeDuration(ffmpeg, srcPath);
+    const totalDur = await probeDuration(ffmpeg, srcPath, demuxer);
     const outFile = `tts-trimmed-${ts}${ext}`;
     const outPath = path.join(rendersDir, outFile);
 
     if (effectiveTailSecs > 0 && effectiveDurationSecs <= 0) {
       // tail-only: extract last T seconds
       const tailStart = Math.max(0, totalDur - effectiveTailSecs);
-      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-ss", String(tailStart), "-c", "copy", outPath]);
+      await runFfmpeg(ffmpeg, ["-y", ...input, "-ss", String(tailStart), "-c", "copy", outPath]);
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
     } else if (effectiveTailSecs > 0 && effectiveDurationSecs > 0) {
       // bookend-both concat: intro[0..N] + tail[totalDur-T..end]
@@ -95,19 +100,20 @@ export async function POST(req: Request) {
       const introPath = path.join(rendersDir, `tts-intro-${ts}${ext}`);
       const tailPath  = path.join(rendersDir, `tts-tail-${ts}${ext}`);
       const listPath  = path.join(rendersDir, `tts-concat-${ts}.txt`);
-      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-t", String(N), "-c", "copy", introPath]);
-      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-ss", String(tailStart), "-c", "copy", tailPath]);
+      await runFfmpeg(ffmpeg, ["-y", ...input, "-t", String(N), "-c", "copy", introPath]);
+      await runFfmpeg(ffmpeg, ["-y", ...input, "-ss", String(tailStart), "-c", "copy", tailPath]);
       fs.writeFileSync(listPath, `file '${introPath.replace(/\\/g, "/")}'\nfile '${tailPath.replace(/\\/g, "/")}'`);
       await runFfmpeg(ffmpeg, ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outPath]);
       try { fs.unlinkSync(introPath); fs.unlinkSync(tailPath); fs.unlinkSync(listPath); } catch {}
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
     } else {
       // intro only: first N seconds
-      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-t", String(effectiveDurationSecs), "-c", "copy", outPath]);
+      await runFfmpeg(ffmpeg, ["-y", ...input, "-t", String(effectiveDurationSecs), "-c", "copy", outPath]);
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
     }
   } catch (e) {
     console.error("[trim-audio]", e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Failed" }, { status: 500 });
+    // Never echo the error: it carries server paths and the ffmpeg command line.
+    return NextResponse.json({ error: "Audio trim failed" }, { status: 500 });
   }
 }

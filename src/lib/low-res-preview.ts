@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveStoredMediaDemuxer, safeInputArgs } from "@/lib/media-probe-args";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   existingLowResPreviewUrlForVideoUrl,
@@ -74,6 +75,9 @@ function emitPreviewTelemetry(
 }
 
 function runFfmpegPreview(job: PreviewJob): Promise<void> {
+  // G24: the source is read with a pinned demuxer (its own bytes, else .mp4), never auto-detect.
+  const demuxer = resolveStoredMediaDemuxer(job.info.sourceFilePath, ["video"]);
+  if (!demuxer) return Promise.reject(new Error("preview source is not a supported video file"));
   const ffmpeg = getFfmpegPath();
   const tmpPath = `${job.info.previewFilePath}.tmp-${process.pid}-${Date.now()}.mp4`;
   const profile = previewEncodeProfile(job.info.previewWidth);
@@ -86,6 +90,7 @@ function runFfmpegPreview(job: PreviewJob): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpeg, [
       "-y",
+      ...safeInputArgs(demuxer),
       "-i", job.info.sourceFilePath,
       "-map", "0:v:0",
       "-map", "0:a?",

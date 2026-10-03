@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { randomUUID } from "crypto";
+import { admitUserMediaFile } from "@/lib/upload-media-probe";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
@@ -28,7 +30,21 @@ function isAllowedVideo(file: File, ext: string): boolean {
   return VIDEO_MIMES.has(file.type);
 }
 
+const UNSUPPORTED = "Unsupported file type — only mp4/mov/webm video is accepted";
+
+/** rename, or copy + unlink when the temp dir is on another filesystem. */
+function moveFile(from: string, to: string): void {
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+    fs.unlinkSync(from);
+  }
+}
+
 export async function POST(req: Request) {
+  let tempPath: string | null = null;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
@@ -50,10 +66,7 @@ export async function POST(req: Request) {
 
     const ext = fileExt(file.name);
     if (!isAllowedVideo(file, ext)) {
-      return NextResponse.json(
-        { error: "Unsupported file type — only mp4/mov/webm video is accepted" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: UNSUPPORTED }, { status: 400 });
     }
 
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -64,15 +77,24 @@ export async function POST(req: Request) {
     const filename = `upload-${randomUUID()}.${ext}`;
     const outputPath = path.join(rendersDir, filename);
 
+    // G24: the bytes must be a real video container before they are stored. Files here
+    // are read later by ffmpeg paths that still auto-detect the format, so a playlist or
+    // ffconcat script named .mp4 must never land in public/renders.
+    tempPath = path.join(os.tmpdir(), `video-upload-${randomUUID()}`);
     const buffer = Buffer.from(await file.arrayBuffer());
-    fs.writeFileSync(outputPath, buffer);
+    // Default mode (as before): nginx serves public/renders straight from disk.
+    fs.writeFileSync(tempPath, buffer, { flag: "wx" });
+    if (!(await admitUserMediaFile(tempPath, ["video"]))) {
+      return NextResponse.json({ error: UNSUPPORTED }, { status: 400 });
+    }
+    moveFile(tempPath, outputPath);
+    tempPath = null;
 
     return NextResponse.json({ url: `/api/renders/${filename}` });
   } catch (error) {
     console.error("Upload error:", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Upload failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+  } finally {
+    if (tempPath) try { fs.unlinkSync(tempPath); } catch {}
   }
 }

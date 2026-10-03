@@ -5,7 +5,12 @@
 // playlist disguised as media cannot open other files or URLs (see media-probe-args.ts).
 import { execFile, execFileSync } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
-import { safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
+import {
+  safeInputArgs,
+  sniffSafeInputDemuxer,
+  type MediaKind,
+  type SafeInputDemuxer,
+} from "@/lib/media-probe-args";
 
 // ffprobe sits next to ffmpeg in the same install.
 export function getFfprobePath(): string {
@@ -81,4 +86,72 @@ export async function probeDurationMs(filePath: string, demuxer: SafeInputDemuxe
   } catch {
     return null;
   }
+}
+
+export type MediaStreams = { audio: boolean; video: boolean };
+
+// A stream only counts when it decodes to something: an mp3 forced through `-f aac` still
+// "opens" as an aac stream with 0 channels, and a playlist forced through a resyncing
+// demuxer can report an empty stream too.
+function streamsFromBanner(stderr: string): MediaStreams {
+  let audio = false;
+  let video = false;
+  for (const line of stderr.split("\n")) {
+    const m = /Stream #\d+:\d+.*?: (Audio|Video): (.*)$/.exec(line);
+    if (!m) continue;
+    if (m[1] === "Audio") {
+      const hz = Number(/(\d+) Hz/.exec(m[2])?.[1] ?? 0);
+      if (hz > 0 && !/\b0 channels\b/.test(m[2])) audio = true;
+    } else {
+      const size = /\b(\d{1,5})x(\d{1,5})\b/.exec(m[2]);
+      if (size && Number(size[1]) > 0 && Number(size[2]) > 0) video = true;
+    }
+  }
+  return { audio, video };
+}
+
+/**
+ * Which decodable streams the file holds when read with `demuxer`. ffprobe first; ffmpeg's
+ * banner only when ffprobe is not installed. null = neither tool could run.
+ */
+export async function probeMediaStreams(filePath: string, demuxer: SafeInputDemuxer): Promise<MediaStreams | null> {
+  try {
+    const { stdout } = await execFileCapture(getFfprobePath(), [
+      "-v", "error",
+      ...safeInputArgs(demuxer),
+      "-show_entries", "stream=codec_type,width,height,sample_rate,channels",
+      "-of", "json",
+      filePath,
+    ], 20_000);
+    const parsed = JSON.parse(stdout) as { streams?: Array<Record<string, unknown>> };
+    const result: MediaStreams = { audio: false, video: false };
+    for (const stream of parsed.streams ?? []) {
+      if (stream.codec_type === "audio" && Number(stream.sample_rate) > 0 && Number(stream.channels) > 0) result.audio = true;
+      if (stream.codec_type === "video" && Number(stream.width) > 0 && Number(stream.height) > 0) result.video = true;
+    }
+    return result;
+  } catch (error) {
+    // ffprobe ran and refused the file: nothing decodable.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return { audio: false, video: false };
+  }
+  try {
+    const { stderr } = await execFileCapture(getFfmpegPath(), [...safeInputArgs(demuxer), "-i", filePath], 20_000, true);
+    return streamsFromBanner(stderr);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ingest gate for user media that will be stored, or read later by code that still lets
+ * ffmpeg auto-detect the format. The file must start with a media signature of one of
+ * `kinds` (so auto-detection can never see a playlist or script) AND parse with that
+ * pinned demuxer into at least one real audio or video stream. Returns the demuxer, or
+ * null when the file must be refused.
+ */
+export async function admitUserMediaFile(filePath: string, kinds: readonly MediaKind[]): Promise<SafeInputDemuxer | null> {
+  const demuxer = sniffSafeInputDemuxer(filePath, kinds);
+  if (!demuxer) return null;
+  const streams = await probeMediaStreams(filePath, demuxer);
+  return streams && (streams.audio || streams.video) ? demuxer : null;
 }

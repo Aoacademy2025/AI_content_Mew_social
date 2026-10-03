@@ -30,6 +30,13 @@ import {
   type TranscribeWarningCode,
 } from "@/lib/transcribe-partial-coverage";
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveContainedFile } from "@/lib/contained-path";
+import {
+  resolveStoredMediaDemuxer,
+  safeInputArgs,
+  sniffSafeInputDemuxer,
+  type SafeInputDemuxer,
+} from "@/lib/media-probe-args";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
@@ -464,15 +471,17 @@ function localMediaDeadlineError(error: unknown, deadlineMs: number | null): Err
   return isTranscribeDeadlineExceeded(error, deadlineMs) ? new TranscribeDeadlineExceededError() : null;
 }
 
+// G24: the user's media is always read with a pinned demuxer and the file protocol only.
 function extractAudioMp3(
   ffmpegPath: string,
   inputPath: string,
+  demuxer: SafeInputDemuxer,
   outputPath: string,
   bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(ffmpegPath, [
-      "-y", "-i", inputPath,
+      "-y", ...safeInputArgs(demuxer), "-i", inputPath,
       "-vn", "-acodec", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1",
       outputPath,
     ], localMediaExecOptions(10 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
@@ -493,6 +502,7 @@ function extractAudioMp3(
 
 function getAudioDurationMs(
   audioPath: string,
+  demuxer: SafeInputDemuxer,
   bounded: BoundedLocalMediaWork = { deadlineMs: null },
 ): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -501,7 +511,7 @@ function getAudioDurationMs(
 
     if (probe.toLowerCase().includes("ffprobe")) {
       execFile(probe, [
-        "-v", "error", "-show_entries", "format=duration",
+        "-v", "error", ...safeInputArgs(demuxer), "-show_entries", "format=duration",
         "-of", "csv=p=0", audioPath,
       ], localMediaExecOptions(undefined, bounded), (err, stdout) => {
         if (err) return reject(localMediaDeadlineError(err, bounded.deadlineMs) ?? err);
@@ -519,7 +529,7 @@ function getAudioDurationMs(
 
     // FFmpeg prints container metadata before its expected no-output error;
     // do not decode the whole uploaded video just to read its duration.
-    execFile(probe, ["-i", audioPath], localMediaExecOptions(5 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
+    execFile(probe, [...safeInputArgs(demuxer), "-i", audioPath], localMediaExecOptions(5 * 1024 * 1024, bounded), (err, _stdout, stderr) => {
       const deadlineError = localMediaDeadlineError(err, bounded.deadlineMs);
       if (deadlineError) return reject(deadlineError);
       const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
@@ -991,21 +1001,30 @@ export async function POST(req: Request) {
     const tmpDir = path.join(process.cwd(), "stocks");
     fs.mkdirSync(tmpDir, { recursive: true });
     let inputPath: string;
+    let inputDemuxer: SafeInputDemuxer | null;
     let needsCleanup = false;
+    // Local paths are confined (realpath) to stocks/ or public/: neither "../" nor a symlink
+    // may point ffmpeg at another file.
+    const publicDir = path.join(process.cwd(), "public");
+    const publicRelative = (p: string) => p.replace(/^\/api\/renders\//, "/renders/");
 
     if (audioUrl.startsWith("/api/stocks/")) {
-      const filename = audioUrl.replace("/api/stocks/", "");
-      inputPath = path.join(tmpDir, filename);
-      if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
+      const local = resolveContainedFile(tmpDir, audioUrl.replace("/api/stocks/", ""));
+      if (!local.ok) return NextResponse.json({ error: "File not found" }, { status: 400 });
+      inputPath = local.path;
+      inputDemuxer = resolveStoredMediaDemuxer(inputPath, ["audio", "video"]);
     } else if (audioUrl.startsWith("/")) {
-      inputPath = path.join(process.cwd(), "public", audioUrl.replace(/^\/api\/renders\//, "/renders/"));
-      if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
+      const local = resolveContainedFile(publicDir, publicRelative(audioUrl));
+      if (!local.ok) return NextResponse.json({ error: "File not found" }, { status: 400 });
+      inputPath = local.path;
+      inputDemuxer = resolveStoredMediaDemuxer(inputPath, ["audio", "video"]);
     } else {
       // Extract local path from full URL if pointing to our own server, then read from disk
       const localMatch = audioUrl.match(/^https?:\/\/[^/]+(\/.*)/);
-      const localPath = localMatch ? path.join(process.cwd(), "public", localMatch[1].replace(/^\/api\/renders\//, "/renders/")) : null;
-      if (localPath && fs.existsSync(localPath)) {
-        inputPath = localPath;
+      const local = localMatch ? resolveContainedFile(publicDir, publicRelative(localMatch[1])) : null;
+      if (local?.ok) {
+        inputPath = local.path;
+        inputDemuxer = resolveStoredMediaDemuxer(inputPath, ["audio", "video"]);
       } else {
         // SSRF guard: this remote branch fetches a user-supplied URL — block internal/private
         // targets, and follow redirects manually so a safe URL can't 302 to an internal one.
@@ -1021,6 +1040,8 @@ export async function POST(req: Request) {
         inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
         fs.writeFileSync(inputPath, Buffer.from(await audioRes.arrayBuffer()));
         needsCleanup = true;
+        // A download has no trusted name: only its own bytes may pick the demuxer.
+        inputDemuxer = sniffSafeInputDemuxer(inputPath, ["audio", "video"]);
       }
     }
 
@@ -1028,8 +1049,13 @@ export async function POST(req: Request) {
     const ffmpeg = getFfmpegPath();
     const mp3Path = path.join(tmpDir, `transcribe-audio-${ts}.mp3`);
     mp3PathForCleanup = mp3Path;
+    if (!inputDemuxer) {
+      console.error("[transcribe] input is not a supported audio/video container");
+      if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
+      return NextResponse.json({ error: "ไม่สามารถแกะเสียงจากไฟล์ได้" }, { status: 500 });
+    }
     try {
-      await extractAudioMp3(ffmpeg, inputPath, mp3Path, {
+      await extractAudioMp3(ffmpeg, inputPath, inputDemuxer, mp3Path, {
         deadlineMs: internalDeadlineMs,
         ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
       });
@@ -1042,7 +1068,7 @@ export async function POST(req: Request) {
     try {
       // The uploaded media owns the render clock. MP3 encoder padding can add
       // several frames and make a presenter-only timeline exceed its source.
-      sourceAudioDurationMs = await getAudioDurationMs(inputPath, {
+      sourceAudioDurationMs = await getAudioDurationMs(inputPath, inputDemuxer, {
         deadlineMs: internalDeadlineMs,
         ...(internalDeadlineMs !== null ? { parentSignal: req.signal } : {}),
       });

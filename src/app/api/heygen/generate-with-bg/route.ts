@@ -11,6 +11,8 @@ import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION
 import { decryptKey } from "@/lib/key-crypto";
 import { HeyGenAuthError } from "@/lib/heygen-avatars";
 import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
+import { resolveContainedFile } from "@/lib/contained-path";
+import { resolveStoredMediaDemuxer, safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
 import {
   HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE,
   HEYGEN_ENGINE_UNKNOWN_MESSAGE,
@@ -36,12 +38,13 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
 }
 
-/** Convert any audio file to MP3 128k, return path to tmp mp3 */
-function toMp3(inputPath: string): Promise<string> {
+/** Convert any audio file to MP3 128k, return path to tmp mp3.
+ *  G24: the input is read with a pinned demuxer and the file protocol only. */
+function toMp3(inputPath: string, demuxer: SafeInputDemuxer): Promise<string> {
   const outPath = inputPath.replace(/\.\w+$/, "") + `-heygen-${Date.now()}.mp3`;
   return new Promise((resolve, reject) => {
     execFile(getFfmpegPath(), [
-      "-y", "-i", inputPath,
+      "-y", ...safeInputArgs(demuxer), "-i", inputPath,
       "-vn", "-acodec", "libmp3lame", "-ab", "128k", "-ar", "44100", "-ac", "2",
       outPath,
     ], { maxBuffer: 20 * 1024 * 1024 }, (err, _stdout, stderr) => {
@@ -68,9 +71,16 @@ function resolveAvatarAudioPath(localUrl: string): string {
   return resolved;
 }
 
-function probeDurationMs(filePath: string): Promise<number> {
+/** A stored audio file's own demuxer (its bytes, else its extension); never auto-detect. */
+function storedAudioDemuxer(filePath: string): SafeInputDemuxer {
+  const demuxer = resolveStoredMediaDemuxer(filePath, ["audio", "video"]);
+  if (!demuxer) throw new Error("Avatar audio is not a supported media file");
+  return demuxer;
+}
+
+function probeDurationMs(filePath: string, demuxer: SafeInputDemuxer): Promise<number> {
   return new Promise((resolve, reject) => {
-    execFile(getFfmpegPath(), ["-hide_banner", "-i", filePath], { maxBuffer: 1024 * 1024, timeout: 10_000 }, (_error, _stdout, stderr) => {
+    execFile(getFfmpegPath(), ["-hide_banner", ...safeInputArgs(demuxer), "-i", filePath], { maxBuffer: 1024 * 1024, timeout: 10_000 }, (_error, _stdout, stderr) => {
       const durationMs = parseFfmpegDurationMs(stderr ?? "");
       if (durationMs === null) reject(new Error("Could not read avatar audio duration"));
       else resolve(durationMs);
@@ -88,9 +98,10 @@ async function uploadV3AvatarAudio(input: {
   try {
     const sourcePath = resolveAvatarAudioPath(input.audioUrl);
     const isMp3 = path.extname(sourcePath).toLowerCase() === ".mp3";
-    uploadPath = isMp3 ? sourcePath : await toMp3(sourcePath);
+    const sourceDemuxer = storedAudioDemuxer(sourcePath);
+    uploadPath = isMp3 ? sourcePath : await toMp3(sourcePath, sourceDemuxer);
     removeUploadPath = !isMp3;
-    durationMs = await probeDurationMs(uploadPath);
+    durationMs = await probeDurationMs(uploadPath, isMp3 ? sourceDemuxer : "mp3");
   } catch {
     if (removeUploadPath && uploadPath) try { fs.unlinkSync(uploadPath); } catch {}
     return NextResponse.json({
@@ -181,9 +192,11 @@ function detectVideoType(buf: Buffer): string {
 // Upload a local file to HeyGen and return { id, url }
 async function uploadAsset(localUrl: string, heygenKey: string, contentType?: string): Promise<{ id: string; url: string | null }> {
   const normalizedUrl = localUrl.replace(/^\/api\/renders\//, "/renders/");
-  const localPath = path.join(process.cwd(), "public", normalizedUrl);
-  if (!fs.existsSync(localPath)) throw new Error(`File not found: ${localUrl}`);
-  const buffer = fs.readFileSync(localPath);
+  // Containment guard (realpath): only a file inside public/ may be uploaded — never
+  // "/../.env" or a symlink pointing out of public/.
+  const file = resolveContainedFile(path.join(process.cwd(), "public"), normalizedUrl);
+  if (!file.ok) throw new Error(`File not found: ${localUrl}`);
+  const buffer = fs.readFileSync(file.path);
   const ct = contentType ?? detectVideoType(buffer);
   console.log("[generate-with-bg] uploading:", localUrl, "content-type:", ct, "size:", buffer.length);
 
@@ -356,14 +369,17 @@ async function handleGenerateWithBg(req: Request) {
     // Always upload as MP3 — HeyGen's asset API is strict about audio format.
     // WAV (Gemini TTS) and other formats must be converted first.
     const normalizedAudioUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
-    const localPath = path.join(process.cwd(), "public", normalizedAudioUrl);
+    // Containment guard (realpath): the audio must be a file inside public/.
+    const audioFile = resolveContainedFile(path.join(process.cwd(), "public"), normalizedAudioUrl);
+    if (!audioFile.ok) throw new Error("Avatar audio file not found");
+    const localPath = audioFile.path;
     const audioExt = audioUrl.split(".").pop()?.toLowerCase() ?? "";
     let uploadPath = localPath;
     let tmpMp3: string | null = null;
 
     if (audioExt !== "mp3") {
       console.log("[generate-with-bg] converting", audioExt, "→ mp3 before HeyGen upload");
-      tmpMp3 = await toMp3(localPath);
+      tmpMp3 = await toMp3(localPath, storedAudioDemuxer(localPath));
       uploadPath = tmpMp3;
     }
 

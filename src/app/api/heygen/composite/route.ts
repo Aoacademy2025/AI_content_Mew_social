@@ -7,6 +7,8 @@ import { clampAvatarLayout, shouldCropAvatarToVisibleCanvas, type AvatarLayout }
 import { buildEnableExpr } from "@/lib/cutaway-plan";
 import { buildCutawayCompositeFilter } from "@/lib/cutaway-composite";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveLocalMediaFile } from "@/lib/contained-path";
+import { admitUserMediaFile } from "@/lib/upload-media-probe";
 import {
   CompositeExecutionError,
   executeCompositeFfmpeg,
@@ -59,15 +61,6 @@ function compositePreset(): string {
   return resolveCompositeEncode().preset;
 }
 
-// Containment guard: reject a body-supplied path that escapes `base` (path traversal).
-// Returns null on escape so the caller throws its normal "not found" without leaking the path.
-function containWithin(base: string, joined: string): string | null {
-  const baseDir = path.resolve(process.cwd(), base);
-  const resolvedPath = path.resolve(joined);
-  if (resolvedPath !== baseDir && !resolvedPath.startsWith(baseDir + path.sep)) return null;
-  return joined;
-}
-
 // Exact hostname match so the user's HeyGen key is only ever attached to a genuine
 // heygen.ai host — not a substring lookalike (evilheygen.ai / heygen.ai.evil.com / …).
 function isHeygenHost(u: string): boolean {
@@ -103,26 +96,26 @@ async function safeFetchFollow(
 }
 
 async function downloadFile(url: string, dest: string, heygenKey?: string): Promise<void> {
-  if (url.startsWith("/api/stocks/")) {
-    const filename = url.replace("/api/stocks/", "");
-    const src = containWithin("stocks", path.join(process.cwd(), "stocks", filename));
-    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
-    fs.copyFileSync(src, dest);
-    return;
-  }
   if (url.startsWith("/")) {
-    const src = containWithin("public", path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/")));
-    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
-    fs.copyFileSync(src, dest);
-    return;
+    // Containment guard (realpath, so a symlink inside public/ or stocks/ cannot point out).
+    // On failure the caller throws its normal "not found" without leaking the path.
+    const src = resolveLocalMediaFile(url, { stocks: true });
+    if (!src.ok) throw new Error(`Local file not found: ${url}`);
+    fs.copyFileSync(src.path, dest);
+  } else {
+    const res = await safeFetchFollow(url, (currentUrl) => {
+      const headers: Record<string, string> = { "Accept": "video/mp4,video/*,*/*" };
+      if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
+      return { headers };
+    });
+    if (!res.ok) throw new Error(`Download failed ${res.status}: ${url}`);
+    fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
   }
-  const res = await safeFetchFollow(url, (currentUrl) => {
-    const headers: Record<string, string> = { "Accept": "video/mp4,video/*,*/*" };
-    if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
-    return { headers };
-  });
-  if (!res.ok) throw new Error(`Download failed ${res.status}: ${url}`);
-  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  // G24: every ffmpeg call below auto-detects these files, so only a real video container
+  // with a decodable stream goes on (never a playlist or concat script under a video name).
+  if (fs.statSync(dest).size >= 1000 && !(await admitUserMediaFile(dest, ["video"]))) {
+    throw new Error("Unsupported media file");
+  }
 }
 
 

@@ -71,9 +71,10 @@ const FORBIDDEN_DEMUXERS = ["hls", "concat", "image2pipe", "webm_dash_manifest",
 function unitChecks(tmp: string): void {
   console.log("\n# 1. arg builder, sniffing, resolution");
 
-  check("allowlist has exactly the six G24 demuxers",
+  // PR-0 shipped the six video/image demuxers; PR-0b (Task 2b) added the five audio ones.
+  check("allowlist has exactly the eleven G24 demuxers",
     JSON.stringify([...SAFE_INPUT_DEMUXERS].sort())
-      === JSON.stringify(["image2", "jpeg_pipe", "matroska", "mov", "png_pipe", "webp_pipe"]));
+      === JSON.stringify(["aac", "flac", "image2", "jpeg_pipe", "matroska", "mov", "mp3", "ogg", "png_pipe", "wav", "webp_pipe"]));
   check("allowlist contains no playlist/concat demuxer",
     SAFE_INPUT_DEMUXERS.every((d) => !FORBIDDEN_DEMUXERS.includes(d)));
 
@@ -84,6 +85,11 @@ function unitChecks(tmp: string): void {
     jpeg_pipe: ["-protocol_whitelist", "file", "-f", "jpeg_pipe"],
     png_pipe: ["-protocol_whitelist", "file", "-f", "png_pipe"],
     webp_pipe: ["-protocol_whitelist", "file", "-f", "webp_pipe"],
+    mp3: ["-protocol_whitelist", "file", "-f", "mp3"],
+    wav: ["-protocol_whitelist", "file", "-f", "wav"],
+    ogg: ["-protocol_whitelist", "file", "-f", "ogg"],
+    aac: ["-protocol_whitelist", "file", "-f", "aac"],
+    flac: ["-protocol_whitelist", "file", "-f", "flac"],
   };
   for (const demuxer of SAFE_INPUT_DEMUXERS) {
     const args = safeInputArgs(demuxer);
@@ -596,7 +602,7 @@ function sourceChecks(): void {
   const probe = read("src/lib/upload-media-probe.ts");
   const execCalls = (probe.match(/execFile(?:Sync|Capture)\(/g) ?? []).length - 1; // minus the helper's own declaration
   const safeCalls = (probe.match(/\.\.\.safeInputArgs\(demuxer\)/g) ?? []).length;
-  check("upload-media-probe: every ffprobe/ffmpeg call spreads safeInputArgs(demuxer)", execCalls === 4 && safeCalls === 4,
+  check("upload-media-probe: every ffprobe/ffmpeg call spreads safeInputArgs(demuxer)", execCalls >= 4 && safeCalls === execCalls,
     `${execCalls} calls, ${safeCalls} safe`);
   check("upload-media-probe: the ffmpeg fallback puts the input options before -i",
     probe.includes('[...safeInputArgs(demuxer), "-i", filePath]'));

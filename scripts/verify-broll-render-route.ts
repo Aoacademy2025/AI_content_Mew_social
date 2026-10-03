@@ -43,7 +43,6 @@ async function main(): Promise<void> {
     readdirSync: () => [] as string[],
     copyFileSync: () => undefined,
   };
-  class UnsafeUrlError extends Error {}
   class SupersededError extends Error {}
   class VideoJobFundingConfirmationRequiredError extends Error {}
   class RenderDeployDrainError extends Error {
@@ -125,8 +124,11 @@ async function main(): Promise<void> {
     if (specifier === "path") return nodePath;
     if (specifier === "fs") return fsMock;
     if (specifier === "crypto") return nodeCrypto;
-    if (specifier === "@/lib/safe-fetch") {
-      return { isSafeFetchUrl: async () => false, assertSafeFetchUrl: async () => undefined, UnsafeUrlError };
+    if (specifier === "@/lib/render-input-guard") {
+      return {
+        cacheImageLocally: async () => "",
+        probeVideoDurationSec: async () => { probeSpawnCount += 1; return null; },
+      };
     }
     if (specifier === "@/lib/sanitize-caption-style") return { stripDangerousCss: (value: unknown) => value };
     if (specifier === "child_process") {
@@ -141,7 +143,6 @@ async function main(): Promise<void> {
         },
       };
     }
-    if (specifier === "@/lib/ffmpeg-path") return { getFfmpegPath: () => "ffmpeg" };
     if (specifier === "@/lib/telemetry") {
       return { recordTelemetryEvent: async (_userId: string, event: Record<string, unknown>) => { telemetryEvents.push(event); } };
     }

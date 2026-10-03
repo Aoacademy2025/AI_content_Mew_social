@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveLocalMediaFile } from "@/lib/contained-path";
+import { resolveStoredMediaDemuxer, safeInputArgs } from "@/lib/media-probe-args";
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
@@ -25,27 +27,19 @@ export async function POST(req: Request) {
     const { videoUrl, seekTime = 1.0 } = await req.json();
     if (!videoUrl) return NextResponse.json({ error: "videoUrl required" }, { status: 400 });
 
-    // Resolve local file path from URL
+    // Resolve local file path from URL. Containment guard (realpath, so a symlink inside
+    // public/ cannot point out): anything outside public/ or missing gets the generic 404 —
+    // never leak the resolved path.
     const publicDir = path.join(process.cwd(), "public");
-    let localVideoPath: string | null = null;
-    if (videoUrl.startsWith("/api/renders/")) {
-      localVideoPath = path.join(publicDir, "renders", videoUrl.slice("/api/renders/".length));
-    } else if (videoUrl.startsWith("/renders/")) {
-      localVideoPath = path.join(publicDir, "renders", videoUrl.slice("/renders/".length));
-    } else if (videoUrl.startsWith("/")) {
-      localVideoPath = path.join(publicDir, videoUrl);
-    }
-    // Containment guard: reject a body-supplied path that escapes public/ (path traversal,
-    // e.g. "/../prisma/dev.db"). Fall through to the generic 404 — never leak the resolved path.
-    if (localVideoPath) {
-      const publicRoot = path.resolve(publicDir);
-      const resolvedPath = path.resolve(localVideoPath);
-      if (resolvedPath !== publicRoot && !resolvedPath.startsWith(publicRoot + path.sep)) {
-        localVideoPath = null;
-      }
-    }
-    if (!localVideoPath || !fs.existsSync(localVideoPath)) {
+    const local = typeof videoUrl === "string" ? resolveLocalMediaFile(videoUrl) : null;
+    if (!local?.ok) {
       return NextResponse.json({ error: "Video file not found" }, { status: 404 });
+    }
+    const localVideoPath = local.path;
+    // G24: read with a pinned demuxer (its own bytes, else its own extension), never auto-detect.
+    const demuxer = resolveStoredMediaDemuxer(localVideoPath, ["video", "image"]);
+    if (!demuxer) {
+      return NextResponse.json({ error: "Unsupported video file" }, { status: 400 });
     }
 
     // Output thumbnail
@@ -58,7 +52,8 @@ export async function POST(req: Request) {
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(ffmpeg, [
         "-ss", String(seekTime),
-        "-i", localVideoPath!,
+        ...safeInputArgs(demuxer),
+        "-i", localVideoPath,
         "-frames:v", "1",
         "-vf", "scale=720:-2",
         "-q:v", "3",  // 1-31, lower = better (3 ≈ 90% quality)

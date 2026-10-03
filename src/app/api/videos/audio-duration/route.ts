@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { resolveContainedFile } from "@/lib/contained-path";
+import { resolveStoredMediaDemuxer, safeInputArgs, type SafeInputDemuxer } from "@/lib/media-probe-args";
 
 export const maxDuration = 15;
 export const runtime = "nodejs";
@@ -20,14 +22,15 @@ function getFfprobePath(): string {
   return path.join(ffmpegDir, `ffmpeg${ext}`);
 }
 
-function getDurationMs(filePath: string): Promise<number> {
+// G24: the file is read with a pinned demuxer and the file protocol only.
+function getDurationMs(filePath: string, demuxer: SafeInputDemuxer): Promise<number> {
   return new Promise((resolve, reject) => {
     const bin = getFfprobePath();
     if (!fs.existsSync(bin)) return reject(new Error("ffprobe/ffmpeg not found"));
 
     if (bin.includes("ffprobe")) {
       execFile(bin, [
-        "-v", "error", "-show_entries", "format=duration",
+        "-v", "error", ...safeInputArgs(demuxer), "-show_entries", "format=duration",
         "-of", "csv=p=0", filePath,
       ], (err, stdout) => {
         if (err) return reject(err);
@@ -37,7 +40,7 @@ function getDurationMs(filePath: string): Promise<number> {
       });
     } else {
       // ffmpeg -i fallback — duration is in stderr
-      execFile(bin, ["-i", filePath, "-f", "null", "-"], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+      execFile(bin, [...safeInputArgs(demuxer), "-i", filePath, "-f", "null", "-"], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
         const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
         if (!m) return reject(new Error("Could not parse duration from ffmpeg"));
         const ms = (parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3])) * 1000 + parseInt(m[4]) * 10;
@@ -58,19 +61,20 @@ export async function POST(req: Request) {
   const audioUrl: string = body?.audioUrl ?? "";
   if (!audioUrl) return NextResponse.json({ error: "audioUrl required" }, { status: 400 });
 
-  const filePath = path.join(process.cwd(), "public", audioUrl.replace(/^\/api\/renders\//, "/renders/"));
-  // Containment guard: reject any audioUrl that escapes the public webroot (path traversal).
-  const publicDir = path.resolve(process.cwd(), "public");
-  const resolvedPath = path.resolve(filePath);
-  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep))
-    return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
-  if (!fs.existsSync(filePath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
+  if (typeof audioUrl !== "string") return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
+  // Containment guard: the file must resolve (realpath, so symlinks too) inside public/.
+  const file = resolveContainedFile(path.join(process.cwd(), "public"), audioUrl.replace(/^\/api\/renders\//, "/renders/"));
+  if (!file.ok && file.reason === "outside") return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
+  if (!file.ok) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
+  const demuxer = resolveStoredMediaDemuxer(file.path, ["audio", "video"]);
+  if (!demuxer) return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
 
   try {
-    const durationMs = await getDurationMs(filePath);
+    const durationMs = await getDurationMs(file.path, demuxer);
     return NextResponse.json({ durationMs });
   } catch (e) {
     console.error("[audio-duration]", e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Failed" }, { status: 500 });
+    // Never echo the error: it carries server paths and the ffmpeg command line.
+    return NextResponse.json({ error: "Could not read audio duration" }, { status: 500 });
   }
 }

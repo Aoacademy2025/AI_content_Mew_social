@@ -3,7 +3,9 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { randomUUID } from "crypto";
+import { admitUserMediaFile } from "@/lib/upload-media-probe";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50MB per upload
 const MAX_FORM_OVERHEAD_BYTES = 2 * 1024 * 1024;
@@ -43,8 +45,22 @@ function jsonError(status: number, code: string, error: string) {
   return NextResponse.json({ code, error }, { status });
 }
 
+const UNSUPPORTED_MESSAGE = "ไฟล์ต้องเป็น mp3, wav, ogg, aac หรือ m4a";
+
+/** rename, or copy + unlink when the temp dir is on another filesystem. */
+function moveFile(from: string, to: string): void {
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+    fs.unlinkSync(from);
+  }
+}
+
 async function writeFileStream(file: File, outPath: string) {
-  const stream = fs.createWriteStream(outPath);
+  // Exclusive create, default mode (nginx serves public/music straight from disk).
+  const stream = fs.createWriteStream(outPath, { flags: "wx" });
   const reader = file.stream().getReader();
   await new Promise<void>((resolve, reject) => {
     stream.once("finish", resolve);
@@ -93,7 +109,7 @@ export async function POST(req: Request) {
   if (!(file instanceof File)) return jsonError(400, "file_required", "file required");
 
   if (!isAllowedAudio(file)) {
-    return jsonError(400, "unsupported_type", "ไฟล์ต้องเป็น mp3, wav, ogg, aac หรือ m4a");
+    return jsonError(400, "unsupported_type", UNSUPPORTED_MESSAGE);
   }
   // Security: reject filenames that contain path traversal sequences or path separators.
   // The saved filename is always a server-generated UUID, but we still gate on the
@@ -119,9 +135,18 @@ export async function POST(req: Request) {
   const musicDir = path.join(process.cwd(), "public", "music");
   fs.mkdirSync(musicDir, { recursive: true });
   const outPath = path.join(musicDir, filename);
+  // G24: the bytes must be a real audio container before they are stored — music files are
+  // decoded again later (render audio, trim/duration probes), and a playlist or ffconcat
+  // script named .mp3 must never land in public/music.
+  let tempPath: string | null = path.join(os.tmpdir(), `music-upload-${randomUUID()}`);
 
   try {
-    await writeFileStream(file, outPath);
+    await writeFileStream(file, tempPath);
+    if (!(await admitUserMediaFile(tempPath, ["audio"]))) {
+      return jsonError(400, "unsupported_type", UNSUPPORTED_MESSAGE);
+    }
+    moveFile(tempPath, outPath);
+    tempPath = null;
     const sizeBytes = fs.statSync(outPath).size;
     const track = await prisma.userMusic.create({
       data: {
@@ -143,5 +168,7 @@ export async function POST(req: Request) {
     }
     console.error("[music-upload] failed", error);
     return jsonError(500, "upload_failed", "อัปโหลดเพลงไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+  } finally {
+    if (tempPath) try { fs.unlinkSync(tempPath); } catch {}
   }
 }
