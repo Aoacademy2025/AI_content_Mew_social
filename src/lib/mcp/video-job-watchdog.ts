@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { failJob, withVideoJobSqliteRetry } from "@/lib/mcp/video-job";
 import { recoverLostMcpChainExports } from "@/lib/mcp/chain-export";
+import { recoverLostMcpRerenderExports } from "@/lib/mcp/rerender-chain";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 /**
@@ -181,6 +182,13 @@ export async function sweepStalledVideoJobs(
   } catch (error) {
     // Recovery is best effort here; get_video_status re-runs the same enqueue on the next poll.
     console.error("[video-job-watchdog] chain export recovery failed:", error instanceof Error ? error.message : "unknown");
+  }
+  try {
+    // T13: an MCP B-roll re-render whose export hop was lost (restart, deploy drain).
+    recoveredChainExports = [...recoveredChainExports, ...await recoverLostMcpRerenderExports(now)];
+  } catch (error) {
+    // Best effort, like the chain recovery above; get_video_status re-runs the same hop.
+    console.error("[video-job-watchdog] rerender export recovery failed:", error instanceof Error ? error.name : "unknown");
   }
 
   return { failed, repairedPoll, recoveredChainExports };

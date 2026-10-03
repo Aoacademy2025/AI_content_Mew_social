@@ -96,10 +96,15 @@ export type MediaImportLaneErrorCode = (typeof MEDIA_IMPORT_LANE_ERROR_CODES)[nu
 const LANE_CODES: ReadonlySet<string> = new Set(MEDIA_IMPORT_LANE_ERROR_CODES);
 const FETCH_CODES: ReadonlySet<string> = new Set(MEDIA_FETCH_ERROR_CODES);
 
-/** What each purpose may fetch — the same kind and byte cap as its web upload (G22). */
+/**
+ * What each purpose may fetch — the same kind and byte cap as its web upload (G22). A url
+ * B-roll import (`replace_broll_window`, T13) is queued as broll_video but may be either an
+ * image or a video: the fetched bytes decide, and an image is processed (and recorded) as
+ * broll_image with the image cap.
+ */
 const FETCH_ACCEPT: Record<MediaImportPurpose, MediaFetchOptions["accept"]> = {
   broll_image: { image: MAX_BROLL_IMAGE_BYTES },
-  broll_video: { video: MAX_BROLL_VIDEO_BYTES },
+  broll_video: { image: MAX_BROLL_IMAGE_BYTES, video: MAX_BROLL_VIDEO_BYTES },
   presenter: { video: MAX_PRESENTER_IMPORT_BYTES },
 };
 
@@ -215,6 +220,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
     if (!isPurpose(row.purpose) || (row.source !== "url" && row.source !== "upload")) {
       code = "unsupported_media";
     } else {
+      let purpose: MediaImportPurpose = row.purpose;
       if (row.source === "url") {
         stage = "fetch";
         const remainingMs = row.deadlineAt.getTime() - Date.now();
@@ -226,6 +232,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
             deadlineMs: Math.min(remainingMs, MEDIA_FETCH_DEADLINE_MS),
           });
           fetchedPath = fetched.path;
+          if (purpose === "broll_video" && fetched.kind === "image") purpose = "broll_image";
           stage = "process";
           stageFetchedFile(row.id, fetched.path);
           fetchedPath = null;
@@ -243,7 +250,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
       if (!code) {
         const user = await prisma.user.findUnique({ where: { id: row.userId } });
         const plan = user ? classifyEntitlement(user).effectivePlan : "FREE";
-        const result = await deps.processStaged({ importId: row.id, purpose: row.purpose, plan, stocksDir: deps.stocksDir });
+        const result = await deps.processStaged({ importId: row.id, purpose, plan, stocksDir: deps.stocksDir });
         if (!result.ok) {
           code = LANE_CODES.has(result.errorCode) ? (result.errorCode as MediaImportLaneErrorCode) : "process_failed";
         } else {
@@ -251,7 +258,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
           try {
             const done = await withTransientSqliteRetry(() => prisma.mediaImport.updateMany({
               where: { id: row.id, status: "processing", deadlineAt: { gt: new Date() } },
-              data: { status: "ready", resultSrc: result.resultSrc, durationMs: result.durationMs, errorCode: null, sourceUrl: null },
+              data: { status: "ready", purpose, resultSrc: result.resultSrc, durationMs: result.durationMs, errorCode: null, sourceUrl: null },
             }));
             published = done.count === 1;
           } finally {

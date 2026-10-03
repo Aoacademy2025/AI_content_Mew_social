@@ -108,20 +108,26 @@ class AdmissionRefused extends Error {
   }
 }
 
-/** Throws AdmissionRefused when one more import of `purpose` would break a G25 cap or the budget. */
+/**
+ * Throws AdmissionRefused when one more import of `purpose` would break a G25 cap or the budget.
+ * `excludeId` is the row the caller already inserted in this transaction (write first), which
+ * must not count against itself.
+ */
 async function assertImportCapacity(
   tx: Prisma.TransactionClient,
   userId: string,
   now: Date,
   purpose: MediaImportPurpose,
+  excludeId?: string,
 ): Promise<void> {
-  const active = await tx.mediaImport.count({ where: { userId, ...liveImportsWhere(now) } });
+  const notSelf = excludeId ? { id: { not: excludeId } } : {};
+  const active = await tx.mediaImport.count({ where: { userId, ...notSelf, ...liveImportsWhere(now) } });
   if (active >= MAX_ACTIVE_IMPORTS) throw new AdmissionRefused("too_many_active_imports");
   const lastHour = await tx.mediaImport.count({
-    where: { userId, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } },
+    where: { userId, ...notSelf, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } },
   });
   if (lastHour >= MAX_IMPORTS_PER_HOUR) throw new AdmissionRefused("import_hourly_limit");
-  const reserved = await tx.mediaImport.groupBy({ by: ["purpose"], where: liveImportsWhere(now), _count: { _all: true } });
+  const reserved = await tx.mediaImport.groupBy({ by: ["purpose"], where: { ...notSelf, ...liveImportsWhere(now) }, _count: { _all: true } });
   const reservedBytes = reserved.reduce(
     // An unknown purpose reserves the largest cap.
     (sum, group) => sum + (PURPOSE_MAX_BYTES[group.purpose as MediaImportPurpose] ?? MAX_PRESENTER_IMPORT_BYTES) * group._count._all,
@@ -170,6 +176,47 @@ export async function issueUploadToken(
     throw error;
   }
   return { ok: true, token, importId, kind, issuedAt: now, expiresAt: new Date(now.getTime() + UPLOAD_TOKEN_TTL_MS) };
+}
+
+export type UrlImportAdmissionCode = Exclude<AdmissionCode, "upload_link_hourly_limit">;
+
+/**
+ * `replace_broll_window(url)`'s admission (T13, G23/G25): queue a url B-roll import for the
+ * import lane — "pending", fresh deadline (the lane resets it again when it claims the row).
+ * Queued as broll_video; the lane accepts an image or a video and records what the bytes were.
+ * The url is only stored for the lane's guarded fetch (G23 is enforced there, at connect time)
+ * and is cleared when the import finishes. Same caps and budget as an upload, counted in one
+ * write-first transaction (see the module comment).
+ */
+export async function createUrlImport(
+  userId: string,
+  sourceUrl: string,
+  now: Date = new Date(),
+): Promise<{ ok: true; importId: string } | { ok: false; code: UrlImportAdmissionCode }> {
+  const importId = randomUUID();
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Write first: takes the writer lock; the capacity check then excludes this row.
+      await tx.mediaImport.create({
+        data: {
+          id: importId,
+          userId,
+          purpose: "broll_video",
+          source: "url",
+          status: "pending",
+          sourceUrl,
+          deadlineAt: new Date(now.getTime() + IMPORT_DEADLINE_MS),
+        },
+      });
+      await assertImportCapacity(tx, userId, now, "broll_video", importId);
+    });
+  } catch (error) {
+    if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid" && error.code !== "upload_link_hourly_limit") {
+      return { ok: false, code: error.code };
+    }
+    throw error;
+  }
+  return { ok: true, importId };
 }
 
 /** The link row behind a raw token, or null when it is malformed, unknown, used or expired. */

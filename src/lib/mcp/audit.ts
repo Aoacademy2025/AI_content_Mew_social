@@ -23,6 +23,8 @@ function redactRequest(v: unknown): unknown {
     if (typeof o.narrativeSource === "string") {
       redacted.narrativeSource = `[redacted ${o.narrativeSource.length} chars]`;
     }
+    // T13: an agent media link (replace_broll_window) may carry a signed query token.
+    if (typeof o.url === "string") redacted.url = `[redacted ${o.url.length} chars]`;
     return redacted;
   }
   return v;

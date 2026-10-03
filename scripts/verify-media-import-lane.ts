@@ -746,11 +746,13 @@ async function main(): Promise<void> {
       logs.length = 0;
     });
 
-    await section("C10) each purpose fetches only its kind, with the web upload's cap (G22)", async () => {
+    await section("C10) each purpose fetches only its kind(s), with the web upload's cap (G22)", async () => {
       await reset();
+      // A url B-roll import (replace_broll_window, T13) is queued as broll_video and may be an
+      // image or a video — the bytes decide (C11), each kind with its own web cap.
       const expectations: Array<["broll_image" | "broll_video" | "presenter", Record<string, number>]> = [
         ["broll_image", { image: MAX_BROLL_IMAGE_BYTES }],
-        ["broll_video", { video: MAX_BROLL_VIDEO_BYTES }],
+        ["broll_video", { image: MAX_BROLL_IMAGE_BYTES, video: MAX_BROLL_VIDEO_BYTES }],
         ["presenter", { video: imports.MAX_PRESENTER_IMPORT_BYTES }],
       ];
       for (const [purpose] of expectations) behaviors.set(`https://cap.example/${purpose}`, { error: new fetchMod.MediaFetchError("file_too_large") });
@@ -765,6 +767,23 @@ async function main(): Promise<void> {
         check(`${purpose} → accept ${JSON.stringify(accept)}`, JSON.stringify(call?.accept) === JSON.stringify(accept), JSON.stringify(call?.accept));
       }
       check("file_too_large passes through", (await prisma.mediaImport.count({ where: { errorCode: "file_too_large" } })) === 3);
+      logs.length = 0;
+    });
+
+    await section("C11) a url B-roll import (broll_video) that serves an image is processed and recorded as broll_image", async () => {
+      await reset();
+      behaviors.set("https://media.example/window.png", { serve: servePng });
+      const row = await addImport("uc", "broll_video", { url: "https://media.example/window.png" });
+      const l = newLane();
+      l.start();
+      await waitFor(async () => (await rowOf(row.id)).status === "ready", 60_000);
+      await l.stop();
+      const r = await rowOf(row.id);
+      check("ready with a Ken Burns mp4 under /api/stocks/broll-upload-*", r.status === "ready" && /^\/api\/stocks\/broll-upload-[\w.-]+\.mp4$/.test(r.resultSrc ?? ""), `${r.status} ${r.resultSrc}`);
+      check("purpose recorded as broll_image (what the bytes were)", r.purpose === "broll_image", r.purpose);
+      check("the agent's url is cleared", r.sourceUrl === null);
+      check("nothing left in the temp or staging dir", tempFiles().length === 0 && !stagedExists(row.id));
+      for (const f of stocksFiles()) fs.rmSync(path.join(stocksDir, f), { force: true });
       logs.length = 0;
     });
 

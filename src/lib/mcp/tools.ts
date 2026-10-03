@@ -12,6 +12,7 @@ import {
   type McpHeldChain,
 } from "@/lib/mcp/chain-export";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
+import { continueMcpRerenderChainSafely, isMcpExportAfterRerender } from "@/lib/mcp/rerender-chain";
 
 const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 
@@ -252,15 +253,35 @@ function isInFlightJobStatus(status: string): boolean {
 }
 
 /**
+ * T13: when a held chain's newest job is a finished MCP B-roll re-render that owes its export,
+ * run the idempotent hop on read (like the auto chain's on-read enqueue) and re-read the chain.
+ * `exportOwed` = the hop could not run yet (deploy drain, busy database): the export is still
+ * coming, so the status reads `exporting`, never `held`.
+ */
+async function settleRerenderHop(userId: string, chain: McpHeldChain): Promise<{ chain: McpHeldChain; exportOwed: boolean }> {
+  const { root, latest } = chain;
+  if (root.status !== "done" || !latest || latest.status !== "done" || !isMcpExportAfterRerender(latest)) {
+    return { chain, exportOwed: false };
+  }
+  const hop = await continueMcpRerenderChainSafely({ userId, rerenderJobId: latest.id });
+  if (hop?.kind === "enqueued" || hop?.kind === "exists" || hop?.kind === "refused") {
+    const fresh = await resolveMcpChain(userId, root.id);
+    return { chain: fresh?.kind === "held" ? fresh : chain, exportOwed: false };
+  }
+  return { chain, exportOwed: hop === null || hop.kind === "deferred" };
+}
+
+/**
  * T5 (ADR 0064, G8): get_video_status for a Held Preview — one job under the root id, whichever
  * linked id the agent holds. Until the root finishes it reads like the root itself. After
  * that the NEWEST linked job (by createdAt) decides: none or a finished re-render → `held`;
  * a re-render in flight → `rerendering`; an export in flight → `exporting`; a finished export
  * → `done` with that export's videoUrl; `failed` / `canceled` carry the failure / settlement
  * fields of that job. `previewUrl` (the current preview) and `editorUrl` ride every reply
- * once the root has finished. Nothing here enqueues: a Held Preview never chains (G6).
+ * once the root has finished. Nothing here enqueues: a Held Preview never chains on its own
+ * (G6) — only the export the agent ordered with export_video is finished (settleRerenderHop).
  */
-async function heldChainStatus(userId: string, chain: McpHeldChain) {
+async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed = false) {
   const { root, latest } = chain;
   const rootDone = root.status === "done";
   const row: McpChainRow = rootDone && latest ? latest : root;
@@ -272,9 +293,12 @@ async function heldChainStatus(userId: string, chain: McpHeldChain) {
   if (!rootDone) status = toPublicVideoJobStatus(root.status);
   else if (!latest) status = "held";
   else if (isInFlightJobStatus(latest.status)) status = isExport ? "exporting" : "rerendering";
-  else if (latest.status === "done") status = isExport ? "done" : "held";
+  // T13: a finished re-render whose export is owed (its hop is deferred) is still exporting.
+  else if (latest.status === "done") status = isExport ? "done" : exportOwed ? "exporting" : "held";
   else status = toPublicVideoJobStatus(latest.status);
-  const progress = status === "held" || status === "done" ? 100 : row.progress;
+  const progress = exportOwed && status === "exporting"
+    ? 0
+    : status === "held" || status === "done" ? 100 : row.progress;
 
   const editorUrl = rootDone && root.projectId ? mcpEditorUrl(root.projectId) : null;
   const previewOutput = rootDone
@@ -320,7 +344,10 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
   // user's id resolves to null here AND below, so it is "not found" either way.
   // T5: a Held Preview and every job linked to it read as one job under the root id.
   const chain = await resolveMcpChain(userId, jobId);
-  if (chain?.kind === "held") return heldChainStatus(userId, chain);
+  if (chain?.kind === "held") {
+    const settled = await settleRerenderHop(userId, chain);
+    return heldChainStatus(userId, settled.chain, settled.exportOwed);
+  }
   if (chain) return chainJobStatus(userId, chain);
   const job = await prisma.videoJob.findFirst({
     where: { id: jobId, userId },

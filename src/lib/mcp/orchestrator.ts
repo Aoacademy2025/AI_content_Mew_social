@@ -141,6 +141,7 @@ import {
 import { getVideoJobBillingReceipt, getVideoJobChainBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { enqueueMcpChainExportSafely, isMcpChainPreview } from "@/lib/mcp/chain-export";
 import { clearPendingEditDraftIfRevision } from "@/lib/mcp/pending-edit-draft";
+import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
@@ -312,6 +313,14 @@ interface CreateInput {
    * revision it applied. On success the draft is cleared only if the project is still at it.
    */
   mcpPendingEditRevision?: number;
+  /**
+   * T13 (ADR 0064/0065): server-set on an MCP `export_video` B-roll re-render (via
+   * `enqueueBrollRerender`'s `mcpExportAfter`). When it is done, the hop in rerender-chain.ts
+   * rebases the Pending Edit Draft onto it and enqueues the Held Preview's export from it.
+   */
+  mcpExportAfterRerender?: boolean;
+  /** T13: the Pending Edit Draft window-edit entries this re-render applies (dropped on rebase). */
+  mcpAppliedDraftWindowEdits?: unknown[];
 }
 
 type SourceVideoJob = {
@@ -1595,6 +1604,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             promotions: preparedSceneRerollPromotions,
           }),
       });
+      if (
+        rrCompletion.transitioned
+        && rrCompletion.job.status === "done"
+        && input.mcpExportAfterRerender === true
+      ) {
+        // T13: AFTER the finish committed (never inside onTransition). Never throws; a lost
+        // hop is recovered by the watchdog sweep and by get_video_status / export_video.
+        await continueMcpRerenderChainSafely({ userId, rerenderJobId: jobId });
+      }
       if (
         rrCompletion.transitioned
         && rrCompletion.job.status === "done"

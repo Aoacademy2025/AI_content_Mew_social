@@ -7,13 +7,13 @@ import {
   UPLOAD_KINDS,
   UPLOAD_KIND_MAX_BYTES,
   UPLOAD_TOKEN_TTL_MS,
-  MAX_ACTIVE_IMPORTS,
-  MAX_IMPORTS_PER_HOUR,
-  MAX_UPLOAD_LINKS_PER_HOUR,
   issueUploadToken,
-  type AdmissionCode,
   type UploadKind,
 } from "@/lib/media-import/imports";
+import { admissionRefusal } from "@/lib/mcp/media-import-copy";
+
+// The PUT route imports the admission copy from here (Task 11); it lives in media-import-copy.ts.
+export { admissionRefusal };
 
 /**
  * Task 11 (PR-B, G26, ADR 0065): `create_upload_url` — a single-use, 15-minute `PUT` link for
@@ -42,25 +42,6 @@ const USE_NEXT: Record<UploadKind, string> = {
   presenter: "ส่ง uploadId เป็น clipUploadId ของ create_video_job",
 };
 
-const ADMISSION_REFUSAL: Record<AdmissionCode, { message: string; next: string }> = {
-  too_many_active_imports: {
-    message: `มีไฟล์กำลังนำเข้าอยู่ครบ ${MAX_ACTIVE_IMPORTS} ไฟล์แล้ว`,
-    next: "รอให้ไฟล์ที่กำลังนำเข้าเสร็จก่อน แล้วค่อยเรียก create_upload_url อีกครั้ง",
-  },
-  import_hourly_limit: {
-    message: `นำเข้าไฟล์ครบ ${MAX_IMPORTS_PER_HOUR} ไฟล์ในหนึ่งชั่วโมงแล้ว`,
-    next: "รอสักพัก (ไม่เกิน 1 ชั่วโมง) แล้วลองใหม่",
-  },
-  upload_link_hourly_limit: {
-    message: `ขอลิงก์อัปโหลดครบ ${MAX_UPLOAD_LINKS_PER_HOUR} ครั้งในหนึ่งชั่วโมงแล้ว`,
-    next: "ใช้ลิงก์ที่ขอไว้แล้วที่ยังไม่หมดอายุ หรือส่งลิงก์สาธารณะ (url) แทน หรือรอสักพักแล้วลองใหม่",
-  },
-  storage_busy: {
-    message: "พื้นที่รับไฟล์ของระบบเต็มชั่วคราว",
-    next: "รอสักครู่ (ไม่กี่นาที) แล้วเรียก create_upload_url อีกครั้ง",
-  },
-};
-
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
@@ -87,11 +68,6 @@ const UPLOAD_UNAVAILABLE = editToolFailure(
   "ตอนนี้ระบบยังสร้างลิงก์อัปโหลดที่ปลอดภัยไม่ได้",
   "ส่งลิงก์สาธารณะ (https) ของไฟล์แทน หรือแจ้งทีมงานให้ตรวจการตั้งค่า",
 );
-
-export function admissionRefusal(code: AdmissionCode) {
-  const copy = ADMISSION_REFUSAL[code];
-  return editToolFailure(code, copy.message, copy.next);
-}
 
 export async function createUploadUrlTool(userId: string, args: { kind: UploadKind }) {
   // Checked before issuing, so a misconfigured origin never mints (or counts) a link.
