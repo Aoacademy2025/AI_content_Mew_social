@@ -6,6 +6,12 @@
 // resource-exhaustion boundary. Every rule below is load-bearing:
 //
 //   • `https:` only, on every hop. Anything else → url_not_https.
+//   • Port 443 only, on every hop. Any other explicit port → url_not_public: the VPS
+//     reaching its own public IP travels over `lo`, which the firewall allows, so an
+//     arbitrary port would reach services bound to 0.0.0.0 behind nginx's back.
+//   • The host's own interface addresses (os.networkInterfaces(), re-read every 10 s;
+//     IPv4-mapped forms included) are refused like private ones, before the connect and
+//     again on the peer → url_not_public.
 //   • Pinned connect. Each hop resolves its hostname ONCE, inside the socket's own
 //     `lookup` (the https.request option, which runs at connect time). Every answer is
 //     classified with safe-fetch's `ipIsPrivate` (hardened in PR-0: IPv4-mapped incl.
@@ -27,7 +33,9 @@
 //   • Errors carry a fixed code and nothing else: no upstream text, IP, hostname, port
 //     or path, and no `cause`. This module logs nothing.
 //   • The temp file (mode 0600, server-generated name) is removed on every failure. On
-//     success the caller owns it and must move or delete it.
+//     success the caller owns it and must move or delete it. By default it lives in a
+//     dedicated folder, mediaImportTempDir() (0700, owned by this uid). A crash can still
+//     leave files there; the import worker calls sweepStaleImportTemp() at start.
 //
 // Callers pass the byte cap for each kind they accept. B-roll: broll-pipeline's
 // MAX_BROLL_IMAGE_BYTES / MAX_BROLL_VIDEO_BYTES. Presenter clip: video only, 500 MB,
@@ -72,6 +80,11 @@ export const MEDIA_FETCH_IDLE_TIMEOUT_MS = 30_000;
 export const MEDIA_FETCH_DEADLINE_MS = 10 * 60_000;
 
 const MAX_URL_LENGTH = 4096;
+const HTTPS_PORT = 443;
+const OWN_ADDRESS_TTL_MS = 10_000;
+const TEMP_DIR_NAME = "hero-media-import";
+// Exactly the names saveBody creates: a .part while streaming, then the sniffed extension.
+const TEMP_FILE_NAME = /^media-import-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(part|jpg|png|webp|mp4|webm)$/;
 // Enough leading bytes for every signature media-probe-args knows (12 for WebP/RIFF).
 const SNIFF_HEAD_BYTES = 64;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -95,7 +108,7 @@ export interface MediaFetchOptions {
   accept: Partial<Record<MediaFetchKind, number>>;
   /** Shortens the 10-min total deadline (e.g. to the import's `deadlineAt`). Never lengthens it. */
   deadlineMs?: number;
-  /** Directory for the temp file. Default: os.tmpdir(). */
+  /** Directory for the temp file. Default: mediaImportTempDir(). */
   tmpDir?: string;
 }
 
@@ -114,6 +127,10 @@ export interface MediaFetchTestHooks {
   resolve?: ResolveAllAddresses;
   /** Address classifier. Default: safe-fetch's ipIsPrivate. */
   isPrivateAddress?: (ip: string) => boolean;
+  /** This host's own addresses, read at every check. Default: os.networkInterfaces(), cached 10 s. */
+  ownAddresses?: () => string[];
+  /** Ports allowed instead of 443 (test servers cannot bind 443). */
+  allowedPorts?: number[];
   /** Extra trust anchor (a test server's self-signed cert). */
   ca?: string | Buffer;
   connectTimeoutMs?: number;
@@ -136,9 +153,95 @@ export function fetchMediaToTempFileForTests(
   return fetchMedia(url, options, hooks);
 }
 
+/** The dedicated folder Media Import downloads into by default. */
+export function mediaImportTempDir(): string {
+  return path.join(os.tmpdir(), TEMP_DIR_NAME);
+}
+
+/**
+ * Delete Media Import temp files (in-flight `.part` or finished-but-unclaimed) last
+ * modified more than `olderThanMs` ago, left behind by a crash or restart. Only names this
+ * module creates, only regular files, never recursing. Call at import-worker start with
+ * at least the import deadline. Returns how many files were removed.
+ */
+export function sweepStaleImportTemp(olderThanMs: number, dir: string = mediaImportTempDir()): number {
+  if (!Number.isFinite(olderThanMs) || olderThanMs < 0) throw new TypeError("sweepStaleImportTemp: olderThanMs must be >= 0");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0; // nothing downloaded yet
+  }
+  const cutoff = Date.now() - olderThanMs;
+  let removed = 0;
+  for (const name of names) {
+    if (!TEMP_FILE_NAME.test(name)) continue;
+    const full = path.join(dir, name);
+    try {
+      const stat = fs.lstatSync(full);
+      if (!stat.isFile() || stat.mtimeMs > cutoff) continue;
+      fs.unlinkSync(full);
+      removed++;
+    } catch {}
+  }
+  return removed;
+}
+
+/** Create the default temp folder; refuse one that is a symlink or someone else's. */
+function ensureDefaultTempDir(): string {
+  const dir = mediaImportTempDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) throw new MediaFetchError("fetch_failed");
+  return dir;
+}
+
+let ownAddressCache: { at: number; list: net.BlockList } | null = null;
+
+function blockListOf(addresses: Iterable<string>): net.BlockList {
+  const list = new net.BlockList();
+  for (const address of addresses) {
+    const family = net.isIP(address);
+    if (!family) continue;
+    try {
+      list.addAddress(address, family === 6 ? "ipv6" : "ipv4");
+    } catch {}
+  }
+  return list;
+}
+
+function interfaceAddresses(): string[] {
+  return Object.values(os.networkInterfaces()).flatMap((entries) => (entries ?? []).map((entry) => entry.address));
+}
+
+/** True when `ip` (any textual form, IPv4-mapped included) is one of this host's addresses. */
+function hostOwnsAddress(ip: string, ownAddresses: MediaFetchTestHooks["ownAddresses"]): boolean {
+  const family = net.isIP(ip);
+  if (!family) return true;
+  try {
+    let list: net.BlockList;
+    if (ownAddresses) {
+      list = blockListOf(ownAddresses());
+    } else {
+      const now = Date.now();
+      if (!ownAddressCache || now - ownAddressCache.at > OWN_ADDRESS_TTL_MS) {
+        ownAddressCache = { at: now, list: blockListOf(interfaceAddresses()) };
+      }
+      list = ownAddressCache.list;
+    }
+    return list.check(ip, family === 6 ? "ipv6" : "ipv4");
+  } catch {
+    return true; // cannot tell → refuse
+  }
+}
+
 interface Ctx {
   resolve: ResolveAllAddresses;
   isPrivate: (ip: string) => boolean;
+  /** This host's own addresses (hairpin over `lo`). */
+  isOwn: (ip: string) => boolean;
+  allowedPorts: ReadonlySet<number>;
   ca?: string | Buffer;
   connectTimeoutMs: number;
   idleTimeoutMs: number;
@@ -157,7 +260,6 @@ const noop = () => {};
 
 async function fetchMedia(rawUrl: string, options: MediaFetchOptions, hooks: MediaFetchTestHooks): Promise<FetchedMedia> {
   const caps = validateAccept(options.accept);
-  const tmpDir = options.tmpDir ?? os.tmpdir();
   const requested = typeof options.deadlineMs === "number" && Number.isFinite(options.deadlineMs)
     ? Math.max(0, options.deadlineMs)
     : Infinity;
@@ -166,6 +268,8 @@ async function fetchMedia(rawUrl: string, options: MediaFetchOptions, hooks: Med
   const ctx: Ctx = {
     resolve: hooks.resolve ?? defaultResolve,
     isPrivate: hooks.isPrivateAddress ?? ipIsPrivate,
+    isOwn: (ip) => hostOwnsAddress(ip, hooks.ownAddresses),
+    allowedPorts: new Set(hooks.allowedPorts ?? [HTTPS_PORT]),
     ca: hooks.ca,
     connectTimeoutMs: hooks.connectTimeoutMs ?? MEDIA_FETCH_CONNECT_TIMEOUT_MS,
     idleTimeoutMs: hooks.idleTimeoutMs ?? MEDIA_FETCH_IDLE_TIMEOUT_MS,
@@ -179,6 +283,7 @@ async function fetchMedia(rawUrl: string, options: MediaFetchOptions, hooks: Med
 
   try {
     let url = parseHttpsUrl(rawUrl);
+    const tmpDir = options.tmpDir ?? ensureDefaultTempDir();
     for (let redirects = 0; ; redirects++) {
       if (ctx.failure) throw new MediaFetchError(ctx.failure);
       const { req, res } = await openHop(url, ctx);
@@ -230,7 +335,7 @@ function parseHttpsUrl(raw: unknown, base?: URL): URL {
   return url;
 }
 
-/** Resolve once and classify every answer. Any private answer refuses the whole host. */
+/** Resolve once and classify every answer. Any private or own answer refuses the whole host. */
 async function resolveVetted(host: string, ctx: Ctx): Promise<LookupAddress[]> {
   let answers: ReadonlyArray<{ address: string }>;
   try {
@@ -242,7 +347,7 @@ async function resolveVetted(host: string, ctx: Ctx): Promise<LookupAddress[]> {
   const vetted: LookupAddress[] = [];
   for (const { address } of answers) {
     const family = net.isIP(address);
-    if (family === 0 || ctx.isPrivate(address)) throw new MediaFetchError("url_not_public");
+    if (family === 0 || ctx.isPrivate(address) || ctx.isOwn(address)) throw new MediaFetchError("url_not_public");
     vetted.push({ address, family });
   }
   return vetted;
@@ -257,7 +362,10 @@ function wantedFamily(family: LookupOptions["family"]): 0 | 4 | 6 {
 /** One request/response hop. Resolves once the response headers are in. */
 function openHop(url: URL, ctx: Ctx): Promise<{ req: ClientRequest; res: IncomingMessage }> {
   const host = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
-  if (net.isIP(host) && ctx.isPrivate(host)) return Promise.reject(new MediaFetchError("url_not_public"));
+  // WHATWG drops an explicit :443, so `url.port` is "" for the only port production allows.
+  const port = url.port ? Number(url.port) : HTTPS_PORT;
+  if (!ctx.allowedPorts.has(port)) return Promise.reject(new MediaFetchError("url_not_public"));
+  if (net.isIP(host) && (ctx.isPrivate(host) || ctx.isOwn(host))) return Promise.reject(new MediaFetchError("url_not_public"));
 
   // Called by the socket at connect time (net skips it for IP literals). The answer is
   // memoised, so even a second call never reaches the resolver again.
@@ -285,7 +393,7 @@ function openHop(url: URL, ctx: Ctx): Promise<{ req: ClientRequest; res: Incomin
     const req = https.request({
       protocol: "https:",
       hostname: host,
-      port: url.port ? Number(url.port) : 443,
+      port,
       path: `${url.pathname}${url.search}`,
       method: "GET",
       headers: { "user-agent": USER_AGENT, accept: "image/*, video/*", "accept-encoding": "identity" },
@@ -304,7 +412,7 @@ function openHop(url: URL, ctx: Ctx): Promise<{ req: ClientRequest; res: Incomin
         // The peer must be an address we would have allowed. This runs before the TLS
         // handshake finishes, so no HTTP byte has gone out yet.
         const peer = socket.remoteAddress;
-        if (!peer || ctx.isPrivate(peer)) fail("url_not_public");
+        if (!peer || ctx.isPrivate(peer) || ctx.isOwn(peer)) fail("url_not_public");
       });
       socket.once("secureConnect", () => clearTimeout(connectTimer));
     });

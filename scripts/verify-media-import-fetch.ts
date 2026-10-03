@@ -17,6 +17,11 @@
  *     headers) cannot outlast;
  *   - the media type comes from the bytes (HTML, HLS, DASH-in-PNG, empty → refused);
  *   - TLS is verified against the URL's hostname even though the socket is pinned to an IP;
+ *   - port 443 only, on every hop (other ports refused before DNS or any socket);
+ *   - the host's own interface addresses are refused (literal, DNS, IPv4-mapped, via a
+ *     redirect, and on the connected peer), from os.networkInterfaces() by default;
+ *   - downloads land in a dedicated 0700 folder; sweepStaleImportTemp removes only stale
+ *     files this module names, never directories, symlinks or fresh files;
  *   - no temp file is left behind on any failure, and no error message, error property or
  *     log line carries an IP, hostname, port, temp path or upstream text;
  *   - only this script calls the test entry point (which can swap classifier and CA).
@@ -27,6 +32,7 @@
  * Run: npm run verify:media-import-fetch
  */
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
@@ -41,6 +47,8 @@ import {
   MediaFetchError,
   fetchMediaToTempFile,
   fetchMediaToTempFileForTests,
+  mediaImportTempDir,
+  sweepStaleImportTemp,
   type FetchedMedia,
   type MediaFetchErrorCode,
   type MediaFetchOptions,
@@ -97,11 +105,12 @@ const CREDS = makeCert();
 // ─────────────────────────────────────────────────────────────────────────────
 // Servers.
 //   A  https on 127.0.0.1:P — the "public" origin (the test classifier exempts 127.0.0.1).
+//   A2 https on 127.0.0.1:Q — the same origin on a second port (a non-443 redirect target).
 //   B  https on [::1]:P (same port) — the "private" origin a rebinding answer points at.
 //   H  raw TLS on 127.0.0.1 — drips response HEADERS forever (header slow-loris).
 //   T  plain TCP on 127.0.0.1 — accepts, never speaks (TLS handshake never completes).
 // ─────────────────────────────────────────────────────────────────────────────
-const counters = { a: 0, b: 0, h: 0, t: 0 };
+const counters = { a: 0, a2: 0, b: 0, h: 0, t: 0 };
 const requestsByPath = new Map<string, number>();
 const bigStream = { written: 0, closedEarly: false, finished: false };
 const bigDeclared = { closed: false };
@@ -198,6 +207,8 @@ const handlerA: http.RequestListener = (req, res) => {
 
 const serverA = https.createServer({ key: CREDS.key, cert: CREDS.cert }, handlerA);
 serverA.on("connection", () => { counters.a++; });
+const serverA2 = https.createServer({ key: CREDS.key, cert: CREDS.cert }, handlerA);
+serverA2.on("connection", () => { counters.a2++; });
 const serverB = https.createServer({ key: CREDS.key, cert: CREDS.cert }, (_req, res) => sendBody(res, MP4_FROM_B, "video/mp4"));
 serverB.on("connection", () => { counters.b++; });
 const dripHeaders = new Set<NodeJS.Timeout>();
@@ -241,6 +252,8 @@ const answers: Record<string, () => Answer> = {
   "mixed.test": () => [{ address: "127.0.0.1", family: 4 }, { address: "10.0.0.1", family: 4 }],
   "garbage.test": () => [{ address: "not-an-ip", family: 4 }],
   "empty.test": () => [],
+  "own-mapped.test": () => [{ address: "::ffff:127.0.0.1", family: 6 }],
+  "own-mixed.test": () => [{ address: "127.0.0.1", family: 4 }, { address: "::1", family: 6 }],
   // Public on the first lookup, private on every later one.
   "rebind.test": () => (++rebindCalls === 1 ? [{ address: "127.0.0.1", family: 4 }] : [{ address: "::1", family: 6 }]),
   // Private on the very first lookup.
@@ -260,6 +273,7 @@ async function testResolve(hostname: string): Promise<Answer> {
 const testIsPrivate = (ip: string) => (ip === "127.0.0.1" ? false : ipIsPrivate(ip));
 
 let PORT = 0;
+let PORT_A2 = 0;
 let PORT_H = 0;
 let PORT_T = 0;
 
@@ -275,6 +289,10 @@ function hooks(extra: Partial<MediaFetchTestHooks> = {}): MediaFetchTestHooks {
     connectTimeoutMs: 3000,
     idleTimeoutMs: 3000,
     deadlineMs: 10_000,
+    // The rig's servers sit on random ports and on 127.0.0.1 (a real interface address);
+    // sections 12 and 13 put the production defaults back.
+    allowedPorts: [PORT, PORT_A2, PORT_H, PORT_T],
+    ownAddresses: () => [],
     ...extra,
   };
 }
@@ -284,7 +302,7 @@ function hooks(extra: Partial<MediaFetchTestHooks> = {}): MediaFetchTestHooks {
 // ─────────────────────────────────────────────────────────────────────────────
 function forbiddenFragments(): string[] {
   return [
-    "127.0.0.1", "::1", "10.0.0", "169.254", "a9fe", ".test", String(PORT), String(PORT_H), String(PORT_T),
+    "127.0.0.1", "::1", "10.0.0", "169.254", "a9fe", ".test", String(PORT), String(PORT_A2), String(PORT_H), String(PORT_T),
     WORK, TMP, os.tmpdir(), "SECRET", "/etc/passwd", "ECONN", "ENOTFOUND", "getaddrinfo", "certificate", "self-signed",
   ];
 }
@@ -402,6 +420,7 @@ async function main() {
     console.log(`✗ cannot listen on [::1]:${PORT} — this test needs an IPv6 loopback (${String(err)})`);
     process.exit(1);
   }
+  PORT_A2 = await listen(serverA2, 0, "127.0.0.1");
   PORT_H = await listen(serverH, 0, "127.0.0.1");
   PORT_T = await listen(serverT, 0, "127.0.0.1");
   const A = (p: string, host = "media.test") => `https://${host}:${PORT}${p}`;
@@ -469,9 +488,10 @@ async function main() {
   {
     const before = deltas();
     // The production entry point, real DNS: /etc/hosts answers localhost without a network.
-    await expectCode("production fetchMediaToTempFile: https://localhost", `https://localhost:${PORT}/ok.png`, "url_not_public", {}, null);
-    await expectCode("production fetchMediaToTempFile: [::ffff:7f00:1]", `https://[::ffff:7f00:1]:${PORT}/ok.png`, "url_not_public", {}, null);
-    await expectCode("production fetchMediaToTempFile: 127.0.0.1", `https://127.0.0.1:${PORT}/ok.png`, "url_not_public", {}, null);
+    // No explicit port: these must be refused by the classifier, not by the port gate.
+    await expectCode("production fetchMediaToTempFile: https://localhost", "https://localhost/ok.png", "url_not_public", {}, null);
+    await expectCode("production fetchMediaToTempFile: [::ffff:7f00:1]", "https://[::ffff:7f00:1]/ok.png", "url_not_public", {}, null);
+    await expectCode("production fetchMediaToTempFile: 127.0.0.1", "https://127.0.0.1/ok.png", "url_not_public", {}, null);
     check("production entry point: zero connections to A or B", counters.a === before.a && counters.b === before.b);
   }
   await expectCode("DNS failure → fetch_failed", A("/ok.png", "nxdomain.test"), "fetch_failed");
@@ -621,7 +641,214 @@ async function main() {
   await expectCode("404 with secret body → fetch_failed", A("/status/404"), "fetch_failed");
   await expectCode("500 with secret body → fetch_failed", A("/status/500"), "fetch_failed");
 
-  section("12. hygiene");
+  section("12. port 443 only — on every hop, before DNS or any socket");
+  {
+    const prodPorts = { allowedPorts: undefined };
+    for (const [label, url] of [
+      ["name with a non-443 port", A("/ok.png")],
+      ["literal IP with a non-443 port", `https://127.0.0.1:${PORT}/ok.png`],
+      ["port 3000 (Next behind nginx)", "https://media.test:3000/ok.png"],
+      ["port 22", "https://media.test:22/"],
+      ["port 80 over https", "https://media.test:80/ok.png"],
+      ["port 8443", "https://media.test:8443/ok.png"],
+    ] as const) {
+      const calls = resolverCalls.length;
+      const before = deltas();
+      await expectCode(`port gate: ${label}`, url, "url_not_public", {}, hooks(prodPorts));
+      check(`port gate: ${label}: no DNS, no connection`, resolverCalls.length === calls && counters.a === before.a && counters.a2 === before.a2);
+    }
+    // An explicit :443 is the default port (WHATWG drops it), so it passes the gate and
+    // goes on to DNS; nothing listens on 127.0.0.1:443 here, so it then fails to connect.
+    const calls = resolverCalls.length;
+    const out = await run("https://media.test:443/ok.png", { accept: BROLL, tmpDir: TMP }, hooks(prodPorts));
+    const code = out.ok ? "ok" : out.error instanceof MediaFetchError ? out.error.code : String(out.error);
+    check("port gate: explicit :443 passes the gate (resolved, then not url_not_public)",
+      resolverCalls.length - calls === 1 && code !== "url_not_public", `${code}, lookups+${resolverCalls.length - calls}`);
+    if (out.ok) fs.unlinkSync(out.value.path);
+  }
+  {
+    const before = deltas();
+    await expectCode("port gate via redirect: A → same host on another port", A(`/redirect?to=${encodeURIComponent(`https://media.test:${PORT_A2}/ok.png`)}`),
+      "url_not_public", {}, hooks({ allowedPorts: [PORT] }));
+    check("port gate via redirect: first hop only, A2 untouched", counters.a - before.a === 1 && counters.a2 === before.a2,
+      `a+${counters.a - before.a} a2+${counters.a2 - before.a2}`);
+  }
+  {
+    const before = deltas();
+    await expectCode("port gate via protocol-relative redirect", A(`/redirect?to=${encodeURIComponent(`//media.test:${PORT_A2}/ok.png`)}`),
+      "url_not_public", {}, hooks({ allowedPorts: [PORT] }));
+    check("protocol-relative: A2 untouched", counters.a2 === before.a2);
+  }
+  {
+    const before = deltas();
+    await expectMedia("control: the same redirect with A2's port allowed → served by A2",
+      A(`/redirect?to=${encodeURIComponent(`https://media.test:${PORT_A2}/ok.png`)}`), { kind: "image", ext: "png", mime: "image/png", body: PNG },
+      {}, hooks({ allowedPorts: [PORT, PORT_A2] }));
+    check("control: A2 was reached", counters.a2 - before.a2 === 1, `a2+${counters.a2 - before.a2}`);
+  }
+  for (const url of ["https://example.com:8443/x.png", "https://1.1.1.1:22/", "https://[2606:4700:4700::1111]:3000/x.png"]) {
+    const out = await expectCode(`production fetchMediaToTempFile: ${url}`, url, "url_not_public", {}, null);
+    check(`production ${url}: refused without touching the network`, !!out && out.ms < 1000, String(out?.ms));
+  }
+
+  section("13. the host's own addresses are refused — literal, DNS, mapped, redirect, peer");
+  {
+    // 127.0.0.1 and ::1 count as "public" here so only the own-address guard can refuse.
+    const loopbackPublic = (ip: string) => (ip === "127.0.0.1" || ip === "::1" ? false : ipIsPrivate(ip));
+    const allPublic = () => false;
+    const own = (...list: string[]) => () => list;
+    const cases: Array<[string, string, Partial<MediaFetchTestHooks>]> = [
+      ["literal own IPv4", `https://127.0.0.1:${PORT}/ok.png`, { ownAddresses: own("127.0.0.1") }],
+      ["literal own IPv4 in IPv4-mapped form", `https://[::ffff:7f00:1]:${PORT}/ok.png`, { isPrivateAddress: allPublic, ownAddresses: own("127.0.0.1") }],
+      ["literal own IPv6", `https://[::1]:${PORT}/ok.png`, { isPrivateAddress: loopbackPublic, ownAddresses: own("::1") }],
+      ["DNS → own IPv4", A("/ok.png"), { ownAddresses: own("127.0.0.1") }],
+      ["DNS → own IPv4 as an IPv4-mapped answer", A("/ok.png", "own-mapped.test"), { isPrivateAddress: allPublic, ownAddresses: own("127.0.0.1") }],
+      ["DNS → own address listed in IPv4-mapped form", A("/ok.png"), { ownAddresses: own("::ffff:127.0.0.1") }],
+      ["DNS → one own answer among public ones", A("/ok.png", "own-mixed.test"), { isPrivateAddress: loopbackPublic, ownAddresses: own("::1") }],
+      ["DNS → own IPv6", A("/ok.png", "local6.test"), { isPrivateAddress: loopbackPublic, ownAddresses: own("::1") }],
+    ];
+    for (const [label, url, extra] of cases) {
+      const before = deltas();
+      await expectCode(`own address: ${label}`, url, "url_not_public", {}, hooks(extra));
+      check(`own address: ${label}: zero connections`, counters.a === before.a && counters.b === before.b,
+        `a+${counters.a - before.a} b+${counters.b - before.b}`);
+    }
+    for (const [label, target] of [
+      ["name → own ::1", `https://local6.test:${PORT}/ok.mp4`],
+      ["literal own [::1]", `https://[::1]:${PORT}/ok.mp4`],
+    ] as const) {
+      const before = deltas();
+      await expectCode(`own address via redirect: ${label}`, A(`/redirect?to=${encodeURIComponent(target)}`), "url_not_public", {},
+        hooks({ isPrivateAddress: loopbackPublic, ownAddresses: own("::1") }));
+      check(`own address via redirect: ${label}: first hop only, B untouched`, counters.a - before.a === 1 && counters.b === before.b,
+        `a+${counters.a - before.a} b+${counters.b - before.b}`);
+    }
+    {
+      const before = deltas();
+      await expectMedia("control: same redirect, ::1 not an own address → served by B", A(`/redirect?to=${encodeURIComponent(`https://local6.test:${PORT}/ok.mp4`)}`),
+        { kind: "video", ext: "mp4", mime: "video/mp4", body: MP4_FROM_B }, {}, hooks({ isPrivateAddress: loopbackPublic }));
+      check("control: B was reached", counters.b - before.b === 1, `b+${counters.b - before.b}`);
+    }
+    {
+      // The address list changes between the lookup and the connect: the peer check catches it.
+      let reads = 0;
+      const before = deltas();
+      const requestsBefore = requestsByPath.get("/ok.png") ?? 0;
+      await expectCode("own address on the connected peer → url_not_public", A("/ok.png"), "url_not_public", {},
+        hooks({ ownAddresses: () => (++reads === 1 ? [] : ["127.0.0.1"]) }));
+      check("own peer: TCP reached A but no HTTP request was served",
+        counters.a - before.a === 1 && (requestsByPath.get("/ok.png") ?? 0) === requestsBefore,
+        `a+${counters.a - before.a} requests+${(requestsByPath.get("/ok.png") ?? 0) - requestsBefore}`);
+    }
+    // Production default: the list comes from os.networkInterfaces().
+    const ifaceAddresses = Object.values(os.networkInterfaces()).flatMap((e) => (e ?? []).map((x) => x));
+    check("precondition: os.networkInterfaces() lists 127.0.0.1", ifaceAddresses.some((x) => x.address === "127.0.0.1"));
+    {
+      const before = deltas();
+      await expectCode("default own list (os.networkInterfaces): 127.0.0.1 refused", A("/ok.png"), "url_not_public", {},
+        hooks({ ownAddresses: undefined }));
+      check("default own list: zero connections", counters.a === before.a);
+    }
+    const lan = ifaceAddresses.find((x) => !x.internal && x.family === "IPv4")?.address;
+    if (lan) {
+      answers["lan.test"] = () => [{ address: lan, family: 4 }];
+      answers["lan-mapped.test"] = () => [{ address: `::ffff:${lan}`, family: 6 }];
+      await expectCode("default own list: this host's LAN/public IPv4 refused", A("/ok.png", "lan.test"), "url_not_public", {},
+        hooks({ isPrivateAddress: allPublic, ownAddresses: undefined }));
+      await expectCode("default own list: …and its IPv4-mapped form", A("/ok.png", "lan-mapped.test"), "url_not_public", {},
+        hooks({ isPrivateAddress: allPublic, ownAddresses: undefined }));
+      await expectCode("default own list: …as a literal", `https://${lan}:${PORT}/ok.png`, "url_not_public", {},
+        hooks({ isPrivateAddress: allPublic, ownAddresses: undefined }));
+    } else {
+      originalConsole.log("  (no non-internal IPv4 interface on this host — LAN own-address checks skipped)");
+    }
+  }
+
+  section("14. dedicated temp folder + crash sweep");
+  {
+    const savedTmp = process.env.TMPDIR;
+    const fakeTmp = fs.mkdtempSync(path.join(WORK, "fake-tmp-"));
+    process.env.TMPDIR = fakeTmp;
+    try {
+      check("mediaImportTempDir() is <os.tmpdir()>/hero-media-import", mediaImportTempDir() === path.join(os.tmpdir(), "hero-media-import") && os.tmpdir() === fakeTmp,
+        mediaImportTempDir());
+      const out = await run(A("/ok.png"), { accept: BROLL }, hooks());
+      if (!out.ok) {
+        check("default tmpDir: download succeeds", false, out.error instanceof MediaFetchError ? out.error.code : String(out.error));
+      } else {
+        const dir = path.join(fakeTmp, "hero-media-import");
+        check("default tmpDir: the file lands in the dedicated folder", path.dirname(out.value.path) === dir, out.value.path);
+        if (process.platform !== "win32") {
+          const mode = fs.existsSync(dir) ? (fs.statSync(dir).mode & 0o777).toString(8) : "missing";
+          check("default tmpDir: the folder is 0700", mode === "700", mode);
+        }
+        fs.unlinkSync(out.value.path);
+      }
+      // A planted symlink in place of the folder is refused, not followed.
+      const evilTmp = fs.mkdtempSync(path.join(WORK, "evil-tmp-"));
+      const elsewhere = fs.mkdtempSync(path.join(WORK, "elsewhere-"));
+      fs.symlinkSync(elsewhere, path.join(evilTmp, "hero-media-import"));
+      process.env.TMPDIR = evilTmp;
+      const before = deltas();
+      await expectCode("default tmpDir is a symlink → fetch_failed", A("/ok.png"), "fetch_failed", { tmpDir: undefined });
+      check("symlinked tmpDir: nothing written through it, no connection", fs.readdirSync(elsewhere).length === 0 && counters.a === before.a,
+        JSON.stringify(fs.readdirSync(elsewhere)));
+      process.env.TMPDIR = fakeTmp;
+
+      // sweepStaleImportTemp
+      const dir = fs.mkdtempSync(path.join(WORK, "sweep-"));
+      const HOUR = 3_600_000;
+      const old = new Date(Date.now() - 2 * HOUR);
+      const make = (name: string, stale: boolean) => {
+        const full = path.join(dir, name);
+        fs.writeFileSync(full, "x");
+        if (stale) fs.utimesSync(full, old, old);
+        return name;
+      };
+      const stalePart = make(`media-import-${randomUUID()}.part`, true);
+      const stalePng = make(`media-import-${randomUUID()}.png`, true);
+      const freshPart = make(`media-import-${randomUUID()}.part`, false);
+      const freshMp4 = make(`media-import-${randomUUID()}.mp4`, false);
+      const unrelated = make("notes.txt", true);
+      const lookalike = make("media-import-evil.part", true);
+      const wrongExt = make(`media-import-${randomUUID()}.sh`, true);
+      const dirName = `media-import-${randomUUID()}.webm`;
+      fs.mkdirSync(path.join(dir, dirName));
+      fs.utimesSync(path.join(dir, dirName), old, old);
+      const target = path.join(WORK, "sweep-target.txt");
+      fs.writeFileSync(target, "keep");
+      fs.utimesSync(target, old, old);
+      const linkName = `media-import-${randomUUID()}.jpg`;
+      fs.symlinkSync(target, path.join(dir, linkName));
+      fs.lutimesSync(path.join(dir, linkName), old, old);
+
+      const removed = sweepStaleImportTemp(HOUR, dir);
+      const left = new Set(fs.readdirSync(dir));
+      check("sweep: removes exactly the stale .part and the stale finished file", removed === 2 && !left.has(stalePart) && !left.has(stalePng), `removed=${removed}`);
+      check("sweep: keeps fresh files (an import may be in flight)", left.has(freshPart) && left.has(freshMp4));
+      check("sweep: keeps names it does not own", left.has(unrelated) && left.has(lookalike) && left.has(wrongExt));
+      check("sweep: never removes a directory", left.has(dirName) && fs.statSync(path.join(dir, dirName)).isDirectory());
+      check("sweep: never removes or follows a symlink", left.has(linkName) && fs.readFileSync(target, "utf8") === "keep");
+      check("sweep: a second pass removes nothing", sweepStaleImportTemp(HOUR, dir) === 0);
+      check("sweep: a missing folder is fine (0 removed)", sweepStaleImportTemp(HOUR, path.join(WORK, "does-not-exist")) === 0);
+      let threw = 0;
+      for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        try { sweepStaleImportTemp(bad, dir); } catch (e) { if (e instanceof TypeError) threw++; }
+      }
+      check("sweep: a negative / NaN / infinite age is refused", threw === 3, String(threw));
+      // Default folder.
+      const defaultDir = path.join(fakeTmp, "hero-media-import");
+      const staleDefault = path.join(defaultDir, `media-import-${randomUUID()}.part`);
+      fs.writeFileSync(staleDefault, "x");
+      fs.utimesSync(staleDefault, old, old);
+      check("sweep: defaults to mediaImportTempDir()", sweepStaleImportTemp(HOUR) === 1 && !fs.existsSync(staleDefault));
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+    }
+  }
+
+  section("15. hygiene");
   {
     // The test entry point can swap the classifier and trust store. App and worker code
     // must only ever call fetchMediaToTempFile.
@@ -654,7 +881,7 @@ main()
   .finally(async () => {
     for (const t of dripHeaders) clearInterval(t);
     for (const s of silentSockets) s.destroy();
-    for (const server of [serverA, serverB, serverH, serverT]) {
+    for (const server of [serverA, serverA2, serverB, serverH, serverT]) {
       (server as net.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
       server.close();
     }
