@@ -15,6 +15,10 @@ interface DashboardLayoutProps {
   children: React.ReactNode;
   /** @deprecated padding is now controlled per-page via the .ve-no-padding marker */
   noPadding?: boolean;
+  /** ADR 0066 — PROMPTPAY_MONTHLY, read server-side by the (dashboard) layout and
+   *  forwarded down to PastDueBanner. Undefined (no server parent passed it) behaves
+   *  as off, same as every other new PromptPay-monthly surface. */
+  promptpayMonthly?: boolean;
 }
 
 function browserStorage() {
@@ -23,7 +27,7 @@ function browserStorage() {
   return storage && typeof storage.getItem === "function" ? storage : null;
 }
 
-export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
+export function DashboardLayout({ children, noPadding, promptpayMonthly }: DashboardLayoutProps) {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -60,7 +64,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   ) : (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TopNav onMenuClick={() => setMobileMenuOpen(true)} />
-      <PastDueBanner />
+      <PastDueBanner promptpayMonthly={promptpayMonthly} />
       <TrialBanner />
 
       <div className="flex flex-1 overflow-hidden">
