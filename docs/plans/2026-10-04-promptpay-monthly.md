@@ -183,7 +183,9 @@ Checklist:
 ### Task 6 — Release (session, after Mew's go)
 1. Whole-branch review (mew-reviewer, opus) and `security-review` are green, and PR CI is green. The PR body carries the rollback steps. Then merge.
 2. **Test-mode proof**, if the Stripe MCP gives test-mode access: make a test-clock subscription go past_due, run the cancel+void sequence the helper uses, and confirm no invoice stays collectable. Record it in the research doc. Without test-mode access, record that the proof is docs-only.
+   - **2026-10-05:** the Stripe MCP exposes only the live account (`acct_1TZBIjL39kyExJWO`), so the proof is docs-only (`docs/research/2026-10-04-stripe-cancel-open-invoices.md`).
 3. Create two one-time Stripe Prices in **live** mode via the Stripe MCP: THB 599 on the PRO product and THB 990 on the BUSINESS product. The products are the ones the configured card monthly prices belong to. Record the IDs here.
+   - **Done 2026-10-05 (live):** PRO ฿599 `price_1UMtNLL39kyExJWO1g2j5BUG` on `prod_Udyx4PpeOiclyQ` (Hero AI PRO); BUSINESS ฿990 `price_1UMtLTL39kyExJWOmbxkcfmz` on `prod_Udyx1QfllkLdOA` (Hero AI BUSINESS). Not yet pasted in `/admin`.
 4. **Affiliate check:** confirm with the hero-affiliate side (repo if reachable, otherwise Mew) that a paid `mode=payment` session with `product_id=hero-studio-<tier>-monthly` is credited once and only after payment. Monthly product ids were previously recurring-only. A mismatch does not block go-live, but it is reported.
 5. Prod `.env`: `PROMPTPAY_MONTHLY=1` (Mew or a `!` command). Deploy with the standard command (Mew approved "go live when done"). Confirm the flag reached the process: `/proc/<pid>/environ`, or re-register the app if not (prior incident: `.env` keys did not apply on restart). Paste both price IDs in `/admin` settings.
 6. **Smoke test preconditions:** the test account has no active or trialing subscription, no running term and no active trial. Mew buys PRO monthly PromptPay ฿599. Check: PRO, `planExpiresAt` = +30 days, `billingPeriod` monthly, PAID Payment periodDays 30, affiliate metadata present if a ref was set. Then refund in Stripe and **revert the plan by hand**, because `charge.refunded` only marks the Payment. Use `/admin` or an approved script, and record which.
@@ -236,4 +238,4 @@ Checklist:
 - Changes to the external hero-affiliate service.
 
 ## Status
-interviewed 2026-10-04 | approved: 2026-10-04 (Mew) | executed: - | delivered: -
+interviewed 2026-10-04 | approved: 2026-10-04 (Mew) | executed: Tasks 1–4 2026-10-05 (branch reviewed, security-reviewed, local full CI green); Task 6 in progress | delivered: -
