@@ -25,6 +25,7 @@ import {
 } from "@/lib/preserve-trial";
 import { recordTelemetryEventOnce } from "@/lib/telemetry";
 import { deliverPastDueReminder } from "@/lib/past-due-dunning.server";
+import { cancelSupersededSubscription } from "@/lib/cancel-superseded-subscription";
 
 export const config = { api: { bodyParser: false } };
 
@@ -192,9 +193,19 @@ async function handleCheckoutSession(s: any, eventId: string) {
   });
   if (!activation.activated) {
     console.log("[webhook] session already activated, skip", s.id);
+    // Same call as the success path below, repeated here so that a run which committed the term
+    // but never reached the Stripe call is finished by any later delivery for this session that
+    // gets this far: a retry after the event claim was released, or a sibling event.
+    // Idempotent and never throws; it acts only on a settled one-time plan payment (ADR 0066).
+    await cancelSupersededSubscription(stripe, s);
     return;
   }
   const { newExpiry } = activation;
+  // ADR 0066: a settled one-time (PromptPay) plan payment replaces a card subscription that Stripe
+  // reports as past_due/unpaid. Cancel it and void its open invoices, so Smart Retries cannot
+  // charge again and invoice.paid cannot overwrite the paid term. Gated by PROMPTPAY_MONTHLY. Never
+  // throws; on a Stripe failure it alerts admins and the term stays.
+  await cancelSupersededSubscription(stripe, s);
 
   // Everything below MUST stay fire-and-forget/guarded (never throws): the tx already committed the
   // money/time effect, so a throw here would make MON-1 delete the claim and Stripe's retry would
