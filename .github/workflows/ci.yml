@@ -238,6 +238,11 @@ jobs:
       - name: Verify the Founding claim matches what customers are charged
         run: npm run verify:founding-copy-truth
 
+      - name: Verify a Founding member upgrade reuses their seat (HERO-61)
+        env:
+          DATABASE_URL: file:${{ runner.temp }}/heroai-founding-member.db?connection_limit=1
+        run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:founding-member-upgrade
+
       - name: Verify ARR annualises only recurring revenue
         run: npm run verify:arr-revenue-shape
 

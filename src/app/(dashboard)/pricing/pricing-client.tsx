@@ -9,7 +9,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
-import { computeDisplayPrice, getDefaultPricingSelection } from "@/lib/pricing-display";
+import { computeDisplayPrice, foundingMemberUpgradeEligible, getDefaultPricingSelection } from "@/lib/pricing-display";
 import { marketingPlanFeatures, supplementalPlanFeatures } from "@/lib/marketing-plan-facts";
 import {
   isFoundingAnnualConversionEligible,
@@ -79,6 +79,7 @@ const FAQS = [
 export function PricingClient({
   initialPlans,
   initialFounding,
+  foundingMember = false,
   paymentResult,
   acquisitionSource,
   preferredPeriod,
@@ -87,6 +88,8 @@ export function PricingClient({
 }: {
   initialPlans: PlanConfig;
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
+  /** HERO-61 — the viewer holds a CONFIRMED founding seat (server-resolved). */
+  foundingMember?: boolean;
   paymentResult: string | null;
   acquisitionSource: string | null;
   preferredPeriod: BillingPeriod | null;
@@ -143,6 +146,11 @@ export function PricingClient({
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
   const onTrial = currentPlan === "PRO" && daysLeft > 0;
+  // HERO-61 — mirror what checkout applies, per tier: a member keeps the founding % only on an
+  // annual upgrade (even when sold out) and pays full price otherwise (no second seat).
+  const foundingFor = (planKey: PlanKey) => foundingMember
+    ? { ...founding, active: foundingMemberUpgradeEligible({ currentPlan, targetPlan: planKey, period }) }
+    : founding;
 
   // pricing_viewed — fires once per mount for ALL acquisition sources (previously
   // hero_script only), so conversion analysis of the new default isn't blind to the
@@ -176,7 +184,7 @@ export function PricingClient({
     const effectiveMethod = period === "monthly" ? "card" : method;
     const cfgKey = planKey === "PRO" ? "pro" : "business";
     const monthlyPrice = planConfig?.[cfgKey]?.price ?? (planKey === "PRO" ? 599 : 990);
-    const isFounding = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding }).isFounding;
+    const isFounding = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding: foundingFor(planKey) }).isFounding;
     trackEvent("pricing_cta_clicked", {
       step: "pricing_page",
       properties: {
@@ -255,8 +263,8 @@ export function PricingClient({
   }
 
   // No annual total shown — the per-month figure is the hero; total appears at checkout.
-  function priceBlock(monthlyPrice: number) {
-    const display = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding });
+  function priceBlock(monthlyPrice: number, planKey: PlanKey) {
+    const display = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding: foundingFor(planKey) });
     if (!yearly) {
       return { amount: monthlyPrice.toLocaleString(), sub: "ต่ออัตโนมัติรายเดือน · ยกเลิกได้", was: undefined as string | undefined };
     }
@@ -446,7 +454,7 @@ export function PricingClient({
           const isRenewCurrent = cardMode === "renew";
           const isLoading = loading === key;
           const isSignedOut = userChecked && !currentPlan;
-          const pb = isPaid ? priceBlock(price) : null;
+          const pb = isPaid ? priceBlock(price, key) : null;
 
           const hasActiveSub = me?.subStatus === "active";
           const isFoundingConversion = !!currentPlan && isPaid && isFoundingAnnualConversionEligible({

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { foundingMemberUpgradeEligible } from "@/lib/pricing-display";
 
 /** The designated founding coupon's code. Looked up by the system; never entered by a user. */
 export const FOUNDING_CODE = "FOUNDING100";
@@ -181,6 +182,72 @@ export async function releaseUnattachedSeat(couponId: string): Promise<void> {
     where: { id: couponId, usedCount: { gt: 0 } },
     data: { usedCount: { decrement: 1 } },
   });
+}
+
+/** True when the user holds a CONFIRMED founding seat. */
+export async function isFoundingMember(userId: string): Promise<boolean> {
+  const member = await prisma.foundingReservation.findFirst({
+    where: { userId, status: "CONFIRMED" }, select: { id: true },
+  });
+  return !!member;
+}
+
+export type FoundingDiscount =
+  | { kind: "seat"; couponId: string; stripePromotionCodeId: string }
+  | { kind: "member"; couponId: string; stripePromotionCodeId: string }
+  | null;
+
+/**
+ * Which founding discount (if any) a checkout gets. A manual discount always wins.
+ * - kind "member" (HERO-61): a CONFIRMED member upgrading a paid tier on annual reuses their
+ *   seat — no claimSeat, no reservation, usedCount untouched, and it works when sold out.
+ * - kind "seat": everyone else goes through claimSeat exactly as before.
+ */
+export async function resolveFoundingDiscount(input: {
+  userId: string;
+  currentPlan: string;
+  targetPlan: string;
+  period: "monthly" | "annual";
+  hasManualDiscount: boolean;
+}): Promise<FoundingDiscount> {
+  const { userId, currentPlan, targetPlan, period, hasManualDiscount } = input;
+  if (hasManualDiscount || period !== "annual") return null;
+  if (foundingMemberUpgradeEligible({ currentPlan, targetPlan, period }) && await isFoundingMember(userId)) {
+    const c = await getFoundingCoupon();
+    return c ? { kind: "member", couponId: c.id, stripePromotionCodeId: c.stripePromotionCodeId } : null;
+  }
+  const claim = await claimSeat(userId); // null if sold out / already a founding member
+  return claim ? { kind: "seat", ...claim } : null;
+}
+
+/**
+ * Webhook bookkeeping for the coupon on a paid checkout session. Never throws.
+ * - founding "1": the seat was counted at reservation → just confirm it.
+ * - founding "member": the member reused their seat → no seat or usedCount change.
+ * - otherwise a manual coupon: record the redemption and count it once (unique guard = idempotent).
+ */
+export async function settleCheckoutCoupon(input: {
+  sessionId: string;
+  userId: string;
+  couponId: string;
+  founding: string | undefined;
+}): Promise<void> {
+  const { sessionId, userId, couponId, founding } = input;
+  if (founding === "1") {
+    await confirmSeat(sessionId).catch(() => {});
+    await prisma.couponRedemption.create({ data: { couponId, userId } }).catch(() => {});
+    console.log(`[stripe-webhook] founding seat confirmed: ${userId} (coupon ${couponId})`);
+    return;
+  }
+  if (founding === "member") {
+    console.log(`[stripe-webhook] founding member upgrade, seat reused: ${userId} (coupon ${couponId})`);
+    return;
+  }
+  try {
+    await prisma.couponRedemption.create({ data: { couponId, userId } });
+    await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
+    console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
+  } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
 }
 
 /** Backstop for a missed `checkout.session.expired`: release RESERVED seats older than HOLD_MINUTES.

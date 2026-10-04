@@ -2,6 +2,8 @@
 // Precedence rule (mirrors origin/main pricing page):
 //   a manual coupon always wins; the Founding-100 price applies on ANNUAL only.
 
+import { PLAN_RANK } from "@/lib/plan-change";
+
 export interface DisplayPriceInput {
   /** Monthly list price for the plan (THB). */
   monthlyPrice: number;
@@ -41,6 +43,22 @@ export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
   const isFounding = !coupon && foundingPct > 0;
   const final = pct > 0 ? Math.round(base * (1 - pct / 100)) : base;
   return { base, final, pct, isFounding };
+}
+
+/**
+ * HERO-61: a confirmed Founding member keeps the founding % when moving UP a paid tier on
+ * annual (PRO → BUSINESS), reusing their seat. Same-tier renewals stay out on purpose: the
+ * Founding renewal price is still undecided (HERO-66), so they keep today's full price.
+ * Shared by checkout (what Stripe charges) and /pricing (what the card shows).
+ */
+export function foundingMemberUpgradeEligible(input: {
+  currentPlan: string | null;
+  targetPlan: string;
+  period: "monthly" | "annual";
+}): boolean {
+  const { currentPlan, targetPlan, period } = input;
+  if (period !== "annual" || !currentPlan || currentPlan === "FREE") return false;
+  return (PLAN_RANK[targetPlan] ?? 0) > (PLAN_RANK[currentPlan] ?? 0);
 }
 
 export interface DefaultPricingSelectionInput {
