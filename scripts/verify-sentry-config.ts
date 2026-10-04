@@ -2,6 +2,7 @@ import assert from "assert";
 
 import {
   beforeSendSentryEvent,
+  beforeSendSentryTransaction,
   beforeSentryBreadcrumb,
   parseSentrySampleRate,
   sentryDataCollection,
@@ -246,7 +247,36 @@ function main() {
     "our own failed fetch must still be reported",
   );
 
-  console.log("verify-sentry-config: 38/38 passed");
+
+  // HERO-59: the upload-token pass must never throw on objects it cannot write to. Sentry SDK
+  // internals carry getter-only properties (e.g. `$`); one TypeError there dropped every
+  // transaction and flooded the error quota after release 269c50ad.
+  const token = "heroai_up_abcdefghijklmnopqrstuvwxyz012345";
+  const withGetter = (extra: Record<string, unknown> = {}) => {
+    const holder: Record<string, unknown> = { ...extra };
+    Object.defineProperty(holder, "$", { get: () => "sdk-internal", enumerable: true });
+    return holder;
+  };
+  const tx = beforeSendSentryTransaction({
+    type: "transaction",
+    transaction: `PUT /api/mcp-uploads/${token}`,
+    contexts: { trace: { data: withGetter({ url: `/api/mcp-uploads/${token}` }) } },
+    sdkProcessingMetadata: { frozen: Object.freeze({ path: `/api/mcp-uploads/${token}` }), scope: withGetter() },
+  } as unknown as Parameters<typeof beforeSendSentryTransaction>[0]);
+  assert(tx, "a transaction carrying getter-only or frozen objects must not be dropped");
+  assert(!JSON.stringify(tx.transaction).includes(token), "the transaction name is still redacted");
+  assert(
+    !JSON.stringify(tx.contexts).includes(token),
+    "a writable sibling of a getter-only property is still redacted",
+  );
+  const errorWithGetter = beforeSendSentryEvent({
+    event_id: "getter-event",
+    message: "boom",
+    extra: { holder: withGetter() },
+  });
+  assert(errorWithGetter, "an error event carrying a getter-only property must not be dropped");
+
+  console.log("verify-sentry-config: 42/42 passed");
 }
 
 main();
