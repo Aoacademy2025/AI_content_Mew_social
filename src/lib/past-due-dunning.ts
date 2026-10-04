@@ -70,16 +70,21 @@ export function pastDueReminderLink(input: {
  * customer has already fixed the problem — skip the d3 nudge even if the local
  * `subStatus` mirror has not caught up yet (it updates only once the superseded
  * subscription's `customer.subscription.deleted` webhook arrives).
+ *
+ * Review A7: a PromptPay row is created PENDING at checkout start and only
+ * turns PAID once scanned, so the moment that actually settled the problem is
+ * `paidAt`, not `createdAt`. A checkout STARTED before the failed-invoice claim
+ * but PAID after it must still count — compare on `paidAt ?? createdAt`.
  */
 export function hasCashPaymentAfter(
-  payments: readonly { amount: number; periodDays: number; note: string | null; createdAt: Date }[],
+  payments: readonly { amount: number; periodDays: number; note: string | null; createdAt: Date; paidAt?: Date | null }[],
   after: Date,
 ): boolean {
   return payments.some((payment) =>
     payment.amount > 0
     && payment.periodDays > 0
     && payment.note?.trim().toLowerCase() !== "credits"
-    && payment.createdAt.getTime() > after.getTime());
+    && (payment.paidAt ?? payment.createdAt).getTime() > after.getTime());
 }
 
 /** A past_due account still holds its tier while `planExpiresAt` is in the future. */

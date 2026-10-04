@@ -149,6 +149,28 @@ async function main() {
         { amount: 59_900, periodDays: 0, note: null, createdAt: new Date(after.getTime() + DAY_MS) },
       ], after));
     check("hasCashPaymentAfter: no payments → false", !pastDue.hasCashPaymentAfter([], after));
+
+    // Review A7: a PromptPay row is created PENDING at checkout start and only turns PAID once
+    // scanned, so the moment that matters is `paidAt`, not `createdAt`. A checkout STARTED before
+    // the failed-invoice claim but PAID after it must still count.
+    check("hasCashPaymentAfter: checkout started (createdAt) BEFORE the claim, paid AFTER it → true (uses paidAt, not createdAt)",
+      pastDue.hasCashPaymentAfter([{
+        amount: 59_900, periodDays: 30, note: null,
+        createdAt: new Date(after.getTime() - DAY_MS), paidAt: new Date(after.getTime() + DAY_MS),
+      }], after));
+    check("hasCashPaymentAfter: createdAt AFTER the claim but paidAt BEFORE it → false (paidAt wins over createdAt)",
+      !pastDue.hasCashPaymentAfter([{
+        amount: 59_900, periodDays: 30, note: null,
+        createdAt: new Date(after.getTime() + DAY_MS), paidAt: new Date(after.getTime() - DAY_MS),
+      }], after));
+    check("hasCashPaymentAfter: no paidAt on file → falls back to createdAt (after → true)",
+      pastDue.hasCashPaymentAfter([{
+        amount: 59_900, periodDays: 30, note: null, createdAt: new Date(after.getTime() + DAY_MS), paidAt: null,
+      }], after));
+    check("hasCashPaymentAfter: no paidAt on file → falls back to createdAt (before → false)",
+      !pastDue.hasCashPaymentAfter([{
+        amount: 59_900, periodDays: 30, note: null, createdAt: new Date(after.getTime() - DAY_MS), paidAt: null,
+      }], after));
   }
 
   // ── C · sendDueRenewalReminders against a throwaway SQLite ───────────────
@@ -335,6 +357,27 @@ async function main() {
     check("flag off: the cash-settled skip does not apply — d3 fires for this account",
       n7.some((n) => n.userId === "ppm-pd-settled-off") && (noSkipRun.promptpaySettled ?? 0) === 0,
       JSON.stringify(noSkipRun));
+
+    // Review A7, reproduced end-to-end: the PromptPay checkout STARTED (Payment row created
+    // PENDING) before the failed-invoice claim, and only turned PAID after it (`paidAt` after,
+    // `createdAt` before). Comparing on createdAt would miss this and send the d3 nudge anyway.
+    process.env.PROMPTPAY_MONTHLY = "1";
+    await createPastDueUser({ id: "ppm-pd-pending-before", planExpiresAt: new Date(NOW.getTime() + 5 * DAY_MS) });
+    const { deps: d8 } = depsFor();
+    await deliverPastDueReminder({ userId: "ppm-pd-pending-before", stripeInvoiceId: "ppm_in_6", kind: "failed" }, NOW, d8 as never);
+    await prisma.payment.create({
+      data: {
+        userId: "ppm-pd-pending-before", stripeSessionId: "ppm_pp_pending_before", plan: "PRO", amount: 59_900,
+        currency: "thb", status: "PAID", periodDays: 30, note: null,
+        createdAt: new Date(NOW.getTime() - 1 * DAY_MS), // checkout started BEFORE the claim
+        paidAt: new Date(NOW.getTime() + 1 * DAY_MS), // settled AFTER the claim
+      },
+    });
+    const { notifications: n8, deps: d9 } = depsFor();
+    const pendingBeforeRun = await sendDuePastDueFollowUps(day3, d9 as never);
+    check("flag on: PENDING-before/paid-after cash payment still skips the d3 follow-up (uses paidAt, not createdAt)",
+      pendingBeforeRun.promptpaySettled >= 1 && !n8.some((n) => n.userId === "ppm-pd-pending-before"),
+      JSON.stringify({ run: pendingBeforeRun, n8 }));
 
     await prisma.payment.deleteMany({ where: { id: { startsWith: "ppm_" } } });
     await prisma.pastDueReminderLog.deleteMany({ where: { userId: { startsWith: "ppm-pd-" } } });

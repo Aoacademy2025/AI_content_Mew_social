@@ -171,7 +171,7 @@ export async function sendDuePastDueFollowUps(
         select: {
           subStatus: true,
           payments: promptpayMonthly
-            ? { where: { status: "PAID" }, select: { amount: true, periodDays: true, note: true, createdAt: true } }
+            ? { where: { status: "PAID" }, select: { amount: true, periodDays: true, note: true, createdAt: true, paidAt: true } }
             : false,
         },
       },

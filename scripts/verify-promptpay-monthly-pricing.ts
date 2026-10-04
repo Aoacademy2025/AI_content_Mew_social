@@ -220,6 +220,41 @@ ok("pricing-client (BLOCKING-1 fix) seeds monthly's method via seedMethodFromCan
 ok("pricing-client no longer special-cases only `cancelReturn.period === \"monthly\"` for the preselect",
   !/cancelReturn\.period === ["']monthly["'] && shouldPreselectPromptpay/.test(pricingClient));
 
+// ───────────────────────── A2 — cancel-banner monthly price formatting ─────────────────────────
+// Review finding A2: the cancel-banner's monthly `{price}` must be formatted with
+// `.toLocaleString()` exactly like the card's monthly price (`priceBlock`), so ฿1290 (an
+// admin-set price ≥1000) reads as "1,290" on both surfaces, not "1290" on one of them.
+{
+  const monthlyBannerLine = pricingClient
+    .split("\n")
+    .find((l) => l.includes("ใช้ ${cancelBanner.plan} ได้ 30 วัน"));
+  ok("A2: cancel-banner monthly price line exists",
+    !!monthlyBannerLine);
+  ok("A2: cancel-banner monthly price is formatted with .toLocaleString() (matches the card's priceBlock)",
+    !!monthlyBannerLine && /\.price\)\s*\?\?\s*\([^)]*\)\)\.toLocaleString\(\)/.test(monthlyBannerLine));
+}
+
+// ───────────────────────── A3 — /api/user/me effect deps are primitives ─────────────────────────
+// Review finding A3: the effect must depend on primitives (cancelReturn.period/.method,
+// monthlyPromptpayOffered.PRO/.BUSINESS, the flag boolean, preferredPeriod) — or hoisted
+// module-constant defaults — not on the whole `cancelReturn`/`monthlyPromptpayOffered` OBJECTS,
+// whose identity changes on every re-render and would loop the fetch / reset the chosen period.
+{
+  const meEffectMatch = pricingClient.match(/fetch\("\/api\/user\/me"\)[\s\S]*?\}, \[([^\]]*)\]\);/);
+  const deps = meEffectMatch?.[1] ?? "";
+  ok("A3: the /api/user/me effect was found", !!meEffectMatch);
+  ok("A3: effect deps do NOT include the whole `cancelReturn` object",
+    !!meEffectMatch && !/\bcancelReturn\b(?!\.)/.test(deps));
+  ok("A3: effect deps do NOT include the whole `monthlyPromptpayOffered` object",
+    !!meEffectMatch && !/\bmonthlyPromptpayOffered\b(?!\.)/.test(deps));
+  ok("A3: effect deps include cancelReturn.period", /\bcancelReturn\.period\b/.test(deps));
+  ok("A3: effect deps include cancelReturn.method", /\bcancelReturn\.method\b/.test(deps));
+  ok("A3: effect deps include monthlyPromptpayOffered.PRO", /\bmonthlyPromptpayOffered\.PRO\b/.test(deps));
+  ok("A3: effect deps include monthlyPromptpayOffered.BUSINESS", /\bmonthlyPromptpayOffered\.BUSINESS\b/.test(deps));
+  ok("A3: effect deps include promptpayMonthlyEnabledFlag", /\bpromptpayMonthlyEnabledFlag\b/.test(deps));
+  ok("A3: effect deps include preferredPeriod", /\bpreferredPeriod\b/.test(deps));
+}
+
 ok("pricing page parses the whitelisted cancel-return params via parseCancelReturnParams",
   /parseCancelReturnParams\(/.test(pricingPage));
 ok("pricing page resolves promptpayMonthlyOffered per paid tier",

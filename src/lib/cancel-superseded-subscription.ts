@@ -46,7 +46,7 @@ const MAX_ERROR_DETAIL = 300;
  */
 export type SupersedeStripeClient = {
   subscriptions: {
-    retrieve(id: string): Promise<{ status?: string | null }>;
+    retrieve(id: string): Promise<{ status?: string | null; customer?: string | { id: string } | null }>;
     cancel(id: string, params: { invoice_now: boolean; prorate: boolean }): Promise<unknown>;
   };
   invoices: {
@@ -83,6 +83,10 @@ export type CancelSupersededSkipReason =
   | "payment_not_recorded"
   | "no_subscription"
   | "bundle_subscription"
+  /** A5 hardening: the retrieved subscription's `customer` doesn't match (or the user has no)
+   * `stripeCustomerId` on file. A corrupted `stripeSubscriptionId` row must never cancel
+   * someone else's subscription. */
+  | "customer_mismatch"
   | "stripe_status"
   /** A concurrent run (or someone in the Dashboard) canceled it between our status read and our cancel. */
   | "already_canceled";
@@ -162,7 +166,7 @@ export async function cancelSupersededSubscription(
     // Rule (b): target only this user's own `stripeSubscriptionId`, never another sub of the same customer.
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { stripeSubscriptionId: true, bundleSubscriptionId: true },
+      select: { stripeSubscriptionId: true, bundleSubscriptionId: true, stripeCustomerId: true },
     });
     subscriptionId = user?.stripeSubscriptionId ?? null;
     if (!user || !subscriptionId) return { outcome: "skipped", reason: "no_subscription" };
@@ -177,6 +181,31 @@ export async function cancelSupersededSubscription(
     step = "retrieve";
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const stripeStatus = subscription.status ?? null;
+
+    // A5 hardening: require the subscription Stripe just returned to actually belong to this
+    // user's own Stripe customer before we go any further. Guards against a corrupted
+    // `stripeSubscriptionId` row pointing at another customer's subscription.
+    const subscriptionCustomerId = typeof subscription.customer === "string"
+      ? subscription.customer
+      : subscription.customer?.id ?? null;
+    if (!user.stripeCustomerId || !subscriptionCustomerId || subscriptionCustomerId !== user.stripeCustomerId) {
+      console.error(
+        `[cancel-superseded] customer mismatch — user ${userId}, subscription ${subscriptionId}: `
+          + `Stripe customer ${subscriptionCustomerId ?? "none"} !== user's stripeCustomerId ${user.stripeCustomerId ?? "none"}`,
+      );
+      const mismatchAlert: AdminAlert = {
+        type: "ERROR_SYSTEM",
+        title: "🔴 ERROR: subscription customer ไม่ตรงกับผู้ใช้ ก่อนยกเลิก (PromptPay)",
+        body: `ERROR — user ${userId} · subscription ${subscriptionId}`,
+      };
+      try {
+        await (deps.notify ?? notifyAdmins)(mismatchAlert);
+      } catch (notifyErr) {
+        console.error("[cancel-superseded] admin alert could not be written:", describeError(notifyErr));
+      }
+      return { outcome: "skipped", reason: "customer_mismatch", subscriptionId };
+    }
+
     if (!stripeStatus || !SUPERSEDABLE_STRIPE_STATUSES.has(stripeStatus)) {
       return { outcome: "skipped", reason: "stripe_status", subscriptionId, stripeStatus };
     }

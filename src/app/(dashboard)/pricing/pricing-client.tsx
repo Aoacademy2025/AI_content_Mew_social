@@ -188,17 +188,24 @@ export function PricingClient({
         setPeriod(preferredPeriod ?? resolved.period);
         // ADR 0066 — re-apply the same explicit-param override on top of the freshly
         // resolved default once `/api/user/me` is known (mirrors the initial state's
-        // seeding so a slower client hydration can't drop the override).
+        // seeding so a slower client hydration can't drop the override). Review A3 — built
+        // from the PRIMITIVE fields below (not the whole `cancelReturn`/`monthlyPromptpayOffered`
+        // objects), which is also what the effect depends on: those objects' identity can
+        // change on a server re-render with the same values, and depending on the objects
+        // themselves would re-run this fetch and reset `period`/`method` out from under the user.
         setMethod(seedMethodFromCancelReturn(
           "annual",
-          cancelReturn,
-          { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+          { period: cancelReturn.period, method: cancelReturn.method },
+          {
+            promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag,
+            monthlyOffered: { PRO: monthlyPromptpayOffered.PRO, BUSINESS: monthlyPromptpayOffered.BUSINESS },
+          },
           resolved.method,
         ));
         setUserChecked(true);
       })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
-  }, [preferredPeriod, cancelReturn, monthlyPromptpayOffered, promptpayMonthlyEnabledFlag]);
+  }, [preferredPeriod, cancelReturn.period, cancelReturn.method, monthlyPromptpayOffered.PRO, monthlyPromptpayOffered.BUSINESS, promptpayMonthlyEnabledFlag]);
 
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
@@ -394,7 +401,7 @@ export function PricingClient({
                 <p className="text-sm font-semibold" style={{ color: "#FCA5A5" }}>บัตรใช้ไม่ได้? จ่ายด้วย PromptPay แทนได้</p>
                 <p className="mt-1 text-[13px]" style={{ color: "#FCA5A5" }}>
                   {cancelBanner.period === "monthly"
-                    ? `สแกนจ่าย ฿${(cancelBanner.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (cancelBanner.plan === "PRO" ? 599 : 990)} ใช้ ${cancelBanner.plan} ได้ 30 วัน ไม่ต้องใช้บัตร`
+                    ? `สแกนจ่าย ฿${((cancelBanner.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (cancelBanner.plan === "PRO" ? 599 : 990)).toLocaleString()} ใช้ ${cancelBanner.plan} ได้ 30 วัน ไม่ต้องใช้บัตร`
                     : `สแกนจ่ายครั้งเดียว ใช้ ${cancelBanner.plan} ได้ 1 ปี ไม่ต้องใช้บัตร`}
                 </p>
               </div>

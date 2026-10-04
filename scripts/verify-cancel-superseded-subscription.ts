@@ -182,6 +182,9 @@ async function main() {
     bundleSubscriptionId?: string | null;
     paymentStatus?: "PAID" | "PENDING";
     periodDays?: number;
+    /** A5 hardening — defaults to `cus_${seq}`; pass the stub sub's `customer` to match it, or
+     * `null` to simulate a user record with no Stripe customer on file. */
+    stripeCustomerId?: string | null;
   }) {
     seq += 1;
     const id = `user-${seq}`;
@@ -192,7 +195,7 @@ async function main() {
         email: `user-${seq}@example.com`,
         plan: "PRO",
         planExpiresAt: new Date(now.getTime() + 30 * DAY_MS),
-        stripeCustomerId: `cus_${seq}`,
+        stripeCustomerId: opts.stripeCustomerId === undefined ? `cus_${seq}` : opts.stripeCustomerId,
         stripeSubscriptionId: opts.stripeSubscriptionId,
         subStatus: opts.subStatus === undefined ? "past_due" : opts.subStatus,
         bundleSubscriptionId: opts.bundleSubscriptionId ?? null,
@@ -232,7 +235,7 @@ async function main() {
   // A1 · past_due → canceled with no proration and no final invoice; every open AND uncollectible
   //      invoice voided (an uncollectible invoice can still be paid by hand, so rule (c) voids it too)
   {
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a1", sessionId: "cs_a1" });
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a1", sessionId: "cs_a1", stripeCustomerId: "cus_a1" });
     const stub = makeStub(
       { sub_a1: { status: "past_due", customer: "cus_a1" } },
       [
@@ -293,7 +296,7 @@ async function main() {
 
   // A2 · unpaid → canceled + voided; this session is an ANNUAL PromptPay term (rule (f))
   {
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a2", sessionId: "cs_a2", subStatus: "past_due", periodDays: 365 });
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a2", sessionId: "cs_a2", subStatus: "past_due", periodDays: 365, stripeCustomerId: "cus_a2" });
     const stub = makeStub(
       { sub_a2: { status: "unpaid", customer: "cus_a2" } },
       [{ id: "in_a2_open", subscription: "sub_a2", status: "open" }],
@@ -317,9 +320,9 @@ async function main() {
   // A4 · trialing / canceled / incomplete / paused → untouched
   for (const status of ["active", "trialing", "canceled", "incomplete", "paused"]) {
     const subId = `sub_a3_${status}`;
-    const userId = await paidUser({ stripeSubscriptionId: subId, sessionId: `cs_a3_${status}`, subStatus: "past_due" });
+    const userId = await paidUser({ stripeSubscriptionId: subId, sessionId: `cs_a3_${status}`, subStatus: "past_due", stripeCustomerId: `cus_a3_${status}` });
     const stub = makeStub(
-      { [subId]: { status, customer: "cus_a3" } },
+      { [subId]: { status, customer: `cus_a3_${status}` } },
       [{ id: `in_a3_${status}`, subscription: subId, status: "open" }],
     );
     const n = recordingNotify();
@@ -371,7 +374,7 @@ async function main() {
 
   // A6 · a different subscription id than the user's stripeSubscriptionId → untouched
   {
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a6_mine", sessionId: "cs_a6", subStatus: "active" });
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a6_mine", sessionId: "cs_a6", subStatus: "active", stripeCustomerId: "cus_a6" });
     const stub = makeStub(
       {
         sub_a6_mine: { status: "active", customer: "cus_a6" },
@@ -431,8 +434,8 @@ async function main() {
   for (const failOn of ["retrieve", "cancel", "list", "void"] as const) {
     const subId = `sub_a9_${failOn}`;
     const sessionId = `cs_a9_${failOn}`;
-    const userId = await paidUser({ stripeSubscriptionId: subId, sessionId });
-    const stub = makeStub({ [subId]: { status: "past_due", customer: "cus_a9" } },
+    const userId = await paidUser({ stripeSubscriptionId: subId, sessionId, stripeCustomerId: `cus_a9_${failOn}` });
+    const stub = makeStub({ [subId]: { status: "past_due", customer: `cus_a9_${failOn}` } },
       [{ id: `in_a9_${failOn}`, subscription: subId, status: "open" }]);
     stub.setFailOn(failOn);
     const n = recordingNotify();
@@ -457,8 +460,8 @@ async function main() {
   }
   {
     // the alert itself failing still never throws
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a9_notify", sessionId: "cs_a9_notify" });
-    const stub = makeStub({ sub_a9_notify: { status: "past_due", customer: "cus_a9" } }, []);
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a9_notify", sessionId: "cs_a9_notify", stripeCustomerId: "cus_a9_notify" });
+    const stub = makeStub({ sub_a9_notify: { status: "past_due", customer: "cus_a9_notify" } }, []);
     stub.setFailOn("cancel");
     let threw: unknown = null;
     try {
@@ -493,7 +496,7 @@ async function main() {
   //       the same event) canceled the sub between our status read and our cancel. Stripe refuses
   //       our cancel. That is the outcome we wanted, so it is a no-op, never an admin alert.
   {
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a11", sessionId: "cs_a11" });
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a11", sessionId: "cs_a11", stripeCustomerId: "cus_a11" });
     const stub = makeStub({ sub_a11: { status: "past_due", customer: "cus_a11" } },
       [{ id: "in_a11_open", subscription: "sub_a11", status: "open" }]);
     stub.setBeforeCancel((id) => { stub.subs[id].status = "canceled"; });
@@ -515,7 +518,7 @@ async function main() {
   // A12 · partial-void failure: every invoice that can be voided is voided, and the admin alert
   //       lists the voided ids and the failed ids separately (advisory 4)
   {
-    const userId = await paidUser({ stripeSubscriptionId: "sub_a12", sessionId: "cs_a12" });
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a12", sessionId: "cs_a12", stripeCustomerId: "cus_a12" });
     const stub = makeStub({ sub_a12: { status: "past_due", customer: "cus_a12" } }, [
       { id: "in_a12_open_1", subscription: "sub_a12", status: "open" },
       { id: "in_a12_open_2", subscription: "sub_a12", status: "open" },
@@ -552,6 +555,63 @@ async function main() {
         && isDeepStrictEqual([...(r.voidedInvoiceIds ?? [])].sort(), ["in_a12_open_1", "in_a12_uncollectible"])
         && isDeepStrictEqual(r.failedInvoiceIds, ["in_a12_open_2"]),
       JSON.stringify(r));
+  }
+
+  // A13 · ownership hardening (review finding A5): the retrieved subscription's `customer`
+  // must equal the user's own `stripeCustomerId` before we touch it — a corrupted
+  // `stripeSubscriptionId` row must never cancel someone else's subscription.
+  {
+    // match → acts exactly as before
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a13_match", sessionId: "cs_a13_match", stripeCustomerId: "cus_a13_match" });
+    const stub = makeStub({ sub_a13_match: { status: "past_due", customer: "cus_a13_match" } },
+      [{ id: "in_a13_match_open", subscription: "sub_a13_match", status: "open" }]);
+    const n = recordingNotify();
+    const result = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a13_match", userId), { env: FLAG_ON, notify: n.notify });
+    check("A13 customer matches the user's stripeCustomerId → cancels and voids as normal, no alert",
+      result.outcome === "canceled" && stub.subs.sub_a13_match.status === "canceled" && n.sent.length === 0,
+      JSON.stringify(result));
+  }
+  {
+    // mismatch → untouched, one admin alert naming user id + sub id, never throws
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a13_mismatch", sessionId: "cs_a13_mismatch", stripeCustomerId: "cus_a13_mine" });
+    const stub = makeStub({ sub_a13_mismatch: { status: "past_due", customer: "cus_a13_someone_else" } },
+      [{ id: "in_a13_mismatch_open", subscription: "sub_a13_mismatch", status: "open" }]);
+    const n = recordingNotify();
+    let threw: unknown = null;
+    let result: Awaited<ReturnType<typeof cancelSupersededSubscription>> | null = null;
+    try {
+      result = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a13_mismatch", userId), { env: FLAG_ON, notify: n.notify });
+    } catch (e) { threw = e; }
+    const alert = n.sent[0];
+    check("A13 customer mismatch → no throw, untouched (status read only, nothing canceled/voided)",
+      threw === null && result?.outcome === "skipped"
+        && isDeepStrictEqual(stub.ops(), ["retrieve"])
+        && stub.subs.sub_a13_mismatch.status === "past_due"
+        && stub.invoices[0].status === "open",
+      String(threw ?? JSON.stringify({ result, calls: stub.calls })));
+    check("A13 customer mismatch → exactly one ERROR_SYSTEM admin alert naming the user id and the sub id",
+      n.sent.length === 1 && alert?.type === "ERROR_SYSTEM" && /ERROR/.test(`${alert.title} ${alert.body}`)
+        && alert.body.includes(userId) && alert.body.includes("sub_a13_mismatch"),
+      JSON.stringify(n.sent));
+  }
+  {
+    // the user has no stripeCustomerId on file at all → same as a mismatch, never acts
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a13_missing", sessionId: "cs_a13_missing", stripeCustomerId: null });
+    const stub = makeStub({ sub_a13_missing: { status: "past_due", customer: "cus_a13_whatever" } },
+      [{ id: "in_a13_missing_open", subscription: "sub_a13_missing", status: "open" }]);
+    const n = recordingNotify();
+    let threw: unknown = null;
+    let result: Awaited<ReturnType<typeof cancelSupersededSubscription>> | null = null;
+    try {
+      result = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a13_missing", userId), { env: FLAG_ON, notify: n.notify });
+    } catch (e) { threw = e; }
+    check("A13 user has no stripeCustomerId on file → no throw, untouched, one admin alert",
+      threw === null && result?.outcome === "skipped"
+        && isDeepStrictEqual(stub.ops(), ["retrieve"])
+        && stub.subs.sub_a13_missing.status === "past_due"
+        && n.sent.length === 1 && n.sent[0].type === "ERROR_SYSTEM"
+        && n.sent[0].body.includes(userId) && n.sent[0].body.includes("sub_a13_missing"),
+      String(threw ?? JSON.stringify({ result, calls: stub.calls, alerts: n.sent })));
   }
 
   // ═══ B · the real webhook route ═══════════════════════════════════════════
