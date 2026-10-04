@@ -189,9 +189,19 @@ async function importChecks(tmp: string): Promise<void> {
     !failResult.ok && fs.existsSync(landscapePath), JSON.stringify(failResult));
 }
 
+// 2026-10-04: prod runs Ubuntu's ffprobe 4.4, which has no `stream_side_data` section — a
+// `-show_entries …:stream_side_data=rotation` probe fails outright there (every MCP presenter
+// import was probe_failed) while passing on CI's newer ffprobe. Runtime probes use -show_streams.
+function ffprobeVersionPortabilityChecks(): void {
+  const offenders = ["src/lib/upload-media-probe.ts", "src/lib/video-media-probe.server.ts"].filter((file) =>
+    /["'`][^"'`\n]*stream_side_data=/.test(fs.readFileSync(path.join(process.cwd(), file), "utf8")));
+  check("no runtime ffprobe call selects stream_side_data (unsupported by prod ffprobe 4.4)", offenders.length === 0, offenders.join(", "));
+}
+
 async function main(): Promise<void> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "media-import-presenter-checks-"));
   try {
+    ffprobeVersionPortabilityChecks();
     pureChecks();
     await presenterCheckScenarios(tmp);
     await importChecks(tmp);
