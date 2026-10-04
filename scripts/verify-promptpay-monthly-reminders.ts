@@ -9,8 +9,10 @@
 //    except the link, under the flag; flag off is byte-for-byte today's behavior
 // D. deliverPastDueReminder / sendDuePastDueFollowUps against the same DB: the
 //    not-entitled link, the still-entitled suffix, and the cash-settled d3 skip
-// E. wiring: the dashboard layout passes the flag down to PastDueBanner, and the
-//    banner renders the secondary PromptPay link
+// E. wiring: /api/user/me delivers the flag at RUNTIME and PastDueBanner reads
+//    it from there (not a prop from the statically-prerendered (dashboard)
+//    layout — branch-review B1), and the banner's flag-off tree stays
+//    byte-for-byte the pre-ADR-0066 single <button> (branch-review A1).
 //
 // Stripe is never called, and no real email is ever sent — every email/notify
 // dependency is a plain injected stub.
@@ -341,25 +343,54 @@ async function main() {
   }
 
   // ── E · wiring (source text, the repo's route-check pattern) ─────────────
-  console.log("\nE. wiring: dashboard layout plumbs the flag down to PastDueBanner");
+  console.log("\nE. wiring: /api/user/me delivers the flag at runtime; the (dashboard)");
+  console.log("   layout and components/layout never freeze it at build time");
   {
+    // branch-review B1: the (dashboard) layout is statically prerendered, so a
+    // server layout reading the flag and passing it down as a prop freezes the
+    // value into those pages' RSC payload at BUILD time — a restart-only
+    // rollback (unset the env var + restart, no rebuild) would then not revert
+    // the banner. No file under (dashboard)/layout.tsx or components/layout/
+    // may call promptpayMonthlyEnabled() ever again.
     const dashLayout = src("src/app/(dashboard)/layout.tsx");
-    check("(dashboard)/layout.tsx reads promptpayMonthlyEnabled() and passes it down",
-      dashLayout.includes("promptpayMonthlyEnabled()") && dashLayout.includes("promptpayMonthly={promptpayMonthlyEnabled()}"));
+    check("(dashboard)/layout.tsx does NOT read promptpayMonthlyEnabled() (B1 — static prerender freezes it)",
+      !dashLayout.includes("promptpayMonthlyEnabled"));
     check("(dashboard)/layout.tsx has no NEXT_PUBLIC_ twin for the flag",
       !dashLayout.includes("NEXT_PUBLIC_PROMPTPAY_MONTHLY"));
 
     const dashboardLayoutComponent = src("src/components/layout/dashboard-layout.tsx");
-    check("dashboard-layout.tsx forwards promptpayMonthly to PastDueBanner",
-      /<PastDueBanner\s+promptpayMonthly=\{promptpayMonthly\}\s*\/>/.test(dashboardLayoutComponent));
+    check("dashboard-layout.tsx does NOT read promptpayMonthlyEnabled() and does not pass a promptpayMonthly prop to PastDueBanner",
+      !dashboardLayoutComponent.includes("promptpayMonthlyEnabled")
+      && !dashboardLayoutComponent.includes("promptpayMonthly")
+      && /<PastDueBanner\s*\/>/.test(dashboardLayoutComponent));
+
+    const userMeRoute = src("src/app/api/user/me/route.ts");
+    check("/api/user/me reads promptpayMonthlyEnabled() and returns it in the response (runtime, per-request)",
+      userMeRoute.includes("promptpayMonthlyEnabled()") && /promptpayMonthly:\s*promptpayMonthlyEnabled\(\)/.test(userMeRoute));
 
     const banner = src("src/components/layout/past-due-banner.tsx");
-    check("past-due-banner.tsx takes promptpayMonthly as a prop (no direct env read)",
-      banner.includes("promptpayMonthly") && !banner.includes("process.env.PROMPTPAY_MONTHLY"));
+    check("past-due-banner.tsx takes no promptpayMonthly prop (no direct env read either)",
+      !/export function PastDueBanner\([^)]*promptpayMonthly/.test(banner)
+      && !banner.includes("process.env.PROMPTPAY_MONTHLY"));
+    check("past-due-banner.tsx reads the flag from fetchMe() (the /api/user/me response), not a prop",
+      banner.includes("fetchMe()") && banner.includes("me.promptpayMonthly"));
     check("past-due-banner.tsx renders the exact Copy secondary-link text",
       banner.includes("หรือจ่ายด้วย PromptPay"));
     check("past-due-banner.tsx uses pastDueReminderLink for the secondary link",
       banner.includes("pastDueReminderLink("));
+    // branch-review A1: flag off (or not yet loaded) must render the ORIGINAL
+    // single <button data-testid="past-due-banner"> tree unchanged — no wrapping
+    // <div>, no lost px-4 py-2 on the clickable element. The wrapper is only
+    // reachable once a PromptPay link exists.
+    check("past-due-banner.tsx keeps the original single-<button> className+testid pair for the flag-off branch (A1)",
+      banner.includes("!promptpayLink")
+      && banner.includes('className="flex w-full items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-70"'));
+    const flagOnBranch = banner.split("!promptpayLink")[1] ?? "";
+    check("past-due-banner.tsx's flag-on branch wraps a <div data-testid=\"past-due-banner\"> around two <button>s (secondary link, not a nested interactive control)",
+      flagOnBranch.includes('<div')
+      && flagOnBranch.includes('data-testid="past-due-banner"')
+      && (flagOnBranch.match(/<button/g) ?? []).length >= 2
+      && flagOnBranch.includes("past-due-banner-promptpay"));
 
     const renewalServer = src("src/lib/renewal-reminders.server.ts");
     check("renewal-reminders.server.ts reads the flag and uses selectRenewalKind + matchedCashBackedPayment",

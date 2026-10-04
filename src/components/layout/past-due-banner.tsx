@@ -12,8 +12,19 @@ type Me = {
   subStatus?: string | null;
   planExpiresAt?: string | null;
   billingPeriod?: string | null;
+  /** ADR 0066 — PROMPTPAY_MONTHLY, delivered by /api/user/me (server-only env,
+   *  no NEXT_PUBLIC_ twin). Read here at runtime, not through a prop from the
+   *  (dashboard) layout: that layout is statically prerendered, so a prop would
+   *  freeze the flag into the page at build time and break the env+restart
+   *  rollback contract. */
+  promptpayMonthly?: boolean;
 };
-type BannerState = { tier: "PRO" | "BUSINESS"; stillEntitled: boolean; billingPeriod: string | null };
+type BannerState = {
+  tier: "PRO" | "BUSINESS";
+  stillEntitled: boolean;
+  billingPeriod: string | null;
+  promptpayMonthly: boolean;
+};
 
 /**
  * HERO-33 — shown while Stripe reports the subscription `past_due` (a renewal or
@@ -22,10 +33,11 @@ type BannerState = { tier: "PRO" | "BUSINESS"; stillEntitled: boolean; billingPe
  * Billing, where the same button lives. Copy follows pastDueReminderCopy(): while
  * `planExpiresAt` is still ahead the tier is intact, otherwise it has already lapsed.
  *
- * `promptpayMonthly` (ADR 0066) is the PROMPTPAY_MONTHLY flag, read server-side by the
- * (dashboard) layout and passed down as a prop — this component has no env access.
+ * Flag off (or not yet loaded) renders the exact same single-button markup as
+ * before ADR 0066 — the PromptPay secondary link is an addition, not a
+ * restructure, of that tree.
  */
-export function PastDueBanner({ promptpayMonthly = false }: { promptpayMonthly?: boolean }) {
+export function PastDueBanner() {
   const router = useRouter();
   const [state, setState] = useState<BannerState | null>(null);
   const [opening, setOpening] = useState(false);
@@ -41,6 +53,7 @@ export function PastDueBanner({ promptpayMonthly = false }: { promptpayMonthly?:
         tier: me.plan === "BUSINESS" ? "BUSINESS" : "PRO",
         stillEntitled,
         billingPeriod: me.billingPeriod ?? null,
+        promptpayMonthly: !!me.promptpayMonthly,
       });
     }).catch(() => {});
   }, []);
@@ -53,7 +66,7 @@ export function PastDueBanner({ promptpayMonthly = false }: { promptpayMonthly?:
   // Always the not-entitled pricing link (Copy: "same link as the row above"),
   // regardless of this account's current entitlement — PromptPay is offered as an
   // instant alternative to fixing the card either way.
-  const promptpayLink = promptpayMonthly
+  const promptpayLink = state.promptpayMonthly
     ? pastDueReminderLink({ stillEntitled: false, plan: state.tier, billingPeriod: state.billingPeriod, promptpayMonthly: true })
     : null;
 
@@ -76,6 +89,29 @@ export function PastDueBanner({ promptpayMonthly = false }: { promptpayMonthly?:
     }
   }
 
+  // Flag off → the exact original single-button tree (byte-for-byte: same
+  // element, same data-testid, same className, same inline style).
+  if (!promptpayLink) {
+    return (
+      <button
+        type="button"
+        onClick={openPortal}
+        disabled={opening}
+        data-testid="past-due-banner"
+        className="flex w-full items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-70"
+        style={{ background: "linear-gradient(90deg,#DC2626,#B45309)" }}
+      >
+        {opening ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4" strokeWidth={2.5} />}
+        <span>{text}</span>
+        <span className="inline-flex items-center gap-1 underline underline-offset-2">
+          อัปเดตบัตร <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+        </span>
+      </button>
+    );
+  }
+
+  // Flag on → the original button's content, wrapped so a second, non-nested
+  // button can carry the secondary PromptPay link underneath it.
   return (
     <div
       data-testid="past-due-banner"
@@ -95,16 +131,14 @@ export function PastDueBanner({ promptpayMonthly = false }: { promptpayMonthly?:
           อัปเดตบัตร <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
         </span>
       </button>
-      {promptpayLink && (
-        <button
-          type="button"
-          onClick={() => router.push(promptpayLink)}
-          data-testid="past-due-banner-promptpay"
-          className="text-xs font-medium underline underline-offset-2 opacity-90 hover:opacity-100"
-        >
-          หรือจ่ายด้วย PromptPay
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => router.push(promptpayLink)}
+        data-testid="past-due-banner-promptpay"
+        className="text-xs font-medium underline underline-offset-2 opacity-90 hover:opacity-100"
+      >
+        หรือจ่ายด้วย PromptPay
+      </button>
     </div>
   );
 }
