@@ -55,7 +55,7 @@ export function TimelinePanel({
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, brollTimelineSpans, onSelectBrollWindow, onBrollBoundaryChange,
-  editedWindowIndices, disabledWindowIndices,
+  editedWindowIndices, disabledWindowIndices, selectedWindowIndex,
   layerVisibility, layerAvailability, onLayerVisibilityChange,
   layerControlsDisabled = false,
   headlineHook, onHeadlineHookDurationChange,
@@ -94,6 +94,10 @@ export function TimelinePanel({
   editedWindowIndices?: ReadonlySet<number>;
   /** B-roll windows that are currently disabled (includes optimistic staged visibility). */
   disabledWindowIndices?: ReadonlySet<number>;
+  /** index (ใน config.bgVideos[]) ของหน้าต่างที่เลือกอยู่ตอนนี้ (inspector เปิดอยู่) — วาด
+   *  เป็น outline ม่วง 2px รอบคลิป, แยกจากจุดม่วง (editedWindowIndices) และเส้นประ
+   *  (disabledWindowIndices); หายไปเมื่อ inspector ปิด (HERO-63). */
+  selectedWindowIndex?: number | null;
   layerVisibility: Record<EditableEditorLayer, boolean>;
   layerAvailability: Record<EditableEditorLayer, boolean>;
   onLayerVisibilityChange: (layer: EditableEditorLayer, enabled: boolean) => void;
@@ -504,6 +508,7 @@ export function TimelinePanel({
             <div className="relative flex-1" style={{ height: TRACK_H }}>
               {brollSpans.map((s, i) => {
                 const enabled = !disabledWindowIndices?.has(s.index);
+                const isSelectedWindow = selectedWindowIndex != null && selectedWindowIndex === s.index;
                 const next = brollSpans[i + 1];
                 const canResizeBoundary = Boolean(
                   onBrollBoundaryChange
@@ -514,12 +519,18 @@ export function TimelinePanel({
                   <div
                     key={i}
                     data-clip
+                    data-selected-broll-window={isSelectedWindow ? "true" : undefined}
                     style={{
                       ...clipStyle(color.trackBroll),
                       left: toPx(s.startMs),
                       width: Math.max(14, toPx(s.endMs - s.startMs) - 2),
                       borderStyle: enabled ? "solid" : "dashed",
                       opacity: enabled ? 1 : 0.52,
+                      // Selected-window outline — separate channel from the border (which
+                      // already carries solid/dashed enabled state) and the edited dot, so
+                      // it reads on filled, empty-placeholder and disabled windows alike.
+                      outline: isSelectedWindow ? `2px solid ${color.primary500}` : "none",
+                      outlineOffset: 1,
                     }}
                     onClick={() => {
                       seekTo(s.startMs);

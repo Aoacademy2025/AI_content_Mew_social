@@ -891,6 +891,7 @@ export function PostPhase({
         onBrollBoundaryChange={fullBrollEditEnabled && !ed.applyingWindows ? ed.moveBrollBoundary : undefined}
         editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
         disabledWindowIndices={brollEditEnabled ? disabledWindowIndices : undefined}
+        selectedWindowIndex={brollEditEnabled ? ed.selectedWindow : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}

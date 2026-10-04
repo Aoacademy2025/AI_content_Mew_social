@@ -65,5 +65,23 @@ assert(!/message: "คลิปเก่ายังไม่มีข้อม�
 const step2 = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
 assert(/p\.brollSource === "none"[\s\S]{0,80}เติมเองทีละช่วง/.test(step2), "the upload summary stops promising cutaways when the customer fills B-roll themselves");
 
+console.log("selected-window outline (HERO-63)");
+// TimelinePanel never received the inspector's selectedWindow, so nothing on the
+// timeline showed which B-roll window was open (ticket cmuqf5oja01jalc5j94smwf53).
+assert(/selectedWindowIndex\?:\s*number \| null/.test(timeline), "TimelinePanel declares a selectedWindowIndex prop");
+const brollClip = timeline.slice(timeline.indexOf("{brollSpans.map"), timeline.indexOf("{/* เสียงพูด"));
+assert(/const isSelectedWindow = selectedWindowIndex != null && selectedWindowIndex === s\.index;/.test(brollClip), "each window derives its own selected state from the index, not from the edited/disabled sets");
+assert(/outline:\s*isSelectedWindow\s*\?\s*`2px solid \$\{color\.primary500\}`\s*:\s*"none"/.test(brollClip), "the selected window gets a 2px violet-accent outline, as a channel separate from border/opacity");
+// Outline must be computed once per span, inside the same clip div that already renders
+// the filled / empty-placeholder ("คลิปของคุณ") / disabled label — so all three states get it.
+assert(brollClip.indexOf("const isSelectedWindow") < brollClip.indexOf("brollTimelineLabel({ enabled"), "the selected check covers the same clip div that renders every label state (filled/empty/disabled)");
+const postPhase = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
+assert(/selectedWindowIndex=\{brollEditEnabled \? ed\.selectedWindow : undefined\}/.test(postPhase), "PostPhase wires the inspector's selectedWindow into the Timeline, gated the same as the edited/disabled sets");
+// The inspector's close() and the swap-with-previous/next buttons both already route
+// through ed.setSelectedWindow — closing (or swapping to another window) must clear or
+// move the outline without any new plumbing.
+assert(/function close\(\) \{ ed\.setSelectedWindow\(null\); \}/.test(inspector), "closing the inspector clears selectedWindow, which clears the Timeline outline");
+assert(/ed\.setSelectedWindow\(target\.index\);/.test(inspector), "the inspector's swap-with-previous/next buttons move selectedWindow (and so the outline) to the target window");
+
 if (failed) { console.error(`\n${failed} FAILED`); process.exit(1); }
 console.log("\nALL PASSED");
