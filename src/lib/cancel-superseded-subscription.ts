@@ -182,6 +182,10 @@ export async function cancelSupersededSubscription(
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const stripeStatus = subscription.status ?? null;
 
+    if (!stripeStatus || !SUPERSEDABLE_STRIPE_STATUSES.has(stripeStatus)) {
+      return { outcome: "skipped", reason: "stripe_status", subscriptionId, stripeStatus };
+    }
+
     // A5 hardening: require the subscription Stripe just returned to actually belong to this
     // user's own Stripe customer before we go any further. Guards against a corrupted
     // `stripeSubscriptionId` row pointing at another customer's subscription.
@@ -204,10 +208,6 @@ export async function cancelSupersededSubscription(
         console.error("[cancel-superseded] admin alert could not be written:", describeError(notifyErr));
       }
       return { outcome: "skipped", reason: "customer_mismatch", subscriptionId };
-    }
-
-    if (!stripeStatus || !SUPERSEDABLE_STRIPE_STATUSES.has(stripeStatus)) {
-      return { outcome: "skipped", reason: "stripe_status", subscriptionId, stripeStatus };
     }
 
     // Rule (c): cancel now, with no proration and no final invoice. Canceling also turns off

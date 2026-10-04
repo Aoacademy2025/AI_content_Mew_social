@@ -614,6 +614,31 @@ async function main() {
       String(threw ?? JSON.stringify({ result, calls: stub.calls, alerts: n.sent })));
   }
 
+  // A14 · regression: A5 ordering — customer mismatch must be checked AFTER the status gate.
+  // If Stripe status is not past_due/unpaid, skip with stripe_status reason, no ownership check,
+  // and NO admin alert. The status gate should decide, not the customer check.
+  {
+    for (const status of ["active", "trialing", "canceled"]) {
+      const subId = `sub_a14_mismatch_${status}`;
+      const userId = await paidUser({ stripeSubscriptionId: subId, sessionId: `cs_a14_mismatch_${status}`, stripeCustomerId: `cus_a14_mine_${status}` });
+      const stub = makeStub({ [subId]: { status, customer: `cus_a14_someone_else_${status}` } },
+        [{ id: `in_a14_mismatch_${status}_open`, subscription: subId, status: "open" }]);
+      const n = recordingNotify();
+      let threw: unknown = null;
+      let result: Awaited<ReturnType<typeof cancelSupersededSubscription>> | null = null;
+      try {
+        result = await cancelSupersededSubscription(stub.api, promptpaySession(`cs_a14_mismatch_${status}`, userId), { env: FLAG_ON, notify: n.notify });
+      } catch (e) { threw = e; }
+      check(`A14 customer mismatch + Stripe status ${status} → skip with stripe_status reason, no alert`,
+        threw === null && result?.outcome === "skipped" && result?.reason === "stripe_status"
+          && isDeepStrictEqual(stub.ops(), ["retrieve"])
+          && stub.subs[subId].status === status
+          && stub.invoices.find((i) => i.id === `in_a14_mismatch_${status}_open`)?.status === "open"
+          && n.sent.length === 0,
+        String(threw ?? JSON.stringify({ result, calls: stub.calls, alerts: n.sent })));
+    }
+  }
+
   // ═══ B · the real webhook route ═══════════════════════════════════════════
   console.log("\nB. the real webhook POST handler, signed events, Stripe methods stubbed");
   const { stripe } = await import("../src/lib/stripe");
