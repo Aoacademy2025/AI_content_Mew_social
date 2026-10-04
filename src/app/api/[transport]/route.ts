@@ -4,7 +4,7 @@ import { z } from "zod";
 import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
-import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
+import { recordToolCall, isInBandError, auditErrorSummary, auditExceptionSummary } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
@@ -95,17 +95,18 @@ async function runTool(
   const started = Date.now();
   const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
   if (!userId || !user || !effectivePlan || !mcpAccessAllowed(effectivePlan)) {
-    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent });
+    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: { error: "plan_required" } });
     return text(opts
       ? { error: "plan_required", code: "plan_required", message: UPSELL, next: UPGRADE_NEXT }
       : { error: "plan_required", message: UPSELL });
   }
   try {
     const result = await fn({ userId, user });
-    await recordToolCall({ userId, toolName, status: auditStatusOf(result), durationMs: Date.now() - started, requestJson: args, userAgent });
+    const status = auditStatusOf(result);
+    await recordToolCall({ userId, toolName, status, durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: status === "ok" ? null : auditErrorSummary(result) });
     return text(result);
-  } catch {
-    await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent });
+  } catch (err) {
+    await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: auditExceptionSummary(err) });
     const message = "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง";
     return text(opts
       ? { error: "internal_error", code: "internal_error", message, next: opts.next }

@@ -13,6 +13,39 @@ export function isInBandError(result: unknown): boolean {
   );
 }
 
+// What a non-ok row stores about its cause (ToolCallAudit.responseJson). Codes only: a
+// field whose value is code-shaped is kept, anything else (a human message, a job's
+// errorMessage that may quote a provider body or a URL) is reduced to its length, so the
+// audit never holds free text. Without this, error rows recorded no cause at all.
+const CODE_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const SUMMARY_FIELDS = ["error", "code", "errorCode"] as const;
+
+function codeOrLength(v: string): string {
+  return CODE_SHAPE.test(v) ? v : `[text ${v.length} chars]`;
+}
+
+export function auditErrorSummary(result: unknown): Record<string, string> | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const o = result as Record<string, unknown>;
+  const summary: Record<string, string> = {};
+  for (const key of SUMMARY_FIELDS) {
+    if (typeof o[key] === "string") summary[key] = codeOrLength(o[key]);
+  }
+  return Object.keys(summary).length ? summary : null;
+}
+
+// A thrown exception: its class name and a code-shaped `code` (e.g. Prisma P2002), never
+// its message, which can carry paths, SQL or provider bodies.
+export function auditExceptionSummary(err: unknown): Record<string, string> {
+  const summary: Record<string, string> = {
+    error: "internal_error",
+    exception: err instanceof Error ? codeOrLength(err.name) : typeof err,
+  };
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && CODE_SHAPE.test(code)) summary.exceptionCode = code;
+  return summary;
+}
+
 // Redact bulky/sensitive fields before persisting. The user's full script is private
 // content (PII / draft IP) — store only its length, never the body.
 function redactRequest(v: unknown): unknown {
@@ -61,6 +94,8 @@ export async function recordToolCall(entry: {
   status: "ok" | "denied" | "error";
   durationMs?: number;
   requestJson?: unknown;
+  /** A non-ok row's cause, from auditErrorSummary / auditExceptionSummary. */
+  responseJson?: Record<string, string> | null;
   userAgent?: string | null;
 }): Promise<void> {
   try {
@@ -71,6 +106,7 @@ export async function recordToolCall(entry: {
         status: entry.status,
         durationMs: entry.durationMs ?? null,
         requestJson: entry.requestJson ? JSON.stringify(redactRequest(entry.requestJson)).slice(0, 4000) : null,
+        responseJson: entry.responseJson ? JSON.stringify(entry.responseJson).slice(0, 500) : null,
         userAgent: sanitizeUserAgent(entry.userAgent),
       },
     });
