@@ -96,10 +96,17 @@ export function marketingPriceBlock({
   monthlyPrice,
   period,
   founding,
+  offered = false,
 }: {
   monthlyPrice: number;
   period: "monthly" | "annual";
   founding: DisplayPriceInput["founding"];
+  /**
+   * ADR 0066 — true when this tier's monthly PromptPay 30-day term is offered
+   * (PROMPTPAY_MONTHLY=1 and the price is configured). Ignored for `period:
+   * "annual"`. Default false reproduces today's monthly copy byte-for-byte.
+   */
+  offered?: boolean;
 }): MarketingPriceBlock {
   const display = computeDisplayPrice({ monthlyPrice, period, coupon: null, founding });
   if (period === "monthly") {
@@ -107,7 +114,9 @@ export function marketingPriceBlock({
       amount: `฿${monthlyPrice.toLocaleString("th-TH")}`,
       unit: "/เดือน",
       sub: `ชำระ ฿${monthlyPrice.toLocaleString("th-TH")}/เดือน`,
-      billingNote: "ชำระด้วยบัตร · ต่ออัตโนมัติและยกเลิกได้",
+      billingNote: offered
+        ? "บัตร (ต่ออัตโนมัติ) หรือ PromptPay (ครั้งละ 30 วัน)"
+        : "ชำระด้วยบัตร · ต่ออัตโนมัติและยกเลิกได้",
     };
   }
 

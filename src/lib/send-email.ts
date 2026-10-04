@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { Resend } from "resend";
+import { isThirtyDayRenewalTerm } from "@/lib/renewal-reminders";
 
 // ── Gmail API (primary) ──────────────────────────────────────────────────────
 function getGmailTransport() {
@@ -377,7 +378,15 @@ ${premiumButton({ href: opts.pricingUrl, label: "สมัครรายเด�
   });
 }
 
-export async function sendRenewalReminderEmail(opts: { to: string; plan: string; daysLeft: number; pricingUrl: string }): Promise<boolean> {
+export async function sendRenewalReminderEmail(
+  /** `periodDays` is the matched cash payment's term length (ADR 0066), passed only
+   *  under PROMPTPAY_MONTHLY; omitted it keeps today's body. */
+  opts: { to: string; plan: string; daysLeft: number; pricingUrl: string; periodDays?: number },
+): Promise<boolean> {
+  const thirtyDayTerm = opts.periodDays !== undefined && isThirtyDayRenewalTerm(opts.periodDays);
+  const bodyText = thirtyDayTerm
+    ? "ต่ออีก 30 วันด้วย PromptPay ก่อนหมด เพื่อสร้างและส่งออกงานต่อได้ไม่สะดุด"
+    : `แพ็กเกจของคุณจะหมดอายุในอีก <b style="color:#fff">${opts.daysLeft} วัน</b> — ต่ออายุตอนนี้เพื่อใช้งานต่อแบบไม่สะดุด`;
   return sendEmail({
     to: opts.to,
     subject: `แพ็ก ${opts.plan} ใกล้หมดอายุ (อีก ${opts.daysLeft} วัน) — ${BRAND}`,
@@ -386,7 +395,7 @@ export async function sendRenewalReminderEmail(opts: { to: string; plan: string;
       previewText: `แพ็ก ${opts.plan} หมดอายุในอีก ${opts.daysLeft} วัน — ต่ออายุก่อนหมดเพื่อใช้งานต่อไม่สะดุด`,
       body: `
 <h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">แพ็ก ${escapeHtml(opts.plan)} ใกล้หมดอายุ</h1>
-<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">แพ็กเกจของคุณจะหมดอายุในอีก <b style="color:#fff">${opts.daysLeft} วัน</b> — ต่ออายุตอนนี้เพื่อใช้งานต่อแบบไม่สะดุด</p>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">${bodyText}</p>
 ${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย" })}
 `.trim(),
     }),

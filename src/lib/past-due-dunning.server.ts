@@ -5,13 +5,15 @@ import { createNotification } from "@/lib/notifications";
 import { sendPastDueEmail } from "@/lib/send-email";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server";
+import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
 import {
+  hasCashPaymentAfter,
   isStillEntitled,
   pastDueDeliveryStatus,
   pastDueFailureCode,
   pastDueFollowUpDecision,
   pastDueReminderCopy,
-  PAST_DUE_LINK,
+  pastDueReminderLink,
   type PastDueReminderKind,
 } from "@/lib/past-due-dunning";
 
@@ -57,7 +59,7 @@ export async function deliverPastDueReminder(
 ): Promise<PastDueDeliveryResult> {
   const user = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { id: true, email: true, role: true, plan: true, planExpiresAt: true, suspended: true },
+    select: { id: true, email: true, role: true, plan: true, planExpiresAt: true, suspended: true, billingPeriod: true },
   });
   if (!user) return { outcome: "skipped", reason: "no_user" };
   if (user.suspended || isInternalNorthStarAccount(user)) return { outcome: "skipped", reason: "internal" };
@@ -79,14 +81,16 @@ export async function deliverPastDueReminder(
   const emailOn = (deps.emailEnabled ?? pastDueEmailEnabled)();
 
   const stillEntitled = isStillEntitled(user, now);
-  const copy = pastDueReminderCopy({ kind: input.kind, plan: user.plan, stillEntitled });
+  const promptpayMonthly = promptpayMonthlyEnabled();
+  const copy = pastDueReminderCopy({ kind: input.kind, plan: user.plan, stillEntitled, promptpayMonthly });
+  const link = pastDueReminderLink({ stillEntitled, plan: user.plan, billingPeriod: user.billingPeriod, promptpayMonthly });
 
   let notificationDelivered = false;
   let emailAttempted = false;
   let emailDelivered = false;
 
   try {
-    await notify({ userId: user.id, type: "LIMIT_WARNING", title: copy.title, body: copy.body, link: PAST_DUE_LINK });
+    await notify({ userId: user.id, type: "LIMIT_WARNING", title: copy.title, body: copy.body, link });
     notificationDelivered = true;
   } catch {
     notificationDelivered = false;
@@ -99,7 +103,7 @@ export async function deliverPastDueReminder(
       title: copy.title,
       body: copy.body,
       cta: copy.cta,
-      billingUrl: `${appOrigin()}${PAST_DUE_LINK}`,
+      billingUrl: `${appOrigin()}${link}`,
     }).catch(() => false);
   }
 
@@ -140,6 +144,10 @@ export type PastDueFollowUpRun = {
   tooEarly: number;
   recovered: number;
   deliveryFailed: number;
+  /** ADR 0066: a PromptPay cash payment landed after the failed invoice — the d3
+   *  nudge is skipped even though the local `subStatus` mirror may still say
+   *  past_due (it catches up once `customer.subscription.deleted` arrives). */
+  promptpaySettled: number;
 };
 
 /**
@@ -152,23 +160,38 @@ export async function sendDuePastDueFollowUps(
   now: Date = new Date(),
   deps: PastDueDeps = {},
 ): Promise<PastDueFollowUpRun> {
+  const promptpayMonthly = promptpayMonthlyEnabled();
   const failedClaims = await prisma.pastDueReminderLog.findMany({
     where: { kind: "failed" },
     select: {
       userId: true,
       stripeInvoiceId: true,
       attemptedAt: true,
-      user: { select: { subStatus: true } },
+      user: {
+        select: {
+          subStatus: true,
+          payments: promptpayMonthly
+            ? { where: { status: "PAID" }, select: { amount: true, periodDays: true, note: true, createdAt: true, paidAt: true } }
+            : false,
+        },
+      },
     },
     orderBy: { attemptedAt: "asc" },
   });
 
-  const run: PastDueFollowUpRun = { checked: failedClaims.length, sent: 0, duplicateClaimsSkipped: 0, tooEarly: 0, recovered: 0, deliveryFailed: 0 };
+  const run: PastDueFollowUpRun = {
+    checked: failedClaims.length, sent: 0, duplicateClaimsSkipped: 0, tooEarly: 0, recovered: 0,
+    deliveryFailed: 0, promptpaySettled: 0,
+  };
   for (const claim of failedClaims) {
     const decision = pastDueFollowUpDecision({ subStatus: claim.user.subStatus, failedAt: claim.attemptedAt, now });
     if (!decision.send) {
       if (decision.reason === "too_early") run.tooEarly += 1;
       else run.recovered += 1;
+      continue;
+    }
+    if (promptpayMonthly && hasCashPaymentAfter(claim.user.payments ?? [], claim.attemptedAt)) {
+      run.promptpaySettled += 1;
       continue;
     }
     const result = await deliverPastDueReminder(

@@ -14,6 +14,7 @@ import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 import { resolveFirstClipPath, resolveFirstClipProgress } from "@/lib/first-clip-path.server";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
+import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
 
 export async function GET() {
   try {
@@ -114,6 +115,13 @@ export async function GET() {
     const { stripeSubscriptionId, ...safeUser } = user as typeof user & { stripeSubscriptionId: string | null };
     return NextResponse.json({
       ...safeUser,
+      // ADR 0066: PROMPTPAY_MONTHLY is a server-only flag (no NEXT_PUBLIC_ twin).
+      // This is the one runtime surface that delivers it to the dashboard chrome —
+      // a plain env read, no DB query — so a client component (PastDueBanner) can
+      // read it per-request instead of through a prop baked in by the (dashboard)
+      // layout, which Next statically prerenders (that would freeze the flag at
+      // build time and break the env-only rollback).
+      promptpayMonthly: promptpayMonthlyEnabled(),
       // Boolean only — the Stripe subscription id itself never reaches the browser.
       // Pricing needs it to tell a converted `trialing` subscriber (#348) apart
       // from a plain unpaid trial.

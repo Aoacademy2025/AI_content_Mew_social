@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { stripe, PLANS, PlanKey, BillingPeriod, resolvePrice } from "@/lib/stripe";
+import { stripe, PLANS, PlanKey, BillingPeriod } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { resolveFoundingDiscount, attachReservation, releaseUnattachedSeat } from "@/lib/founding";
 import { checkoutAllowed } from "@/lib/plan-change";
-import { AFF_COOKIE, sanitizeRefCode, studioProductSlug } from "@/lib/affiliate-ref";
+import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
 import { preserveTrialOnConvertEnabled, resolveTrialPreservation } from "@/lib/preserve-trial";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { promptpayMonthlyEnabled, promptpayMonthlyOffered } from "@/lib/promptpay-monthly";
+import { buildCheckoutSessionParams, resolveCheckoutSelection } from "@/lib/checkout-session-params";
 
 export async function POST(req: Request) {
   try {
@@ -27,11 +29,14 @@ export async function POST(req: Request) {
     if (period !== "monthly" && period !== "annual") {
       return NextResponse.json({ error: "Invalid period" }, { status: 400 });
     }
-    // Monthly is card-only: PromptPay is one-time and cannot back a recurring subscription, so a
-    // monthly+promptpay request would build an invalid Stripe session. Coerce to card.
-    const method: "card" | "promptpay" = period === "monthly" ? "card" : (rawMethod === "promptpay" ? "promptpay" : "card");
-
-    const priceCfg = resolvePrice(plan, period, method);
+    // PromptPay cannot back a recurring subscription. Monthly PromptPay is therefore a one-time
+    // 30-day term (ADR 0066), sold only when offered (PROMPTPAY_MONTHLY=1 + that tier's price);
+    // otherwise a monthly+promptpay request is coerced to card, exactly as before.
+    const promptpayMonthly = promptpayMonthlyEnabled();
+    const monthlyPromptpayOffered = await promptpayMonthlyOffered(plan);
+    const { method, priceCfg, isSub } = resolveCheckoutSelection({
+      plan, period, requestedMethod: rawMethod, monthlyPromptpayOffered,
+    });
     if (!process.env.STRIPE_SECRET_KEY || !priceCfg.priceId) {
       return NextResponse.json({
         error: "Payment configuration is unavailable",
@@ -39,8 +44,6 @@ export async function POST(req: Request) {
         userAction: "ระบบชำระเงินของหน้านี้ยังไม่พร้อม กรุณาแจ้งทีมงานเพื่อเปิดการชำระเงิน",
       }, { status: 503 });
     }
-    const isSub = priceCfg.recurring; // card monthly/annual → subscription · PromptPay annual → one-time
-
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -61,17 +64,13 @@ export async function POST(req: Request) {
     });
 
     // ── Affiliate attribution (cookie wins, first-sign-in stamp is fallback) ──
-    // Tags the Stripe session + subscription so the hero-affiliate webhook can attribute
-    // the initial payment AND every renewal invoice. Empty when there's no ref → no-op.
+    // buildCheckoutSessionParams turns the ref into session (+ subscription) metadata.
     let refCode: string | null = null;
     try {
       const jar = await cookies();
       refCode = sanitizeRefCode(jar.get(AFF_COOKIE)?.value);
     } catch {}
     refCode = refCode ?? authUser.affiliateRefCode ?? null;
-    const affiliateMeta: Record<string, string> = refCode
-      ? { ref_code: refCode, product_id: studioProductSlug(plan, period), ha_brand: "hero-ai" }
-      : {};
 
     // ── Plan-change guard (defense-in-depth; the pricing UI is gated too) ──
     // Prevents the two ways the old equality-only UI could mis-charge:
@@ -171,39 +170,23 @@ export async function POST(req: Request) {
 
     let checkoutSession;
     try {
-      checkoutSession = await stripe.checkout.sessions.create({
-        mode: isSub ? "subscription" : "payment",
-        customer: customerId,
-        payment_method_types: method === "promptpay" ? ["promptpay"] : ["card"],
-        line_items: [{ price: priceCfg.priceId, quantity: 1 }],
-        ...(appliedPromotionCode ? { discounts: [{ promotion_code: appliedPromotionCode }] } : {}),
-        metadata: {
-          userId, plan, period, periodDays: String(priceCfg.periodDays), method,
-          ...(appliedCouponId ? { couponId: appliedCouponId } : {}),
-          ...(isFounding ? { founding: "1" } : {}),
-          ...(isFoundingMemberUpgrade ? { founding: "member" } : {}),
-          ...affiliateMeta,
-        },
-        ...(isSub
-          ? {
-              subscription_data: {
-                metadata: { userId, plan, period, ...affiliateMeta },
-                // #348: carry the unused free-trial days into Stripe. The card is
-                // still collected now (payment_method_collection stays default);
-                // the FIRST charge happens at trial_end. Null whenever the trial
-                // is absent, already converted, the flag is off, or fewer than
-                // 48h remain (Stripe rejects a nearer trial_end).
-                ...(preservation.stripeTrialEnd ? { trial_end: preservation.stripeTrialEnd } : {}),
-              },
-              // bound how long a founding seat is held even for subscription sessions
-              ...(isFounding ? { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 } : {}),
-            }
-          : { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 }), // one-time session expires in 30 min
-        // The result page confirms this exact, authenticated checkout against
-        // our webhook-backed Payment row before it claims that access is ready.
-        success_url: `${origin}/settings?tab=billing&payment=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${origin}/pricing?payment=cancelled`,
-      });
+      checkoutSession = await stripe.checkout.sessions.create(buildCheckoutSessionParams({
+        plan,
+        period,
+        requestedMethod: rawMethod,
+        monthlyPromptpayOffered,
+        promptpayMonthlyEnabled: promptpayMonthly,
+        userId,
+        customerId,
+        origin,
+        appliedPromotionCode,
+        appliedCouponId,
+        isFounding,
+        isFoundingMemberUpgrade,
+        refCode,
+        stripeTrialEnd: preservation.stripeTrialEnd,
+        nowMs: Date.now(),
+      }));
     } catch (e) {
       // Stripe failed AFTER we claimed a seat but BEFORE a reservation row exists → roll the seat back
       if (foundingClaim) await releaseUnattachedSeat(foundingClaim.couponId).catch(() => {});
@@ -225,7 +208,7 @@ export async function POST(req: Request) {
       data: {
         userId,
         stripeSessionId: checkoutSession.id,
-        plan: plan as any,
+        plan,
         // satang: monthly = thb*100, annual ≈ thb*1000 (10 months). Informational only — real charge is the Stripe price.
         amount: planConfig.thb * (period === "annual" ? 1000 : 100),
         currency: "thb",

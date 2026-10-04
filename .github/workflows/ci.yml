@@ -187,6 +187,9 @@ jobs:
       - name: Verify past_due dunning dedupe, copy split and follow-up (HERO-33)
         run: npm run verify:past-due-dunning
 
+      - name: Verify PromptPay monthly 30-day term (ADR 0066)
+        run: npm run verify:promptpay-monthly
+
       - name: Verify brand voice picker failure messages (HERO-32)
         run: npm run verify:brand-voice-catalog
 

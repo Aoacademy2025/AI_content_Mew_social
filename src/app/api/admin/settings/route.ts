@@ -12,6 +12,9 @@ const KEYS = [
   "stripe_webhook_secret",
   "stripe_price_pro",
   "stripe_price_business",
+  // PromptPay 30-day prepaid term (ADR 0066) — one-time THB prices, not secrets
+  "stripe_price_pro_monthly_onetime",
+  "stripe_price_business_monthly_onetime",
   "plan_free_price",
   "plan_free_features",
   "plan_pro_price",
@@ -75,6 +78,8 @@ async function setConfig(key: SettingKey, value: string) {
     stripe_webhook_secret: "STRIPE_WEBHOOK_SECRET",
     stripe_price_pro: "STRIPE_PRICE_PRO_MONTHLY",
     stripe_price_business: "STRIPE_PRICE_BUSINESS_MONTHLY",
+    stripe_price_pro_monthly_onetime: "STRIPE_PRICE_PRO_MONTHLY_ONETIME",
+    stripe_price_business_monthly_onetime: "STRIPE_PRICE_BUSINESS_MONTHLY_ONETIME",
     server_gemini_key: "LOANWORD_MINER_GEMINI_KEY",
   };
   const envKey = envMap[key];

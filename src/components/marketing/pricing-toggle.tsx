@@ -17,10 +17,13 @@ export function PricingToggle({
   plans,
   founding = null,
   minuteQuotaEnabled = false,
+  offered = { PRO: false, BUSINESS: false },
 }: {
   plans: PlanConfig;
   founding?: FoundingStatus;
   minuteQuotaEnabled?: boolean;
+  /** ADR 0066 — per-tier `promptpayMonthlyOffered`, resolved server-side (no NEXT_PUBLIC_ twin). */
+  offered?: { PRO: boolean; BUSINESS: boolean };
 }) {
   const [period, setPeriod] = useState<Period>("yearly");
   const yearly = period === "yearly";
@@ -29,8 +32,8 @@ export function PricingToggle({
   const bizDisplay = computeDisplayPrice({ monthlyPrice: plans.business.price, period: pricePeriod, coupon: null, founding });
   const hasFounding = Boolean(yearly && founding?.active);
 
-  const proBlock = marketingPriceBlock({ monthlyPrice: plans.pro.price, period: pricePeriod, founding });
-  const bizBlock = marketingPriceBlock({ monthlyPrice: plans.business.price, period: pricePeriod, founding });
+  const proBlock = marketingPriceBlock({ monthlyPrice: plans.pro.price, period: pricePeriod, founding, offered: offered.PRO });
+  const bizBlock = marketingPriceBlock({ monthlyPrice: plans.business.price, period: pricePeriod, founding, offered: offered.BUSINESS });
 
   return (
     <div>
