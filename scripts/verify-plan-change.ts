@@ -89,6 +89,21 @@ assert(paidPlanCardMode({
   currentPlan: "PRO", subStatus: null, isTrialPlan: false, planExpiresAt: future, paymentMethod: "promptpay",
 }, "PRO", "annual", now) === "renew", "pricing still offers additive PromptPay renewal for a timed plan");
 
+// ADR 0066 (Task 2, pricing UI) — "recurring" must be derived from the selected payment
+// METHOD, not the period: a monthly PromptPay purchase is a one-time 30-day term and must
+// never be forced to "wait" the way a monthly CARD subscription would be.
+assert(paidPlanCardMode({
+  currentPlan: "PRO", subStatus: null, isTrialPlan: false, planExpiresAt: future, paymentMethod: "promptpay",
+}, "PRO", "monthly", now) === "renew", "monthly PromptPay never waits for a running timed plan (ADR 0066)");
+assert(paidPlanCardMode({
+  currentPlan: "PRO", subStatus: null, isTrialPlan: false, planExpiresAt: future, paymentMethod: "card",
+}, "PRO", "monthly", now) === "wait", "monthly CARD still waits for a running timed plan (unchanged)");
+
+// BUSINESS renew fix (Task 2, ungated pre-existing bug) — a BUSINESS cash user with no live
+// subscription must be able to renew BUSINESS from a reminder link, same as PRO already could.
+assert(paidPlanCardMode({ currentPlan: "BUSINESS", subStatus: null, isTrialPlan: false }, "BUSINESS") === "renew",
+  "granted/one-time BUSINESS can renew BUSINESS (previously only PRO could)");
+
 // An active monthly subscriber selecting the same tier's annual card is not on
 // the "current" product. The existing subscription must be changed in place so
 // Stripe can show the Founding discount and unused-month credit before confirm.
