@@ -7,7 +7,6 @@
 import assert from "node:assert/strict";
 import {
   buildBrollWindows,
-  buildFillYourselfBrollWindows,
   capFillYourselfBrollWindows,
   type BrollWindow,
   type BrollWindowCaption,
@@ -38,7 +37,7 @@ check("precondition: today's builder produces the two over-long windows this bug
   && todaysWindows[1].startMs === 14_000 && todaysWindows[1].endMs === 26_000,
   JSON.stringify(todaysWindows.map((w) => [w.startMs, w.endMs])));
 
-const capped = buildFillYourselfBrollWindows(captions, cadenceSec, audioEndMs);
+const capped = capFillYourselfBrollWindows(todaysWindows, captions);
 
 check("every fill-yourself window is <= 5000ms",
   capped.every((w) => w.endMs - w.startMs <= 5_000),
@@ -110,6 +109,62 @@ const zeroSlackSplit = capFillYourselfBrollWindows([zeroSlackWindow], zeroSlackC
 check("a snap that would break the 5000ms cap is rejected in favour of the even point",
   zeroSlackSplit.every((w) => w.endMs - w.startMs <= 5_000)
   && zeroSlackSplit.some((w) => w.startMs === 5_000 || w.endMs === 5_000));
+
+// ── Per-piece caption fields (review follow-up) ──────────────────────────────────────
+// A parent window spanning 2 captions: cap0 "Hello" (0-3000), cap1 "World" (3000-11000).
+// buildBrollWindows groups both into one 11000ms window (captionStartIdx 0, captionEndIdx
+// 1, text "Hello World") — splitting it must NOT hand every sibling piece that identical
+// parent text; each piece should get only the caption(s) it actually overlaps.
+const distinctCaptions: BrollWindowCaption[] = [
+  { startMs: 0, endMs: 3_000, text: "Hello" },
+  { startMs: 3_000, endMs: 11_000, text: "World" },
+];
+const distinctParent: BrollWindow = {
+  startMs: 0, endMs: 11_000, captionStartIdx: 0, captionEndIdx: 1, text: "Hello World",
+};
+const distinctPieces = capFillYourselfBrollWindows([distinctParent], distinctCaptions);
+check("parent spanning 2+ captions -> pieces get distinct caption ranges",
+  distinctPieces.length >= 2
+  && distinctPieces[0].captionStartIdx === 0 && distinctPieces[0].captionEndIdx === 0
+  && distinctPieces[0].text === "Hello"
+  && distinctPieces[distinctPieces.length - 1].captionStartIdx === 1
+  && distinctPieces[distinctPieces.length - 1].captionEndIdx === 1
+  && distinctPieces[distinctPieces.length - 1].text === "World",
+  JSON.stringify(distinctPieces.map((w) => [w.startMs, w.endMs, w.captionStartIdx, w.captionEndIdx, w.text])));
+check("distinct-range pieces still tile the parent window and stay <= 5000ms",
+  distinctPieces[0].startMs === 0
+  && distinctPieces[distinctPieces.length - 1].endMs === 11_000
+  && distinctPieces.every((w, i) => i === 0 || w.startMs === distinctPieces[i - 1].endMs)
+  && distinctPieces.every((w) => w.endMs - w.startMs <= 5_000));
+
+// A pure-pause piece (no caption overlaps its span) falls back to the parent's own fields.
+// Reuse the AC scenario's second window: single 3s caption (14000-17000) stretched over a
+// 9s trailing pause to 26000 -> the tail pieces overlap no caption at all.
+const pauseOnlyParent = todaysWindows[1]; // {startMs: 14000, endMs: 26000, captionStartIdx: 1, captionEndIdx: 1, text: "a three second caption"}
+const pauseOnlyPieces = capFillYourselfBrollWindows([pauseOnlyParent], captions);
+const pauseOnlyTailPiece = pauseOnlyPieces[pauseOnlyPieces.length - 1];
+check("a pause-only piece (no caption overlap) falls back to the parent's fields",
+  pauseOnlyTailPiece.startMs >= 17_000 // past the caption's own end -> pure pause
+  && pauseOnlyTailPiece.captionStartIdx === pauseOnlyParent.captionStartIdx
+  && pauseOnlyTailPiece.captionEndIdx === pauseOnlyParent.captionEndIdx
+  && pauseOnlyTailPiece.text === pauseOnlyParent.text,
+  JSON.stringify(pauseOnlyPieces.map((w) => [w.startMs, w.endMs, w.captionStartIdx, w.captionEndIdx, w.text])));
+
+// An invalid caption elsewhere in the list must not shift indices: buildBrollWindows'
+// captionStartIdx/captionEndIdx refer to the FILTERED caption list, so the cap function
+// must apply the identical filter before indexing — a garbage entry between "Hello" and
+// "World" in the RAW list must still land piece 0 on caption index 0 ("Hello") and the
+// later pieces on caption index 1 ("World"), exactly as if the garbage entry were absent.
+const withInvalidCaption: BrollWindowCaption[] = [
+  { startMs: 0, endMs: 3_000, text: "Hello" },
+  { startMs: 100, endMs: 50, text: "garbage (endMs <= startMs)" },
+  { startMs: 3_000, endMs: 11_000, text: "World" },
+];
+const invalidFilteredPieces = capFillYourselfBrollWindows([distinctParent], withInvalidCaption);
+check("an invalid caption elsewhere in the list does not shift piece caption indices",
+  JSON.stringify(invalidFilteredPieces.map((w) => [w.captionStartIdx, w.captionEndIdx, w.text])) ===
+  JSON.stringify(distinctPieces.map((w) => [w.captionStartIdx, w.captionEndIdx, w.text])),
+  JSON.stringify(invalidFilteredPieces.map((w) => [w.captionStartIdx, w.captionEndIdx, w.text])));
 
 // ── HERO-44 placeholder contract: each piece is its own hidden placeholder ───────────
 const placeholders = buildPlaceholderBgVideos(capped, audioEndMs / 1_000);

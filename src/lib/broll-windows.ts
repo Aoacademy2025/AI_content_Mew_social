@@ -196,6 +196,63 @@ export const FILL_YOURSELF_MAX_WINDOW_MS = 5_000;
  *  even split point — otherwise the cut lands mid-caption. */
 export const FILL_YOURSELF_SNAP_TOLERANCE_MS = 750;
 
+/** Same validity predicate `buildBrollWindows` filters captions by, duplicated here (not
+ *  shared/exported) so `buildBrollWindows` itself stays untouched. A window's
+ *  `captionStartIdx`/`captionEndIdx` are indices into THIS filtered-and-order-preserved
+ *  array, never the raw caller-supplied list — rebuilding it identically is required to
+ *  land on the same captions a parent window's indices already point at. */
+function validFillYourselfCaptions(captions: BrollWindowCaption[]): BrollWindowCaption[] {
+  return (Array.isArray(captions) ? captions : []).filter(
+    (c): c is BrollWindowCaption =>
+      Boolean(c) && Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs,
+  );
+}
+
+const joinCaptionText = (caps: BrollWindowCaption[]): string =>
+  caps.map((c) => c.text.trim()).filter(Boolean).join(" ");
+
+/**
+ * The `captionStartIdx`/`captionEndIdx`/`text` one split piece should carry, scoped to the
+ * piece's own `[pieceStartMs, pieceEndMs)` rather than inheriting the whole parent window's
+ * range. Content Preflight (`ensureUploadContentPreflight`) reads these fields as the
+ * window's `sourceExcerpt`; every sibling piece reporting the identical parent text would
+ * plan the same AI-image prompt for windows that are visually distinct once split.
+ *
+ * Only captions within the PARENT's own `[captionStartIdx..captionEndIdx]` are considered —
+ * a piece never reaches into a caption the parent window didn't itself cover. A piece that
+ * overlaps none of them (a pure-pause piece, e.g. the tail stretched over trailing silence)
+ * falls back to the parent's own fields: there is nothing more specific to report.
+ */
+function pieceCaptionFields(
+  parentWindow: BrollWindow,
+  filteredCaptions: BrollWindowCaption[],
+  pieceStartMs: number,
+  pieceEndMs: number,
+): Pick<BrollWindow, "captionStartIdx" | "captionEndIdx" | "text"> {
+  let firstIdx: number | null = null;
+  let lastIdx: number | null = null;
+  for (let idx = parentWindow.captionStartIdx; idx <= parentWindow.captionEndIdx; idx += 1) {
+    const caption = filteredCaptions[idx];
+    if (!caption) continue;
+    if (caption.endMs > pieceStartMs && caption.startMs < pieceEndMs) {
+      if (firstIdx === null) firstIdx = idx;
+      lastIdx = idx;
+    }
+  }
+  if (firstIdx === null || lastIdx === null) {
+    return {
+      captionStartIdx: parentWindow.captionStartIdx,
+      captionEndIdx: parentWindow.captionEndIdx,
+      text: parentWindow.text,
+    };
+  }
+  return {
+    captionStartIdx: firstIdx,
+    captionEndIdx: lastIdx,
+    text: joinCaptionText(filteredCaptions.slice(firstIdx, lastIdx + 1)),
+  };
+}
+
 function nearestBoundaryWithin(
   candidates: number[],
   target: number,
@@ -259,11 +316,12 @@ function splitWindowBoundaries(
  * calling this with a non-fill-yourself caller's windows reproduces them exactly — the
  * cap only ever applies where a caller opts in.
  *
- * Each resulting piece keeps the parent window's `captionStartIdx`/`captionEndIdx`/`text`
- * (the HERO-44 placeholder contract only needs each piece's own timing + array position
- * for its `sourceIndex` — see `buildPlaceholderBgVideos`). The full set of pieces still
- * tiles exactly `[window.startMs, window.endMs]`, so tiling across the whole timeline is
- * preserved.
+ * Each resulting piece gets its own `captionStartIdx`/`captionEndIdx`/`text`, scoped to
+ * that piece's span (see `pieceCaptionFields`) rather than inheriting the whole parent
+ * window's range. The full set of pieces still tiles exactly `[window.startMs,
+ * window.endMs]`, so tiling across the whole timeline is preserved, and each piece's array
+ * position is still what gives it its own `sourceIndex` downstream — see
+ * `buildPlaceholderBgVideos`.
  */
 export function capFillYourselfBrollWindows(
   windows: BrollWindow[],
@@ -272,9 +330,8 @@ export function capFillYourselfBrollWindows(
 ): BrollWindow[] {
   if (!Array.isArray(windows) || windows.length === 0) return windows ?? [];
   const cap = Number.isFinite(maxWindowMs) && maxWindowMs > 0 ? maxWindowMs : FILL_YOURSELF_MAX_WINDOW_MS;
-  const boundaryCandidates = (Array.isArray(captions) ? captions : [])
-    .flatMap((c) => [c?.startMs, c?.endMs])
-    .filter((ms): ms is number => Number.isFinite(ms));
+  const filteredCaptions = validFillYourselfCaptions(captions);
+  const boundaryCandidates = filteredCaptions.flatMap((c) => [c.startMs, c.endMs]);
 
   const result: BrollWindow[] = [];
   for (const window of windows) {
@@ -286,32 +343,16 @@ export function capFillYourselfBrollWindows(
     const pieceCount = Math.max(2, Math.ceil(span / cap));
     const boundaries = splitWindowBoundaries(window.startMs, window.endMs, pieceCount, boundaryCandidates, cap);
     for (let p = 0; p < boundaries.length - 1; p += 1) {
+      const pieceStartMs = boundaries[p];
+      const pieceEndMs = boundaries[p + 1];
       result.push({
-        startMs: boundaries[p],
-        endMs: boundaries[p + 1],
-        captionStartIdx: window.captionStartIdx,
-        captionEndIdx: window.captionEndIdx,
-        text: window.text,
+        startMs: pieceStartMs,
+        endMs: pieceEndMs,
+        ...pieceCaptionFields(window, filteredCaptions, pieceStartMs, pieceEndMs),
       });
     }
   }
   return result;
-}
-
-/**
- * The fill-yourself entry point: plan windows exactly as `buildBrollWindows` always has,
- * then cap them for a customer who will fill each one herself (HERO-62). A non-fill-yourself
- * caller keeps calling `buildBrollWindows` directly and is byte-for-byte unaffected by this
- * function's existence.
- */
-export function buildFillYourselfBrollWindows(
-  captions: BrollWindowCaption[],
-  cadenceSec: number,
-  audioEndMs?: number,
-  options?: { cadenceMultiplier?: number; maxWindowMs?: number },
-): BrollWindow[] {
-  const windows = buildBrollWindows(captions, cadenceSec, audioEndMs, options);
-  return capFillYourselfBrollWindows(windows, captions, options?.maxWindowMs);
 }
 
 type NarrativeAlignedBrollInput = {
