@@ -9,6 +9,7 @@ import {
   monthlyPromptpayAvailable,
   periodPromptpayOffered,
   resolveMonthlyMethodForTier,
+  seedMethodFromCancelReturn,
   shouldPreselectPromptpay,
   type MonthlyOffered,
 } from "../src/lib/pricing-period-method";
@@ -85,6 +86,63 @@ check("method=card -> never preselects promptpay",
 check("no period -> ignored",
   shouldPreselectPromptpay({ method: "promptpay" }, { promptpayMonthlyEnabled: true, monthlyOffered: both }), false);
 
+// ───────────────────────── seedMethodFromCancelReturn (BLOCKING-1 fix round 1) ─────────────────────────
+// "today's annual default" stand-ins for NEXT_PUBLIC_PRICING_DEFAULT_RECURRING on/off,
+// mirroring getDefaultPricingSelection's un-overridden annual/monthly defaults.
+const annualDefaultCard = "card" as const;      // RECURRING on -> base method is "card"
+const annualDefaultPromptpay = "promptpay" as const; // RECURRING off -> base method is "promptpay"
+
+// annual + method=promptpay -> promptpay, regardless of the default (both RECURRING states)
+check("annual, ?method=promptpay, flag on, offered, default=card (RECURRING on) -> promptpay",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "promptpay" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultCard), "promptpay");
+check("annual, ?method=promptpay, flag on, offered, default=promptpay (RECURRING off) -> promptpay",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "promptpay" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultPromptpay), "promptpay");
+
+// annual + method=card -> card, regardless of the default (both RECURRING states)
+check("annual, ?method=card, flag on, default=card (RECURRING on) -> card",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "card" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultCard), "card");
+check("annual, ?method=card, flag on, default=promptpay (RECURRING off) -> card",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "card" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultPromptpay), "card");
+
+// no method param (or param targets the other period) -> today's annual default, untouched
+check("annual, no cancelReturn param -> today's default (card)",
+  seedMethodFromCancelReturn("annual", {}, { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultCard), "card");
+check("annual, no cancelReturn param -> today's default (promptpay)",
+  seedMethodFromCancelReturn("annual", {}, { promptpayMonthlyEnabled: true, monthlyOffered: neither }, annualDefaultPromptpay), "promptpay");
+check("annual, cancelReturn targets monthly only -> annual default untouched",
+  seedMethodFromCancelReturn("annual", { period: "monthly", method: "promptpay" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: both }, annualDefaultCard), "card");
+
+// flag off -> method ignored on EVERY period, exactly as today (both promptpay and card params)
+check("annual, ?method=promptpay, flag OFF -> ignored, default kept",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "promptpay" },
+    { promptpayMonthlyEnabled: false, monthlyOffered: neither }, annualDefaultCard), "card");
+check("annual, ?method=card, flag OFF -> ignored, default kept",
+  seedMethodFromCancelReturn("annual", { period: "annual", method: "card" },
+    { promptpayMonthlyEnabled: false, monthlyOffered: neither }, annualDefaultPromptpay), "promptpay");
+check("monthly, ?method=promptpay, flag OFF -> ignored, stays card",
+  seedMethodFromCancelReturn("monthly", { period: "monthly", method: "promptpay" },
+    { promptpayMonthlyEnabled: false, monthlyOffered: neither }, "card"), "card");
+check("monthly, ?method=card, flag OFF -> ignored, stays card",
+  seedMethodFromCancelReturn("monthly", { period: "monthly", method: "card" },
+    { promptpayMonthlyEnabled: false, monthlyOffered: neither }, "card"), "card");
+
+// monthly, flag on: promptpay only wins when actually offered for some tier (per-tier
+// coercion still happens downstream via resolveMonthlyMethodForTier)
+check("monthly, ?method=promptpay, flag on, PRO offered -> promptpay",
+  seedMethodFromCancelReturn("monthly", { period: "monthly", method: "promptpay" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: proOnly }, "card"), "promptpay");
+check("monthly, ?method=promptpay, flag on, NOT offered -> stays card (default)",
+  seedMethodFromCancelReturn("monthly", { period: "monthly", method: "promptpay" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: neither }, "card"), "card");
+check("monthly, ?method=card, flag on -> card",
+  seedMethodFromCancelReturn("monthly", { period: "monthly", method: "card" },
+    { promptpayMonthlyEnabled: true, monthlyOffered: both }, "card"), "card");
+
 // ───────────────────────── marketingPriceBlock(offered) ─────────────────────────
 const monthlyNotOffered = marketingPriceBlock({ monthlyPrice: 599, period: "monthly", founding: null });
 assert.equal(monthlyNotOffered.billingNote, "ชำระด้วยบัตร · ต่ออัตโนมัติและยกเลิกได้");
@@ -155,6 +213,12 @@ ok("pricing-client fires cancel_return_promptpay telemetry",
   pricingClient.includes("cancel_return_promptpay"));
 ok("pricing-client keeps card as the static monthly toggle default (no flag-based reordering)",
   /\(\["card", "promptpay"\] as const\)/.test(pricingClient));
+ok("pricing-client (BLOCKING-1 fix) seeds annual's method from seedMethodFromCancelReturn, not just monthly's",
+  (pricingClient.match(/seedMethodFromCancelReturn\(\s*\n?\s*["']annual["']/g) ?? []).length >= 2);
+ok("pricing-client (BLOCKING-1 fix) seeds monthly's method via seedMethodFromCancelReturn too",
+  /seedMethodFromCancelReturn\(\s*\n?\s*["']monthly["']/.test(pricingClient));
+ok("pricing-client no longer special-cases only `cancelReturn.period === \"monthly\"` for the preselect",
+  !/cancelReturn\.period === ["']monthly["'] && shouldPreselectPromptpay/.test(pricingClient));
 
 ok("pricing page parses the whitelisted cancel-return params via parseCancelReturnParams",
   /parseCancelReturnParams\(/.test(pricingPage));

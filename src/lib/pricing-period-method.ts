@@ -63,9 +63,8 @@ export function cancelBannerOffered(
 /**
  * Should the page preselect PromptPay for `period` from an explicit `?method=promptpay`
  * link (e.g. the past-due banner)? Only when PromptPay is actually offered for that
- * period. Global Constraints scope the new default-override behavior to monthly
- * ("annual keeps today's default logic") — callers only invoke this for period
- * "monthly"; it stays generic here so both branches are covered by its own tests.
+ * period. Generic over period on purpose — see `seedMethodFromCancelReturn` below,
+ * which is the one callers actually use for both monthly and annual state seeding.
  */
 export function shouldPreselectPromptpay(
   params: { period?: Period; method?: PaymentMethod },
@@ -73,4 +72,34 @@ export function shouldPreselectPromptpay(
 ): boolean {
   if (params.method !== "promptpay" || !params.period) return false;
   return periodPromptpayOffered(params.period, ctx);
+}
+
+/**
+ * Seed a period's selected payment method (monthly's `monthlyMethod`, or annual's
+ * `method`) from an explicit, whitelisted `cancelReturn` param — e.g. a past-due or
+ * renewal link's `?method=promptpay`/`?method=card` — falling back to `defaultMethod`
+ * (today's own default-selection logic for that period, unchanged) whenever the
+ * override does not apply.
+ *
+ * Session ruling reconciling "Annual keeps today's default logic" with Task 4's
+ * annual links: that line describes the DEFAULT when no explicit `method` param is
+ * given. An explicit whitelisted `method` overrides that default on the exact period
+ * it targets (monthly or annual) — it never leaks to the other period.
+ *
+ * The whole override is itself "under the flag": with `promptpayMonthlyEnabled`
+ * false, `method` is ignored on every period exactly as today, including an explicit
+ * `method=card` (which would be a no-op today anyway, but we gate it identically for
+ * one predictable rule rather than two).
+ */
+export function seedMethodFromCancelReturn(
+  period: Period,
+  cancelReturn: { period?: Period; method?: PaymentMethod },
+  ctx: PromptpayCtx,
+  defaultMethod: PaymentMethod,
+): PaymentMethod {
+  if (!ctx.promptpayMonthlyEnabled || cancelReturn.period !== period || !cancelReturn.method) {
+    return defaultMethod;
+  }
+  if (cancelReturn.method === "card") return "card";
+  return periodPromptpayOffered(period, ctx) ? "promptpay" : defaultMethod;
 }

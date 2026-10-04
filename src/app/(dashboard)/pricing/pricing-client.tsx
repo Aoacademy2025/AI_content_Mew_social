@@ -23,7 +23,7 @@ import {
   cancelBannerOffered,
   monthlyPromptpayAvailable,
   resolveMonthlyMethodForTier,
-  shouldPreselectPromptpay,
+  seedMethodFromCancelReturn,
   type PaidTier,
 } from "@/lib/pricing-period-method";
 // Type-only: erased at compile time, so promptpay-monthly.ts's server-only import
@@ -122,18 +122,28 @@ export function PricingClient({
     () => preferredPeriod
       ?? getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).period,
   );
+  // ADR 0066 — annual's default method (today's logic, unchanged) can still be overridden
+  // by an explicit, whitelisted `?method=` cancel-return param that targets "annual"
+  // specifically (session ruling: "annual keeps today's default logic" describes the
+  // DEFAULT absent that param — see seedMethodFromCancelReturn).
   const [method, setMethod] = useState<PaymentMethod>(
-    () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
+    () => seedMethodFromCancelReturn(
+      "annual",
+      cancelReturn,
+      { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+      getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
+    ),
   );
   // ADR 0066 — monthly's method is tracked separately from annual's. Card is ALWAYS the
   // monthly default, independent of NEXT_PUBLIC_PRICING_DEFAULT_RECURRING; the only override
-  // is an explicit `?method=promptpay` link (e.g. the past-due banner) that is actually
-  // offered. Annual keeps its own `method` state and today's default logic, unchanged.
+  // is an explicit `?method=` link (e.g. the past-due banner) that targets "monthly".
   const [monthlyMethod, setMonthlyMethod] = useState<PaymentMethod>(
-    () => cancelReturn.period === "monthly" && shouldPreselectPromptpay(
-      { period: "monthly", method: cancelReturn.method },
+    () => seedMethodFromCancelReturn(
+      "monthly",
+      cancelReturn,
       { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
-    ) ? "promptpay" : "card",
+      "card",
+    ),
   );
   const [faqOpen, setFaqOpen] = useState<number>(-1);
   const [showCoupon, setShowCoupon] = useState(false);
@@ -176,11 +186,19 @@ export function PricingClient({
           billingPeriod: d?.billingPeriod ?? null,
         });
         setPeriod(preferredPeriod ?? resolved.period);
-        setMethod(resolved.method);
+        // ADR 0066 — re-apply the same explicit-param override on top of the freshly
+        // resolved default once `/api/user/me` is known (mirrors the initial state's
+        // seeding so a slower client hydration can't drop the override).
+        setMethod(seedMethodFromCancelReturn(
+          "annual",
+          cancelReturn,
+          { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+          resolved.method,
+        ));
         setUserChecked(true);
       })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
-  }, [preferredPeriod]);
+  }, [preferredPeriod, cancelReturn, monthlyPromptpayOffered, promptpayMonthlyEnabledFlag]);
 
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
