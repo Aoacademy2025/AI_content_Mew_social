@@ -85,10 +85,15 @@ export function paidPlanCardMode(
     return "manage";
   }
   if ((PLAN_RANK[cardPlan] ?? 0) < (PLAN_RANK[state.currentPlan] ?? 0)) return "downgrade";
-  const recurring = cardPeriod === "monthly" || state.paymentMethod === "card";
+  // ADR 0066: "recurring" is derived from the selected METHOD, not the period — a monthly
+  // PromptPay purchase is a one-time 30-day term, additive just like annual PromptPay, and
+  // must never be forced to "wait" for a running timed plan to expire.
+  const recurring = state.paymentMethod === "card";
   if (recurring && state.planExpiresAt && state.planExpiresAt > now) return "wait";
   if (cardPlan === state.currentPlan) {
-    if (cardPlan === "PRO" && !liveSubscription) return "renew";
+    // HERO-61-style fix: a BUSINESS cash user with no live subscription can renew BUSINESS
+    // from a reminder link, same as PRO already could (previously PRO-only).
+    if ((cardPlan === "PRO" || cardPlan === "BUSINESS") && !liveSubscription) return "renew";
     return "current";
   }
   return "purchase";

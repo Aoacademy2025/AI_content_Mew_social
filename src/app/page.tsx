@@ -24,6 +24,7 @@ import { ProductFeatureVisual } from "@/components/marketing/product-feature-vis
 import { MobileStickyCta } from "@/components/marketing/mobile-sticky-cta";
 import { getFoundingCoupon } from "@/lib/founding";
 import { getPlanConfig } from "@/lib/plan-config";
+import { promptpayMonthlyOffered } from "@/lib/promptpay-monthly";
 
 export const metadata = {
   title: "HERO AI Creator Studio — จากไอเดีย ถึงคลิปพร้อมโพสต์",
@@ -153,7 +154,14 @@ const FAQS = [
 ] as const;
 
 export default async function Home() {
-  const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
+  // ADR 0066 — promptpayMonthlyOffered() short-circuits to `false` before any config/DB
+  // read when PROMPTPAY_MONTHLY is off, so this adds no query on the flag-off path.
+  const [plans, founding, offeredPro, offeredBusiness] = await Promise.all([
+    getPlanConfig(),
+    getFounding(),
+    promptpayMonthlyOffered("PRO"),
+    promptpayMonthlyOffered("BUSINESS"),
+  ]);
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
@@ -393,7 +401,12 @@ export default async function Home() {
               <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มฟรี แล้วค่อยโตตามงาน</h2>
               <p className="mx-auto mt-4 max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">ลองทำคลิปจริงก่อนตัดสินใจ ทุกแพ็กแสดงสิทธิ์และโควต้าล่าสุดจากระบบ</p>
             </Reveal>
-            <PricingToggle plans={plans} founding={founding} minuteQuotaEnabled={MINUTE_QUOTA} />
+            <PricingToggle
+              plans={plans}
+              founding={founding}
+              minuteQuotaEnabled={MINUTE_QUOTA}
+              offered={{ PRO: offeredPro, BUSINESS: offeredBusiness }}
+            />
           </div>
         </section>
 

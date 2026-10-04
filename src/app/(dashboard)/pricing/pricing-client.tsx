@@ -19,6 +19,16 @@ import {
 import { trackEvent } from "@/lib/client-telemetry";
 import { PRESERVE_TRIAL_CONVERT_LINE } from "@/lib/preserve-trial";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
+import {
+  cancelBannerOffered,
+  monthlyPromptpayAvailable,
+  resolveMonthlyMethodForTier,
+  seedMethodFromCancelReturn,
+  type PaidTier,
+} from "@/lib/pricing-period-method";
+// Type-only: erased at compile time, so promptpay-monthly.ts's server-only import
+// (ensureStripeConfig/Prisma) never reaches this client bundle.
+import type { CancelReturnParams } from "@/lib/promptpay-monthly";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -85,6 +95,9 @@ export function PricingClient({
   preferredPeriod,
   minuteQuotaEnabled,
   preserveTrialOnConvert = false,
+  monthlyPromptpayOffered = { PRO: false, BUSINESS: false },
+  promptpayMonthlyEnabledFlag = false,
+  cancelReturn = {},
 }: {
   initialPlans: PlanConfig;
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
@@ -96,6 +109,12 @@ export function PricingClient({
   minuteQuotaEnabled: boolean;
   /** #348 — PRESERVE_TRIAL_ON_CONVERT, read on the server and passed down. */
   preserveTrialOnConvert?: boolean;
+  /** ADR 0066 — `promptpayMonthlyOffered(plan)` per paid tier, resolved on the server. */
+  monthlyPromptpayOffered?: Record<PaidTier, boolean>;
+  /** ADR 0066 — `promptpayMonthlyEnabled()`, resolved on the server (no NEXT_PUBLIC_ twin). */
+  promptpayMonthlyEnabledFlag?: boolean;
+  /** ADR 0066 — the whitelisted cancel-return / `?method=promptpay` preselect params. */
+  cancelReturn?: CancelReturnParams;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   // Base default (no known subscription state yet) — #300, flag-gated.
@@ -103,18 +122,48 @@ export function PricingClient({
     () => preferredPeriod
       ?? getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).period,
   );
+  // ADR 0066 — annual's default method (today's logic, unchanged) can still be overridden
+  // by an explicit, whitelisted `?method=` cancel-return param that targets "annual"
+  // specifically (session ruling: "annual keeps today's default logic" describes the
+  // DEFAULT absent that param — see seedMethodFromCancelReturn).
   const [method, setMethod] = useState<PaymentMethod>(
-    () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
+    () => seedMethodFromCancelReturn(
+      "annual",
+      cancelReturn,
+      { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+      getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
+    ),
+  );
+  // ADR 0066 — monthly's method is tracked separately from annual's. Card is ALWAYS the
+  // monthly default, independent of NEXT_PUBLIC_PRICING_DEFAULT_RECURRING; the only override
+  // is an explicit `?method=` link (e.g. the past-due banner) that targets "monthly".
+  const [monthlyMethod, setMonthlyMethod] = useState<PaymentMethod>(
+    () => seedMethodFromCancelReturn(
+      "monthly",
+      cancelReturn,
+      { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+      "card",
+    ),
   );
   const [faqOpen, setFaqOpen] = useState<number>(-1);
   const [showCoupon, setShowCoupon] = useState(false);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; percentOff: number | null } | null>(null);
+  const [cancelBannerLoading, setCancelBannerLoading] = useState(false);
   const founding = initialFounding;
   const [me, setMe] = useState<Me>(null);
   const [userChecked, setUserChecked] = useState(false);
   const [planConfig] = useState<PlanConfig>(initialPlans);
 
   const yearly = period === "annual";
+  const monthlyToggleVisible = monthlyPromptpayAvailable(monthlyPromptpayOffered);
+  const monthlyMethodForTier = (tier: PaidTier): PaymentMethod =>
+    resolveMonthlyMethodForTier(monthlyMethod, tier, monthlyPromptpayOffered);
+  const cancelBanner = paymentResult === "cancelled"
+    && cancelReturn.plan
+    && cancelReturn.period
+    && cancelBannerOffered(cancelReturn, { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered })
+    ? { plan: cancelReturn.plan, period: cancelReturn.period }
+    : null;
 
   useEffect(() => {
     fetch("/api/user/me")
@@ -137,11 +186,19 @@ export function PricingClient({
           billingPeriod: d?.billingPeriod ?? null,
         });
         setPeriod(preferredPeriod ?? resolved.period);
-        setMethod(resolved.method);
+        // ADR 0066 — re-apply the same explicit-param override on top of the freshly
+        // resolved default once `/api/user/me` is known (mirrors the initial state's
+        // seeding so a slower client hydration can't drop the override).
+        setMethod(seedMethodFromCancelReturn(
+          "annual",
+          cancelReturn,
+          { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+          resolved.method,
+        ));
         setUserChecked(true);
       })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
-  }, [preferredPeriod]);
+  }, [preferredPeriod, cancelReturn, monthlyPromptpayOffered, promptpayMonthlyEnabledFlag]);
 
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
@@ -181,7 +238,7 @@ export function PricingClient({
       window.location.href = "/register";
       return;
     }
-    const effectiveMethod = period === "monthly" ? "card" : method;
+    const effectiveMethod = period === "monthly" ? monthlyMethodForTier(planKey) : method;
     const cfgKey = planKey === "PRO" ? "pro" : "business";
     const monthlyPrice = planConfig?.[cfgKey]?.price ?? (planKey === "PRO" ? 599 : 990);
     const isFounding = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding: foundingFor(planKey) }).isFounding;
@@ -213,8 +270,8 @@ export function PricingClient({
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Monthly is card-only (the method toggle is hidden in monthly mode, so the promptpay default
-        // would otherwise build an invalid monthly+promptpay session). Server coerces too.
+        // ADR 0066 — monthly PromptPay is only sent when offered for THIS tier
+        // (monthlyMethodForTier coerces to card otherwise); the server coerces too.
         body: JSON.stringify({ plan: planKey, period, method: effectiveMethod, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
@@ -262,11 +319,49 @@ export function PricingClient({
     }
   }
 
+  // ADR 0066 — the cancel-return banner's one-click PromptPay retry for the exact
+  // plan+period the customer abandoned. Fires the same telemetry shape as the other
+  // pricing CTAs, tagged with the dedicated surface so it's measurable on its own.
+  async function handleCancelBannerCheckout(plan: PaidTier, cancelPeriod: BillingPeriod) {
+    trackEvent("pricing_cta_clicked", {
+      step: "pricing_page",
+      properties: {
+        plan,
+        period: cancelPeriod,
+        method: "promptpay",
+        surface: "cancel_return_promptpay",
+        source: acquisitionSource ?? "direct",
+      },
+    });
+    setCancelBannerLoading(true);
+    try {
+      const res = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, period: cancelPeriod, method: "promptpay" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(customerApiErrorMessage(data, "ยังเริ่มชำระเงินไม่ได้ กรุณาลองใหม่หรือติดต่อทีมงาน"));
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setCancelBannerLoading(false);
+    }
+  }
+
   // No annual total shown — the per-month figure is the hero; total appears at checkout.
   function priceBlock(monthlyPrice: number, planKey: PlanKey) {
     const display = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding: foundingFor(planKey) });
     if (!yearly) {
-      return { amount: monthlyPrice.toLocaleString(), sub: "ต่ออัตโนมัติรายเดือน · ยกเลิกได้", was: undefined as string | undefined };
+      // ADR 0066 — monthly + PromptPay (offered for this tier) replaces the card sub line.
+      const sub = planKey !== "FREE" && monthlyMethodForTier(planKey) === "promptpay"
+        ? `จ่ายครั้งเดียว ฿${monthlyPrice.toLocaleString()} · ใช้ได้ 30 วัน · ไม่ตัดเงินอัตโนมัติ`
+        : "ต่ออัตโนมัติรายเดือน · ยกเลิกได้";
+      return { amount: monthlyPrice.toLocaleString(), sub, was: undefined as string | undefined };
     }
     const monthlyEq = Math.round(display.final / 12);
     const sub = display.isFounding
@@ -288,11 +383,38 @@ export function PricingClient({
         </div>
       )}
       {paymentResult === "cancelled" && (
-        <div className="mx-auto mb-6 flex max-w-2xl items-center gap-3 rounded-2xl p-4"
-          style={{ background: "rgba(248,113,113,.10)", border: "1px solid rgba(248,113,113,.25)" }}>
-          <AlertCircle className="h-5 w-5 shrink-0" style={{ color: "#F87171" }} />
-          <p className="text-sm" style={{ color: "#FCA5A5" }}>ยกเลิกการชำระเงินแล้ว — กลับมาเลือกแพ็กได้ทุกเมื่อ</p>
-        </div>
+        cancelBanner ? (
+          // ADR 0066 — the abandoned session was card and PromptPay is offered for this
+          // exact plan+period: offer a one-click PromptPay retry instead of the plain text.
+          <div className="mx-auto mb-6 flex max-w-2xl flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between"
+            style={{ background: "rgba(248,113,113,.10)", border: "1px solid rgba(248,113,113,.25)" }}>
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" style={{ color: "#F87171" }} />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: "#FCA5A5" }}>บัตรใช้ไม่ได้? จ่ายด้วย PromptPay แทนได้</p>
+                <p className="mt-1 text-[13px]" style={{ color: "#FCA5A5" }}>
+                  {cancelBanner.period === "monthly"
+                    ? `สแกนจ่าย ฿${(cancelBanner.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (cancelBanner.plan === "PRO" ? 599 : 990)} ใช้ ${cancelBanner.plan} ได้ 30 วัน ไม่ต้องใช้บัตร`
+                    : `สแกนจ่ายครั้งเดียว ใช้ ${cancelBanner.plan} ได้ 1 ปี ไม่ต้องใช้บัตร`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => handleCancelBannerCheckout(cancelBanner.plan, cancelBanner.period)}
+              disabled={cancelBannerLoading}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed"
+              style={{ background: VIOLET_GRAD, color: "#fff" }}
+            >
+              {cancelBannerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "จ่ายด้วย PromptPay"}
+            </button>
+          </div>
+        ) : (
+          <div className="mx-auto mb-6 flex max-w-2xl items-center gap-3 rounded-2xl p-4"
+            style={{ background: "rgba(248,113,113,.10)", border: "1px solid rgba(248,113,113,.25)" }}>
+            <AlertCircle className="h-5 w-5 shrink-0" style={{ color: "#F87171" }} />
+            <p className="text-sm" style={{ color: "#FCA5A5" }}>ยกเลิกการชำระเงินแล้ว — กลับมาเลือกแพ็กได้ทุกเมื่อ</p>
+          </div>
+        )
       )}
 
       {/* personalized status band */}
@@ -397,6 +519,25 @@ export function PricingClient({
         </div>
       )}
 
+      {/* ADR 0066 — monthly PromptPay 30-day term, only when offered. Card is always first
+          and always the default; no flag-based reordering (unlike the annual toggle above). */}
+      {!yearly && monthlyToggleVisible && (
+        <div className="mb-2 flex justify-center px-2">
+          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[13px]">
+            {(["card", "promptpay"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMonthlyMethod(m)}
+                className="inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 font-medium transition"
+                style={monthlyMethod === m ? { background: VIOLET_TILE_BG, color: VIOLET_LIGHT } : { color: "var(--ui-text-muted)" }}
+              >
+                {m === "promptpay" ? "PromptPay · 30 วัน" : "บัตร · ต่ออัตโนมัติ"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* coupon (collapsed) */}
       <div className="mb-8 flex flex-col items-center">
         {appliedCoupon ? (
@@ -442,7 +583,7 @@ export function PricingClient({
                 isTrialPlan: onTrial,
                 billingPeriod: me?.billingPeriod ?? null,
                 planExpiresAt: me?.planExpiresAt ? new Date(me.planExpiresAt) : null,
-                paymentMethod: period === "monthly" ? "card" : method,
+                paymentMethod: period === "monthly" ? monthlyMethodForTier(key as PaidTier) : method,
                 // A converted-but-still-trialing subscription must read as
                 // "manage/current", not as a second purchase the API rejects.
                 hasStripeSubscription: me?.hasStripeSubscription ?? false,
