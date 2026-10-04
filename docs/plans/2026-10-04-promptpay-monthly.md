@@ -236,4 +236,4 @@ Checklist:
 - Changes to the external hero-affiliate service.
 
 ## Status
-interviewed 2026-10-04 | approved: pending | executed: - | delivered: -
+interviewed 2026-10-04 | approved: 2026-10-04 (Mew) | executed: - | delivered: -
