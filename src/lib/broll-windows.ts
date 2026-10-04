@@ -184,6 +184,136 @@ export function buildFixedCountBrollWindows(
   });
 }
 
+/**
+ * HERO-62 "ใส่ B-roll เอง": fill-yourself windows can run 12–15 s (a caption longer than
+ * the cadence is its own window, and the pause-smoothing pass above can stretch a window
+ * over a long trailing silence). A single still picture then has to hold for that whole
+ * span. This caps every window a fill-yourself caller plans at `maxWindowMs` by splitting
+ * it into the fewest equal pieces that are each <= maxWindowMs.
+ */
+export const FILL_YOURSELF_MAX_WINDOW_MS = 5_000;
+/** A cut point snaps to a caption boundary only when it falls within this distance of the
+ *  even split point — otherwise the cut lands mid-caption. */
+export const FILL_YOURSELF_SNAP_TOLERANCE_MS = 750;
+
+function nearestBoundaryWithin(
+  candidates: number[],
+  target: number,
+  toleranceMs: number,
+): number | null {
+  let best: number | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const distance = Math.abs(candidate - target);
+    if (distance <= toleranceMs && distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * Whole-ms cut points for one over-long window, split into `pieceCount` pieces.
+ * Each interior cut starts at the even split point, then snaps to the nearest caption
+ * boundary within `FILL_YOURSELF_SNAP_TOLERANCE_MS` IF that snap still keeps both the
+ * piece it closes and the piece it opens at or under `maxWindowMs` — a snap that would
+ * push either neighbour over the cap is treated the same as "no boundary nearby" (cut
+ * stays at the even point). This keeps the <= maxWindowMs guarantee exact regardless of
+ * where captions happen to fall.
+ */
+function splitWindowBoundaries(
+  startMs: number,
+  endMs: number,
+  pieceCount: number,
+  boundaryCandidates: number[],
+  maxWindowMs: number,
+): number[] {
+  const span = endMs - startMs;
+  const nominals: number[] = [];
+  for (let k = 1; k < pieceCount; k += 1) {
+    nominals.push(Math.round(startMs + (span * k) / pieceCount));
+  }
+  const boundaries = [startMs];
+  for (let k = 0; k < nominals.length; k += 1) {
+    const nominal = nominals[k];
+    const previous = boundaries[boundaries.length - 1];
+    const nextNominalOrEnd = k + 1 < nominals.length ? nominals[k + 1] : endMs;
+    const snapped = nearestBoundaryWithin(boundaryCandidates, nominal, FILL_YOURSELF_SNAP_TOLERANCE_MS);
+    const canSnap = snapped !== null
+      && snapped > previous
+      && snapped < endMs
+      && snapped - previous <= maxWindowMs
+      && nextNominalOrEnd - snapped <= maxWindowMs;
+    const chosen = canSnap ? (snapped as number) : nominal;
+    boundaries.push(Math.max(previous + 1, Math.min(endMs - 1, Math.round(chosen))));
+  }
+  boundaries.push(endMs);
+  return boundaries;
+}
+
+/**
+ * Split every window longer than `maxWindowMs` into the fewest equal (whole-ms) pieces
+ * each <= `maxWindowMs`, snapping interior cuts to a nearby caption boundary when safe
+ * (see `splitWindowBoundaries`). Windows at or under the cap pass through unchanged, so
+ * calling this with a non-fill-yourself caller's windows reproduces them exactly — the
+ * cap only ever applies where a caller opts in.
+ *
+ * Each resulting piece keeps the parent window's `captionStartIdx`/`captionEndIdx`/`text`
+ * (the HERO-44 placeholder contract only needs each piece's own timing + array position
+ * for its `sourceIndex` — see `buildPlaceholderBgVideos`). The full set of pieces still
+ * tiles exactly `[window.startMs, window.endMs]`, so tiling across the whole timeline is
+ * preserved.
+ */
+export function capFillYourselfBrollWindows(
+  windows: BrollWindow[],
+  captions: BrollWindowCaption[],
+  maxWindowMs: number = FILL_YOURSELF_MAX_WINDOW_MS,
+): BrollWindow[] {
+  if (!Array.isArray(windows) || windows.length === 0) return windows ?? [];
+  const cap = Number.isFinite(maxWindowMs) && maxWindowMs > 0 ? maxWindowMs : FILL_YOURSELF_MAX_WINDOW_MS;
+  const boundaryCandidates = (Array.isArray(captions) ? captions : [])
+    .flatMap((c) => [c?.startMs, c?.endMs])
+    .filter((ms): ms is number => Number.isFinite(ms));
+
+  const result: BrollWindow[] = [];
+  for (const window of windows) {
+    const span = window.endMs - window.startMs;
+    if (!Number.isFinite(span) || span <= cap) {
+      result.push(window);
+      continue;
+    }
+    const pieceCount = Math.max(2, Math.ceil(span / cap));
+    const boundaries = splitWindowBoundaries(window.startMs, window.endMs, pieceCount, boundaryCandidates, cap);
+    for (let p = 0; p < boundaries.length - 1; p += 1) {
+      result.push({
+        startMs: boundaries[p],
+        endMs: boundaries[p + 1],
+        captionStartIdx: window.captionStartIdx,
+        captionEndIdx: window.captionEndIdx,
+        text: window.text,
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * The fill-yourself entry point: plan windows exactly as `buildBrollWindows` always has,
+ * then cap them for a customer who will fill each one herself (HERO-62). A non-fill-yourself
+ * caller keeps calling `buildBrollWindows` directly and is byte-for-byte unaffected by this
+ * function's existence.
+ */
+export function buildFillYourselfBrollWindows(
+  captions: BrollWindowCaption[],
+  cadenceSec: number,
+  audioEndMs?: number,
+  options?: { cadenceMultiplier?: number; maxWindowMs?: number },
+): BrollWindow[] {
+  const windows = buildBrollWindows(captions, cadenceSec, audioEndMs, options);
+  return capFillYourselfBrollWindows(windows, captions, options?.maxWindowMs);
+}
+
 type NarrativeAlignedBrollInput = {
   captions: BrollWindowCaption[];
   words: TimedWord[];

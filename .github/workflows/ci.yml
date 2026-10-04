@@ -44,6 +44,9 @@ jobs:
       - name: Verify fill-it-yourself B-roll plans windows without provider calls (HERO-44)
         run: npm run verify:broll-fill-yourself
 
+      - name: Verify fill-yourself B-roll windows are capped at 5s (HERO-62)
+        run: npm run verify:broll-fill-yourself-window-cap
+
       - name: Verify local media eviction yields to customer renders (HERO-41)
         run: npm run verify:media-local-eviction
 
