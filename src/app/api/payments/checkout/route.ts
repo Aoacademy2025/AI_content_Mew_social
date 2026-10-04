@@ -5,7 +5,7 @@ import { stripe, PLANS, PlanKey, BillingPeriod, resolvePrice } from "@/lib/strip
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
-import { claimSeat, attachReservation, releaseUnattachedSeat } from "@/lib/founding";
+import { resolveFoundingDiscount, attachReservation, releaseUnattachedSeat } from "@/lib/founding";
 import { checkoutAllowed } from "@/lib/plan-change";
 import { AFF_COOKIE, sanitizeRefCode, studioProductSlug } from "@/lib/affiliate-ref";
 import { preserveTrialOnConvertEnabled, resolveTrialPreservation } from "@/lib/preserve-trial";
@@ -153,15 +153,17 @@ export async function POST(req: Request) {
     }
 
     // ── Founding-100 auto-apply: annual only, only when no manual discount was applied ──
-    let foundingClaim: { couponId: string; stripePromotionCodeId: string } | null = null;
-    if (!discountCoupon && period === "annual") {
-      foundingClaim = await claimSeat(userId); // null if sold out / already a founding member
-    }
+    // A confirmed member upgrading PRO → BUSINESS reuses their seat (HERO-61); everyone else claims one.
+    const founding = await resolveFoundingDiscount({
+      userId, currentPlan: user.plan, targetPlan: plan, period, hasManualDiscount: !!discountCoupon,
+    });
+    const foundingClaim = founding?.kind === "seat" ? founding : null;
 
     // The promotion code + coupon id actually applied (manual discount takes precedence over founding)
-    const appliedPromotionCode = discountCoupon?.stripePromotionCodeId ?? foundingClaim?.stripePromotionCodeId ?? null;
-    const appliedCouponId = discountCoupon?.id ?? foundingClaim?.couponId ?? null;
+    const appliedPromotionCode = discountCoupon?.stripePromotionCodeId ?? founding?.stripePromotionCodeId ?? null;
+    const appliedCouponId = discountCoupon?.id ?? founding?.couponId ?? null;
     const isFounding = !!foundingClaim;
+    const isFoundingMemberUpgrade = founding?.kind === "member";
 
     // Never trust the caller-controlled Origin header for Stripe redirects.
     // Prefer the configured canonical app URL, then the server request URL.
@@ -179,6 +181,7 @@ export async function POST(req: Request) {
           userId, plan, period, periodDays: String(priceCfg.periodDays), method,
           ...(appliedCouponId ? { couponId: appliedCouponId } : {}),
           ...(isFounding ? { founding: "1" } : {}),
+          ...(isFoundingMemberUpgrade ? { founding: "member" } : {}),
           ...affiliateMeta,
         },
         ...(isSub

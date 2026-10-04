@@ -1,5 +1,7 @@
+import { auth } from "@clerk/nextjs/server";
 import { getPlanConfig } from "@/lib/plan-config";
-import { foundingStatus } from "@/lib/founding";
+import { foundingStatus, isFoundingMember } from "@/lib/founding";
+import { prisma } from "@/lib/prisma";
 import { preserveTrialOnConvertEnabled } from "@/lib/preserve-trial";
 import { PricingClient } from "./pricing-client";
 
@@ -8,14 +10,28 @@ import { PricingClient } from "./pricing-client";
  * HTML so LCP is the heading, not a blank client-only shell waiting on JS
  * (prod p75 was ~26s when this route suspended with an empty fallback).
  */
+/** HERO-61: a confirmed member sees the founding price on an upgrade even when seats are sold out.
+ *  Display-only and fail-closed to false (checkout re-decides on its own). */
+async function viewerIsFoundingMember(): Promise<boolean> {
+  try {
+    const { userId: clerkId } = await auth();
+    if (!clerkId) return false;
+    const user = await prisma.user.findUnique({ where: { clerkId }, select: { id: true } });
+    return user ? await isFoundingMember(user.id) : false;
+  } catch {
+    return false;
+  }
+}
+
 export default async function PricingPage({
   searchParams,
 }: {
   searchParams: Promise<{ payment?: string; source?: string; period?: string }>;
 }) {
-  const [plans, founding, params] = await Promise.all([
+  const [plans, founding, foundingMember, params] = await Promise.all([
     getPlanConfig(),
     foundingStatus(),
+    viewerIsFoundingMember(),
     searchParams,
   ]);
   return (
@@ -40,6 +56,7 @@ export default async function PricingPage({
         <PricingClient
           initialPlans={plans}
           initialFounding={founding}
+          foundingMember={foundingMember}
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
           preferredPeriod={params.period === "monthly" || params.period === "annual" ? params.period : null}

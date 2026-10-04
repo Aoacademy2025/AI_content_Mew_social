@@ -6,7 +6,7 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import {
   confirmLatestSeatForUser,
-  confirmSeat,
+  settleCheckoutCoupon,
   getFoundingCoupon,
   releasePendingSeatForUser,
   releaseSeat,
@@ -214,18 +214,8 @@ async function handleCheckoutSession(s: any, eventId: string) {
   }).catch(() => {});
   const couponId = s.metadata?.couponId;
   if (couponId) {
-    if (s.metadata?.founding === "1") {
-      // Founding seat was already counted at reservation — just confirm it (no re-increment)
-      await confirmSeat(s.id).catch(() => {});
-      await prisma.couponRedemption.create({ data: { couponId, userId } }).catch(() => {});
-      console.log(`[stripe-webhook] founding seat confirmed: ${userId} (coupon ${couponId})`);
-    } else {
-      try {
-        await prisma.couponRedemption.create({ data: { couponId, userId } });
-        await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
-        console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
-      } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
-    }
+    // founding "1" confirms the reserved seat; "member" (HERO-61) reused a seat → no counter change.
+    await settleCheckoutCoupon({ sessionId: s.id, userId, couponId, founding: s.metadata?.founding }).catch(() => {});
   }
   // Initial paid grant — FORCE a fresh grant ignoring the 30-day window (NOT
   // ensureMonthlyGrant): a trial-expiry downgrade stamps grantedResetAt=now with FREE

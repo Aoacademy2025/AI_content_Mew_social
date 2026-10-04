@@ -136,6 +136,7 @@
     "verify:editor-media-keys": "tsx scripts/verify-editor-media-keys.ts",
     "verify:editor-playback-guard": "tsx scripts/verify-editor-playback-guard.ts",
     "verify:founding-copy-truth": "tsx scripts/verify-founding-copy-truth.ts",
+    "verify:founding-member-upgrade": "tsx scripts/verify-founding-member-upgrade.ts",
     "verify:arr-revenue-shape": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-arr-revenue-shape.ts",
     "verify:plan-cash-vs-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-cash-vs-credits.ts",
     "verify:renewal-receipts": "tsx scripts/verify-renewal-receipts.ts",
