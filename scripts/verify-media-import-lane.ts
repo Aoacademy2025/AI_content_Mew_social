@@ -134,11 +134,12 @@ function runClaimChildren(count: number, goFile: string): Promise<Array<{ claime
 async function main(): Promise<void> {
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "media-import-lane-")));
   process.on("exit", () => fs.rmSync(tmp, { recursive: true, force: true })); // also on a setup failure
-  // Private TMPDIR: the staging dir (T11) and the fetch temp dir (T10) both live under
-  // os.tmpdir(), so this keeps the real ones untouched — for this process and the worker child.
+  // Private TMPDIR (the fetch temp dir, T10, lives under os.tmpdir()) and a private staging
+  // dir (T11), so the real ones stay untouched — for this process and the worker child.
   const privateTmp = path.join(tmp, "tmpdir");
   fs.mkdirSync(privateTmp, { mode: 0o700 });
   process.env.TMPDIR = privateTmp;
+  process.env.MEDIA_IMPORT_STAGING_DIR = path.join(tmp, "staging");
   const dbPath = path.join(tmp, "media-import-lane.db");
   process.env.DATABASE_URL = `file:${dbPath}?connection_limit=1`;
   execSync("npx prisma db push --skip-generate", { cwd: ROOT, stdio: "ignore", env: process.env });
@@ -154,6 +155,18 @@ async function main(): Promise<void> {
 
   check("os.tmpdir() is the private test dir", os.tmpdir() === privateTmp, os.tmpdir());
   const stagingDir = staging.mediaImportStagingDir();
+  check("staging dir is the private test dir", stagingDir === path.join(tmp, "staging"), stagingDir);
+  // 2026-10-04 regression: the render route rewrites TMPDIR for the whole web process, so the
+  // staging dir must not follow it (web staged in .tmp/remotion, the worker read /tmp).
+  {
+    const saved = { MEDIA_IMPORT_STAGING_DIR: process.env.MEDIA_IMPORT_STAGING_DIR, TMPDIR: process.env.TMPDIR };
+    delete process.env.MEDIA_IMPORT_STAGING_DIR;
+    const before = staging.mediaImportStagingDir();
+    process.env.TMPDIR = path.join(tmp, "render-tmp");
+    const after = staging.mediaImportStagingDir();
+    Object.assign(process.env, saved);
+    check("default staging dir ignores a TMPDIR change (render route)", before === after && after === path.join(ROOT, ".tmp", "media-import"), `${before} → ${after}`);
+  }
   const tempDir = fetchMod.mediaImportTempDir();
   const stocksDir = path.join(tmp, "stocks");
   fs.mkdirSync(stocksDir, { recursive: true });

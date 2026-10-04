@@ -48,7 +48,8 @@ const ROOT = process.cwd();
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-clip-import-job-")));
 const privateTmp = path.join(tmp, "tmpdir");
 fs.mkdirSync(privateTmp, { mode: 0o700 });
-process.env.TMPDIR = privateTmp; // staging (T11) + fetch temp (T10) live under os.tmpdir()
+process.env.TMPDIR = privateTmp; // fetch temp (T10) lives under os.tmpdir()
+process.env.MEDIA_IMPORT_STAGING_DIR = path.join(tmp, "staging"); // staging (T11)
 process.env.DATABASE_URL = `file:${path.join(tmp, "test.db")}`;
 process.env.RENDER_VIA_QUEUE = "1";
 process.env.MCP_PUBLIC_ORIGIN = "https://studio.example.test";
@@ -744,7 +745,7 @@ async function main() {
   };
   const newPresenterOutputs = () => listPresenterOutputs().filter((name) => !presenterOutputsBefore.has(name));
   const tempLeft = () => (fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []);
-  const stagingDir = path.join(os.tmpdir(), "heroai-media-import");
+  const stagingDir = path.join(tmp, "staging");
   const stagingLeft = () => (fs.existsSync(stagingDir) ? fs.readdirSync(stagingDir) : []);
   const importOf = async (jobId: unknown) => prisma.mediaImport.findUniqueOrThrow({ where: { id: String(inputOf(await jobRow(jobId)).clipImportId) } });
 
@@ -768,7 +769,7 @@ async function main() {
     const imp1 = await importOf(r1.jobId);
     check("output disk below the floor → import failed storage_busy", imp1.status === "failed" && imp1.errorCode === "storage_busy" && imp1.resultSrc === null, JSON.stringify(imp1));
     check("the floor was measured on the disk the output is written to (public/renders)", diskFake.asked.includes(rendersAbs), JSON.stringify([...new Set(diskFake.asked)]));
-    check("…and on the fetch/staging disk", diskFake.asked.some((dir) => dir.startsWith(privateTmp)), JSON.stringify([...new Set(diskFake.asked)]));
+    check("…and on the fetch/staging disk", diskFake.asked.some((dir) => dir.startsWith(stagingDir)), JSON.stringify([...new Set(diskFake.asked)]));
     check("checked before fetching: the url was never downloaded", fetchCalls.length === fetchesBefore && !fetchCalls.some((c) => c.url === url1));
     check("no file written (no presenter output, no temp, no staged file)",
       newPresenterOutputs().length === outputsBefore && tempLeft().length === 0 && stagingLeft().length === 0,

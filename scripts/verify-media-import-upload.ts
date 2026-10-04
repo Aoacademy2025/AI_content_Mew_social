@@ -159,6 +159,7 @@ function runChildren(specs: ChildSpec[], goFile: string): Promise<Array<Array<{ 
 
 async function main(): Promise<void> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "media-import-upload-"));
+  process.env.MEDIA_IMPORT_STAGING_DIR = path.join(tmp, "staging");
   const dbPath = path.join(tmp, "media-import-upload.db");
   process.env.DATABASE_URL = `file:${dbPath}?connection_limit=1`;
   for (const key of ["MCP_EDITOR_PROJECT_PUBLIC", "INTERNAL_AI_ALLOWED_EMAILS", "INTERNAL_AI_ALLOWED_DOMAINS"]) {
