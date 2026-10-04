@@ -71,7 +71,10 @@ for (const path of gatedRoutes) {
 }
 
 const checkout = source("src/app/api/payments/checkout/route.ts");
-check(checkout.includes("session_id={CHECKOUT_SESSION_ID}"),
+// The session params (incl. success_url) are built by src/lib/checkout-session-params.ts,
+// which the route wires (PromptPay monthly, Task 1).
+const checkoutParams = source("src/lib/checkout-session-params.ts");
+check(checkout.includes("buildCheckoutSessionParams(") && checkoutParams.includes("session_id={CHECKOUT_SESSION_ID}"),
   "Stripe return URL carries the exact checkout session for confirmation");
 check(checkout.includes("new URL(req.url).origin") && !checkout.includes('req.headers.get("origin")'),
   "Stripe redirects use the configured/server origin rather than a caller-controlled header");

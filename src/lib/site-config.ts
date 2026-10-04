@@ -25,7 +25,7 @@ export async function getConfigs(
   return result;
 }
 
-// Env-var fallback map for src/app/api/admin/settings/route.ts's 32 admin
+// Env-var fallback map for src/app/api/admin/settings/route.ts's 34 admin
 // settings keys. Lives here (not in route.ts) because a Next.js route file
 // may export ONLY route handlers/segment config — the build's `.next/types`
 // route-shape check (stricter than plain `tsc`) rejects any other export,
@@ -37,7 +37,7 @@ export async function getConfigs(
 // whatever getConfigs() resolved for it (`null` when the SiteConfig row
 // doesn't exist), returns: the DB value when present (including an empty
 // string — `dbValue != null` mirrors the original `if (row)` check), else
-// the key's env-var fallback (7 of the 32 admin-settings keys have one),
+// the key's env-var fallback (9 of the 34 admin-settings keys have one),
 // else "".
 export function resolveSettingValue(key: string, dbValue: string | null): string {
   if (dbValue != null) return dbValue;
@@ -48,6 +48,8 @@ export function resolveSettingValue(key: string, dbValue: string | null): string
     stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET,
     stripe_price_pro: process.env.STRIPE_PRICE_PRO_MONTHLY,
     stripe_price_business: process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
+    stripe_price_pro_monthly_onetime: process.env.STRIPE_PRICE_PRO_MONTHLY_ONETIME,
+    stripe_price_business_monthly_onetime: process.env.STRIPE_PRICE_BUSINESS_MONTHLY_ONETIME,
     server_gemini_key: process.env.LOANWORD_MINER_GEMINI_KEY,
   };
   return envMap[key] ?? "";

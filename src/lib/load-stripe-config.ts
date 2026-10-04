@@ -11,6 +11,9 @@ const DB_KEYS = [
   { db: "stripe_price_pro_annual_onetime", env: "STRIPE_PRICE_PRO_ANNUAL_ONETIME" },
   { db: "stripe_price_business_annual", env: "STRIPE_PRICE_BUSINESS_ANNUAL" },
   { db: "stripe_price_business_annual_onetime", env: "STRIPE_PRICE_BUSINESS_ANNUAL_ONETIME" },
+  // PromptPay 30-day prepaid term (ADR 0066)
+  { db: "stripe_price_pro_monthly_onetime", env: "STRIPE_PRICE_PRO_MONTHLY_ONETIME" },
+  { db: "stripe_price_business_monthly_onetime", env: "STRIPE_PRICE_BUSINESS_MONTHLY_ONETIME" },
   { db: "stripe_portal_founding_annual_config", env: "STRIPE_PORTAL_FOUNDING_ANNUAL_CONFIG_ID" },
 ];
 

@@ -53,6 +53,8 @@ export const PLANS = {
     monthly:       { get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY ?? ""; }, periodDays: 30,  recurring: true },
     annual:        { get priceId() { return process.env.STRIPE_PRICE_PRO_ANNUAL ?? ""; },  periodDays: 365, recurring: true },
     annualOnetime: { get priceId() { return process.env.STRIPE_PRICE_PRO_ANNUAL_ONETIME ?? ""; }, periodDays: 365, recurring: false },
+    // PromptPay 30-day prepaid term (ADR 0066) — sold only when promptpayMonthlyOffered("PRO")
+    monthlyOnetime: { get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY_ONETIME ?? ""; }, periodDays: 30, recurring: false },
   },
   BUSINESS: {
     name: "Business",
@@ -65,6 +67,7 @@ export const PLANS = {
     monthly:       { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? ""; }, periodDays: 30,  recurring: true },
     annual:        { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_ANNUAL ?? ""; },  periodDays: 365, recurring: true },
     annualOnetime: { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_ANNUAL_ONETIME ?? ""; }, periodDays: 365, recurring: false },
+    monthlyOnetime: { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY_ONETIME ?? ""; }, periodDays: 30, recurring: false },
   },
 } as const;
 
@@ -73,11 +76,14 @@ export type BillingPeriod = "monthly" | "annual";
 
 /**
  * Pick the Stripe price + period for a checkout.
- * - monthly  → card subscription only (recurring)
+ * - monthly  → card subscription (recurring) OR PromptPay 30-day one-time
  * - annual   → card subscription (recurring) OR PromptPay one-time
+ *
+ * Monthly PromptPay is only SOLD when promptpayMonthlyOffered(plan) — the
+ * checkout coerces monthly+promptpay to card otherwise (resolveCheckoutSelection).
  */
 export function resolvePrice(plan: PlanKey, period: BillingPeriod, method: "card" | "promptpay") {
   const p = PLANS[plan];
-  if (period === "monthly") return p.monthly;
+  if (period === "monthly") return method === "promptpay" ? p.monthlyOnetime : p.monthly;
   return method === "promptpay" ? p.annualOnetime : p.annual;
 }

@@ -84,6 +84,8 @@ export async function register() {
       { db: "stripe_webhook_secret", env: "STRIPE_WEBHOOK_SECRET" },
       { db: "stripe_price_pro", env: "STRIPE_PRICE_PRO_MONTHLY" },
       { db: "stripe_price_business", env: "STRIPE_PRICE_BUSINESS_MONTHLY" },
+      { db: "stripe_price_pro_monthly_onetime", env: "STRIPE_PRICE_PRO_MONTHLY_ONETIME" },
+      { db: "stripe_price_business_monthly_onetime", env: "STRIPE_PRICE_BUSINESS_MONTHLY_ONETIME" },
     ];
 
     try {

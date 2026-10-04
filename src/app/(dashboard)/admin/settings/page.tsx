@@ -215,6 +215,9 @@ export default function AdminSettingsPage() {
   const [stripeWebhookSecretStatus, setStripeWebhookSecretStatus] = useState<SecretStatus>(UNSET_SECRET);
   const [stripePricePro, setStripePricePro] = useState("");
   const [stripePriceBusiness, setStripePriceBusiness] = useState("");
+  // PromptPay 30-day prepaid term (ADR 0066) — one-time THB prices
+  const [stripePriceProMonthlyOnetime, setStripePriceProMonthlyOnetime] = useState("");
+  const [stripePriceBusinessMonthlyOnetime, setStripePriceBusinessMonthlyOnetime] = useState("");
 
   // Server-owned Gemini key (platform automation: loanword miner cron, etc.)
   const [serverGeminiKey, setServerGeminiKey] = useState("");
@@ -267,6 +270,8 @@ export default function AdminSettingsPage() {
       if (d.stripe_webhook_secret && typeof d.stripe_webhook_secret === "object") setStripeWebhookSecretStatus(d.stripe_webhook_secret);
       if (d.stripe_price_pro) setStripePricePro(d.stripe_price_pro);
       if (d.stripe_price_business) setStripePriceBusiness(d.stripe_price_business);
+      if (d.stripe_price_pro_monthly_onetime) setStripePriceProMonthlyOnetime(d.stripe_price_pro_monthly_onetime);
+      if (d.stripe_price_business_monthly_onetime) setStripePriceBusinessMonthlyOnetime(d.stripe_price_business_monthly_onetime);
       if (d.plan_free_price) setPlanFreePrice(d.plan_free_price);
       if (d.plan_free_features) setPlanFreeFeatures(d.plan_free_features);
       if (d.plan_pro_price) setPlanProPrice(d.plan_pro_price);
@@ -370,6 +375,8 @@ export default function AdminSettingsPage() {
         stripe_publishable_key: stripePublishableKey.trim(),
         stripe_price_pro: stripePricePro.trim(),
         stripe_price_business: stripePriceBusiness.trim(),
+        stripe_price_pro_monthly_onetime: stripePriceProMonthlyOnetime.trim(),
+        stripe_price_business_monthly_onetime: stripePriceBusinessMonthlyOnetime.trim(),
       };
       if (stripeSecretKey.trim()) body.stripe_secret_key = stripeSecretKey.trim();
       if (stripeWebhookSecret.trim()) body.stripe_webhook_secret = stripeWebhookSecret.trim();
@@ -420,6 +427,7 @@ export default function AdminSettingsPage() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadSettings only sets state after its awaited fetch resolves; this is the initial admin-settings load.
     loadSettings();
   }, []);
 
@@ -492,6 +500,20 @@ export default function AdminSettingsPage() {
                 <label className="text-xs text-zinc-400 mb-1 block">Price ID — Business</label>
                 <input type="text" value={stripePriceBusiness}
                   onChange={e => setStripePriceBusiness(e.target.value)}
+                  placeholder="price_xxxx"
+                  className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400 mb-1 block">Stripe Price — PRO รายเดือน PromptPay (one-time)</label>
+                <input type="text" value={stripePriceProMonthlyOnetime}
+                  onChange={e => setStripePriceProMonthlyOnetime(e.target.value)}
+                  placeholder="price_xxxx"
+                  className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400 mb-1 block">Stripe Price — BUSINESS รายเดือน PromptPay (one-time)</label>
+                <input type="text" value={stripePriceBusinessMonthlyOnetime}
+                  onChange={e => setStripePriceBusinessMonthlyOnetime(e.target.value)}
                   placeholder="price_xxxx"
                   className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
               </div>
