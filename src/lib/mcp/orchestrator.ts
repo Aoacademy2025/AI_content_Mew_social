@@ -87,6 +87,7 @@ import {
   buildBrollWindows,
   buildFixedCountBrollWindows,
   buildNarrativeAlignedBrollWindows,
+  capFillYourselfBrollWindows,
   type BrollWindow,
 } from "@/lib/broll-windows";
 import {
@@ -2066,7 +2067,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // calling it here would freeze that shared snapshot at its pre-pin value for the
       // REST of this job, including the later `resolveStockMood()` calls that must not
       // regress to pre-pin data. Cadence here stays the pre-wave-1 env default.
-      const upWindows = cutawayPieceLimit(upDurMs) === 0
+      const upWindowsRaw = cutawayPieceLimit(upDurMs) === 0
         ? buildFixedCountBrollWindows(
             upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
             1,
@@ -2085,6 +2086,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             upWindowSec,
             upDurMs,
           );
+      // HERO-62: on the fill-yourself path a window the customer has to hold one picture
+      // over for 12-15s is the bug being fixed here — cap every planned window at 5s.
+      // Every other stockSource keeps upWindowsRaw untouched.
+      const upWindows = brollDisabled
+        ? capFillYourselfBrollWindows(
+            upWindowsRaw,
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+          )
+        : upWindowsRaw;
       // Plan the final composite before any provider request. The uploaded presenter
       // covers every `person` range, so media generated for those ranges can never be
       // seen and must not consume image credits.
@@ -2825,7 +2835,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // painted from the brand palette by the composition instead.
     // HERO-44: the windows are still planned — always, even where window mode is off —
     // because they are the empty slots the customer fills in the editor afterwards.
-    const brollWindows = (narrativeAlignedWindows
+    const brollWindowsRaw = (narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0 || brollDisabled
         ? manualBrollCount > 0
         ? buildFixedCountBrollWindows(
@@ -2840,6 +2850,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
           )
         : []));
+    // HERO-62: same cap as the upload path — a fill-yourself window must never ask the
+    // customer to hold one picture for 12-15s. Every other stockSource keeps the raw plan.
+    const brollWindows = brollDisabled
+      ? capFillYourselfBrollWindows(brollWindowsRaw, timedCaptionInput)
+      : brollWindowsRaw;
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
     // 3. Keywords

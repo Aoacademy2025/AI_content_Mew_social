@@ -184,6 +184,177 @@ export function buildFixedCountBrollWindows(
   });
 }
 
+/**
+ * HERO-62 "ใส่ B-roll เอง": fill-yourself windows can run 12–15 s (a caption longer than
+ * the cadence is its own window, and the pause-smoothing pass above can stretch a window
+ * over a long trailing silence). A single still picture then has to hold for that whole
+ * span. This caps every window a fill-yourself caller plans at `maxWindowMs` by splitting
+ * it into the fewest equal pieces that are each <= maxWindowMs.
+ */
+export const FILL_YOURSELF_MAX_WINDOW_MS = 5_000;
+/** A cut point snaps to a caption boundary only when it falls within this distance of the
+ *  even split point — otherwise the cut lands mid-caption. */
+export const FILL_YOURSELF_SNAP_TOLERANCE_MS = 750;
+
+/** Same validity predicate `buildBrollWindows` filters captions by, duplicated here (not
+ *  shared/exported) so `buildBrollWindows` itself stays untouched. A window's
+ *  `captionStartIdx`/`captionEndIdx` are indices into THIS filtered-and-order-preserved
+ *  array, never the raw caller-supplied list — rebuilding it identically is required to
+ *  land on the same captions a parent window's indices already point at. */
+function validFillYourselfCaptions(captions: BrollWindowCaption[]): BrollWindowCaption[] {
+  return (Array.isArray(captions) ? captions : []).filter(
+    (c): c is BrollWindowCaption =>
+      Boolean(c) && Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs,
+  );
+}
+
+const joinCaptionText = (caps: BrollWindowCaption[]): string =>
+  caps.map((c) => c.text.trim()).filter(Boolean).join(" ");
+
+/**
+ * The `captionStartIdx`/`captionEndIdx`/`text` one split piece should carry, scoped to the
+ * piece's own `[pieceStartMs, pieceEndMs)` rather than inheriting the whole parent window's
+ * range. Content Preflight (`ensureUploadContentPreflight`) reads these fields as the
+ * window's `sourceExcerpt`; every sibling piece reporting the identical parent text would
+ * plan the same AI-image prompt for windows that are visually distinct once split.
+ *
+ * Only captions within the PARENT's own `[captionStartIdx..captionEndIdx]` are considered —
+ * a piece never reaches into a caption the parent window didn't itself cover. A piece that
+ * overlaps none of them (a pure-pause piece, e.g. the tail stretched over trailing silence)
+ * falls back to the parent's own fields: there is nothing more specific to report.
+ */
+function pieceCaptionFields(
+  parentWindow: BrollWindow,
+  filteredCaptions: BrollWindowCaption[],
+  pieceStartMs: number,
+  pieceEndMs: number,
+): Pick<BrollWindow, "captionStartIdx" | "captionEndIdx" | "text"> {
+  let firstIdx: number | null = null;
+  let lastIdx: number | null = null;
+  for (let idx = parentWindow.captionStartIdx; idx <= parentWindow.captionEndIdx; idx += 1) {
+    const caption = filteredCaptions[idx];
+    if (!caption) continue;
+    if (caption.endMs > pieceStartMs && caption.startMs < pieceEndMs) {
+      if (firstIdx === null) firstIdx = idx;
+      lastIdx = idx;
+    }
+  }
+  if (firstIdx === null || lastIdx === null) {
+    return {
+      captionStartIdx: parentWindow.captionStartIdx,
+      captionEndIdx: parentWindow.captionEndIdx,
+      text: parentWindow.text,
+    };
+  }
+  return {
+    captionStartIdx: firstIdx,
+    captionEndIdx: lastIdx,
+    text: joinCaptionText(filteredCaptions.slice(firstIdx, lastIdx + 1)),
+  };
+}
+
+function nearestBoundaryWithin(
+  candidates: number[],
+  target: number,
+  toleranceMs: number,
+): number | null {
+  let best: number | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const distance = Math.abs(candidate - target);
+    if (distance <= toleranceMs && distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * Whole-ms cut points for one over-long window, split into `pieceCount` pieces.
+ * Each interior cut starts at the even split point, then snaps to the nearest caption
+ * boundary within `FILL_YOURSELF_SNAP_TOLERANCE_MS` IF that snap still keeps both the
+ * piece it closes and the piece it opens at or under `maxWindowMs` — a snap that would
+ * push either neighbour over the cap is treated the same as "no boundary nearby" (cut
+ * stays at the even point). This keeps the <= maxWindowMs guarantee exact regardless of
+ * where captions happen to fall.
+ */
+function splitWindowBoundaries(
+  startMs: number,
+  endMs: number,
+  pieceCount: number,
+  boundaryCandidates: number[],
+  maxWindowMs: number,
+): number[] {
+  const span = endMs - startMs;
+  const nominals: number[] = [];
+  for (let k = 1; k < pieceCount; k += 1) {
+    nominals.push(Math.round(startMs + (span * k) / pieceCount));
+  }
+  const boundaries = [startMs];
+  for (let k = 0; k < nominals.length; k += 1) {
+    const nominal = nominals[k];
+    const previous = boundaries[boundaries.length - 1];
+    const nextNominalOrEnd = k + 1 < nominals.length ? nominals[k + 1] : endMs;
+    const snapped = nearestBoundaryWithin(boundaryCandidates, nominal, FILL_YOURSELF_SNAP_TOLERANCE_MS);
+    const canSnap = snapped !== null
+      && snapped > previous
+      && snapped < endMs
+      && snapped - previous <= maxWindowMs
+      && nextNominalOrEnd - snapped <= maxWindowMs;
+    const chosen = canSnap ? (snapped as number) : nominal;
+    boundaries.push(Math.max(previous + 1, Math.min(endMs - 1, Math.round(chosen))));
+  }
+  boundaries.push(endMs);
+  return boundaries;
+}
+
+/**
+ * Split every window longer than `maxWindowMs` into the fewest equal (whole-ms) pieces
+ * each <= `maxWindowMs`, snapping interior cuts to a nearby caption boundary when safe
+ * (see `splitWindowBoundaries`). Windows at or under the cap pass through unchanged, so
+ * calling this with a non-fill-yourself caller's windows reproduces them exactly — the
+ * cap only ever applies where a caller opts in.
+ *
+ * Each resulting piece gets its own `captionStartIdx`/`captionEndIdx`/`text`, scoped to
+ * that piece's span (see `pieceCaptionFields`) rather than inheriting the whole parent
+ * window's range. The full set of pieces still tiles exactly `[window.startMs,
+ * window.endMs]`, so tiling across the whole timeline is preserved, and each piece's array
+ * position is still what gives it its own `sourceIndex` downstream — see
+ * `buildPlaceholderBgVideos`.
+ */
+export function capFillYourselfBrollWindows(
+  windows: BrollWindow[],
+  captions: BrollWindowCaption[],
+  maxWindowMs: number = FILL_YOURSELF_MAX_WINDOW_MS,
+): BrollWindow[] {
+  if (!Array.isArray(windows) || windows.length === 0) return windows ?? [];
+  const cap = Number.isFinite(maxWindowMs) && maxWindowMs > 0 ? maxWindowMs : FILL_YOURSELF_MAX_WINDOW_MS;
+  const filteredCaptions = validFillYourselfCaptions(captions);
+  const boundaryCandidates = filteredCaptions.flatMap((c) => [c.startMs, c.endMs]);
+
+  const result: BrollWindow[] = [];
+  for (const window of windows) {
+    const span = window.endMs - window.startMs;
+    if (!Number.isFinite(span) || span <= cap) {
+      result.push(window);
+      continue;
+    }
+    const pieceCount = Math.max(2, Math.ceil(span / cap));
+    const boundaries = splitWindowBoundaries(window.startMs, window.endMs, pieceCount, boundaryCandidates, cap);
+    for (let p = 0; p < boundaries.length - 1; p += 1) {
+      const pieceStartMs = boundaries[p];
+      const pieceEndMs = boundaries[p + 1];
+      result.push({
+        startMs: pieceStartMs,
+        endMs: pieceEndMs,
+        ...pieceCaptionFields(window, filteredCaptions, pieceStartMs, pieceEndMs),
+      });
+    }
+  }
+  return result;
+}
+
 type NarrativeAlignedBrollInput = {
   captions: BrollWindowCaption[];
   words: TimedWord[];
