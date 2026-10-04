@@ -124,6 +124,11 @@ async function verifyAuditRow() {
   const row4 = await prisma.toolCallAudit.findFirst({ where: { userId: user.id, toolName: "create_video_job" } });
   check("a denied call still carries the user-agent (captured before the plan gate)", row4?.userAgent === "DeniedClient/0.9");
 
+  await recordToolCall({ userId: user.id, toolName: "export_video", status: "error", responseJson: { error: "missing_key" } });
+  const row6 = await prisma.toolCallAudit.findFirst({ where: { userId: user.id, toolName: "export_video" } });
+  check("an error row stores its error summary in responseJson", row6?.responseJson === '{"error":"missing_key"}', JSON.stringify(row6?.responseJson));
+  check("an ok row leaves responseJson null", row?.responseJson === null);
+
   await prisma.$disconnect();
 }
 
@@ -142,6 +147,8 @@ function verifyRouteWiring() {
     /function principalFrom[\s\S]{0,400}userAgent/.test(routeSrc));
   check("runTool forwards userAgent into every recordToolCall call (denied/ok/error)",
     (routeSrc.match(/recordToolCall\(\{[^}]*userAgent/g) ?? []).length >= 3);
+  check("runTool stores the error summary on every non-ok row (denied/in-band/thrown)",
+    (routeSrc.match(/recordToolCall\(\{[^}]*responseJson/g) ?? []).length >= 3);
 }
 
 verifySanitize()

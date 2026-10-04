@@ -3,7 +3,7 @@
 // always returns `error: job.errorMessage ?? null`, so a SUCCESSFUL job-status poll
 // (error: null) was being mislabeled "error" in ToolCallAudit. No DB needed — pure logic.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-mcp-audit-status.ts
-import { isInBandError } from "../src/lib/mcp/audit";
+import { auditErrorSummary, auditExceptionSummary, isInBandError } from "../src/lib/mcp/audit";
 import { readFileSync } from "node:fs";
 
 let passed = 0;
@@ -41,6 +41,24 @@ assert(isInBandError({ error: undefined }) === false, "error: undefined is OK (n
 assert(isInBandError({ error: "" }) === true, "error: '' (empty string) is still an error value");
 assert(isInBandError(null) === false, "null result is OK");
 assert(isInBandError("done") === false, "string result is OK");
+
+// --- Error summary stored on non-ok rows: codes only, never free text ---
+// Before this, an error row stored nothing about its cause, so 24% of create_video_job
+// calls failed for reasons nobody could see.
+assert(JSON.stringify(auditErrorSummary({ error: "missing_key", message: "ใส่ Pexels key ก่อน" })) === JSON.stringify({ error: "missing_key" }),
+  "summary keeps the error code and drops the human message");
+assert(JSON.stringify(auditErrorSummary({ error: "url_not_public", code: "url_not_public", next: "..." })) === JSON.stringify({ error: "url_not_public", code: "url_not_public" }),
+  "summary keeps `code` alongside `error`");
+assert(JSON.stringify(auditErrorSummary({ kind: "job", status: "failed", error: "render failed at https://x/y?token=abc", errorCode: "tts_failed" })) === JSON.stringify({ error: "[text 38 chars]", errorCode: "tts_failed" }),
+  "free-text `error` (a job errorMessage) is reduced to its length; errorCode is kept");
+assert(auditErrorSummary({ jobId: "j", status: "queued" }) === null, "a result with no error fields has no summary");
+assert(auditErrorSummary(null) === null && auditErrorSummary("x") === null, "non-object results have no summary");
+assert(JSON.stringify(auditExceptionSummary(new TypeError("secret path /var/www"))) === JSON.stringify({ error: "internal_error", exception: "TypeError" }),
+  "a thrown exception stores its class name, never its message");
+assert(JSON.stringify(auditExceptionSummary(Object.assign(new Error("db"), { name: "PrismaClientKnownRequestError", code: "P2002" }))) === JSON.stringify({ error: "internal_error", exception: "PrismaClientKnownRequestError", exceptionCode: "P2002" }),
+  "a thrown exception keeps a code-shaped `code` (e.g. Prisma P2002)");
+assert(JSON.stringify(auditExceptionSummary("boom")) === JSON.stringify({ error: "internal_error", exception: "string" }),
+  "a thrown non-Error stores its typeof");
 
 // Public consumers must never expose the internal waiting_provider lifecycle value.
 const webStatusRoute = readFileSync("src/app/api/videos/jobs/[id]/route.ts", "utf8");
