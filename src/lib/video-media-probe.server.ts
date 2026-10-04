@@ -135,7 +135,8 @@ export async function probeVideoMedia(filePath: string): Promise<VideoMediaMetad
     const { stdout } = await execFileAsync(ffprobe, [
       "-v", "error",
       ...input,
-      "-show_entries", "format=duration:stream=codec_type,width,height,duration:stream_tags=rotate:stream_side_data=rotation",
+      // Not -show_entries …:stream_side_data=rotation — ffprobe 4.4 (prod) rejects that section.
+      "-show_streams", "-show_format",
       "-of", "json",
       filePath,
     ], { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout: 20_000 });

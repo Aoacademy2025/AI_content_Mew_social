@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { sniffMediaFile, type MediaContainer } from "@/lib/media-probe-args";
 import { moveFile } from "@/lib/safe-download";
@@ -11,14 +10,20 @@ import type { MediaImportPurpose, UploadKind } from "@/lib/media-import/imports"
  * Staging for `PUT /api/mcp-uploads/<token>` (Task 11) and the hand-off of a staged file to
  * T9's shared pipelines (`broll-pipeline.ts` / `presenter-checks.ts`).
  *
- * The PUT writes the body to `<tmpdir>/heroai-media-import/<importId>.upload` (dir 0700,
+ * The PUT writes the body to `<cwd>/.tmp/media-import/<importId>.upload` (dir 0700,
  * file 0600, exclusive create) and leaves the MediaImport "pending"; the import lane in
  * mcp-video-worker (Task 12) later calls `processStagedUpload`. Both PM2 apps run on the
- * same host as the same user, so they share this directory.
+ * same host as the same user with the same cwd, so they share this directory.
+ *
+ * Not `os.tmpdir()`: the render route rewrites `process.env.TMPDIR` for the whole web process
+ * on every render, so the web app staged into `.tmp/remotion/` while the worker looked in
+ * `/tmp/` and every upload failed `upload_missing` (2026-10-04).
+ * `MEDIA_IMPORT_STAGING_DIR` overrides the location (the verify scripts isolate with it).
  */
 
 export function mediaImportStagingDir(): string {
-  return path.join(os.tmpdir(), "heroai-media-import");
+  const override = process.env.MEDIA_IMPORT_STAGING_DIR;
+  return override ? path.resolve(override) : path.join(process.cwd(), ".tmp", "media-import");
 }
 
 const IMPORT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;

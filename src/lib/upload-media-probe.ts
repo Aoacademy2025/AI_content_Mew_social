@@ -64,8 +64,10 @@ export function ffprobeDisplayDimensions(filePath: string, demuxer: SafeInputDem
     const out = execFileSync(
       getFfprobePath(),
       [
+        // -show_streams, not -show_entries …:stream_side_data=rotation: prod's Ubuntu ffprobe 4.4
+        // has no `stream_side_data` section and rejects the whole probe (2026-10-04).
         "-v", "error", ...safeInputArgs(demuxer), "-select_streams", "v:0",
-        "-show_entries", "stream=width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", filePath,
+        "-show_streams", "-of", "json", filePath,
       ],
       { encoding: "utf-8", timeout: 10_000, maxBuffer: 1024 * 1024 },
     );
