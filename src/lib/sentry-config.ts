@@ -100,18 +100,24 @@ export function sanitizeSentryText(value: string): string {
   );
 }
 
-/** Every string inside `value` passed through redactMcpUploadTokens (depth-bounded, in place). */
+/**
+ * Every string inside `value` passed through redactMcpUploadTokens (depth-bounded, in place).
+ * Writes back only a value that changed, and only through a writable data property: Sentry SDK
+ * objects carry getter-only and frozen properties, and one throw here drops the whole event
+ * (HERO-59). Arrays take the same path — their indices are own data properties.
+ */
 function redactUploadTokensDeep(value: unknown, depth = 0): unknown {
   if (typeof value === "string") {
     return value.includes("mcp-uploads") || value.includes("heroai_up_") ? redactMcpUploadTokens(value) : value;
   }
   if (!value || typeof value !== "object" || depth > 8) return value;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i += 1) value[i] = redactUploadTokensDeep(value[i], depth + 1);
-    return value;
-  }
   const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) record[key] = redactUploadTokensDeep(record[key], depth + 1);
+  for (const key of Object.keys(record)) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor || !("value" in descriptor)) continue;
+    const redacted = redactUploadTokensDeep(descriptor.value, depth + 1);
+    if (redacted !== descriptor.value && descriptor.writable) record[key] = redacted;
+  }
   return value;
 }
 
