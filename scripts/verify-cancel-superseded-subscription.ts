@@ -1,14 +1,16 @@
 // Proof for docs/plans/2026-10-04-promptpay-monthly.md, Task 3 (ADR 0066):
 // after a SETTLED one-time PromptPay plan payment, a Stripe subscription of the
 // same user that Stripe itself reports as past_due/unpaid is canceled (no
-// proration, no final invoice) and its open invoices are voided.
+// proration, no final invoice) and its open and uncollectible invoices are voided.
 //
-// A. cancelSupersededSubscription with an injected Stripe stub (rules (a)–(f))
+// A. cancelSupersededSubscription with an injected Stripe stub (rules (a)–(f)),
+//    including a concurrent run that canceled first and a partial-void failure
 // B. the real webhook POST handler, signed events, the cached Stripe client's
 //    methods replaced by the same stub: the settled path, the `already_paid`
-//    retry path, a Stripe failure, a credit pack, flag off, and the
-//    customer.subscription.deleted event Stripe sends after our cancel
-// C. source-text checks: route wiring on both paths, the deleted handler only
+//    retry path, a Stripe failure, a credit pack, flag off, the
+//    customer.subscription.deleted event Stripe sends after our cancel, and
+//    Stripe's redelivery of the SAME event id after a crash (the duplicate branch)
+// C. source-text checks: route wiring on all three paths, the deleted handler only
 //    clears subscription fields, the flag is read through the one helper
 //
 // Stripe is NEVER called. The fake secret key below is not a real key, the
@@ -75,6 +77,10 @@ class StubStripeError extends Error {
 function makeStub(subs: Record<string, StubSub>, invoices: StubInvoice[]) {
   const calls: Call[] = [];
   let failOn: FailOn = null;
+  // Invoice ids whose void fails on its own (a partial-void failure).
+  const failVoidIds = new Set<string>();
+  // Runs just before `cancel` acts: lets a test simulate a concurrent run that canceled first.
+  let beforeCancel: ((id: string) => void) | null = null;
   const fail = (op: FailOn) => {
     if (failOn === op) throw new StubStripeError(`stub: ${op} failed (simulated Stripe outage)`);
   };
@@ -89,6 +95,7 @@ function makeStub(subs: Record<string, StubSub>, invoices: StubInvoice[]) {
       },
       async cancel(id: string, params?: unknown) {
         calls.push({ op: "cancel", id, params });
+        beforeCancel?.(id);
         fail("cancel");
         const sub = subs[id];
         if (!sub) throw new StubStripeError(`No such subscription: '${id}'`);
@@ -119,6 +126,7 @@ function makeStub(subs: Record<string, StubSub>, invoices: StubInvoice[]) {
       async voidInvoice(id: string) {
         calls.push({ op: "void", id });
         fail("void");
+        if (failVoidIds.has(id)) throw new StubStripeError(`stub: void of ${id} failed (simulated)`);
         const inv = invoices.find((candidate) => candidate.id === id);
         if (!inv) throw new StubStripeError(`No such invoice: '${id}'`);
         if (inv.status !== "open" && inv.status !== "uncollectible") {
@@ -139,8 +147,10 @@ function makeStub(subs: Record<string, StubSub>, invoices: StubInvoice[]) {
     subs,
     invoices,
     setFailOn(op: FailOn) { failOn = op; },
+    failVoidOf(id: string) { failVoidIds.add(id); },
+    setBeforeCancel(fn: ((id: string) => void) | null) { beforeCancel = fn; },
     ops: () => calls.map((c) => c.op),
-    reset() { calls.length = 0; failOn = null; },
+    reset() { calls.length = 0; failOn = null; failVoidIds.clear(); beforeCancel = null; },
   };
 }
 
@@ -219,7 +229,8 @@ async function main() {
   // ═══ A · the helper, Stripe injected ══════════════════════════════════════
   console.log("\nA. cancelSupersededSubscription with an injected Stripe stub");
 
-  // A1 · past_due → canceled with no proration and no final invoice; every open invoice voided
+  // A1 · past_due → canceled with no proration and no final invoice; every open AND uncollectible
+  //      invoice voided (an uncollectible invoice can still be paid by hand, so rule (c) voids it too)
   {
     const userId = await paidUser({ stripeSubscriptionId: "sub_a1", sessionId: "cs_a1" });
     const stub = makeStub(
@@ -228,31 +239,41 @@ async function main() {
         { id: "in_a1_open_1", subscription: "sub_a1", status: "open" },
         { id: "in_a1_open_2", subscription: "sub_a1", status: "open" },
         { id: "in_a1_open_3", subscription: "sub_a1", status: "open" },
+        { id: "in_a1_uncollectible", subscription: "sub_a1", status: "uncollectible" },
         { id: "in_a1_paid", subscription: "sub_a1", status: "paid" },
         { id: "in_a1_void", subscription: "sub_a1", status: "void" },
+        { id: "in_a1_draft", subscription: "sub_a1", status: "draft" },
         { id: "in_other_sub_open", subscription: "sub_somebody_else", status: "open" },
+        { id: "in_other_sub_uncollectible", subscription: "sub_somebody_else", status: "uncollectible" },
       ],
     );
     const n = recordingNotify();
     const result = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a1", userId), { env: FLAG_ON, notify: n.notify });
-    check("A1 past_due: Stripe status is read first, then cancel, then open invoices listed and voided",
-      isDeepStrictEqual(stub.ops(), ["retrieve", "cancel", "list", "void", "void", "void"]), JSON.stringify(stub.calls));
+    check("A1 past_due: Stripe status is read first, then cancel, then open + uncollectible invoices listed, then voided",
+      isDeepStrictEqual(stub.ops(), ["retrieve", "cancel", "list", "list", "void", "void", "void", "void"]), JSON.stringify(stub.calls));
     const cancel = stub.calls.find((c) => c.op === "cancel");
     check("A1 cancel targets the user's own sub id with exactly { invoice_now: false, prorate: false }",
       cancel?.id === "sub_a1" && isDeepStrictEqual(cancel?.params, { invoice_now: false, prorate: false }),
       JSON.stringify(cancel));
-    const list = stub.calls.find((c) => c.op === "list");
-    check("A1 open invoices are listed for that subscription only, status open, max page size",
-      isDeepStrictEqual(list?.params, { subscription: "sub_a1", status: "open", limit: 100 }), JSON.stringify(list));
-    check("A1 exactly the three open invoices of that subscription are voided",
+    const lists = stub.calls.filter((c) => c.op === "list").map((c) => c.params);
+    check("A1 invoices are listed for that subscription only, once per status (open, uncollectible), max page size",
+      isDeepStrictEqual(lists, [
+        { subscription: "sub_a1", status: "open", limit: 100 },
+        { subscription: "sub_a1", status: "uncollectible", limit: 100 },
+      ]), JSON.stringify(lists));
+    check("A1 exactly the three open and the one uncollectible invoice of that subscription are voided",
       stub.invoices.filter((i) => i.status === "void").map((i) => i.id).sort().join(",")
-        === "in_a1_open_1,in_a1_open_2,in_a1_open_3,in_a1_void"
+        === "in_a1_open_1,in_a1_open_2,in_a1_open_3,in_a1_uncollectible,in_a1_void"
       && stub.invoices.find((i) => i.id === "in_a1_paid")?.status === "paid"
-      && stub.invoices.find((i) => i.id === "in_other_sub_open")?.status === "open");
+      && stub.invoices.find((i) => i.id === "in_a1_draft")?.status === "draft"
+      && stub.invoices.find((i) => i.id === "in_other_sub_open")?.status === "open"
+      && stub.invoices.find((i) => i.id === "in_other_sub_uncollectible")?.status === "uncollectible",
+      JSON.stringify(stub.invoices));
     check("A1 the subscription is canceled in Stripe", stub.subs.sub_a1.status === "canceled");
     check("A1 result reports canceled + the voided invoice ids",
       result.outcome === "canceled" && result.subscriptionId === "sub_a1"
-        && isDeepStrictEqual([...result.voidedInvoiceIds].sort(), ["in_a1_open_1", "in_a1_open_2", "in_a1_open_3"]),
+        && isDeepStrictEqual([...result.voidedInvoiceIds].sort(),
+          ["in_a1_open_1", "in_a1_open_2", "in_a1_open_3", "in_a1_uncollectible"]),
       JSON.stringify(result));
     check("A1 never marks anything uncollectible", !stub.ops().includes("markUncollectible"));
     check("A1 no admin alert on success", n.sent.length === 0);
@@ -288,7 +309,7 @@ async function main() {
     );
     check("A2 unpaid (annual PromptPay, rule f): canceled and the open invoice voided",
       result.outcome === "canceled" && stub.subs.sub_a2.status === "canceled"
-        && stub.invoices[0].status === "void" && isDeepStrictEqual(stub.ops(), ["retrieve", "cancel", "list", "void"]),
+        && stub.invoices[0].status === "void" && isDeepStrictEqual(stub.ops(), ["retrieve", "cancel", "list", "list", "void"]),
       JSON.stringify({ result, calls: stub.calls }));
   }
 
@@ -468,6 +489,71 @@ async function main() {
     check("A10 only PROMPTPAY_MONTHLY=1 turns it on (\"true\" stays off)", r2.outcome === "skipped" && r2.reason === "flag_off");
   }
 
+  // A11 · concurrent delivery: another run of the helper (the original delivery and a redelivery of
+  //       the same event) canceled the sub between our status read and our cancel. Stripe refuses
+  //       our cancel. That is the outcome we wanted, so it is a no-op, never an admin alert.
+  {
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a11", sessionId: "cs_a11" });
+    const stub = makeStub({ sub_a11: { status: "past_due", customer: "cus_a11" } },
+      [{ id: "in_a11_open", subscription: "sub_a11", status: "open" }]);
+    stub.setBeforeCancel((id) => { stub.subs[id].status = "canceled"; });
+    const n = recordingNotify();
+    let threw: unknown = null;
+    let r: Awaited<ReturnType<typeof cancelSupersededSubscription>> | null = null;
+    try {
+      r = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a11", userId), { env: FLAG_ON, notify: n.notify });
+    } catch (e) { threw = e; }
+    check("A11 concurrent run already canceled it → our cancel is refused, the helper does not throw",
+      threw === null && !!r && r.outcome !== "failed", String(threw ?? JSON.stringify(r)));
+    check("A11 concurrent already-canceled → no admin alert", n.sent.length === 0, JSON.stringify(n.sent));
+    check("A11 concurrent already-canceled → skipped as already_canceled; the run that canceled owns the voiding",
+      r?.outcome === "skipped" && r.reason === "already_canceled"
+        && !stub.ops().includes("list") && !stub.ops().includes("void"),
+      JSON.stringify({ r, calls: stub.calls }));
+  }
+
+  // A12 · partial-void failure: every invoice that can be voided is voided, and the admin alert
+  //       lists the voided ids and the failed ids separately (advisory 4)
+  {
+    const userId = await paidUser({ stripeSubscriptionId: "sub_a12", sessionId: "cs_a12" });
+    const stub = makeStub({ sub_a12: { status: "past_due", customer: "cus_a12" } }, [
+      { id: "in_a12_open_1", subscription: "sub_a12", status: "open" },
+      { id: "in_a12_open_2", subscription: "sub_a12", status: "open" },
+      { id: "in_a12_uncollectible", subscription: "sub_a12", status: "uncollectible" },
+    ]);
+    stub.failVoidOf("in_a12_open_2");
+    const n = recordingNotify();
+    let threw: unknown = null;
+    let r: Awaited<ReturnType<typeof cancelSupersededSubscription>> | null = null;
+    try {
+      r = await cancelSupersededSubscription(stub.api, promptpaySession("cs_a12", userId), { env: FLAG_ON, notify: n.notify });
+    } catch (e) { threw = e; }
+    check("A12 one void fails → no throw, failed at void_invoice",
+      threw === null && r?.outcome === "failed" && r.step === "void_invoice", String(threw ?? JSON.stringify(r)));
+    check("A12 the other invoices are still voided",
+      stub.invoices.find((i) => i.id === "in_a12_open_1")?.status === "void"
+        && stub.invoices.find((i) => i.id === "in_a12_uncollectible")?.status === "void"
+        && stub.invoices.find((i) => i.id === "in_a12_open_2")?.status === "open",
+      JSON.stringify(stub.invoices));
+    const alert = n.sent[0];
+    const body = alert?.body ?? "";
+    const voidedPart = /void แล้ว: ([^·.]*)/.exec(body)?.[1] ?? "";
+    const failedPart = /void ไม่สำเร็จ: ([^·.]*)/.exec(body)?.[1] ?? "";
+    const idsIn = (part: string) => part.split(",").map((s) => s.trim()).filter(Boolean).sort();
+    check("A12 exactly one admin alert, with ERROR, the user id, the sub id and the required sentence verbatim",
+      n.sent.length === 1 && /ERROR/.test(`${alert.title} ${body}`) && body.includes(userId)
+        && body.includes("sub_a12") && body.includes(REQUIRED_ALERT), JSON.stringify(n.sent));
+    check("A12 the alert lists the invoice ids already voided",
+      isDeepStrictEqual(idsIn(voidedPart), ["in_a12_open_1", "in_a12_uncollectible"]), body);
+    check("A12 the alert lists the invoice ids that failed to void",
+      isDeepStrictEqual(idsIn(failedPart), ["in_a12_open_2"]), body);
+    check("A12 the result carries both sets",
+      r?.outcome === "failed"
+        && isDeepStrictEqual([...(r.voidedInvoiceIds ?? [])].sort(), ["in_a12_open_1", "in_a12_uncollectible"])
+        && isDeepStrictEqual(r.failedInvoiceIds, ["in_a12_open_2"]),
+      JSON.stringify(r));
+  }
+
   // ═══ B · the real webhook route ═══════════════════════════════════════════
   console.log("\nB. the real webhook POST handler, signed events, Stripe methods stubbed");
   const { stripe } = await import("../src/lib/stripe");
@@ -502,10 +588,12 @@ async function main() {
   const signer = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2026-04-22.dahlia" });
   const { POST } = await import("../src/app/api/payments/webhook/route");
   let eventSeq = 0;
-  async function postEvent(type: string, object: Record<string, unknown>) {
+  /** Posts a signed event. Pass `eventId` to redeliver an event id Stripe already sent. */
+  async function postEvent(type: string, object: Record<string, unknown>, eventId?: string) {
     eventSeq += 1;
+    const id = eventId ?? `evt_cancel_superseded_${eventSeq}`;
     const body = JSON.stringify({
-      id: `evt_cancel_superseded_${eventSeq}`,
+      id,
       object: "event",
       api_version: "2026-04-22.dahlia",
       created: Math.floor(Date.now() / 1000),
@@ -521,14 +609,14 @@ async function main() {
       headers: { "stripe-signature": signature, "content-type": "application/json" },
       body,
     }));
-    return { res, eventId: `evt_cancel_superseded_${eventSeq}` };
+    return { res, eventId: id };
   }
 
   await prisma.user.create({
     data: { id: "admin-1", name: "Admin", email: "admin@example.com", role: "ADMIN" },
   });
 
-  async function routeUser(id: string, subId: string, sessionId: string, payment: "PENDING" | "PAID", planExpiresAt: Date | null) {
+  async function routeUser(id: string, subId: string, sessionId: string, payment: "PENDING" | "PAID" | null, planExpiresAt: Date | null) {
     await prisma.user.create({
       data: {
         id,
@@ -542,6 +630,7 @@ async function main() {
         billingPeriod: "monthly",
       },
     });
+    if (payment === null) return;
     await prisma.payment.create({
       data: {
         userId: id,
@@ -577,7 +666,7 @@ async function main() {
         && !!user?.planExpiresAt && Math.abs(user.planExpiresAt.getTime() - (before + 30 * DAY_MS)) < 60_000,
       JSON.stringify({ status: paid.res.status, payment, plan: user?.plan, exp: user?.planExpiresAt }));
     check("B1 the past_due subscription is canceled (no proration, no final invoice) and its open invoice voided",
-      isDeepStrictEqual(routeStub.ops(), ["retrieve", "cancel", "list", "void"])
+      isDeepStrictEqual(routeStub.ops(), ["retrieve", "cancel", "list", "list", "void"])
         && isDeepStrictEqual(routeStub.calls[1].params, { invoice_now: false, prorate: false })
         && routeStub.subs.sub_route_1.status === "canceled"
         && routeStub.invoices.find((i) => i.id === "in_route_1_open")?.status === "void",
@@ -611,7 +700,7 @@ async function main() {
       retry.res.status === 200 && user?.planExpiresAt?.getTime() === expiry.getTime(),
       JSON.stringify({ status: retry.res.status, exp: user?.planExpiresAt, expected: expiry }));
     check("B2 already_paid retry path triggers the helper: subscription canceled, open invoice voided",
-      isDeepStrictEqual(routeStub.ops(), ["retrieve", "cancel", "list", "void"])
+      isDeepStrictEqual(routeStub.ops(), ["retrieve", "cancel", "list", "list", "void"])
         && routeStub.subs.sub_route_2.status === "canceled"
         && routeStub.invoices.find((i) => i.id === "in_route_2_open")?.status === "void",
       JSON.stringify(routeStub.calls));
@@ -685,6 +774,163 @@ async function main() {
     process.env.PROMPTPAY_MONTHLY = "1";
   }
 
+  // ── B7–B11 · rule (d) crash recovery through Stripe's redelivery of the SAME event id ──────
+  // A hard crash (OOM, pm2 restart) after the term committed but before the Stripe calls finished
+  // throws nothing, so the event-id claim is never released. Stripe's redelivery of that same
+  // event id is then answered by the duplicate branch, before handleCheckoutSession runs. The
+  // state such a crash leaves behind is reproduced exactly: the claim row and the PAID Payment
+  // row both exist, the term is set, and the sub is still past_due in Stripe.
+  async function crashLeftover(eventId: string, type: string) {
+    await prisma.stripeWebhookEvent.create({ data: { id: eventId, type } });
+  }
+  async function adminAlertsFor(subId: string) {
+    const rows = await prisma.notification.findMany({ where: { userId: "admin-1", type: "ERROR_SYSTEM" } });
+    return rows.filter((row) => row.body.includes(subId));
+  }
+
+  // B7 · async_payment_succeeded redelivered after a crash → the duplicate branch finishes the cancel
+  {
+    const expiry = new Date(Date.now() + 30 * DAY_MS);
+    await routeUser("route-user-7", "sub_route_7", "cs_route_7", "PAID", expiry);
+    routeStub.subs.sub_route_7 = { status: "past_due", customer: "cus_route-user-7" };
+    routeStub.invoices.push(
+      { id: "in_route_7_open", subscription: "sub_route_7", status: "open" },
+      { id: "in_route_7_uncollectible", subscription: "sub_route_7", status: "uncollectible" },
+    );
+    await crashLeftover("evt_crash_7", "checkout.session.async_payment_succeeded");
+    routeStub.reset();
+    const session = promptpaySession("cs_route_7", "route-user-7", { payment_intent: "pi_route_7" });
+    const redelivery = await postEvent("checkout.session.async_payment_succeeded", session, "evt_crash_7");
+    const body = await redelivery.res.json();
+    const user = await prisma.user.findUnique({ where: { id: "route-user-7" } });
+    const payment = await prisma.payment.findUnique({ where: { stripeSessionId: "cs_route_7" } });
+    check("B7 redelivered SAME event id after a crash → Stripe still gets the duplicate response (200, { ok, duplicate })",
+      redelivery.res.status === 200 && isDeepStrictEqual(body, { ok: true, duplicate: true }), JSON.stringify(body));
+    check("B7 redelivered SAME event id after a crash → the past_due sub is canceled, open + uncollectible invoices voided",
+      isDeepStrictEqual(routeStub.ops(), ["retrieve", "cancel", "list", "list", "void", "void"])
+        && routeStub.subs.sub_route_7.status === "canceled"
+        && routeStub.invoices.find((i) => i.id === "in_route_7_open")?.status === "void"
+        && routeStub.invoices.find((i) => i.id === "in_route_7_uncollectible")?.status === "void",
+      JSON.stringify(routeStub.calls));
+    check("B7 redelivery → the term is not extended again and the Payment stays PAID",
+      user?.planExpiresAt?.getTime() === expiry.getTime() && user?.plan === "PRO" && payment?.status === "PAID",
+      JSON.stringify({ exp: user?.planExpiresAt, payment: payment?.status }));
+    check("B7 redelivery → no admin alert", (await adminAlertsFor("sub_route_7")).length === 0);
+
+    // B7b · yet another redelivery of the same id → a status read only
+    routeStub.reset();
+    const again = await postEvent("checkout.session.async_payment_succeeded", session, "evt_crash_7");
+    check("B7b another redelivery of the same id after recovery → 200 duplicate, status read only",
+      again.res.status === 200 && isDeepStrictEqual(routeStub.ops(), ["retrieve"]), JSON.stringify(routeStub.calls));
+  }
+
+  // B7c · the same recovery for a checkout.session.completed that arrived already paid
+  {
+    const expiry = new Date(Date.now() + 365 * DAY_MS);
+    await routeUser("route-user-7c", "sub_route_7c", "cs_route_7c", "PAID", expiry);
+    routeStub.subs.sub_route_7c = { status: "unpaid", customer: "cus_route-user-7c" };
+    routeStub.invoices.push({ id: "in_route_7c_open", subscription: "sub_route_7c", status: "open" });
+    await crashLeftover("evt_crash_7c", "checkout.session.completed");
+    routeStub.reset();
+    const redelivery = await postEvent("checkout.session.completed", promptpaySession("cs_route_7c", "route-user-7c", {
+      payment_intent: "pi_route_7c",
+      metadata: { userId: "route-user-7c", plan: "PRO", period: "annual", periodDays: "365", method: "promptpay" },
+    }), "evt_crash_7c");
+    check("B7c redelivered paid checkout.session.completed after a crash → 200 duplicate, sub canceled, invoice voided",
+      redelivery.res.status === 200 && routeStub.subs.sub_route_7c.status === "canceled"
+        && routeStub.invoices.find((i) => i.id === "in_route_7c_open")?.status === "void",
+      JSON.stringify(routeStub.calls));
+  }
+
+  // B8 · same redelivery, but the activation never landed (no PAID Payment row) → untouched
+  for (const [label, payment] of [["Payment row still PENDING", "PENDING"], ["no Payment row at all", null]] as const) {
+    const n = payment ?? "none";
+    const userId = `route-user-8-${n}`;
+    const subId = `sub_route_8_${n}`;
+    const sessionId = `cs_route_8_${n}`;
+    await routeUser(userId, subId, sessionId, payment, null);
+    routeStub.subs[subId] = { status: "past_due", customer: `cus_${userId}` };
+    routeStub.invoices.push({ id: `in_route_8_${n}`, subscription: subId, status: "open" });
+    await crashLeftover(`evt_crash_8_${n}`, "checkout.session.async_payment_succeeded");
+    routeStub.reset();
+    const res = await postEvent("checkout.session.async_payment_succeeded",
+      promptpaySession(sessionId, userId, { payment_intent: `pi_route_8_${n}` }), `evt_crash_8_${n}`);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    check(`B8 redelivery with ${label} → 200 duplicate, zero Stripe calls, sub + invoice untouched, nothing activated`,
+      res.res.status === 200 && routeStub.calls.length === 0 && routeStub.subs[subId].status === "past_due"
+        && routeStub.invoices.find((i) => i.id === `in_route_8_${n}`)?.status === "open" && user?.plan === "FREE",
+      JSON.stringify(routeStub.calls));
+  }
+
+  // B9 · duplicate of a credit-pack session, and of an unpaid session → untouched, even with a PAID
+  //      Payment row on file and a past_due sub (each case fails exactly one predicate)
+  {
+    const expiry = new Date(Date.now() + 30 * DAY_MS);
+    await routeUser("route-user-9", "sub_route_9", "cs_route_9_credits", "PAID", expiry);
+    await prisma.payment.create({
+      data: { userId: "route-user-9", stripeSessionId: "cs_route_9_unpaid", plan: "PRO", amount: 59900, status: "PAID", periodDays: 30, paidAt: new Date() },
+    });
+    routeStub.subs.sub_route_9 = { status: "past_due", customer: "cus_route-user-9" };
+    routeStub.invoices.push({ id: "in_route_9_open", subscription: "sub_route_9", status: "open" });
+    await crashLeftover("evt_dup_9_credits", "checkout.session.completed");
+    await crashLeftover("evt_dup_9_unpaid", "checkout.session.completed");
+    routeStub.reset();
+    const credits = await postEvent("checkout.session.completed", {
+      id: "cs_route_9_credits", object: "checkout.session", mode: "payment", payment_status: "paid",
+      amount_total: 19900, currency: "thb", payment_intent: "pi_route_9",
+      metadata: { type: "credits", userId: "route-user-9", plan: "PRO", credits: "100" },
+    }, "evt_dup_9_credits");
+    const unpaid = await postEvent("checkout.session.completed",
+      promptpaySession("cs_route_9_unpaid", "route-user-9", { payment_status: "unpaid", payment_intent: null }), "evt_dup_9_unpaid");
+    check("B9 duplicate of a paid credit-pack session → 200 duplicate, zero Stripe calls",
+      credits.res.status === 200 && (await credits.res.json()).duplicate === true && routeStub.calls.length === 0,
+      JSON.stringify(routeStub.calls));
+    check("B9 duplicate of an unpaid checkout.session.completed → 200 duplicate, zero Stripe calls, sub untouched",
+      unpaid.res.status === 200 && routeStub.calls.length === 0 && routeStub.subs.sub_route_9.status === "past_due",
+      JSON.stringify(routeStub.calls));
+  }
+
+  // B10 · the crash redelivery with the flag off → zero Stripe calls
+  {
+    delete process.env.PROMPTPAY_MONTHLY;
+    await routeUser("route-user-10", "sub_route_10", "cs_route_10", "PAID", new Date(Date.now() + 30 * DAY_MS));
+    routeStub.subs.sub_route_10 = { status: "past_due", customer: "cus_route-user-10" };
+    routeStub.invoices.push({ id: "in_route_10_open", subscription: "sub_route_10", status: "open" });
+    await crashLeftover("evt_crash_10", "checkout.session.async_payment_succeeded");
+    routeStub.reset();
+    const res = await postEvent("checkout.session.async_payment_succeeded",
+      promptpaySession("cs_route_10", "route-user-10", { payment_intent: "pi_route_10" }), "evt_crash_10");
+    check("B10 flag off → redelivery is a plain duplicate: 200, zero Stripe calls, sub still past_due",
+      res.res.status === 200 && (await res.res.json()).duplicate === true && routeStub.calls.length === 0
+        && routeStub.subs.sub_route_10.status === "past_due", JSON.stringify(routeStub.calls));
+    process.env.PROMPTPAY_MONTHLY = "1";
+  }
+
+  // B11 · other event types keep plain dedupe: no handler re-run, no Stripe call, even when the
+  //       payload is a qualifying paid plan session
+  {
+    await routeUser("route-user-11", "sub_route_11", "cs_route_11", "PAID", new Date(Date.now() + 30 * DAY_MS));
+    routeStub.subs.sub_route_11 = { status: "past_due", customer: "cus_route-user-11" };
+    routeStub.invoices.push({ id: "in_route_11_open", subscription: "sub_route_11", status: "open" });
+    await crashLeftover("evt_dup_11_expired", "checkout.session.expired");
+    await crashLeftover("evt_dup_11_deleted", "customer.subscription.deleted");
+    routeStub.reset();
+    const expired = await postEvent("checkout.session.expired",
+      promptpaySession("cs_route_11", "route-user-11", { payment_intent: "pi_route_11" }), "evt_dup_11_expired");
+    const deleted = await postEvent("customer.subscription.deleted", {
+      id: "sub_route_11", object: "subscription", customer: "cus_route-user-11", status: "canceled",
+    }, "evt_dup_11_deleted");
+    const user = await prisma.user.findUnique({ where: { id: "route-user-11" } });
+    const payment = await prisma.payment.findUnique({ where: { stripeSessionId: "cs_route_11" } });
+    check("B11 duplicates of other event types → 200 duplicate, zero Stripe calls",
+      expired.res.status === 200 && (await expired.res.json()).duplicate === true
+        && deleted.res.status === 200 && (await deleted.res.json()).duplicate === true
+        && routeStub.calls.length === 0, JSON.stringify(routeStub.calls));
+    check("B11 duplicates of other event types → their handlers did not re-run (Payment PAID, sub id kept)",
+      payment?.status === "PAID" && user?.stripeSubscriptionId === "sub_route_11" && user?.subStatus === "past_due",
+      JSON.stringify({ payment: payment?.status, user }));
+  }
+
   check("B network belt: no real Stripe HTTP request was ever attempted", networkAttempts === 0, String(networkAttempts));
 
   // ═══ C · source text ══════════════════════════════════════════════════════
@@ -721,8 +967,21 @@ async function main() {
   const firstCall = handler.indexOf("cancelSupersededSubscription(");
   check("C5 the helper is only reached after the credit-pack branch and the settled gate",
     creditReturn >= 0 && settledGate > creditReturn && firstCall > settledGate);
-  check("C5 the helper is called exactly twice in the route",
-    (route.match(/await cancelSupersededSubscription\(stripe, s\)/g) ?? []).length === 2);
+  check("C5 the checkout handler calls the helper exactly twice",
+    (handler.match(/cancelSupersededSubscription\(/g) ?? []).length === 2
+      && (handler.match(/await cancelSupersededSubscription\(stripe, s\)/g) ?? []).length === 2);
+
+  // C9 · the duplicate branch (rule (d) crash recovery), scoped to the two checkout event types
+  const dupStart = route.indexOf("await prisma.stripeWebhookEvent.create(");
+  const dupEnd = route.indexOf("return NextResponse.json({ ok: true, duplicate: true });", dupStart);
+  const dupBlock = dupStart >= 0 && dupEnd > dupStart ? route.slice(dupStart, dupEnd) : "";
+  check("C9 the duplicate branch runs the helper only for checkout.session.completed / async_payment_succeeded",
+    /if \(event\.type === "checkout\.session\.completed" \|\| event\.type === "checkout\.session\.async_payment_succeeded"\) \{[^}]*cancelSupersededSubscription\(stripe, /.test(dupBlock),
+    dupBlock);
+  check("C9 the duplicate-branch call is guarded so the duplicate response can never turn into a throw",
+    /await cancelSupersededSubscription\(stripe, [^;]*\)\.catch\(/.test(dupBlock), dupBlock);
+  check("C9 the route calls the helper exactly three times (two in the handler, one in the duplicate branch)",
+    (route.match(/cancelSupersededSubscription\(/g) ?? []).length === 3);
   check("C5 the route never cancels/voids by itself (logic lives in the lib)",
     !/subscriptions\.cancel\(|voidInvoice\(|markUncollectible\(/.test(route));
 

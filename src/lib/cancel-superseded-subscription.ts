@@ -10,9 +10,9 @@ import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
  * `planExpiresAt` with that subscription's period end, replacing the term the
  * customer paid for.
  *
- * This helper cancels that subscription and voids its open invoices, under the
- * plan's "Auto-cancel rules" (a)–(f). Stripe behavior and citations are in
- * docs/research/2026-10-04-stripe-cancel-open-invoices.md.
+ * This helper cancels that subscription and voids its open and uncollectible
+ * invoices, under the plan's "Auto-cancel rules" (a)–(f). Stripe behavior and
+ * citations are in docs/research/2026-10-04-stripe-cancel-open-invoices.md.
  *
  * It never throws. It runs after the paid term is already committed, and a
  * throw there would make the webhook retry and re-run work that must happen
@@ -26,6 +26,14 @@ export const SMART_RETRIES_STILL_RUNNING_ALERT =
 
 /** Rule (b): the only Stripe statuses acted on. Anything else is left alone. */
 const SUPERSEDABLE_STRIPE_STATUSES: ReadonlySet<string> = new Set(["past_due", "unpaid"]);
+
+/**
+ * Rule (c): the invoice statuses that can still be paid and that Stripe lets us void. An
+ * `uncollectible` invoice is no longer auto-collected but can still be paid by hand, so it is
+ * voided too. `paid` and `void` are final, and a `draft` cannot be voided.
+ */
+const VOIDABLE_INVOICE_STATUSES = ["open", "uncollectible"] as const;
+type VoidableInvoiceStatus = (typeof VOIDABLE_INVOICE_STATUSES)[number];
 
 /** Stripe's max page size for `invoices.list`. */
 const INVOICE_PAGE_LIMIT = 100;
@@ -42,7 +50,7 @@ export type SupersedeStripeClient = {
     cancel(id: string, params: { invoice_now: boolean; prorate: boolean }): Promise<unknown>;
   };
   invoices: {
-    list(params: { subscription: string; status: "open"; limit: number }): AsyncIterable<{
+    list(params: { subscription: string; status: VoidableInvoiceStatus; limit: number }): AsyncIterable<{
       id?: string | null;
       status?: string | null;
     }>;
@@ -75,9 +83,11 @@ export type CancelSupersededSkipReason =
   | "payment_not_recorded"
   | "no_subscription"
   | "bundle_subscription"
-  | "stripe_status";
+  | "stripe_status"
+  /** A concurrent run (or someone in the Dashboard) canceled it between our status read and our cancel. */
+  | "already_canceled";
 
-export type CancelSupersededStep = "read_db" | "retrieve" | "cancel" | "list_open_invoices" | "void_invoice";
+export type CancelSupersededStep = "read_db" | "retrieve" | "cancel" | "list_invoices" | "void_invoice";
 
 export type CancelSupersededResult =
   | {
@@ -87,7 +97,14 @@ export type CancelSupersededResult =
       stripeStatus?: string | null;
     }
   | { outcome: "canceled"; subscriptionId: string; voidedInvoiceIds: string[] }
-  | { outcome: "failed"; subscriptionId: string | null; step: CancelSupersededStep };
+  | {
+      outcome: "failed";
+      subscriptionId: string | null;
+      step: CancelSupersededStep;
+      /** Set when the failure is at `void_invoice`: what got voided and what is still payable. */
+      voidedInvoiceIds?: string[];
+      failedInvoiceIds?: string[];
+    };
 
 function isPaidTier(plan: unknown): boolean {
   return plan === "PRO" || plan === "BUSINESS";
@@ -102,10 +119,11 @@ function describeError(err: unknown): string {
 
 /**
  * Cancel the user's own past-due/unpaid Stripe subscription after a settled
- * one-time PromptPay plan payment, then void its open invoices.
+ * one-time PromptPay plan payment, then void its open and uncollectible invoices.
  *
- * Idempotent (rule (d)). A second call finds the subscription `canceled` in
- * Stripe and does nothing.
+ * Idempotent (rule (d)). A later call finds the subscription `canceled` in
+ * Stripe and does nothing. So does a concurrent call whose cancel Stripe
+ * refuses because the other call canceled first.
  */
 export async function cancelSupersededSubscription(
   stripe: SupersedeStripeClient,
@@ -128,6 +146,8 @@ export async function cancelSupersededSubscription(
   const userId = metadata.userId;
   let subscriptionId: string | null = null;
   let step: CancelSupersededStep = "read_db";
+  const voidedInvoiceIds: string[] = [];
+  const failedInvoiceIds: string[] = [];
   try {
     // Act only when OUR ledger already holds this session as this user's PAID plan payment.
     // Then the subscription is never canceled without the term that replaces it already recorded.
@@ -164,48 +184,76 @@ export async function cancelSupersededSubscription(
     // Rule (c): cancel now, with no proration and no final invoice. Canceling also turns off
     // automatic collection on the subscription's open invoices, which stops Smart Retries.
     step = "cancel";
-    await stripe.subscriptions.cancel(subscriptionId, { invoice_now: false, prorate: false });
+    try {
+      await stripe.subscriptions.cancel(subscriptionId, { invoice_now: false, prorate: false });
+    } catch (cancelErr) {
+      // Concurrent delivery: two runs (e.g. the original delivery and Stripe's redelivery of the same
+      // event) both read past_due, and the other one canceled first, so Stripe refuses ours. That is
+      // the outcome we wanted, and the run that canceled voids the invoices. Ask Stripe rather than
+      // parse the error text. If that read fails too, the original error is reported below.
+      const now = await stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+      if (now?.status === "canceled") {
+        console.log(
+          `[cancel-superseded] user ${userId}: subscription ${subscriptionId} was already canceled by a concurrent run (checkout ${session.id}); nothing to do`,
+        );
+        return { outcome: "skipped", reason: "already_canceled", subscriptionId, stripeStatus: "canceled" };
+      }
+      throw cancelErr;
+    }
 
-    // Rule (c): an open invoice stays payable after cancel (hosted invoice page, manual charge),
-    // so VOID it, which is terminal. Never mark it uncollectible, since that can still be paid.
-    // Collect the ids before voiding, so the list is not mutated while being paginated.
-    step = "list_open_invoices";
-    const openInvoiceIds: string[] = [];
-    for await (const invoice of stripe.invoices.list({
-      subscription: subscriptionId,
-      status: "open",
-      limit: INVOICE_PAGE_LIMIT,
-    })) {
-      if (invoice.status === "open" && invoice.id) openInvoiceIds.push(invoice.id);
+    // Rule (c): open and uncollectible invoices stay payable after cancel (hosted invoice page,
+    // manual charge), so VOID them, which is terminal. Never mark one uncollectible, since that
+    // can still be paid. Collect every id first, so no list is mutated while being paginated.
+    step = "list_invoices";
+    const invoiceIds = new Set<string>();
+    for (const status of VOIDABLE_INVOICE_STATUSES) {
+      for await (const invoice of stripe.invoices.list({ subscription: subscriptionId, status, limit: INVOICE_PAGE_LIMIT })) {
+        if (invoice.status === status && invoice.id) invoiceIds.add(invoice.id);
+      }
     }
+
+    // Void each one even if another fails, so as few as possible stay payable. Any failure is
+    // reported below with both lists, so an admin knows exactly which invoices still need voiding.
     step = "void_invoice";
-    const voidedInvoiceIds: string[] = [];
-    for (const invoiceId of openInvoiceIds) {
-      await stripe.invoices.voidInvoice(invoiceId);
-      voidedInvoiceIds.push(invoiceId);
+    let firstVoidError: unknown = null;
+    for (const invoiceId of invoiceIds) {
+      try {
+        await stripe.invoices.voidInvoice(invoiceId);
+        voidedInvoiceIds.push(invoiceId);
+      } catch (voidErr) {
+        failedInvoiceIds.push(invoiceId);
+        firstVoidError ??= voidErr;
+        console.error(`[cancel-superseded] could not void invoice ${invoiceId} of ${subscriptionId}: ${describeError(voidErr)}`);
+      }
     }
+    if (failedInvoiceIds.length > 0) throw firstVoidError;
 
     console.log(
-      `[cancel-superseded] user ${userId}: canceled ${stripeStatus} subscription ${subscriptionId} after PromptPay checkout ${session.id}; voided ${voidedInvoiceIds.length} open invoice(s)`,
+      `[cancel-superseded] user ${userId}: canceled ${stripeStatus} subscription ${subscriptionId} after PromptPay checkout ${session.id}; voided ${voidedInvoiceIds.length} invoice(s)`,
       voidedInvoiceIds,
     );
     return { outcome: "canceled", subscriptionId, voidedInvoiceIds };
   } catch (err) {
     // Rule (e): the payment and term stay recorded, nothing throws, and admins are told what to do by hand.
     const detail = describeError(err);
+    const voidLists = step === "void_invoice"
+      ? ` · invoice ที่ void แล้ว: ${voidedInvoiceIds.join(", ") || "ไม่มี"} · invoice ที่ void ไม่สำเร็จ: ${failedInvoiceIds.join(", ")}`
+      : "";
     console.error(
-      `[cancel-superseded] FAILED at ${step} — user ${userId}, subscription ${subscriptionId ?? "unknown"}, checkout ${session.id}: ${detail}`,
+      `[cancel-superseded] FAILED at ${step} — user ${userId}, subscription ${subscriptionId ?? "unknown"}, checkout ${session.id}: ${detail}${voidLists}`,
     );
     const alert: AdminAlert = {
       type: "ERROR_SYSTEM",
       title: "🔴 ERROR: ยกเลิก subscription ค้างชำระไม่สำเร็จ หลังลูกค้าจ่าย PromptPay",
-      body: `ERROR — user ${userId} · subscription ${subscriptionId ?? "unknown"} · checkout ${session.id} · ขั้นที่ล้ม: ${step} (${detail}). ${SMART_RETRIES_STILL_RUNNING_ALERT}`,
+      body: `ERROR — user ${userId} · subscription ${subscriptionId ?? "unknown"} · checkout ${session.id} · ขั้นที่ล้ม: ${step} (${detail})${voidLists}. ${SMART_RETRIES_STILL_RUNNING_ALERT}`,
     };
     try {
       await (deps.notify ?? notifyAdmins)(alert);
     } catch (notifyErr) {
       console.error("[cancel-superseded] admin alert could not be written:", describeError(notifyErr));
     }
-    return { outcome: "failed", subscriptionId, step };
+    return step === "void_invoice"
+      ? { outcome: "failed", subscriptionId, step, voidedInvoiceIds, failedInvoiceIds }
+      : { outcome: "failed", subscriptionId, step };
   }
 }

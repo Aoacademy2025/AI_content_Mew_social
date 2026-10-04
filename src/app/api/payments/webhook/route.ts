@@ -285,6 +285,16 @@ export async function POST(req: Request) {
     await prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
   } catch {
     console.log("[stripe-webhook] duplicate event, skip", event.id);
+    // ADR 0066 rule (d): a hard crash (OOM, pm2 restart) after the paid term committed but before the
+    // past-due subscription was canceled throws nothing, so the claim above is never released and
+    // Stripe's redelivery of this SAME event id lands here, not in handleCheckoutSession. Finish the
+    // cancel here. The helper acts only when the flag is on, the session is a settled one-time plan
+    // payment, our PAID Payment row for it exists, and Stripe still says past_due/unpaid. Otherwise
+    // it is a no-op. Other event types keep plain dedupe.
+    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+      await cancelSupersededSubscription(stripe, event.data.object).catch((err) =>
+        console.error("[stripe-webhook] superseded-subscription check on duplicate failed:", event.id, err));
+    }
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
