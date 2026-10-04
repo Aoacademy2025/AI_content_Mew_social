@@ -19,24 +19,67 @@ export const PAST_DUE_FOLLOW_UP_DAYS = 3;
 /** Where the customer fixes the card: Settings → Billing hosts the Stripe portal button. */
 export const PAST_DUE_LINK = "/settings?tab=billing&source=past_due";
 
+/**
+ * `promptpayMonthly` is the caller's resolved PROMPTPAY_MONTHLY flag (ADR 0066).
+ * Omitted (or false), the copy is byte-for-byte what it was before this feature.
+ */
 export function pastDueReminderCopy(input: {
   kind: PastDueReminderKind;
   plan: string;
   stillEntitled: boolean;
+  promptpayMonthly?: boolean;
 }): { title: string; body: string; cta: string } {
   const tier = input.plan === "BUSINESS" ? "BUSINESS" : "PRO";
+  const promptpayMonthly = input.promptpayMonthly ?? false;
   if (input.stillEntitled) {
+    const body = `บัตรของคุณถูกปฏิเสธตอนต่ออายุ ${tier} — อัปเดตวิธีชำระเงินเพื่อใช้งานต่อไม่สะดุด ระบบจะลองเก็บอีกครั้งอัตโนมัติ`;
     return {
       title: input.kind === "failed" ? "ชำระเงินไม่สำเร็จ" : "ยังเก็บเงินไม่ได้ — บัตรยังไม่ถูกอัปเดต",
-      body: `บัตรของคุณถูกปฏิเสธตอนต่ออายุ ${tier} — อัปเดตวิธีชำระเงินเพื่อใช้งานต่อไม่สะดุด ระบบจะลองเก็บอีกครั้งอัตโนมัติ`,
+      body: promptpayMonthly ? `${body} · ไม่มีบัตรที่ใช้ได้? จ่าย PromptPay แทนได้ที่หน้าราคา` : body,
       cta: "อัปเดตบัตร",
     };
   }
   return {
     title: input.kind === "failed" ? `เก็บเงินไม่สำเร็จ — สิทธิ์ ${tier} หยุดชั่วคราว` : `สิทธิ์ ${tier} ยังหยุดอยู่ — อัปเดตบัตรเพื่อกลับมาใช้`,
-    body: `บัตรที่ผูกไว้ถูกปฏิเสธ บัญชีจึงกลับเป็น FREE ชั่วคราว — อัปเดตบัตรแล้วสิทธิ์ ${tier} จะกลับมาทันทีที่เก็บเงินสำเร็จ`,
+    body: promptpayMonthly
+      ? `บัตรที่ผูกไว้ถูกปฏิเสธ บัญชีจึงกลับเป็น FREE ชั่วคราว — อัปเดตบัตร หรือจ่าย PromptPay เพื่อกลับมาใช้ ${tier} ทันที`
+      : `บัตรที่ผูกไว้ถูกปฏิเสธ บัญชีจึงกลับเป็น FREE ชั่วคราว — อัปเดตบัตรแล้วสิทธิ์ ${tier} จะกลับมาทันทีที่เก็บเงินสำเร็จ`,
     cta: `กลับมาใช้ ${tier}`,
   };
+}
+
+/**
+ * ADR 0066: a not-entitled account gets the PromptPay pricing link instead of the
+ * card-update settings link, honoring the user's `billingPeriod` (default monthly).
+ * A still-entitled account, or the flag off, keeps the existing card-update link.
+ */
+export function pastDueReminderLink(input: {
+  stillEntitled: boolean;
+  plan: string;
+  billingPeriod: string | null;
+  promptpayMonthly: boolean;
+}): string {
+  if (!input.promptpayMonthly || input.stillEntitled) return PAST_DUE_LINK;
+  const period = input.billingPeriod === "annual" ? "annual" : "monthly";
+  const planAnchor = input.plan === "BUSINESS" ? "business" : "pro";
+  return `/pricing?source=past_due&period=${period}&method=promptpay#plan-${planAnchor}`;
+}
+
+/**
+ * ADR 0066: once a PromptPay cash payment lands after the failed invoice, the
+ * customer has already fixed the problem — skip the d3 nudge even if the local
+ * `subStatus` mirror has not caught up yet (it updates only once the superseded
+ * subscription's `customer.subscription.deleted` webhook arrives).
+ */
+export function hasCashPaymentAfter(
+  payments: readonly { amount: number; periodDays: number; note: string | null; createdAt: Date }[],
+  after: Date,
+): boolean {
+  return payments.some((payment) =>
+    payment.amount > 0
+    && payment.periodDays > 0
+    && payment.note?.trim().toLowerCase() !== "credits"
+    && payment.createdAt.getTime() > after.getTime());
 }
 
 /** A past_due account still holds its tier while `planExpiresAt` is in the future. */

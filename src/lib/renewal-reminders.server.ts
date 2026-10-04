@@ -6,12 +6,15 @@ import { sendRenewalReminderEmail } from "@/lib/send-email";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { bangkokCalendarDaysBetween } from "@/lib/day21-convert-reminder";
 import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server";
+import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
 import {
   isCashBackedRenewalTerm,
+  matchedCashBackedPayment,
   renewalDeliveryStatus,
   renewalReminderCopy,
   renewalReminderDecision,
   renewalReminderLink,
+  selectRenewalKind,
   RENEWAL_REMINDER_KINDS,
   type RenewalReminderKind,
 } from "@/lib/renewal-reminders";
@@ -118,6 +121,9 @@ export async function sendDueRenewalReminders(
   const email = deps.sendEmail ?? sendRenewalReminderEmail;
   const telemetry = deps.recordTelemetry ?? recordTelemetryEvent;
   const origin = (process.env.NEXTAUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
+  // ADR 0066: flag off keeps the pre-existing d30/d14/d3/d1 schedule and copy for
+  // every cash-backed term (today only annual terms exist, so this is unchanged).
+  const promptpayMonthly = promptpayMonthlyEnabled();
 
   for (const candidate of candidates) {
     if (
@@ -128,7 +134,11 @@ export async function sendDueRenewalReminders(
     run.cashBacked += 1;
 
     const daysLeft = bangkokCalendarDaysBetween(now, candidate.planExpiresAt);
-    const decision = renewalReminderDecision(daysLeft);
+    const matchedPayment = matchedCashBackedPayment(candidate);
+    const periodDays = matchedPayment?.periodDays;
+    const decision = promptpayMonthly && periodDays !== undefined
+      ? selectRenewalKind(daysLeft, periodDays)
+      : renewalReminderDecision(daysLeft);
     if (!decision.send) continue;
     const { kind } = decision;
 
@@ -152,8 +162,8 @@ export async function sendDueRenewalReminders(
     }
     run.claimed += 1;
 
-    const link = renewalReminderLink(kind, candidate.plan, candidate.billingPeriod);
-    const copy = renewalReminderCopy(kind, candidate.plan);
+    const link = renewalReminderLink(kind, candidate.plan, candidate.billingPeriod, promptpayMonthly);
+    const copy = renewalReminderCopy(kind, candidate.plan, promptpayMonthly ? periodDays : undefined);
     let notificationDelivered = false;
     let emailAttempted = false;
     let emailDelivered = false;
@@ -180,6 +190,7 @@ export async function sendDueRenewalReminders(
         plan: candidate.plan,
         daysLeft,
         pricingUrl: `${origin}${link}`,
+        periodDays: promptpayMonthly ? periodDays : undefined,
       }).catch(() => false);
       if (emailDelivered) run.emailDelivered += 1;
     }

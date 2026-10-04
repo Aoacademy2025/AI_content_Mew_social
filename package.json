@@ -107,7 +107,7 @@
     "verify:cancellation-visible": "tsx scripts/verify-subscription-cancellation-visible.ts && tsx scripts/verify-cancel-subscription.ts && tsx scripts/verify-billing-copy-and-refund.ts",
     "verify:renewal-reminders": "tsx scripts/verify-renewal-reminder-reliability.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-renewal-reminder-server.ts",
     "verify:past-due-dunning": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-past-due-dunning-server.ts",
-    "verify:promptpay-monthly": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-promptpay-monthly.ts",
+    "verify:promptpay-monthly": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-promptpay-monthly.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-promptpay-monthly-reminders.ts",
     "verify:brand-voice-catalog": "tsx scripts/verify-brand-voice-catalog.ts",
     "verify:dormant-payers": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-dormant-payers-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
