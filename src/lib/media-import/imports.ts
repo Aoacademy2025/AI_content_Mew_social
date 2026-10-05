@@ -53,10 +53,12 @@ const PURPOSE_MAX_BYTES: Record<MediaImportPurpose, number> = {
   presenter: MAX_PRESENTER_IMPORT_BYTES,
 };
 
-// G25 — accepted by Mew 2026-10-03.
+// G25 — accepted by Mew 2026-10-03. Raised 2026-10-05 (HERO-69): a real 22-window video needed
+// 22 upload links in one agent run and hit the old 10/hour link cap twice (two ~1h waits) — real
+// demand, not waste. The old 30/hour import cap was the next wall, at two such videos an hour.
 export const MAX_ACTIVE_IMPORTS = 3;
-export const MAX_IMPORTS_PER_HOUR = 30;
-export const MAX_UPLOAD_LINKS_PER_HOUR = 10;
+export const MAX_IMPORTS_PER_HOUR = 60;
+export const MAX_UPLOAD_LINKS_PER_HOUR = 60;
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
@@ -103,9 +105,23 @@ export function hashUploadToken(raw: string): string {
 export type AdmissionCode = "too_many_active_imports" | "import_hourly_limit" | "upload_link_hourly_limit" | "storage_busy";
 
 class AdmissionRefused extends Error {
-  constructor(readonly code: AdmissionCode | "upload_link_invalid") {
+  constructor(
+    readonly code: AdmissionCode | "upload_link_invalid",
+    /** HERO-69: how long until the oldest row counted against an hourly cap leaves the rolling
+     *  1-hour window. Only set for `import_hourly_limit` / `upload_link_hourly_limit`. */
+    readonly retryAfterSeconds?: number,
+  ) {
     super(code);
   }
+}
+
+/**
+ * HERO-69: seconds until `oldest` (the earliest row still counted in the rolling 1-hour window)
+ * ages out of it — `ceil((oldest + 1h − now) / 1000)`, floored at 1. Since `oldest` is inside the
+ * window by construction (`> now - 1h`), this is always in `[1, 3600]`.
+ */
+function retryAfterSecondsFor(oldest: Date, now: Date): number {
+  return Math.max(1, Math.ceil((oldest.getTime() + HOUR_MS - now.getTime()) / 1000));
 }
 
 /**
@@ -123,10 +139,12 @@ async function assertImportCapacity(
   const notSelf = excludeId ? { id: { not: excludeId } } : {};
   const active = await tx.mediaImport.count({ where: { userId, ...notSelf, ...liveImportsWhere(now) } });
   if (active >= MAX_ACTIVE_IMPORTS) throw new AdmissionRefused("too_many_active_imports");
-  const lastHour = await tx.mediaImport.count({
-    where: { userId, ...notSelf, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } },
-  });
-  if (lastHour >= MAX_IMPORTS_PER_HOUR) throw new AdmissionRefused("import_hourly_limit");
+  const hourlyWhere = { userId, ...notSelf, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } };
+  const lastHour = await tx.mediaImport.count({ where: hourlyWhere });
+  if (lastHour >= MAX_IMPORTS_PER_HOUR) {
+    const oldest = await tx.mediaImport.findFirst({ where: hourlyWhere, orderBy: { createdAt: "asc" }, select: { createdAt: true } });
+    throw new AdmissionRefused("import_hourly_limit", oldest ? retryAfterSecondsFor(oldest.createdAt, now) : undefined);
+  }
   const reserved = await tx.mediaImport.groupBy({ by: ["purpose"], where: { ...notSelf, ...liveImportsWhere(now) }, _count: { _all: true } });
   const reservedBytes = reserved.reduce(
     // An unknown purpose reserves the largest cap.
@@ -149,14 +167,14 @@ export type IssuedUploadToken = {
 
 /**
  * `create_upload_url`'s admission + issue (G25/G26). Refuses when the user already asked for
- * 10 links this hour, or when one more import would break the active / hourly import caps or
- * the global staging budget.
+ * MAX_UPLOAD_LINKS_PER_HOUR links this hour, or when one more import would break the active /
+ * hourly import caps or the global staging budget.
  */
 export async function issueUploadToken(
   userId: string,
   kind: UploadKind,
   now: Date = new Date(),
-): Promise<IssuedUploadToken | { ok: false; code: AdmissionCode }> {
+): Promise<IssuedUploadToken | { ok: false; code: AdmissionCode; retryAfterSeconds?: number }> {
   const token = UPLOAD_TOKEN_PREFIX + randomBytes(32).toString("base64url");
   const importId = randomUUID();
   try {
@@ -165,14 +183,18 @@ export async function issueUploadToken(
       await tx.mcpUploadToken.create({
         data: { tokenHash: hashUploadToken(token), userId, kind, issuedAt: now, importId },
       });
-      const linksThisHour = await tx.mcpUploadToken.count({
-        where: { userId, issuedAt: { gt: new Date(now.getTime() - HOUR_MS) } },
-      });
-      if (linksThisHour > MAX_UPLOAD_LINKS_PER_HOUR) throw new AdmissionRefused("upload_link_hourly_limit");
+      const linksWhere = { userId, issuedAt: { gt: new Date(now.getTime() - HOUR_MS) } };
+      const linksThisHour = await tx.mcpUploadToken.count({ where: linksWhere });
+      if (linksThisHour > MAX_UPLOAD_LINKS_PER_HOUR) {
+        const oldest = await tx.mcpUploadToken.findFirst({ where: linksWhere, orderBy: { issuedAt: "asc" }, select: { issuedAt: true } });
+        throw new AdmissionRefused("upload_link_hourly_limit", oldest ? retryAfterSecondsFor(oldest.issuedAt, now) : undefined);
+      }
       await assertImportCapacity(tx, userId, now, UPLOAD_KIND_PURPOSE[kind]);
     });
   } catch (error) {
-    if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid") return { ok: false, code: error.code };
+    if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid") {
+      return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
+    }
     throw error;
   }
   return { ok: true, token, importId, kind, issuedAt: now, expiresAt: new Date(now.getTime() + UPLOAD_TOKEN_TTL_MS) };
@@ -196,7 +218,7 @@ export async function createUrlImport(
   /** T14: "presenter" for create_video_job's clipUrl (the lane then applies T9's presenter
    *  checks); B-roll links keep the default. */
   purpose: "broll_video" | "presenter" = "broll_video",
-): Promise<{ ok: true; importId: string } | { ok: false; code: UrlImportAdmissionCode }> {
+): Promise<{ ok: true; importId: string } | { ok: false; code: UrlImportAdmissionCode; retryAfterSeconds?: number }> {
   const importId = randomUUID();
   try {
     await prisma.$transaction(async (tx) => {
@@ -216,7 +238,7 @@ export async function createUrlImport(
     });
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid" && error.code !== "upload_link_hourly_limit") {
-      return { ok: false, code: error.code };
+      return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     }
     throw error;
   }
@@ -249,7 +271,7 @@ export type AdmittedUpload = {
 export async function admitUpload(
   link: McpUploadToken,
   now: Date = new Date(),
-): Promise<AdmittedUpload | { ok: false; code: AdmissionCode | "upload_link_invalid" }> {
+): Promise<AdmittedUpload | { ok: false; code: AdmissionCode | "upload_link_invalid"; retryAfterSeconds?: number }> {
   if (!isUploadKind(link.kind)) return { ok: false, code: "upload_link_invalid" };
   const kind = link.kind;
   const purpose = UPLOAD_KIND_PURPOSE[kind];
@@ -275,7 +297,7 @@ export async function admitUpload(
       });
     });
   } catch (error) {
-    if (error instanceof AdmissionRefused) return { ok: false, code: error.code };
+    if (error instanceof AdmissionRefused) return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     throw error;
   }
   return { ok: true, importId: link.importId, userId: link.userId, kind, purpose, maxBytes: UPLOAD_KIND_MAX_BYTES[kind] };

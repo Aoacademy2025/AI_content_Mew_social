@@ -879,7 +879,7 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     importStatus = owned.row.status;
   } else if (url !== null) {
     const created = await createUrlImport(user.id, url);
-    if (!created.ok) return admissionRefusal(created.code, "replace_broll_window");
+    if (!created.ok) return admissionRefusal(created.code, "replace_broll_window", created.retryAfterSeconds);
     source = "url";
     importId = created.importId;
     importStatus = "pending";

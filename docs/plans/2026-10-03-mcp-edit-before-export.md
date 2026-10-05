@@ -149,10 +149,10 @@ Existing code anchors (origin/main `71653011`, verified by the critic):
 - G24. Every ffprobe/ffmpeg call on imported or uploaded media runs with `-protocol_whitelist file` and an explicit input demuxer (`-f` per detected container: mov/mp4, matroska/webm, image2 / png_pipe / webp_pipe). No playlist or concat demuxer, ever (B7). PR-0 applies this to the existing web upload routes too.
 - G25. Admission is DB-counted and holds across processes (A9). Per user:
   - at most 3 imports `pending` / `processing`;
-  - at most 30 imports per hour;
-  - at most 10 `create_upload_url` per hour.
+  - at most 60 imports per hour;
+  - at most 60 `create_upload_url` per hour.
 
-  The limits are checked in the tool call **and** in the PUT route. The worker processes imports fair-share across users (oldest first per user, round-robin across users), with concurrency 2. Defaults accepted by Mew 2026-10-03.
+  The limits are checked in the tool call **and** in the PUT route. The worker processes imports fair-share across users (oldest first per user, round-robin across users), with concurrency 2. Defaults accepted by Mew 2026-10-03; the two hourly numbers were raised 10 → 60 and 30 → 60 (HERO-69, 2026-10-05) after a real 22-window video hit the old 10/hour link cap twice with no wait-time in the refusal — refusals for the two hourly caps now also carry `retryAfterSeconds`.
 - G26. Upload link:
   - `create_upload_url(kind: "image" | "video" | "presenter")` returns a single-use `PUT` URL plus an `uploadId`, and expires 15 min after issue.
   - The token is ≥128-bit random, stored hashed, and bound to the user and the kind.
