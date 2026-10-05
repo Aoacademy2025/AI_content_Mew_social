@@ -77,14 +77,23 @@ budget are accepted.
 The marker has this deliberately narrow shape:
 
 ```text
-[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=interactive beforeCallbackMs=<milliseconds> callbackMs=<milliseconds> callbackEntered=<0|1>
-[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=batch
+[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=interactive queueMs=<milliseconds> ahead=<count> beforeCallbackMs=<milliseconds> callbackMs=<milliseconds> callbackEntered=<0|1>
+[prisma-slow-tx] #<sequence> elapsed <milliseconds>ms source=<static-location> kind=batch queueMs=<milliseconds> ahead=<count>
 ```
 
-`elapsed` is the total Prisma call time. For interactive transactions,
-`beforeCallbackMs` is wall time from invocation until Prisma enters the
+`elapsed` is the total Prisma call time. `queueMs` is time spent waiting in
+this process's own transaction line (HERO-70, `src/lib/prisma-transaction-queue.ts`)
+and `ahead` is how many transactions were in front when it arrived (the holder
+plus earlier waiters); both are 0 with `PRISMA_TX_SERIALIZE=0`. A large
+`queueMs` means another transaction in the SAME process held the line; a large
+`beforeCallbackMs` with a small `queueMs` means the wait was in the engine
+(pool, `BEGIN IMMEDIATE`, busy wait — e.g. another process held the writer
+lock). Before HERO-70 there was no line and `beforeCallbackMs` included
+everything. For interactive transactions,
+`beforeCallbackMs` is wall time from leaving the line until Prisma enters the
 callback, while `callbackMs` is wall time executing that callback.
-`callbackEntered=0` means Prisma returned or rejected before entry. Array
+`callbackEntered=0` means Prisma returned or rejected before entry (including a
+`queueMs` that reached `maxWait`, which rejects with P2028). Array
 transactions have no callback boundary and remain total-only. Pre-callback
 time can include connection scheduling or SQLite transaction acquisition, and
 callback time can include database waits during callback queries; neither is a
@@ -101,6 +110,24 @@ frames stay `unknown` rather than logging an absolute path, function arguments,
 SQL, model names, or row data. An `unknown` source means the release did not
 provide a stable application frame and requires another discriminating probe;
 it is not evidence against any route.
+
+### In-process transaction line and pool cap (HERO-70)
+
+Prisma's SQLite engine runs each statement on one of its worker threads (one
+per CPU), and a statement waiting for the writer lock sleeps that thread. With
+more waiting writers than threads, the transaction holding the lock cannot
+COMMIT and everything stalls for a full `busy_timeout` (20 s steps, then
+P1008/P2028). Two guards, each with its own rollback:
+
+- `src/lib/prisma.ts` queues this process's transactions in one FIFO line
+  (wait counts against `maxWait`). Off: `PRISMA_TX_SERIALIZE=0`.
+- The pool is capped at the worker count: `connection_limit=<CPUs>` is appended
+  to a `file:` `DATABASE_URL` unless one is already there. Restore Prisma's old
+  default by putting `connection_limit=17` (2 × physical cores + 1 on the 8-vCPU prod host) in `DATABASE_URL` yourself.
+
+Both are read once at process start, so restart the app after changing either
+(and check the new value reached the process — see the PM2 env notes in
+CLAUDE.md). Reproduction: `npm run verify:sqlite-tx-contention`.
 
 ## 2. SQLite WAL (one-time per DB file)
 

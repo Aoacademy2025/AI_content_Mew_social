@@ -23,6 +23,10 @@ const THRESHOLD_MS = 1_000;
 
 type SlowTransactionDiagnostic = {
   kind: "interactive" | "batch";
+  /** HERO-70: ms waiting in this process's transaction queue, and how many were ahead. */
+  queueMs: number;
+  ahead: number;
+  /** Engine time only — starts after the queue. */
   beforeCallbackMs?: number;
   callbackMs?: number;
   callbackEntered?: 0 | 1;
@@ -37,27 +41,31 @@ type BundledPhaseFindings = {
 
 function parseDiagnostic(line: string): SlowTransactionDiagnostic {
   const interactive = line.match(
-    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=interactive beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01])$/,
+    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=interactive queueMs=(\d+) ahead=(\d+) beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01])$/,
   );
   if (interactive) {
     return {
       kind: "interactive",
       totalMs: Number(interactive[1]),
       source: interactive[2],
-      beforeCallbackMs: Number(interactive[3]),
-      callbackMs: Number(interactive[4]),
-      callbackEntered: Number(interactive[5]) as 0 | 1,
+      queueMs: Number(interactive[3]),
+      ahead: Number(interactive[4]),
+      beforeCallbackMs: Number(interactive[5]),
+      callbackMs: Number(interactive[6]),
+      callbackEntered: Number(interactive[7]) as 0 | 1,
     };
   }
 
   const batch = line.match(
-    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=batch$/,
+    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=batch queueMs=(\d+) ahead=(\d+)$/,
   );
   assert(batch, `unexpected diagnostic shape: ${line}`);
   return {
     kind: "batch",
     totalMs: Number(batch[1]),
     source: batch[2],
+    queueMs: Number(batch[3]),
+    ahead: Number(batch[4]),
   };
 }
 
@@ -149,9 +157,17 @@ async function verifyBundledCallerPhases(
     assert.equal(warnings.length, 2, `expected two bundled warnings, got ${warnings.length}`);
     const diagnostics = warnings.map(parseDiagnostic);
     assert(diagnostics.every((diagnostic) => diagnostic.kind === "interactive"));
+    // HERO-70: the first caller waits in the engine (BEGIN IMMEDIATE behind the external lock);
+    // the second waits in this process's transaction queue behind the first. Either way the
+    // delay before its callback is recorded — split into queueMs and engine beforeCallbackMs.
     assert(
-      diagnostics.every((diagnostic) => (diagnostic.beforeCallbackMs ?? 0) >= THRESHOLD_MS),
+      diagnostics.every((diagnostic) => diagnostic.queueMs + (diagnostic.beforeCallbackMs ?? 0) >= THRESHOLD_MS),
       `the real bundled callers must record delayed callback entry: ${JSON.stringify(diagnostics)}`,
+    );
+    assert.deepEqual(
+      diagnostics.map((diagnostic) => diagnostic.ahead).sort(),
+      [0, 1],
+      `the second bundled caller must report the first one ahead of it: ${JSON.stringify(diagnostics)}`,
     );
     const sources = diagnostics.map((diagnostic) => diagnostic.source).sort();
     assert.match(sources[0] ?? "", /^app\/api\/fixture-balance-a\/route\.js:\d+:\d+$/);
@@ -344,6 +360,8 @@ async function main() {
     // Occupy the one real Prisma/SQLite connection, then prove a second
     // interactive transaction can time out before its callback is entered.
     // This is callback-entry delay, not a claim about SQLite lock ownership.
+    // HERO-70: the second one now waits in this process's transaction queue, and
+    // its forwarded maxWait bounds that wait (P2028, as Prisma's own start timeout).
     warnings.length = 0;
     let release!: () => void;
     let markEntered!: () => void;
@@ -361,6 +379,7 @@ async function main() {
       prisma.$transaction(async () => {
         timedOutCallbackEntered = true;
       }, { maxWait: THRESHOLD_MS + 100, timeout: 5_000 }),
+      (error: unknown) => (error as { code?: unknown }).code === "P2028",
       "the queued transaction must hit its forwarded maxWait",
     );
     assert.equal(timedOutCallbackEntered, false, "timed-out callback must never be entered");
@@ -369,7 +388,8 @@ async function main() {
     assert.equal(timedOut.kind, "interactive");
     assert.equal(timedOut.callbackEntered, 0);
     assert.equal(timedOut.callbackMs, 0);
-    assert(timedOut.beforeCallbackMs! >= THRESHOLD_MS);
+    assert.equal(timedOut.ahead, 1, "the occupying transaction was ahead of it");
+    assert(timedOut.queueMs >= THRESHOLD_MS, "the wait was spent in the queue, bounded by maxWait");
     release();
     await occupyingTransaction;
 
@@ -451,12 +471,16 @@ async function main() {
         totalMs: slowCallback.totalMs,
       },
       timeoutBeforeEntry: {
+        queueMs: timedOut.queueMs,
+        ahead: timedOut.ahead,
         beforeCallbackMs: timedOut.beforeCallbackMs,
         callbackMs: timedOut.callbackMs,
         totalMs: timedOut.totalMs,
       },
       arrayTotalMs: batchDiagnostic.totalMs,
       bundledContention: bundled.contention.map((diagnostic) => ({
+        queueMs: diagnostic.queueMs,
+        ahead: diagnostic.ahead,
         beforeCallbackMs: diagnostic.beforeCallbackMs,
         callbackMs: diagnostic.callbackMs,
         totalMs: diagnostic.totalMs,

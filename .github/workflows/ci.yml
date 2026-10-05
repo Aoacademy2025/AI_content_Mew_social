@@ -59,6 +59,9 @@ jobs:
       - name: Verify post-launch stability hotfixes
         run: npm run verify:launch-stability-hotfix
 
+      - name: Verify SQLite transactions in one process never stall each other (HERO-70)
+        run: npm run verify:prisma-options && npm run verify:sqlite-tx-contention
+
       - name: Verify karaoke subtitle visibility
         run: npm run verify:subtitle-karaoke
 

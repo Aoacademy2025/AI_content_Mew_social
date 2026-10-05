@@ -24,6 +24,7 @@ import { featureNotEnabledEnvelope } from "@/lib/mcp/tool-gating";
 import { registerEditTools } from "@/lib/mcp/edit-tools";
 import { registerMediaImportTools } from "@/lib/mcp/media-import-tools";
 import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
+import { withClientDisconnectGuard } from "@/lib/mcp/transport-disconnect";
 import {
   AI_AUDIO_CEILING_FLOOR_MIN,
   aiAudioCeilingRefusal,
@@ -566,7 +567,10 @@ const verifyToken = async (req: Request, bearerToken?: string): Promise<AuthInfo
   return undefined;
 };
 
-const authHandler = withMcpAuth(handler, verifyToken, {
+// HERO-70: a client that hangs up mid-request must not become an unhandledRejection
+// (mcp-handler runs each request detached). Inside auth, so an unauthenticated request is
+// still refused before its body is read. See transport-disconnect.ts.
+const authHandler = withMcpAuth(withClientDisconnectGuard(handler), verifyToken, {
   required: true,
   resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",
 });
