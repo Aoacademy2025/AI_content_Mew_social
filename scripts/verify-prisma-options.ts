@@ -20,7 +20,9 @@ async function main() {
     slowTransactionThresholdMsFromEnv,
     sqliteBusyTimeoutSecondsFromEnv,
     sqliteCacheSizeKibFromEnv,
+    sqliteConnectionLimitFromEnv,
     transactionOptionsFromEnv,
+    transactionSerializationEnabledFromEnv,
     withSqliteConnectionParams,
   } = await import("../src/lib/prisma-options");
 
@@ -123,6 +125,49 @@ async function main() {
     "file:/abs/db?x=socket_timeout=1",
     "the already-set check is a substring match on the parameter, deliberately conservative",
   );
+
+  // ---- HERO-70: pool never larger than the engine's worker threads ----
+  assert.equal(
+    withSqliteConnectionParams("file:./dev.db", { busyTimeoutSec: 20, connectionLimit: 4 }),
+    "file:./dev.db?socket_timeout=20&connection_limit=4",
+    "the production URL shape gets both parameters",
+  );
+  assert.equal(
+    withSqliteConnectionParams("file:/abs/db?connection_limit=1", { busyTimeoutSec: 20, connectionLimit: 4 }),
+    "file:/abs/db?connection_limit=1&socket_timeout=20",
+    "an operator-supplied connection_limit wins (tests pin 1; an operator can restore a bigger pool)",
+  );
+  assert.equal(
+    withSqliteConnectionParams("file:/abs/db?socket_timeout=5", { busyTimeoutSec: 20, connectionLimit: 4 }),
+    "file:/abs/db?socket_timeout=5&connection_limit=4",
+    "an operator socket_timeout no longer short-circuits the connection cap",
+  );
+  assert.equal(
+    withSqliteConnectionParams("postgresql://user:pw@host:5432/db", { busyTimeoutSec: 20, connectionLimit: 4 }),
+    "postgresql://user:pw@host:5432/db",
+    "a non-SQLite URL is still returned unchanged",
+  );
+  {
+    const once = withSqliteConnectionParams("file:./dev.db", { busyTimeoutSec: 30, connectionLimit: 4 });
+    assert.equal(
+      withSqliteConnectionParams(once, { busyTimeoutSec: 30, connectionLimit: 4 }),
+      once,
+      "applying the helper twice stays a no-op with both parameters",
+    );
+  }
+  assert.equal(sqliteConnectionLimitFromEnv({}, 4), 4, "one connection per engine worker: tokio starts one per CPU");
+  assert.equal(sqliteConnectionLimitFromEnv({ TOKIO_WORKER_THREADS: "2" }, 4), 2, "an explicit worker count is what tokio uses, so it wins");
+  assert.equal(sqliteConnectionLimitFromEnv({ TOKIO_WORKER_THREADS: "0" }, 4), 1, "never below one connection");
+  assert.equal(sqliteConnectionLimitFromEnv({ TOKIO_WORKER_THREADS: "four" }, 4), 4, "garbage falls back to the CPU count");
+  assert.equal(sqliteConnectionLimitFromEnv({}, Number.NaN), 1, "an unknown CPU count still yields a valid pool");
+  assert.equal(sqliteConnectionLimitFromEnv({}, 0), 1, "zero CPUs still yields one connection");
+
+  // ---- HERO-70: in-process transaction queue switch -------------------
+  assert.equal(transactionSerializationEnabledFromEnv({}), true, "on by default");
+  assert.equal(transactionSerializationEnabledFromEnv({ PRISMA_TX_SERIALIZE: "0" }), false, "0 is the rollback lever");
+  assert.equal(transactionSerializationEnabledFromEnv({ PRISMA_TX_SERIALIZE: " 0 " }), false, "whitespace tolerated");
+  assert.equal(transactionSerializationEnabledFromEnv({ PRISMA_TX_SERIALIZE: "1" }), true);
+  assert.equal(transactionSerializationEnabledFromEnv({ PRISMA_TX_SERIALIZE: "" }), true, "only an explicit 0 turns it off");
 
   // ---- slow-transaction threshold (HERO-10 lock visibility) ----------
   assert.equal(

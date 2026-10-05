@@ -106,6 +106,41 @@ export function slowTransactionThresholdMsFromEnv(env: EnvLike = process.env): n
   return clampedInt(env.PRISMA_SLOW_TX_MS, PRISMA_SLOW_TX_MS, 0, SLOW_TX_MAX_MS);
 }
 
+/**
+ * HERO-70: whether this process queues its own Prisma transactions in one FIFO line
+ * (src/lib/prisma-transaction-queue.ts) instead of letting them race for SQLite's writer lock
+ * inside the query engine. On by default. Env: `PRISMA_TX_SERIALIZE=0` turns it off — the
+ * rollback lever, no redeploy needed.
+ */
+export function transactionSerializationEnabledFromEnv(env: EnvLike = process.env): boolean {
+  return env.PRISMA_TX_SERIALIZE?.trim() !== "0";
+}
+
+const ENGINE_WORKERS_MAX = 1_024;
+
+/**
+ * HERO-70: the most SQLite connections Prisma may open — never more than the query engine has
+ * worker threads.
+ *
+ * The engine runs each SQLite statement synchronously on one of its tokio worker threads, and a
+ * statement waiting for the writer lock SLEEPS that thread (SQLite's busy handler). Prisma's
+ * default pool is 2 × physical CPUs + 1 while tokio starts one worker per CPU, so a burst of
+ * writers can park a waiting statement on every worker. The interactive transaction that holds
+ * the lock then has no thread for its next statement or its COMMIT, and everything stalls for a
+ * full busy_timeout (production: 20 s steps, 2026-10-04 and 2026-10-05). With at most one
+ * connection per worker, the lock holder's own connection is one of them, so at most
+ * `workers - 1` threads can be asleep and one is always free for it. A pool request beyond the
+ * cap waits asynchronously in Prisma's pool, which costs no thread.
+ *
+ * `workers` mirrors tokio's own rule: `TOKIO_WORKER_THREADS` when set, else the CPU count the
+ * caller passes (`os.availableParallelism()`).
+ */
+export function sqliteConnectionLimitFromEnv(env: EnvLike, availableParallelism: number): number {
+  const cpus = Number.isFinite(availableParallelism) ? Math.trunc(availableParallelism) : 1;
+  const fallback = Math.min(Math.max(cpus, 1), ENGINE_WORKERS_MAX);
+  return clampedInt(env.TOKIO_WORKER_THREADS, fallback, 1, ENGINE_WORKERS_MAX);
+}
+
 /** Page cache in KiB. Env: `SQLITE_CACHE_SIZE_KIB` (clamped 2 MB-512 MB). */
 export function sqliteCacheSizeKibFromEnv(env: EnvLike = process.env): number {
   return clampedInt(
@@ -117,22 +152,32 @@ export function sqliteCacheSizeKibFromEnv(env: EnvLike = process.env): number {
 }
 
 /**
- * Add `socket_timeout` to a SQLite connection string.
+ * Add `socket_timeout` (and, when given, `connection_limit`) to a SQLite
+ * connection string.
  *
  * `PRAGMA busy_timeout` is per-connection and non-persistent, so setting it
  * once at client init only ever reaches the ONE pooled connection that ran it.
  * `socket_timeout` on the URL is applied to every connection Prisma opens —
  * that is the setting that actually covers production traffic.
  *
+ * `connection_limit` caps the pool at the engine's worker count (HERO-70, see
+ * `sqliteConnectionLimitFromEnv`).
+ *
  * Non-`file:` URLs are returned unchanged, and an operator-supplied
- * `socket_timeout` always wins. Never logs its argument.
+ * `socket_timeout` or `connection_limit` always wins. Never logs its argument.
  */
 export function withSqliteConnectionParams(
   url: string,
-  options: { busyTimeoutSec: number },
+  options: { busyTimeoutSec: number; connectionLimit?: number },
 ): string {
   if (!url.startsWith("file:")) return url;
-  if (url.includes("socket_timeout=")) return url;
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}socket_timeout=${options.busyTimeoutSec}`;
+  let result = url;
+  const append = (param: string) => {
+    result = `${result}${result.includes("?") ? "&" : "?"}${param}`;
+  };
+  if (!url.includes("socket_timeout=")) append(`socket_timeout=${options.busyTimeoutSec}`);
+  if (options.connectionLimit !== undefined && !url.includes("connection_limit=")) {
+    append(`connection_limit=${options.connectionLimit}`);
+  }
+  return result;
 }
