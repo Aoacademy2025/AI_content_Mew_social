@@ -15,9 +15,17 @@
 //
 // Two rules with deliberately different strengths, matching the file they live in:
 //  - managedAudioCeilingApplies is DETERMINISTIC (which engine spends managed minutes)
-//  - the refusal itself fires only when the account has NO allowance left. It is never
-//    built on an estimate of how long the script will be, because a duration gate built
-//    on an estimator has misfired in this codebase before.
+//  - the refusal fires once the remaining allowance drops under a 1-minute floor
+//    (AI_AUDIO_CEILING_FLOOR_MIN) — which also covers a fully exhausted ceiling. It is
+//    never built on an estimate of how long THIS script will be (that stays
+//    reserveAiAudioMinutes's job); a duration gate built on an estimator has misfired
+//    in this codebase before. The one exception is a Hero credit wallet that can fund
+//    the overflow — the same rule the in-pipeline TTS gate already applies.
+//
+// This is the fix for the regression (cmutzi2rj00gmlcbudiwe5ca2): with 0.2 of 160
+// minutes left, the OLD `ceiling.allowed === false` rule stayed quiet (allowed was
+// still true), the preflight passed every time, and the account collected 17 identical
+// TTS failures with nothing reserved and nothing learned for the next attempt.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -63,20 +71,41 @@ const business = aiAudioCeilingRefusal(
 );
 check("B7: the top tier is refused without inventing an upgrade", business !== null && business.neededPlan === null);
 
-// ── C. Anything short of exhausted stays quiet ──
-// The remaining allowance may be less than this script needs. That case must NOT be
-// refused here: the only honest number for a script's audio length is the one the TTS
-// step measures, and the pipeline reserve is still the authoritative gate.
+// ── C. Below the 1-minute floor refuses — UNLESS the wallet can fund the overflow ──
+// HERO-25: the account's real shape was 159.79 of 160 used (0.21 remaining). Any real
+// script's TTS reserve certainly loses at that remaining allowance, so refusing here
+// is still a refusal on fact, not an estimate of THIS script's length.
 check(
-  "C1: allowance left means no refusal, however little",
-  aiAudioCeilingRefusal({ allowed: true, used: 29.9, ceiling: 30, remaining: 0.1 }, "PRO") === null,
+  "C1: near-exhausted (0.2 min left, no wallet) refuses",
+  aiAudioCeilingRefusal({ allowed: true, used: 159.8, ceiling: 160, remaining: 0.2 }, "BUSINESS") !== null,
 );
 check(
-  "C2: a fresh account is not refused",
+  "C1b: the refusal carries the QUOTA_AI_AUDIO code and a way out",
+  aiAudioCeilingRefusal({ allowed: true, used: 159.8, ceiling: 160, remaining: 0.2 }, "BUSINESS")?.code
+    === "QUOTA_AI_AUDIO",
+);
+check(
+  "C2: near-exhausted but the wallet can fund overflow passes (mirrors allowOverCeiling in tts-gemini)",
+  aiAudioCeilingRefusal(
+    { allowed: true, used: 159.8, ceiling: 160, remaining: 0.2 },
+    "BUSINESS",
+    { walletCanFundOverflow: true },
+  ) === null,
+);
+check(
+  "C3: an exhausted ceiling (remaining 0) still refuses even with the new floor check",
+  aiAudioCeilingRefusal({ allowed: false, used: 160, ceiling: 160, remaining: 0 }, "BUSINESS") !== null,
+);
+check(
+  "C4: exactly at the floor passes — the floor refuses strictly UNDER it",
+  aiAudioCeilingRefusal({ allowed: true, used: 29, ceiling: 30, remaining: 1 }, "PRO") === null,
+);
+check(
+  "C5: plenty left (well above the floor) passes",
   aiAudioCeilingRefusal({ allowed: true, used: 0, ceiling: 30, remaining: 30 }, "PRO") === null,
 );
 check(
-  "C3: an unlimited (BYOK) ceiling is not refused",
+  "C6: an unlimited (BYOK) ceiling is not refused",
   aiAudioCeilingRefusal(
     { allowed: true, used: 0, ceiling: Number.POSITIVE_INFINITY, remaining: Number.POSITIVE_INFINITY },
     "PRO",

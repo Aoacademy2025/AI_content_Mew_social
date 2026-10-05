@@ -25,11 +25,12 @@ import { registerEditTools } from "@/lib/mcp/edit-tools";
 import { registerMediaImportTools } from "@/lib/mcp/media-import-tools";
 import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import {
+  AI_AUDIO_CEILING_FLOOR_MIN,
   aiAudioCeilingRefusal,
   managedAudioCeilingApplies,
   voiceProviderPlanViolation,
 } from "@/lib/render-plan-preflight";
-import { checkAiAudioCeiling } from "@/lib/ai-spend-limits";
+import { canFundAiAudioOverflowFromWallet, checkAiAudioCeiling } from "@/lib/ai-spend-limits";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
@@ -244,10 +245,11 @@ const handler = createMcpHandler(
           // MCP exposes only gemini and elevenlabs (createVideoJobInputShape), so there is
           // no Hero Voice branch to write here.
           if (!clip && managedAudioCeilingApplies(useEleven ? "elevenlabs" : "gemini", geminiKeyMode)) {
-            const audioRefusal = aiAudioCeilingRefusal(
-              await checkAiAudioCeiling(u.id, { enforce: true }),
-              u.plan,
-            );
+            const audioCeiling = await checkAiAudioCeiling(u.id, { enforce: true });
+            const walletCanFundOverflow = audioCeiling.remaining < AI_AUDIO_CEILING_FLOOR_MIN
+              ? await canFundAiAudioOverflowFromWallet(u.id)
+              : false;
+            const audioRefusal = aiAudioCeilingRefusal(audioCeiling, u.plan, { walletCanFundOverflow });
             if (audioRefusal) {
               return {
                 error: audioRefusal.code,

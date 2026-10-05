@@ -134,20 +134,42 @@ export interface AiAudioCeilingRefusal {
 }
 
 /**
- * Turn an exhausted AI-audio ceiling into a refusal the customer can act on, BEFORE the
- * job row exists.
+ * Below this remaining allowance, ANY real script will fail at the TTS reserve — so
+ * refusing here is still a refusal on fact, not an estimate (HERO-25).
  *
- * Only an exhausted ceiling refuses. Whether the remaining allowance covers THIS script is
- * deliberately not asked: the only honest number for a script's audio length is the one
- * the TTS step measures, and `reserveAiAudioMinutes` is still the authoritative gate. This
- * keeps the same asymmetry `estimatedDurationPlanWarning` above already follows — refuse
- * on a fact, never on an estimate.
+ * Why a floor instead of `ceiling.allowed === false` (exhausted only, the original
+ * #478 rule): a customer sitting on 0.2 of 160 minutes passed this preflight every
+ * time (`allowed` was still true), then lost the same TTS call 17 times in a row —
+ * every attempt waited through script + funding before `reserveAiAudioMinutes` finally
+ * said no, with nothing reserved and nothing learned for the next try. A one-minute
+ * floor is comfortably below the shortest real narration this product renders, so it
+ * never refuses a script that could have gone through.
+ */
+export const AI_AUDIO_CEILING_FLOOR_MIN = 1;
+
+/**
+ * Turn a near-exhausted AI-audio ceiling into a refusal the customer can act on,
+ * BEFORE the job row exists.
+ *
+ * Refuses when `remaining` is under `AI_AUDIO_CEILING_FLOOR_MIN` (which also covers a
+ * fully exhausted ceiling, `remaining === 0`). Still never asks whether the remaining
+ * allowance covers THIS script above the floor — the only honest number for a script's
+ * audio length is the one the TTS step measures, and `reserveAiAudioMinutes` stays the
+ * authoritative gate. This keeps the same asymmetry `estimatedDurationPlanWarning`
+ * above already follows — refuse on a fact, never on an estimate.
+ *
+ * Exception: `opts.walletCanFundOverflow` — the same rule `/api/videos/tts-gemini`
+ * already applies via `walletFundingForCurrentRequest` (Hero credits may fund a render
+ * past the ceiling). A caller that can fund overflow from the wallet must never be
+ * refused here, since the in-pipeline gate will let that exact render through.
  */
 export function aiAudioCeilingRefusal(
-  ceiling: { allowed: boolean; message?: string },
+  ceiling: { allowed: boolean; remaining: number; message?: string },
   plan: string,
+  opts: { walletCanFundOverflow?: boolean } = {},
 ): AiAudioCeilingRefusal | null {
-  if (ceiling.allowed) return null;
+  if (ceiling.remaining >= AI_AUDIO_CEILING_FLOOR_MIN) return null;
+  if (opts.walletCanFundOverflow) return null;
   const neededPlan = nextPlanFor(plan);
   const upgrade = neededPlan ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan]} ` : "";
   return {

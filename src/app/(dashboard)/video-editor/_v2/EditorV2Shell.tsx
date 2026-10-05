@@ -1123,6 +1123,7 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
   const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
   const isInsufficientCredits = kind === "insufficient-credits";
   const isPlanQuota = kind === "plan-quota";
+  const isAiAudioQuota = kind === "ai-audio-quota";
   const { heading, body } = failureViewCopy(kind, job, exportMode);
   // Same funnel event as the submit-time refusal, so both quota dead-ends land in one
   // series. Keyed on the job id so a re-render of this screen can't inflate the count.
@@ -1178,6 +1179,18 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
               : <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปลองส่งออกใหม่" : "กลับไปตั้งค่า"}</BtnPrimary>}
           </div>
         ) : isPlanQuota ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            {CREDITS_LIVE_CLIENT && (
+              <Link href={QUOTA_BUY_CREDITS_HREF}>
+                <BtnSecondary>เติมเครดิต</BtnSecondary>
+              </Link>
+            )}
+            <Link href={QUOTA_PRICING_HREF}>
+              <BtnSecondary>ดูแผนราคา</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
+          </div>
+        ) : isAiAudioQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">
             {CREDITS_LIVE_CLIENT && (
               <Link href={QUOTA_BUY_CREDITS_HREF}>
