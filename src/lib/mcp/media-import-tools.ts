@@ -77,7 +77,7 @@ export async function createUploadUrlTool(userId: string, args: { kind: UploadKi
     return UPLOAD_UNAVAILABLE;
   }
   const issued = await issueUploadToken(userId, args.kind);
-  if (!issued.ok) return admissionRefusal(issued.code);
+  if (!issued.ok) return admissionRefusal(issued.code, undefined, issued.retryAfterSeconds);
   const uploadUrl = new URL(`/api/mcp-uploads/${issued.token}`, origin);
   return {
     uploadId: issued.importId,

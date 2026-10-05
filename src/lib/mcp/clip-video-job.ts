@@ -162,7 +162,7 @@ export async function startClipImport(
 ): Promise<{ ok: true; started: StartedClipImport } | { ok: false; failure: ClipJobFailure }> {
   if (source.kind === "url") {
     const created = await createUrlImport(userId, source.url, now, "presenter");
-    if (!created.ok) return { ok: false, failure: admissionRefusal(created.code, "create_video_job") };
+    if (!created.ok) return { ok: false, failure: admissionRefusal(created.code, "create_video_job", created.retryAfterSeconds) };
     return { ok: true, started: { importId: created.importId, createdHere: true } };
   }
   const owned = await findOwnedMediaImport(userId, source.id, ["presenter"]);

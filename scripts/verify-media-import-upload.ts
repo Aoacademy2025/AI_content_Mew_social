@@ -14,9 +14,12 @@
 //      over-cap aborted (Content-Length and mid-stream), empty body, identical refusal for
 //      unknown / malformed / used / expired links, admission re-checked with the link kept;
 //      fix round 1: global staged-bytes budget + free-disk floor (S1), rows past their
-//      deadline hold no slot (R-A4), DB unavailable before staging → 503 envelope (R-A1).
-//   D. admission caps across TWO real processes on one SQLite file (3 active, 30/hour,
-//      10 links/hour): exactly the cap is admitted, never more.
+//      deadline hold no slot (R-A4), DB unavailable before staging → 503 envelope (R-A1);
+//      HERO-69 (2026-10-05): the two hourly caps raised 10/30 → 60/60, and their refusals now
+//      carry retryAfterSeconds matching the oldest row in the rolling 1-hour window.
+//   D. admission caps across TWO real processes on one SQLite file (3 active,
+//      MAX_IMPORTS_PER_HOUR/hour, MAX_UPLOAD_LINKS_PER_HOUR links/hour): exactly the cap is
+//      admitted, never more.
 //   E. IDOR (G27): missing, foreign and wrong-purpose ids get one identical `invalid_input`.
 //   F. the staged file is handed to T9's pipelines (real ffmpeg/ffprobe).
 //
@@ -661,12 +664,29 @@ async function main(): Promise<void> {
     staging.removeStagedUpload(issued.importId);
     await prisma.mediaImport.deleteMany({});
 
-    const hourly = await issue(owner.id, "image");
+    // HERO-69: 30 is only half of the new 60/hour cap — explicit regression guard that the
+    // raised cap really raised it (this PUT is the 31st import and must be admitted).
+    const belowCap = await issue(owner.id, "image");
     await prisma.mediaImport.createMany({
       data: Array.from({ length: 30 }, () => ({ userId: owner.id, purpose: "broll_image", source: "url", status: "ready", deadlineAt: new Date() })),
     });
+    const resBelow = await put(belowCap.token, png);
+    check(`30 existing imports (half of ${lib.MAX_IMPORTS_PER_HOUR}/hour) → the 31st is still admitted`, resBelow.status === 202, JSON.stringify(resBelow));
+    staging.removeStagedUpload(belowCap.importId);
+    await prisma.mediaImport.deleteMany({});
+
+    const hourly = await issue(owner.id, "image");
+    const fillers = await prisma.mediaImport.createManyAndReturn({
+      data: Array.from({ length: lib.MAX_IMPORTS_PER_HOUR }, () => ({ userId: owner.id, purpose: "broll_image", source: "url", status: "ready", deadlineAt: new Date() })),
+    });
     const res2 = await put(hourly.token, png);
-    check("30 imports this hour → 429 import_hourly_limit", res2.status === 429 && res2.body.code === "import_hourly_limit", JSON.stringify(res2));
+    check(`${lib.MAX_IMPORTS_PER_HOUR} imports this hour → 429 import_hourly_limit`, res2.status === 429 && res2.body.code === "import_hourly_limit", JSON.stringify(res2));
+    const oldestCreatedAt = fillers.reduce((min, r) => (r.createdAt < min ? r.createdAt : min), fillers[0].createdAt);
+    const expectedRetry = Math.max(1, Math.ceil((oldestCreatedAt.getTime() + 60 * MINUTE - Date.now()) / 1000));
+    const retryAfter2 = res2.body.retryAfterSeconds;
+    check("…refusal carries a numeric retryAfterSeconds in (0, 3600] matching the oldest counted row (±2s)",
+      typeof retryAfter2 === "number" && retryAfter2 > 0 && retryAfter2 <= 3600 && Math.abs((retryAfter2 as number) - expectedRetry) <= 2,
+      JSON.stringify({ got: retryAfter2, expected: expectedRetry }));
     await prisma.mediaImport.updateMany({ where: { userId: owner.id }, data: { createdAt: new Date(Date.now() - 61 * MINUTE) } });
     const res3 = await put(hourly.token, png);
     check("imports older than an hour do not count", res3.status === 202, JSON.stringify(res3));
@@ -675,13 +695,24 @@ async function main(): Promise<void> {
     await prisma.mcpUploadToken.deleteMany({});
   });
 
-  await section("C9) create_upload_url admission (same caps, plus 10 links per hour)", async () => {
+  await section(`C9) create_upload_url admission (same caps, plus ${lib.MAX_UPLOAD_LINKS_PER_HOUR} links per hour)`, async () => {
     await reset();
+    // HERO-69: 11 would have tripped the old 10/hour cap — explicit regression guard that the
+    // raised cap really raised it.
+    const below = [];
+    for (let i = 0; i < 11; i += 1) below.push(await lib.issueUploadToken(owner.id, "image"));
+    check("11 links within the new cap are all admitted", below.every((r) => r.ok), JSON.stringify(below));
+    await prisma.mcpUploadToken.deleteMany({});
+
     const results = [];
-    for (let i = 0; i < 11; i += 1) results.push(await lib.issueUploadToken(owner.id, "image"));
-    check("10 links per hour, the 11th refused upload_link_hourly_limit",
-      results.slice(0, 10).every((r) => r.ok) && !results[10].ok && (results[10] as { code: string }).code === "upload_link_hourly_limit");
-    check("refused issue left no row", (await prisma.mcpUploadToken.count({ where: { userId: owner.id } })) === 10);
+    for (let i = 0; i < lib.MAX_UPLOAD_LINKS_PER_HOUR + 1; i += 1) results.push(await lib.issueUploadToken(owner.id, "image"));
+    const last = results[results.length - 1];
+    check(`${lib.MAX_UPLOAD_LINKS_PER_HOUR} links per hour, the ${lib.MAX_UPLOAD_LINKS_PER_HOUR + 1}th refused upload_link_hourly_limit`,
+      results.slice(0, lib.MAX_UPLOAD_LINKS_PER_HOUR).every((r) => r.ok) && !last.ok && (last as { code: string }).code === "upload_link_hourly_limit");
+    check("refused issue left no row", (await prisma.mcpUploadToken.count({ where: { userId: owner.id } })) === lib.MAX_UPLOAD_LINKS_PER_HOUR);
+    const linkRetry = !last.ok ? (last as { retryAfterSeconds?: number }).retryAfterSeconds : undefined;
+    check("…refusal carries a numeric retryAfterSeconds in (0, 3600]",
+      typeof linkRetry === "number" && linkRetry > 0 && linkRetry <= 3600, JSON.stringify(last));
     await prisma.mcpUploadToken.updateMany({ where: { userId: owner.id }, data: { issuedAt: new Date(Date.now() - 61 * MINUTE) } });
     check("links older than an hour do not count", (await lib.issueUploadToken(owner.id, "image")).ok);
     await prisma.mcpUploadToken.deleteMany({});
@@ -692,15 +723,18 @@ async function main(): Promise<void> {
     check("3 imports active → too_many_active_imports", !busy.ok && busy.code === "too_many_active_imports");
     await prisma.mediaImport.deleteMany({});
     await prisma.mediaImport.createMany({
-      data: Array.from({ length: 30 }, () => ({ userId: owner.id, purpose: "broll_video", source: "url", status: "failed", deadlineAt: new Date() })),
+      data: Array.from({ length: lib.MAX_IMPORTS_PER_HOUR }, () => ({ userId: owner.id, purpose: "broll_video", source: "url", status: "failed", deadlineAt: new Date() })),
     });
     const hourly = await lib.issueUploadToken(owner.id, "image");
-    check("30 imports this hour → import_hourly_limit", !hourly.ok && hourly.code === "import_hourly_limit");
+    check(`${lib.MAX_IMPORTS_PER_HOUR} imports this hour → import_hourly_limit`, !hourly.ok && hourly.code === "import_hourly_limit");
+    check("…carries retryAfterSeconds too", !hourly.ok && typeof (hourly as { retryAfterSeconds?: number }).retryAfterSeconds === "number", JSON.stringify(hourly));
     const otherUser = await lib.issueUploadToken(other.id, "image");
     check("caps are per user", otherUser.ok);
     const reply = await tools.createUploadUrlTool(owner.id, { kind: "image" });
-    check("tool reply for a refused admission is a G14 envelope with a Thai message",
-      (reply as { code?: string }).code === "import_hourly_limit" && (reply as { error?: string }).error === "import_hourly_limit" && /[฀-๿]/u.test(String((reply as { message?: string }).message)),
+    check("tool reply for a refused admission is a G14 envelope with a Thai message and a top-level retryAfterSeconds",
+      (reply as { code?: string }).code === "import_hourly_limit" && (reply as { error?: string }).error === "import_hourly_limit"
+        && /[฀-๿]/u.test(String((reply as { message?: string }).message))
+        && typeof (reply as { retryAfterSeconds?: number }).retryAfterSeconds === "number",
       JSON.stringify(reply));
     await prisma.mediaImport.deleteMany({});
     await prisma.mcpUploadToken.deleteMany({});
@@ -823,18 +857,21 @@ async function main(): Promise<void> {
 
   // ── D. across processes ──────────────────────────────────────────────────────────────────
   await section("D) admission caps hold across two processes sharing one SQLite file", async () => {
-    // D1: 10 links/hour — two processes ask for 8 each at the same instant.
+    // D1: MAX_UPLOAD_LINKS_PER_HOUR links/hour — two processes each ask for a bit more than
+    // half the cap at the same instant, so together they overshoot it by 6.
+    const linksAttempts = lib.MAX_UPLOAD_LINKS_PER_HOUR / 2 + 3;
     const racerA = await makeUser("u-race-a", "qa-race-a@aoacademy.co");
     const go1 = path.join(tmp, "go-1");
     const issued = await runChildren([
-      { op: "issue", userId: racerA.id, kind: "image", attempts: 8, goFile: go1 },
-      { op: "issue", userId: racerA.id, kind: "image", attempts: 8, goFile: go1 },
+      { op: "issue", userId: racerA.id, kind: "image", attempts: linksAttempts, goFile: go1 },
+      { op: "issue", userId: racerA.id, kind: "image", attempts: linksAttempts, goFile: go1 },
     ], go1);
     const issuedFlat = issued.flat();
-    check("links: exactly 10 of 16 admitted across both processes", issuedFlat.filter((r) => r.ok).length === 10, JSON.stringify(issued));
+    check(`links: exactly ${lib.MAX_UPLOAD_LINKS_PER_HOUR} of ${linksAttempts * 2} admitted across both processes`,
+      issuedFlat.filter((r) => r.ok).length === lib.MAX_UPLOAD_LINKS_PER_HOUR, JSON.stringify(issued));
     check("links: the other 6 refused upload_link_hourly_limit", issuedFlat.filter((r) => !r.ok && r.code === "upload_link_hourly_limit").length === 6);
-    check("links: DB holds exactly 10", (await prisma.mcpUploadToken.count({ where: { userId: racerA.id } })) === 10);
-    check("links: each process finished all 8 attempts", issued.every((r) => r.length === 8),
+    check(`links: DB holds exactly ${lib.MAX_UPLOAD_LINKS_PER_HOUR}`, (await prisma.mcpUploadToken.count({ where: { userId: racerA.id } })) === lib.MAX_UPLOAD_LINKS_PER_HOUR);
+    check("links: each process finished all its attempts", issued.every((r) => r.length === linksAttempts),
       `admitted per process: ${issued.map((r) => r.filter((x) => x.ok).length).join(" + ")}`);
     console.log(`        admitted per process: ${issued.map((r) => r.filter((x) => x.ok).length).join(" + ")}`);
 
@@ -857,10 +894,12 @@ async function main(): Promise<void> {
       (await prisma.mediaImport.count({ where: { userId: racerB.id, status: "processing" } })) === 3
         && (await prisma.mcpUploadToken.count({ where: { userId: racerB.id, usedAt: { not: null } } })) === 3);
 
-    // D3: 30 per hour — 28 already this hour, two processes admit 3 each at once.
+    // D3: MAX_IMPORTS_PER_HOUR per hour — cap-2 already this hour, two processes admit 3 each
+    // at once (6 total), so exactly the remaining 2 slots are admitted.
     const racerC = await makeUser("u-race-c", "qa-race-c@aoacademy.co");
+    const fillersC = lib.MAX_IMPORTS_PER_HOUR - 2;
     await prisma.mediaImport.createMany({
-      data: Array.from({ length: 28 }, () => ({ userId: racerC.id, purpose: "broll_image", source: "url", status: "ready", deadlineAt: new Date() })),
+      data: Array.from({ length: fillersC }, () => ({ userId: racerC.id, purpose: "broll_image", source: "url", status: "ready", deadlineAt: new Date() })),
     });
     const rawsC: string[] = [];
     for (let i = 0; i < 6; i += 1) {
@@ -873,8 +912,8 @@ async function main(): Promise<void> {
       { op: "admit", tokens: rawsC.slice(0, 3), goFile: go3 },
       { op: "admit", tokens: rawsC.slice(3), goFile: go3 },
     ], go3)).flat();
-    check("hourly: exactly 2 of 6 admitted (28 + 2 = 30)", hourly.filter((r) => r.ok).length === 2, JSON.stringify(hourly));
-    check("hourly: DB holds exactly 30 imports this hour", (await prisma.mediaImport.count({ where: { userId: racerC.id } })) === 30);
+    check(`hourly: exactly 2 of 6 admitted (${fillersC} + 2 = ${lib.MAX_IMPORTS_PER_HOUR})`, hourly.filter((r) => r.ok).length === 2, JSON.stringify(hourly));
+    check(`hourly: DB holds exactly ${lib.MAX_IMPORTS_PER_HOUR} imports this hour`, (await prisma.mediaImport.count({ where: { userId: racerC.id } })) === lib.MAX_IMPORTS_PER_HOUR);
   });
 
   // ── E. IDOR ──────────────────────────────────────────────────────────────────────────────

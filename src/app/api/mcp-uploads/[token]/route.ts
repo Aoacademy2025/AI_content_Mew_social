@@ -39,14 +39,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Failure = { error: string; code: string; message: string; next: string };
+type Failure = { error: string; code: string; message: string; next: string; retryAfterSeconds?: number };
 
 function reply(status: number, body: Record<string, unknown>): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-function failure(status: number, code: string, message: string, next: string): Response {
-  const body: Failure = { error: code, code, message, next };
+function failure(status: number, code: string, message: string, next: string, retryAfterSeconds?: number): Response {
+  const body: Failure = retryAfterSeconds !== undefined ? { error: code, code, message, next, retryAfterSeconds } : { error: code, code, message, next };
   return reply(status, body);
 }
 
@@ -132,8 +132,14 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
   if (!admitted.ok) {
     if (admitted.code === "upload_link_invalid") return linkInvalid();
     if (admitted.code === "storage_busy") return storageBusy();
-    const refusal = admissionRefusal(admitted.code);
-    return failure(429, refusal.code, refusal.message, "รอให้ไฟล์ที่กำลังนำเข้าเสร็จหรือรอสักพัก แล้ว PUT ด้วยลิงก์เดิมอีกครั้ง (ลิงก์ยังใช้ได้จนหมดอายุ)");
+    const refusal = admissionRefusal(admitted.code, undefined, admitted.retryAfterSeconds);
+    return failure(
+      429,
+      refusal.code,
+      refusal.message,
+      "รอให้ไฟล์ที่กำลังนำเข้าเสร็จหรือรอสักพัก แล้ว PUT ด้วยลิงก์เดิมอีกครั้ง (ลิงก์ยังใช้ได้จนหมดอายุ)",
+      admitted.retryAfterSeconds,
+    );
   }
   const { importId } = admitted;
 
