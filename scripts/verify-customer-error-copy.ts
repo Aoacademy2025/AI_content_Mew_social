@@ -186,6 +186,29 @@ for (const [currentStep, expectedHeading] of [
   assert.equal(copy.heading, expectedHeading);
 }
 
+// HERO-25: the managed AI-audio ceiling (TTS/transcribe spend) is a different pool
+// from the render-minute/clip quota "plan-quota" already covers. Before this fix
+// QUOTA_AI_AUDIO fell through to the generic "tts" copy, which tells the customer to
+// retry and check their OWN API key/quota — wrong and misleading for a managed-ceiling
+// refusal the customer cannot self-service by retrying.
+const aiAudioQuotaMessage = "ใช้เสียง AI (สร้างเสียง/ถอดเสียง) ครบเพดานรอบนี้แล้ว (Business: 160 นาที/30 วัน)";
+const aiAudioQuotaJob = videoJob({
+  currentStep: "tts",
+  errorCode: "QUOTA_AI_AUDIO",
+  errorMessage: aiAudioQuotaMessage,
+});
+assert.equal(classifyFailure(aiAudioQuotaJob), "ai-audio-quota");
+const aiAudioQuotaCopy = failureViewCopy(classifyFailure(aiAudioQuotaJob), aiAudioQuotaJob, false);
+assertCustomerSafe(aiAudioQuotaCopy, aiAudioQuotaMessage);
+assert.match(aiAudioQuotaCopy.heading, /โควต้าเสียง AI/);
+assert.match(aiAudioQuotaCopy.body, /เสียง AI|เพดาน/);
+assert.doesNotMatch(
+  aiAudioQuotaCopy.body,
+  /ลองใหม่อีกครั้ง หากใช้ API Key ส่วนตัว/,
+  "a managed-ceiling refusal must not show the generic tts copy that blames the customer's own key",
+);
+assert.match(aiAudioQuotaCopy.body, /อัปเกรด|เครดิต|รอบถัดไป/);
+
 const rateMessage = "RunPod RATE_LIMITED HTTP 429 internal provider response";
 const rateJob = videoJob({ currentStep: "stock", errorCode: "RATE_LIMITED", errorMessage: rateMessage });
 assertCustomerSafe(failureViewCopy(classifyFailure(rateJob), rateJob, false), rateMessage);

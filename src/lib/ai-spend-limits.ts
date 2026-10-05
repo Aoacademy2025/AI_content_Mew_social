@@ -14,6 +14,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { syncMinuteWindow } from "@/lib/minute-limits";
+import { getBalance, getReservedCredits } from "@/lib/credits";
 
 const DEFAULT_MULT = 2;
 
@@ -171,4 +172,20 @@ export async function reconcileAiAudioMinutes(
   } else if (delta < 0) {
     await refundAiAudioMinutes(userId, -delta);
   }
+}
+
+/**
+ * Can this account's Hero credit wallet fund a render past the AI-audio ceiling
+ * (HERO-25 preflight exception)? Same rule `/api/videos/tts-gemini` applies via
+ * `walletFundingForCurrentRequest` — a non-zero SPENDABLE credit balance, gated on
+ * the same CREDITS_LIVE flag everything else checks. Read-only: no reservation, no
+ * charge. `CREDITS_LIVE` off → false (matches the flag-off behavior everywhere else).
+ */
+export async function canFundAiAudioOverflowFromWallet(userId: string): Promise<boolean> {
+  if (process.env.CREDITS_LIVE !== "1") return false;
+  const [balance, reserved] = await Promise.all([
+    getBalance(userId),
+    getReservedCredits(userId),
+  ]);
+  return balance.total - reserved > 0;
 }

@@ -60,11 +60,12 @@ import {
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import {
+  AI_AUDIO_CEILING_FLOOR_MIN,
   aiAudioCeilingRefusal,
   managedAudioCeilingApplies,
   voiceProviderPlanViolation,
 } from "@/lib/render-plan-preflight";
-import { checkAiAudioCeiling } from "@/lib/ai-spend-limits";
+import { canFundAiAudioOverflowFromWallet, checkAiAudioCeiling } from "@/lib/ai-spend-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
@@ -568,7 +569,10 @@ export async function POST(req: Request) {
     // but it only refuses once the pipeline has reached the TTS step: the customer has
     // waited, the refusal lands in VideoJob.errorMessage with no CTA, and nothing stops
     // the next attempt. Two accounts collected seven such failures in one morning.
-    // Only an EXHAUSTED ceiling refuses here — never an estimate of this script's length.
+    // A remaining allowance under AI_AUDIO_CEILING_FLOOR_MIN refuses here — a fact (any
+    // real script fails under it), never an estimate of this script's length. An
+    // account whose Hero credit wallet can fund overflow is exempt, same as the
+    // in-pipeline gate (`allowOverCeiling` in /api/videos/tts-gemini).
     const narrationEngine = uploadMode
       ? "upload"
       : useEleven
@@ -578,7 +582,10 @@ export async function POST(req: Request) {
           : "gemini";
     if (managedAudioCeilingApplies(narrationEngine, geminiKeyMode)) {
       const audioCeiling = await checkAiAudioCeiling(user.id, { enforce: true });
-      const refusal = aiAudioCeilingRefusal(audioCeiling, user.plan);
+      const walletCanFundOverflow = audioCeiling.remaining < AI_AUDIO_CEILING_FLOOR_MIN
+        ? await canFundAiAudioOverflowFromWallet(user.id)
+        : false;
+      const refusal = aiAudioCeilingRefusal(audioCeiling, user.plan, { walletCanFundOverflow });
       if (refusal) {
         return NextResponse.json({
           error: refusal.code,

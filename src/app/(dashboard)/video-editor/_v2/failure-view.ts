@@ -15,6 +15,7 @@ export type FailureKind =
   | "provider-key"
   | "provider-quota"
   | "plan-quota"
+  | "ai-audio-quota"
   | "content-preflight"
   | "script-narrative-mismatch"
   | "hero-image-transient"
@@ -76,6 +77,10 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
   // this job was accepted); pipelineFailureDetails carries the envelope's `code` through
   // to VideoJob.errorCode verbatim.
   if (job.errorCode === "quota_exceeded") return "plan-quota";
+  // HERO-25: the managed AI-audio ceiling (TTS/transcribe spend), a DIFFERENT pool from
+  // the render-minute/clip quota above. It must not share "plan-quota" copy, which talks
+  // about render minutes/clips the customer already has nothing to do with here.
+  if (job.errorCode === "QUOTA_AI_AUDIO") return "ai-audio-quota";
   if (
     job.errorCode === "CONTENT_PREFLIGHT_NARRATIVE_MISMATCH"
     || NARRATIVE_MISMATCH_MARKER.test(job.errorMessage ?? "")
@@ -209,6 +214,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: "โควต้าเรนเดอร์ของแพ็กเกจใช้ครบแล้ว",
       body: "รอบนี้ใช้โควต้าของแพ็กเกจครบแล้ว ระบบจึงหยุดงานไว้ก่อน โปรเจกต์ยังอยู่ครบ — อัปเกรดแพ็กเกจหรือเติมเครดิต แล้วกลับมาเรนเดอร์ใหม่ได้",
+    };
+  }
+  if (kind === "ai-audio-quota") {
+    return {
+      heading: "โควต้าเสียง AI ใช้ครบแล้ว",
+      body: "เสียง AI (สร้างเสียง/ถอดเสียง) ครบเพดานรอบนี้แล้ว โปรเจกต์ยังอยู่ครบ — อัปเกรดแพ็กเกจ เติมเครดิต Hero เพื่อสร้างเสียงต่อ หรือรอรอบถัดไป",
     };
   }
   if (kind === "content-preflight") {
