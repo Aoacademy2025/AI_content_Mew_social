@@ -9,7 +9,7 @@
 // pool is 2 × physical CPUs + 1, so there are always more connections than workers), the
 // interactive transaction that HOLDS the lock cannot get a thread to run its next statement or
 // its COMMIT. Nobody progresses until the waiters hit busy_timeout and fail (P1008); then the
-// holder resumes. Production (4 vCPU, busy_timeout 20 s): ten concurrent create_upload_url calls
+// holder resumes. Production (8 vCPU, busy_timeout 20 s; the harness pins 4 workers to stall sooner): ten concurrent create_upload_url calls
 // stalled in 20 s steps and failed (2026-10-04; a P2028 at 30 s on 2026-10-05).
 //
 // Every scenario runs in its own child process (prisma.ts reads its env once, at import) against
@@ -20,7 +20,7 @@
 //   default-pool       production DATABASE_URL shape (no connection_limit): concurrent
 //                      issueUploadToken (N = 2, 3, 5, 10) and an interactive transaction racing
 //                      six plain writes. Must never stall or fail.
-//   large-pool-mutex   operator-forced connection_limit=9 (the 4-vCPU default pool size): the
+//   large-pool-mutex   operator-forced connection_limit=9 (a pool larger than the 4 pinned workers): the
 //                      in-process transaction queue alone must keep issueUploadToken bursts
 //                      fast. (Plain writes racing a transaction are reported, not asserted: that
 //                      is what the pool cap covers, and the operator turned it off here.)
@@ -299,7 +299,7 @@ async function main(): Promise<void> {
   assertNoStall("issueUploadToken burst", prod.bursts);
   assertNoStall("transaction + plain writes", prod.mixed);
 
-  console.log("\nB) operator-forced connection_limit=9 (the 4-vCPU default pool): the queue alone");
+  console.log("\nB) operator-forced connection_limit=9 (a pool larger than the 4 pinned workers): the queue alone");
   const large = await runScenario(template, "large-pool-mutex", ["bursts", "mixed"], "?connection_limit=9", {});
   assertNoStall("issueUploadToken burst", large.bursts);
   for (const burst of large.mixed ?? []) {

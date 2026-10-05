@@ -123,7 +123,7 @@ P1008/P2028). Two guards, each with its own rollback:
   (wait counts against `maxWait`). Off: `PRISMA_TX_SERIALIZE=0`.
 - The pool is capped at the worker count: `connection_limit=<CPUs>` is appended
   to a `file:` `DATABASE_URL` unless one is already there. Restore Prisma's old
-  default by putting `connection_limit=9` (4 vCPU) in `DATABASE_URL` yourself.
+  default by putting `connection_limit=17` (2 × physical cores + 1 on the 8-vCPU prod host) in `DATABASE_URL` yourself.
 
 Both are read once at process start, so restart the app after changing either
 (and check the new value reached the process — see the PM2 env notes in

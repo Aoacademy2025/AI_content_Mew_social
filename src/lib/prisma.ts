@@ -162,6 +162,13 @@ function slowTransactionSource(stackBoundary: TransactionFn): string {
   return slowTransactionSourceFromStack(error.stack ?? "");
 }
 
+// The queue replaces the wait each transaction used to do inside BEGIN IMMEDIATE, which
+// lasted up to busy_timeout. When another process holds the writer lock, the head of the
+// queue sits in BEGIN for that long, so the default queue budget must cover it — otherwise
+// every transaction behind it fails at maxWait where it used to commit. A per-call maxWait
+// still wins.
+const defaultQueueWaitMs = Math.max(transactionOptions.maxWait, busyTimeoutSec * 1000);
+
 if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
   const runTransaction = prisma.$transaction.bind(prisma) as TransactionFn;
   const queue = serializeTransactions ? processTransactionQueue() : undefined;
@@ -188,7 +195,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
     let releaseTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (queue) {
-        const maxWaitMs = positiveMs(options.maxWait, transactionOptions.maxWait);
+        const maxWaitMs = positiveMs(options.maxWait, defaultQueueWaitMs);
         slot = await queue.acquire(maxWaitMs, (queuedMs) => queueTimeoutError(queuedMs, maxWaitMs));
       }
       acquiredAt = Date.now();
@@ -233,4 +240,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
   (prisma as unknown as { $transaction: TransactionFn }).$transaction = wrappedTransaction;
 }
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+// Cached in production too: the connection_limit cap above assumes one client per process,
+// and a module evaluated twice (e.g. instrumentation plus a route bundle) must not open a
+// second pool on the same engine workers.
+globalForPrisma.prisma = prisma;
