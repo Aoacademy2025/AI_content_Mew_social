@@ -144,7 +144,7 @@ async function streamToFile(file: File, outPath: string): Promise<void> {
 }
 
 export type BrollPipelineError = { error: string; message: string; status: number };
-export type BrollPipelineSuccess = { src: string; clipDuration: number };
+export type BrollPipelineSuccess = { src: string; clipDuration: number; stillImage?: boolean };
 export type BrollPipelineResult =
   | { ok: true; value: BrollPipelineSuccess }
   | { ok: false; value: BrollPipelineError };
@@ -199,7 +199,7 @@ export async function runBrollPipeline(params: {
         return { ok: false, value: { error: "process_failed", message: "แปลงรูปเป็นวิดีโอไม่สำเร็จ", status: 502 } };
       }
 
-      return { ok: true, value: { src: `/api/stocks/${outFile}`, clipDuration: KEN_BURNS_DURATION_SEC } };
+      return { ok: true, value: { src: `/api/stocks/${outFile}`, clipDuration: KEN_BURNS_DURATION_SEC, stillImage: true } };
     }
 
     // kind === "video": stream to the stocks output path, then re-encode Remotion-safe.

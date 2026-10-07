@@ -416,6 +416,7 @@ export function BrollWindowInspector({
     label?: string,
     clipDuration?: number,
     imageJobId?: string,
+    stillImage = false,
   ) {
     // HERO-44: a pick on a window that is off (an unfilled slot, or a presenter window of an
     // uploaded clip) also turns it on, so one free update is enough to see the result.
@@ -433,6 +434,7 @@ export function BrollWindowInspector({
       // Supplying undefined intentionally clears a previously staged AI candidate
       // when the creator chooses Stock/Upload instead.
       imageJobId,
+      stillImage,
     });
     toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
   }
@@ -442,6 +444,7 @@ export function BrollWindowInspector({
     keyword?: string;
     kind: WindowEditKind;
     label: string;
+    stillImage: boolean;
     imageJobId?: string;
   } | null {
     const raw = rawBgVideoAt(ed.previewConfig, windowIndex);
@@ -454,6 +457,7 @@ export function BrollWindowInspector({
       keyword: staged?.keyword ?? rawKeyword,
       kind: staged?.kind ?? entrySourceKind(raw),
       label: staged?.label ?? entrySourceLabel(raw),
+      stillImage: staged?.src ? staged.stillImage === true : raw?.stillImage === true,
       ...(staged?.imageJobId ? { imageJobId: staged.imageJobId } : {}),
     };
   }
@@ -478,6 +482,7 @@ export function BrollWindowInspector({
           keyword: targetAsset.keyword,
           kind: targetAsset.kind,
           label: targetAsset.label,
+          stillImage: targetAsset.stillImage,
           imageJobId: undefined,
         },
       },
@@ -488,6 +493,7 @@ export function BrollWindowInspector({
           keyword: currentAsset.keyword,
           kind: currentAsset.kind,
           label: currentAsset.label,
+          stillImage: currentAsset.stillImage,
           imageJobId: undefined,
         },
       },
@@ -569,7 +575,7 @@ export function BrollWindowInspector({
       const res = await fetch("/api/videos/broll-window/upload", { method: "POST", body: form });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.src) { setUploadError(d?.message ?? `อัปโหลดไม่สำเร็จ (${res.status})`); return; }
-      markEdited("upload", d.src, undefined, "อัปโหลด", d.clipDuration);
+      markEdited("upload", d.src, undefined, "อัปโหลด", d.clipDuration, undefined, d.stillImage === true);
     } catch {
       setUploadError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {

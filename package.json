@@ -129,7 +129,7 @@
     "verify:broll-fill-yourself": "rm -rf /tmp/heroai-broll-fill-yourself.db && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-broll-fill-yourself.db?connection_limit=1 node --conditions=react-server --import tsx scripts/verify-broll-fill-yourself.ts && tsx scripts/verify-broll-fill-yourself-ai.ts",
     "verify:broll-fill-yourself-window-cap": "tsx scripts/verify-broll-fill-yourself-window-cap.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
-    "verify:broll-coverage": "tsx scripts/verify-broll-coverage.ts && tsx scripts/verify-broll-render-route.ts",
+    "verify:broll-coverage": "tsx scripts/verify-broll-image-hold.ts && tsx scripts/verify-broll-coverage.ts && tsx scripts/verify-broll-render-route.ts",
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
     "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",

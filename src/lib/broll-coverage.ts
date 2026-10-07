@@ -364,11 +364,14 @@ export function coverBrollTimeline(
   targetLoop: for (const target of targets) {
     let cursor = target.start;
     let preferred = target.preferred;
+    // A still-derived motion clip can repeat safely. Keep its selected identity
+    // for the whole window; only ordinary finite footage uses the fallback pool.
+    const selectedImage = target.preferred?.stillImage === true ? target.preferred : undefined;
     let attemptsWithoutProgress = 0;
 
     while (cursor < target.end - EPSILON_SEC) {
       const isPreferredAttempt = preferred !== undefined;
-      const asset = preferred ?? fallbackAssets[poolCursor % Math.max(fallbackAssets.length, 1)];
+      const asset = preferred ?? selectedImage ?? fallbackAssets[poolCursor % Math.max(fallbackAssets.length, 1)];
       let offset = asset?.timelineAligned === true
         ? cursor
         : preferred
@@ -386,7 +389,7 @@ export function coverBrollTimeline(
           + (previousSegment.end - previousSegment.start);
         if (playableDuration(asset, continuedOffset, guardSec) >= minPlayableSec - EPSILON_SEC) {
           offset = continuedOffset;
-        } else {
+        } else if (!selectedImage) {
           continue;
         }
       }
