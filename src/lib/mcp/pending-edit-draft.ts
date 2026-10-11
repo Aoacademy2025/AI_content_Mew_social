@@ -22,6 +22,7 @@ import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-h
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
 import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -67,6 +68,9 @@ export type PendingEditDraft = {
   /** EP5 U7: the music chosen after creation (`set_background_music`). Absent = the base
    *  render's own music, burned exactly as today. */
   backgroundMusic?: BackgroundMusicEdit;
+  /** EP5 backlog #14 (ADR 0066: shared draft field, exposed to both web and MCP). 0-3000 ms,
+   *  default 0 = today's behaviour. */
+  tailHoldMs: number;
   windowEdits: PendingEditWindowEdit[];
 };
 
@@ -122,7 +126,7 @@ export function draftDurationMs(preview: VideoJobPreviewData, captions: readonly
   return Math.max(preview.audioDurationMs || 0, captions[captions.length - 1]?.endMs ?? 0, 1_000);
 }
 
-function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides">): EditorExportDraft {
+function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides" | "tailHoldMs">): EditorExportDraft {
   return {
     version: 1,
     captions: draft.captions,
@@ -130,6 +134,7 @@ function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptio
     subtitleConfig: draft.subtitleConfig,
     cardLen: draft.cardLen,
     captionOverrides: draft.captionOverrides,
+    tailHoldMs: draft.tailHoldMs,
   };
 }
 
@@ -187,6 +192,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
     ...(backgroundMusic ? { backgroundMusic } : {}),
+    tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
   };
 }
@@ -240,6 +246,7 @@ export function seedPendingEditDraft(input: {
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
     ...(backgroundMusic ? { backgroundMusic } : {}),
+    tailHoldMs: clampTailHoldMs(snapshot?.tailHoldMs),
     windowEdits: [],
   };
 }
@@ -534,6 +541,7 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     draft.logoOverlay,
     undefined,
     draft.headlineHook,
+    draft.tailHoldMs,
   );
 }
 
@@ -561,6 +569,7 @@ export type PendingEditForWeb = {
     captionOverrides: V2CardOverrides;
     headlineHook?: HeadlineHookConfig;
     backgroundMusic?: BackgroundMusicEdit;
+    tailHoldMs: number;
   };
 };
 
@@ -584,6 +593,7 @@ export function pendingEditForWeb(project: {
       captionOverrides: draft.captionOverrides,
       ...(draft.headlineHook ? { headlineHook: draft.headlineHook } : {}),
       ...(draft.backgroundMusic ? { backgroundMusic: draft.backgroundMusic } : {}),
+      tailHoldMs: draft.tailHoldMs,
     },
   };
 }

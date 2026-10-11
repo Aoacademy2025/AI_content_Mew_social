@@ -50,6 +50,7 @@ import {
   type HeadlineHookSuggestion,
 } from "@/lib/headline-hook";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
   buildLogoTelemetryProperties,
@@ -284,6 +285,15 @@ export function usePostPhaseEditor(
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => (
     pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {}
   ));
+  // EP5 backlog #14: hold the last frame N ms after the voice ends (0-3000, default 0 = today's
+  // behaviour exactly). Same "pendingDraft, else editSnapshot, else default" precedence as cfg/
+  // cardLen above — a legacy snapshot without this field reads as 0.
+  const [tailHoldMs, setTailHoldMsState] = useState<number>(() => (
+    pendingDraft?.tailHoldMs ?? (editSnapshot?.tailHoldMs as number | undefined) ?? 0
+  ));
+  function setTailHoldMs(next: number) {
+    setTailHoldMsState(clampTailHoldMs(next));
+  }
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
@@ -1093,6 +1103,12 @@ export function usePostPhaseEditor(
     setHeadlineOverrideState(draft.headlineHook);
     // EP5 U7: same rule — a draft without music falls back to the project's own choice.
     setMusicOverrideState(draft.backgroundMusic);
+    // Review B1 (PR #593): this effect is the ONLY place a draft that arrives after the lazy
+    // useState initializers (the normal case, and the 409 stale_revision reload) gets applied —
+    // tailHoldMs was missing here, so an agent-set hold silently read back as 0 in the web, and
+    // an unreviewed web export would then clear the agent's draft with tailHoldMs: 0. Set
+    // unconditionally, same reasoning as headlineHook above: absent/legacy reads as 0.
+    setTailHoldMsState(clampTailHoldMs(draft.tailHoldMs ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 
@@ -1456,6 +1472,7 @@ export function usePostPhaseEditor(
         logoOverlay,
         effectiveLayerVisibility,
         resolvedHeadlineHook,
+        tailHoldMs,
       );
       // EP5 U7: only a changed music is sent; the server re-mixes it from the source's own voice.
       const exportMusic = changedMusic && musicVoiceSrc ? changedMusic : undefined;
@@ -1469,6 +1486,7 @@ export function usePostPhaseEditor(
           subtitleConfig: { ...cfg },
           cardLen,
           captionOverrides: cloneOverrides(overrides),
+          tailHoldMs,
         },
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
@@ -1648,6 +1666,7 @@ export function usePostPhaseEditor(
     cardLen,
     scope, setScope,
     overrides, setOverrides,
+    tailHoldMs, setTailHoldMs,
     videoRef,
     timeMs, setTimeMs,
     playing, setPlaying,

@@ -52,6 +52,7 @@ import {
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
+import { clampTailHoldMs, TAIL_HOLD_MS_MAX, TAIL_HOLD_MS_MIN } from "@/lib/tail-hold";
 import {
   DEFAULT_BGM_VOLUME,
   normalizeBackgroundMusicEdit,
@@ -91,6 +92,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "set_subtitle_style",
   "set_headline_hook",
   "set_background_music",
+  "set_tail_hold",
   "discard_edits",
   "replace_broll_window",
   "export_video",
@@ -173,6 +175,11 @@ export const setBackgroundMusicInputShape = {
   trackId: z.string().optional().describe("เพลงที่จะใช้: tracks[].trackId จากการเรียกด้วย jobId อย่างเดียว หรือ \"none\" = ไม่ใส่เพลง"),
   volume: z.number().int().optional().describe("ความดังเพลง 0-100 (%) — ค่าเริ่มต้นของระบบคือ 12"),
   ducking: z.boolean().optional().describe("ลดเสียงเพลงอัตโนมัติตอนมีเสียงพูด (เลือกเพลงใหม่ = เปิดให้เอง, ส่ง false เพื่อปิด)"),
+} satisfies z.ZodRawShape;
+
+export const setTailHoldInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  tailHoldMs: z.number().int().describe(`ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card) — ${TAIL_HOLD_MS_MIN}-${TAIL_HOLD_MS_MAX}, ค่าเริ่มต้น 0 = ไม่ค้าง`),
 } satisfies z.ZodRawShape;
 
 export const discardEditsInputShape = {
@@ -311,6 +318,8 @@ const ALLOWED = {
     volume: { min: 0, max: 100 },
     noneTrackId: "none",
   },
+  // tail-hold.ts's own bounds (set_tail_hold, EP5 backlog #14).
+  tailHoldMs: { min: TAIL_HOLD_MS_MIN, max: TAIL_HOLD_MS_MAX },
 };
 
 /** The music the export will use: the draft's edit, else the base render's own music. */
@@ -577,10 +586,11 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
     backgroundMusic: await backgroundMusicView(userId, state.draft, state.base.preview),
+    tailHoldMs: state.draft.tailHoldMs,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -953,6 +963,30 @@ export async function setBackgroundMusicTool(userId: string, args: ShapeArgs<typ
     ok: true,
     jobId: held.root.id,
     backgroundMusic: await backgroundMusicView(userId, updated.state.draft, updated.state.base.preview),
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_tail_hold (EP5 backlog #14) ──────────────────────────────────────────────────────────
+
+export async function setTailHoldTool(userId: string, args: ShapeArgs<typeof setTailHoldInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (!Number.isFinite(args.tailHoldMs)) {
+    return editToolFailure("invalid_input", "ค่า tailHoldMs ต้องเป็นตัวเลข", "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  }
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    draft.tailHoldMs = clampTailHoldMs(args.tailHoldMs);
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    tailHoldMs: updated.state.draft.tailHoldMs,
     draftRevision: updated.state.revision,
     next: NEXT_MORE_EDITS,
   };
@@ -1703,6 +1737,19 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("set_background_music", extra, (p) => setBackgroundMusicTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_tail_hold",
+    {
+      title: "Set tail hold",
+      description: "ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card/ชวนแอ็กชัน) — 0-3000, ค่าเริ่มต้น 0 = ไม่ค้าง (เหมือนเดิม). เพลงพื้นหลังเล่นต่อตลอดช่วงที่ค้าง ซับไม่โชว์ในช่วงนี้. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: setTailHoldInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_tail_hold", extra, (p) => setTailHoldTool(p.userId, args), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(

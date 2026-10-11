@@ -119,6 +119,12 @@ export interface SubtitleOverlayConfig {
   videoUrl: string;
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
+  /** EP5 backlog #14: hold the last frame for this many extra frames after
+   *  `durationInFrames - tailHoldFrames` (0/absent = today's behaviour exactly — the video
+   *  plays to its own end and stops there, no freeze). Already folded into `durationInFrames`
+   *  by `buildV2BurnConfig`; subtitles never show in this window because their own timing
+   *  never extends past the original (pre-hold) duration. */
+  tailHoldFrames?: number;
   headlineHook?: HeadlineHookConfig;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;

@@ -312,6 +312,27 @@ async function main() {
     },
   );
 
+  await section(
+    "G) PR #593 review fix (B1): the pendingEdit resync effect also carries tailHoldMs"
+    + " (a draft that arrives after mount, or a 409 stale_revision reload, must not leave the"
+    + " web's slider stuck at its old value while an agent-set hold silently reads back as 0)",
+    async () => {
+      const hookSource = readFileSync(
+        "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+        "utf8",
+      );
+      const resyncEffectMatch = hookSource.match(
+        /useEffect\(\(\) => \{\s*if \(!pendingEdit[\s\S]*?\}, \[pendingEdit\]\);/,
+      );
+      check("usePostPhaseEditor still defines the pendingEdit resync effect", !!resyncEffectMatch);
+      const resyncEffect = resyncEffectMatch![0];
+      check(
+        "the resync effect sets tailHoldMs from the draft (clamped, legacy/absent reads as 0)",
+        /setTailHoldMsState\(clampTailHoldMs\(draft\.tailHoldMs \?\? 0\)\);/.test(resyncEffect),
+      );
+    },
+  );
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 }

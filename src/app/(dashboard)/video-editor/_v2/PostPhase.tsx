@@ -793,6 +793,22 @@ export function PostPhase({
             />
           </section>
 
+          <section className="flex flex-col gap-2">
+            <GroupLabel>ค้างท้ายคลิป ({(ed.tailHoldMs / 1000).toFixed(1)} วิ)</GroupLabel>
+            <input
+              type="range"
+              min={0}
+              max={3000}
+              step={100}
+              value={ed.tailHoldMs}
+              onChange={(e) => ed.setTailHoldMs(Number(e.target.value))}
+              style={{ accentColor: color.primary500 }}
+            />
+            <span style={{ fontSize: 10.5, color: color.textFaintest }}>
+              ค้างภาพสุดท้ายไว้หลังเสียงพากย์จบ (ใส่ end card/ชวนแอ็กชัน) — เพลงพื้นหลังเล่นต่อ ซับไม่โชว์ในช่วงนี้ 0 = ไม่ค้าง (ค่าเริ่มต้น)
+            </span>
+          </section>
+
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
             ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>

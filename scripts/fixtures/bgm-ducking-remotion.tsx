@@ -10,15 +10,27 @@ const BurnFixture = (props: SubtitleOverlayConfig) => <SubtitleOverlayCompositio
 
 function Root() {
   return (
-    <Composition
-      id="BgmDuckingBurn"
-      component={BurnFixture}
-      durationInFrames={90}
-      fps={30}
-      width={180}
-      height={320}
-      defaultProps={{ videoUrl: "", durationInFrames: 90, keywordPopups: [] } satisfies SubtitleOverlayConfig}
-    />
+    <>
+      <Composition
+        id="BgmDuckingBurn"
+        component={BurnFixture}
+        durationInFrames={90}
+        fps={30}
+        width={180}
+        height={320}
+        defaultProps={{ videoUrl: "", durationInFrames: 90, keywordPopups: [] } satisfies SubtitleOverlayConfig}
+      />
+      {/* EP5 #14 interaction: the same 3 s base + a 1 s tail hold (tailHoldFrames 30). */}
+      <Composition
+        id="BgmDuckingBurnHold"
+        component={BurnFixture}
+        durationInFrames={120}
+        fps={30}
+        width={180}
+        height={320}
+        defaultProps={{ videoUrl: "", durationInFrames: 120, keywordPopups: [], tailHoldFrames: 30 } satisfies SubtitleOverlayConfig}
+      />
+    </>
   );
 }
 

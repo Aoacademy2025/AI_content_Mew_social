@@ -13,6 +13,7 @@ import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
 import type { V2CardLen, V2CardOverrides, V2Caption, V2SubConfig } from "./subtitle-style";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 export type WebPendingEditDraft = {
   captions: V2Caption[];
@@ -24,6 +25,8 @@ export type WebPendingEditDraft = {
   captionOverrides: V2CardOverrides;
   headlineHook?: HeadlineHookConfig;
   backgroundMusic?: BackgroundMusicEdit;
+  /** EP5 backlog #14 — absent (a pre-existing MCP draft) reads as 0 by every caller. */
+  tailHoldMs?: number;
 };
 
 export type WebPendingEdit = {
@@ -75,6 +78,7 @@ export function normalizeWebPendingEdit(value: unknown): WebPendingEdit | null {
       ...(normalizeBackgroundMusicEdit(d.backgroundMusic)
         ? { backgroundMusic: normalizeBackgroundMusicEdit(d.backgroundMusic)! }
         : {}),
+      ...(typeof d.tailHoldMs === "number" ? { tailHoldMs: clampTailHoldMs(d.tailHoldMs) } : {}),
     },
   };
 }

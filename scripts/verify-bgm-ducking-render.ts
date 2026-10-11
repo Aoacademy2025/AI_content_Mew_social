@@ -115,8 +115,8 @@ async function main() {
       publicDir,
       webpackOverride: (config) => config,
     });
-    const render = async (inputProps: Record<string, unknown>, output: string) => {
-      const composition = await selectComposition({ serveUrl: serveUrl!, id: "BgmDuckingBurn", inputProps });
+    const render = async (inputProps: Record<string, unknown>, output: string, id = "BgmDuckingBurn") => {
+      const composition = await selectComposition({ serveUrl: serveUrl!, id, inputProps });
       await renderMedia({ composition, serveUrl: serveUrl!, codec: "h264", outputLocation: output, inputProps, logLevel: "error" });
       return decodePcm(output);
     };
@@ -188,6 +188,28 @@ async function main() {
     console.log(`  0.8 s track looped: open ${loopOpen.toFixed(3)} → ducked ${loopDucked.toFixed(3)} (x${loopRatio.toFixed(2)})`);
     assert.ok(loopOpen > 0.05 && Math.abs(loopRatio - DUCK_RATIO) < 0.06, `a looping track still ducks on the video clock (x${loopRatio})`);
     console.log("✓ a short track loops and still ducks on the video's clock (loopVolumeCurveBehavior=extend)");
+
+    // EP5 #14 (tail hold) together with a changed music: the base video freezes for 1 s after
+    // its 3 s; the new music must keep playing through the hold, and the old baked audio must
+    // stay muted inside <Freeze> (dropping `muted` there plays old and new music together).
+    const held = await render({
+      videoUrl: `${base}/base.mp4`, keywordPopups: [], durationInFrames: 120, tailHoldFrames: 30,
+      audioMix: {
+        voiceFile: `${base}/voice.wav`, bgmFile: `${base}/music.wav`, bgmVolume: 0.5, ducking: true,
+        duckSegments: [{ startMs: 1000, endMs: 2000 }],
+      },
+    }, path.join(work, "held.mp4"), "BgmDuckingBurnHold");
+    const heldSec = held.length / SAMPLE_RATE;
+    const heldOpen = toneLevel(held, MUSIC_HZ, 0.1, 0.7);
+    const heldDucked = toneLevel(held, MUSIC_HZ, 1.3, 1.7);
+    const heldTail = toneLevel(held, MUSIC_HZ, 3.2, 3.9);
+    const heldBase = toneLevel(held, BASE_HZ, 0.2, 3.9);
+    console.log(`  tail hold 1 s: length ${heldSec.toFixed(2)} s, music ${heldOpen.toFixed(3)} → ducked ${heldDucked.toFixed(3)} → hold ${heldTail.toFixed(3)}, base ${heldBase.toFixed(4)}`);
+    assert.ok(heldSec > 3.9, `the hold extends the output (${heldSec} s)`);
+    assert.ok(Math.abs(heldTail / heldOpen - 1) < 0.06, `the new music keeps playing through the hold (x${heldTail / heldOpen})`);
+    assert.ok(Math.abs(heldDucked / heldOpen - DUCK_RATIO) < 0.06, `ducking unchanged with a hold (x${heldDucked / heldOpen})`);
+    assert.ok(heldBase < oldBase * 0.02, `old baked audio stays muted inside <Freeze> (${heldBase})`);
+    console.log("✓ tail hold + changed music: music covers the hold, ducking intact, old audio muted under <Freeze>");
 
     const none = await render({ ...common, audioMix: { voiceFile: `${base}/voice.wav`, bgmVolume: 0.5, ducking: false } }, path.join(work, "none.mp4"));
     assert.ok(toneLevel(none, MUSIC_HZ, 0.1, 2.9) < 0.005 && toneLevel(none, BASE_HZ, 0.2, 2.8) < oldBase * 0.02, "no music: voice only");
