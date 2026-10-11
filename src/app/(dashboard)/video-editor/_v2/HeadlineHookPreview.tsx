@@ -26,6 +26,10 @@ export const HeadlineHookPreview = memo(function HeadlineHookPreview({
   const [frameScale, setFrameScale] = useState(0.3);
   const dragRef = useRef<{ startY: number; startPos: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // EP5 #13: dragging still only speaks `topPercent` (the legacy top-anchored placement) — once
+  // the headline is anchored to the bottom, repositioning goes through HeadlineHookControls'
+  // anchor/offset inputs instead, which the dynamic subtitle-band/safe-area clamp also governs.
+  const dragDisabled = hook.anchor === "bottom";
 
   useEffect(() => {
     let raf = 0;
@@ -85,24 +89,26 @@ export const HeadlineHookPreview = memo(function HeadlineHookPreview({
         left: "6%",
         right: "6%",
         transform: "translateY(-50%)",
-        cursor: dragging ? "grabbing" : "grab",
+        cursor: dragDisabled ? "default" : dragging ? "grabbing" : "grab",
         touchAction: "none",
       }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerDown={dragDisabled ? undefined : onPointerDown}
+      onPointerMove={dragDisabled ? undefined : onPointerMove}
+      onPointerUp={dragDisabled ? undefined : onPointerUp}
+      onPointerCancel={dragDisabled ? undefined : onPointerUp}
     >
       <div
         className="pointer-events-none absolute opacity-0 transition-opacity group-hover:opacity-100"
         style={{ inset: -8, border: "1px dashed rgba(249,115,22,.72)", borderRadius: 9 }}
       />
-      <div
-        className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap opacity-0 transition-opacity group-hover:opacity-100"
-        style={{ padding: "2px 7px", borderRadius: 6, background: "rgba(8,8,13,.82)", color: "#FDBA74", fontSize: 9 }}
-      >
-        ↕ ลากพาดหัว · {hook.topPercent}%
-      </div>
+      {!dragDisabled && (
+        <div
+          className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap opacity-0 transition-opacity group-hover:opacity-100"
+          style={{ padding: "2px 7px", borderRadius: 6, background: "rgba(8,8,13,.82)", color: "#FDBA74", fontSize: 9 }}
+        >
+          ↕ ลากพาดหัว · {hook.topPercent}%
+        </div>
+      )}
       <HeadlineHookView hook={hook} frameScale={frameScale} motion={motion} />
     </div>
   );

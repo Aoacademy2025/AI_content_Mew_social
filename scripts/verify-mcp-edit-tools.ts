@@ -688,7 +688,51 @@ async function main() {
     const disabled = await callTool(tester.token, "set_headline_hook", { jobId: root.id, enabled: false });
     check("enabled:false disables while keeping the rest of the config", (disabled.headlineHook as Json).enabled === false
       && (disabled.headlineHook as Json).headline === "สูตรเด็ดวันนี้", JSON.stringify(disabled.headlineHook));
-    // Re-enable for the final combined export check below.
+
+    // EP5 #13: anchor + offset (px or %), clamped off the subtitle band. Section G above set
+    // this fixture's subtitleConfig.verticalPos to 30, so a top-anchored headline near the old
+    // default (25%) collides with it and the server pushes it below the band instead of
+    // refusing — verified against the real draft subtitle position, not a generic default.
+    const anchored = await callTool(tester.token, "set_headline_hook", {
+      jobId: root.id, anchor: "top", offsetPercent: 25,
+    });
+    const hook4 = anchored.headlineHook as Json;
+    check(
+      "anchor+offsetPercent is clamped off the subtitle band (verticalPos 30 from section G)",
+      hook4.anchor === "top" && hook4.offsetPercent === 49 && hook4.topPercent === 49,
+      JSON.stringify(hook4),
+    );
+
+    const anchoredByPx = await callTool(tester.token, "set_headline_hook", {
+      jobId: root.id, anchor: "top", offsetPx: 480, // 25% of the 1920px canvas height
+    });
+    const hook5 = anchoredByPx.headlineHook as Json;
+    check(
+      "offsetPx (px of the 1080×1920 canvas) resolves to the same clamped position as the equivalent %",
+      hook5.offsetPercent === 49 && hook5.topPercent === 49,
+      JSON.stringify(hook5),
+    );
+
+    const bottomAnchored = await callTool(tester.token, "set_headline_hook", {
+      jobId: root.id, anchor: "bottom", offsetPercent: 10,
+    });
+    const hook6 = bottomAnchored.headlineHook as Json;
+    check(
+      "anchor bottom measures from the bottom edge (topPercent = 100 - offsetPercent)",
+      hook6.anchor === "bottom" && hook6.topPercent === 100 - (hook6.offsetPercent as number),
+      JSON.stringify(hook6),
+    );
+
+    const stateWithAllowed = await callTool(tester.token, "get_edit_state", { jobId: root.id });
+    const allowedHeadline = (stateWithAllowed.allowed as Json).headlineHook as Json;
+    check(
+      "get_edit_state.allowed documents the new anchor/offset fields",
+      Array.isArray(allowedHeadline.anchors) && (allowedHeadline.anchors as string[]).includes("bottom")
+        && (allowedHeadline.offsetPercent as Json).max === 100,
+      JSON.stringify(allowedHeadline),
+    );
+
+    // Re-enable for the final combined export check below (position is irrelevant to it).
     await callTool(tester.token, "set_headline_hook", { jobId: root.id, enabled: true });
     void projectId;
   });
