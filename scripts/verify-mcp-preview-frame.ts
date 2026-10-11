@@ -22,7 +22,7 @@
 // Run: node --conditions=react-server --import tsx scripts/verify-mcp-preview-frame.ts
 
 import { execFileSync, execSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -33,7 +33,9 @@ import { checkFailureEnvelope, verifyAgentNeutralSchemas } from "./mcp-agent-neu
 const ROOT = process.cwd();
 // Private TMPDIR first: everything Remotion/Chromium writes to os.tmpdir() lands here, so the
 // leftover check at the end sees exactly what this run left behind.
-const privateTmp = mkdtempSync(join(tmpdir(), "mcp-preview-frame-tmp-"));
+// Kept short (under /tmp on POSIX, not macOS's long /var/folders path) so the preview's per-call
+// Chrome TMPDIR fits Chrome's Unix-socket path limit here exactly as it does on the VPS.
+const privateTmp = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "mcp-pf-"));
 process.env.TMPDIR = privateTmp;
 const dir = mkdtempSync(join(privateTmp, "db-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
@@ -654,8 +656,8 @@ async function main() {
     const record = join(dir, "chrome-tmpdir.txt");
     const probe = join(dir, "probe-chrome.sh");
     writeFileSync(probe, `#!/bin/sh\nprintf '%s' "$TMPDIR" > '${record}'\nexec '${realChrome}' "$@"\n`, { mode: 0o700 });
-    const stale = join(runtime.cacheRoot, "chrome-stale");
-    mkdirSync(join(stale, "tmp"), { recursive: true });
+    const stale = join(tmpdir(), "hero-pv-stale");
+    mkdirSync(stale, { recursive: true });
     utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
     const saved = runtime.browserExecutable;
     runtime.browserExecutable = probe;
@@ -664,10 +666,24 @@ async function main() {
     runtime.browserExecutable = saved;
     check("rendered through the launcher", !!still.jpeg, JSON.stringify(still.body).slice(0, 300));
     const seen = existsSync(record) ? readFileSync(record, "utf8") : "";
-    check("Chrome's TMPDIR was a per-call dir inside the preview cache",
-      seen.startsWith(join(runtime.cacheRoot, "chrome-")) && seen.endsWith("/tmp"), seen);
-    check("…and that dir is gone once the still is answered", !!seen && !existsSync(join(seen, "..")), seen);
+    check("Chrome's TMPDIR was a per-call hero-pv-* dir in the system temp dir", seen.startsWith(join(tmpdir(), "hero-pv-")), seen);
+    // Linux caps a Unix socket path at 107 bytes; Chrome's singleton socket lives under TMPDIR.
+    check("…short enough for Chrome's singleton socket", seen.length + "/com.google.Chrome.XXXXXX/SingletonSocket".length <= 100, String(seen.length));
+    check("…and that dir is gone once the still is answered", !!seen && !existsSync(seen), seen);
     check("a launcher dir left by a dead process (older than 10 min) is swept", !existsSync(stale));
+
+    // A temp dir too long for the socket path: the still still renders (no launcher), nothing kept.
+    const longTmp = join(privateTmp, "x".repeat(70));
+    mkdirSync(longTmp);
+    process.env.TMPDIR = longTmp;
+    try {
+      const fallback = await preview(tester.token, { jobId: root.id, atMs: 500 });
+      check("a temp dir too long for Chrome's socket → renders without the launcher", !!fallback.jpeg, JSON.stringify(fallback.body).slice(0, 300));
+      check("…and leaves no launcher dir behind", readdirSync(longTmp).every((name) => !name.startsWith("hero-pv-")), readdirSync(longTmp).join(", "));
+    } finally {
+      process.env.TMPDIR = privateTmp;
+      rmSync(longTmp, { recursive: true, force: true }); // Chrome's own entries there are expected
+    }
   });
 
   // ── K ──
@@ -685,6 +701,7 @@ async function main() {
   await prisma.$disconnect();
   console.log(`\n${passed} passed, ${failed} failed`);
   if (firstLatency) console.log(`first-call latency (local): ${JSON.stringify(firstLatency)}`);
+  rmSync(privateTmp, { recursive: true, force: true });
   process.exit(failed === 0 ? 0 : 1);
 }
 

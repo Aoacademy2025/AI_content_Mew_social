@@ -276,13 +276,21 @@ async function fitJpeg(buffer: Buffer): Promise<Buffer> {
  */
 // ── the browser's own temp dir ──────────────────────────────────────────────────────────────
 // Remotion stops Chrome with SIGKILL, so Chrome never removes what it created in TMPDIR (on Linux
-// one `com.google.Chrome.XXXXXX` entry per launch — CI caught it). Each still therefore starts
-// Chrome through a tiny per-call launcher that points TMPDIR at a private directory, and that
-// whole directory is deleted once the browser has exited. A directory left by a killed process is
-// swept by the next still once it is clearly dead (older than any render can live).
+// one `com.google.Chrome.XXXXXX` dir per launch, holding its singleton socket — CI caught it).
+// Each still therefore starts Chrome through a tiny per-call launcher that points TMPDIR at a
+// private directory, and that whole directory is deleted once the browser has exited. A directory
+// left by a killed process is swept by the next still once it is clearly dead.
+//
+// The private directory sits directly in the system temp dir with a short name: Chrome binds a
+// Unix socket at $TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket, Linux caps that path at 107
+// bytes, and Chrome aborts on a longer one (CI: SIGABRT with a TMPDIR under the project dir).
+// When even that would be too long, the still runs without the launcher (works; may leave the
+// one entry) rather than fail.
 
-const CHROME_DIR_PREFIX = "chrome-";
+const CHROME_DIR_PREFIX = "hero-pv-";
 const STALE_CHROME_DIR_MS = 10 * 60_000;
+const CHROME_SOCKET_TAIL = "/com.google.Chrome.XXXXXX/SingletonSocket".length;
+const MAX_SOCKET_PATH = 100;
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
@@ -304,18 +312,19 @@ function sweepStaleChromeDirs(root: string, now = Date.now()): void {
   }
 }
 
-/** A launcher script that runs `realBinary` with TMPDIR inside a fresh per-call directory. */
+/** A launcher script that runs `realBinary` with TMPDIR set to a fresh per-call directory. */
 function makeChromeLauncher(realBinary: string): { dir: string; executable: string } | null {
   if (process.platform === "win32") return null; // no /bin/sh; Windows never serves previews
-  const root = previewStillRuntime.cacheRoot;
-  fs.mkdirSync(root, { recursive: true });
+  const root = os.tmpdir();
   sweepStaleChromeDirs(root);
   const dir = fs.mkdtempSync(path.join(root, CHROME_DIR_PREFIX));
-  const tmp = path.join(dir, "tmp");
-  fs.mkdirSync(tmp);
+  if (dir.length + CHROME_SOCKET_TAIL > MAX_SOCKET_PATH) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return null;
+  }
   const executable = path.join(dir, "chrome.sh");
   // `exec` keeps the pid and process group Remotion kills.
-  fs.writeFileSync(executable, `#!/bin/sh\nTMPDIR=${shellQuote(tmp)}\nexport TMPDIR\nexec ${shellQuote(realBinary)} "$@"\n`, {
+  fs.writeFileSync(executable, `#!/bin/sh\nTMPDIR=${shellQuote(dir)}\nexport TMPDIR\nexec ${shellQuote(realBinary)} "$@"\n`, {
     mode: 0o700,
   });
   return { dir, executable };
