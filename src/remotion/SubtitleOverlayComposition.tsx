@@ -2,6 +2,7 @@ import React from "react";
 import { AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import { logoOverlayFrame } from "../lib/logo-overlay";
 import { headlineHookEndFrame } from "../lib/headline-hook";
+import { bgmGainAt, normalizeAudioMix } from "../lib/background-music";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
@@ -29,6 +30,7 @@ export function SubtitleOverlayComposition({
   subtitleOutlineSize = 2,
   bgmFile,
   bgmVolume = 0.12,
+  audioMix,
   logoOverlay,
 }: SubtitleOverlayConfig) {
   const { width, height, fps, durationInFrames } = useVideoConfig();
@@ -37,21 +39,48 @@ export function SubtitleOverlayComposition({
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
   const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
+  // EP5 U7: the music was changed after creation. The base carries voice + the OLD music baked
+  // together, so it is muted and the voice track is mixed with the new music instead.
+  const mix = normalizeAudioMix(audioMix);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Background video — plays WITH its original audio (TTS / voice). */}
+      {/* Background video — plays WITH its original audio (TTS / voice), unless the music
+          was changed (then its baked mix is replaced by `mix` below). */}
       <OffthreadVideo
         src={videoUrl}
+        muted={mix ? true : undefined}
         style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: "cover" }}
       />
 
-      {/* Background music — mixed in here so the avatar path (whose composite has
-          voice only) still gets BGM in the final burned video. Looped to cover
-          the whole duration. */}
-      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
+      {mix ? (
+        <>
+          <Audio src={mix.voiceFile} volume={mix.voiceVolume} />
+          {/* "extend": the volume callback gets the absolute frame across loops, so the duck
+              envelope stays on the voice's clock after the track wraps. */}
+          {mix.bgmFile && (
+            <Audio
+              src={mix.bgmFile}
+              loop
+              loopVolumeCurveBehavior="extend"
+              volume={mix.ducking && mix.duckSegments?.length
+                ? (frame) => bgmGainAt((frame / fps) * 1_000, {
+                  volume: mix.bgmVolume,
+                  ducking: true,
+                  segments: mix.duckSegments,
+                })
+                : mix.bgmVolume}
+            />
+          )}
+        </>
+      ) : (
+        /* Background music — mixed in here so the avatar path (whose composite has
+           voice only) still gets BGM in the final burned video. Looped to cover
+           the whole duration. */
+        bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />
+      )}
 
       {logoOverlay && (() => {
         const box = logoOverlayFrame({

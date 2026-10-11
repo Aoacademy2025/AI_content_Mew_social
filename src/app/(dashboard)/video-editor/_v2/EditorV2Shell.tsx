@@ -469,6 +469,8 @@ export function EditorV2Shell() {
     onLayerVisibilityChange: p.setLayerVisibility,
     headlineHook: p.headlineHook,
     onHeadlineHookChange: p.setHeadlineHook,
+    backgroundMusic: p.backgroundMusic,
+    onBackgroundMusicChange: p.setBackgroundMusic,
     logoEligible: p.canUseLogoOverlay,
     logoEntitlement: p.logoEntitlement,
     logoEntitlementStalled: p.logoEntitlementStalled,

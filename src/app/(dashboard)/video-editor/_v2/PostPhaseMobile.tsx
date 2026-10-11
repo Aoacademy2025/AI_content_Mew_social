@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { brollTimelineLabel } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Type, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Type, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -52,6 +52,8 @@ import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
+import type { BackgroundMusicEdit } from "@/lib/background-music";
+import { BackgroundMusicControls } from "./BackgroundMusicControls";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
@@ -87,6 +89,8 @@ export function PostPhaseMobile({
   onLayerVisibilityChange,
   headlineHook,
   onHeadlineHookChange,
+  backgroundMusic,
+  onBackgroundMusicChange,
   logoEligible,
   logoEntitlement,
   logoEntitlementStalled,
@@ -122,6 +126,8 @@ export function PostPhaseMobile({
   ) => void;
   headlineHook?: HeadlineHookConfig;
   onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
+  backgroundMusic?: BackgroundMusicEdit;
+  onBackgroundMusicChange?: (next: BackgroundMusicEdit | undefined, mirror?: BackgroundMusicEdit) => void;
   logoEligible: boolean;
   logoEntitlement: LogoEntitlementState;
   /** HERO-17: the automatic retry ladder is spent, so the panel must offer a manual one. */
@@ -157,6 +163,8 @@ export function PostPhaseMobile({
     onLayerVisibilityChange,
     headlineHook,
     onHeadlineHookChange,
+    backgroundMusic,
+    onBackgroundMusicChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -171,10 +179,12 @@ export function PostPhaseMobile({
   const [headlineOpen, setHeadlineOpen] = useState(false);
   const [logoOpen, setLogoOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [musicOpen, setMusicOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
   const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const musicTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
 
   const selectedCap = ed.captions[ed.selected];
@@ -218,6 +228,7 @@ export function PostPhaseMobile({
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setStyleOpen(false);
     setHeadlineOpen(false);
+    setMusicOpen(false);
     setLogoOpen(false);
     setLayersOpen(false);
     setEditOpen(true);
@@ -254,6 +265,7 @@ export function PostPhaseMobile({
   function openLogo() {
     ed.videoRef.current?.pause();
     setEditOpen(false);
+    setMusicOpen(false);
     setStyleOpen(false);
     setHeadlineOpen(false);
     setLayersOpen(false);
@@ -263,15 +275,27 @@ export function PostPhaseMobile({
   function openLayers() {
     ed.videoRef.current?.pause();
     setEditOpen(false);
+    setMusicOpen(false);
     setStyleOpen(false);
     setLogoOpen(false);
     setHeadlineOpen(false);
     setLayersOpen(true);
   }
 
+  // EP5 U7: the video keeps playing, so a music change is heard straight away.
+  function openMusic() {
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(false);
+    setLayersOpen(false);
+    setHeadlineOpen(false);
+    setMusicOpen(true);
+  }
+
   function openHeadline() {
     ed.videoRef.current?.pause();
     setEditOpen(false);
+    setMusicOpen(false);
     setStyleOpen(false);
     setLogoOpen(false);
     setLayersOpen(false);
@@ -493,6 +517,21 @@ export function PostPhaseMobile({
               <Check size={9} strokeWidth={3} aria-hidden="true" />
               เปิดอยู่
             </span>
+          )}
+        </button>
+        <button
+          ref={musicTriggerRef}
+          type="button"
+          data-mobile-editor-action="music"
+          aria-haspopup="dialog"
+          aria-expanded={musicOpen}
+          onClick={openMusic}
+          style={mobileEditorActionStyle}
+        >
+          <Music2 size={16} aria-hidden="true" />
+          <span>เพลง</span>
+          {ed.backgroundMusic.changed && (
+            <span aria-label="เปลี่ยนแล้ว" style={{ width: 7, height: 7, borderRadius: "50%", background: color.trackMusic }} />
           )}
         </button>
         <button
@@ -1013,6 +1052,18 @@ export function PostPhaseMobile({
             entitlementRetrying={logoEntitlementRetrying}
             editor={ed.logo}
           />
+        </div>
+      </MobileSheet>
+
+      <MobileSheet
+        open={musicOpen}
+        onClose={() => setMusicOpen(false)}
+        title="เพลงประกอบ"
+        size="medium"
+        triggerRef={musicTriggerRef}
+      >
+        <div className="flex flex-col gap-5 pt-2">
+          <BackgroundMusicControls editor={ed} />
         </div>
       </MobileSheet>
 

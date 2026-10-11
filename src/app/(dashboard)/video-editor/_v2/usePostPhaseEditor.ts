@@ -83,6 +83,12 @@ import {
   type PendingBrollApply,
 } from "@/lib/broll-apply-recovery";
 import { PENDING_EDIT_BANNER_TEXT, type WebPendingEdit } from "./pending-edit-view";
+import {
+  baseBackgroundMusicEdit,
+  speechSegments,
+  type BackgroundMusicEdit,
+} from "@/lib/background-music";
+import { useBackgroundMusicPreview } from "./useBackgroundMusicPreview";
 
 export type ExportState =
   | { phase: "idle" }
@@ -149,6 +155,10 @@ const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
 const ignoreHeadlineHookChange = (_next: HeadlineHookConfig | undefined) => {
   void _next;
 };
+const ignoreBackgroundMusicChange = (_next: BackgroundMusicEdit | undefined, _mirror?: BackgroundMusicEdit) => {
+  void _next;
+  void _mirror;
+};
 const ignoreProjectSaveRetry = () => undefined;
 const alwaysReadyForProjectOperation = () => true;
 const ignoreReloadPendingEdit = async () => null;
@@ -173,6 +183,10 @@ export type UsePostPhaseEditorOptions = {
   onLayerVisibilityChange?: (next: LayerVisibilityChange) => void;
   headlineHook?: HeadlineHookConfig;
   onHeadlineHookChange?: (next: HeadlineHookConfig | undefined) => void;
+  /** EP5 U7: the project's changed background music (undefined = the rendered video's own). */
+  backgroundMusic?: BackgroundMusicEdit;
+  /** `mirror` = the music Step 2 should re-render with (defaults to `next`). */
+  onBackgroundMusicChange?: (next: BackgroundMusicEdit | undefined, mirror?: BackgroundMusicEdit) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
@@ -218,6 +232,8 @@ export function usePostPhaseEditor(
     onLayerVisibilityChange = ignoreLayerVisibilityChange,
     headlineHook,
     onHeadlineHookChange = ignoreHeadlineHookChange,
+    backgroundMusic,
+    onBackgroundMusicChange = ignoreBackgroundMusicChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
@@ -315,6 +331,50 @@ export function usePostPhaseEditor(
     );
     setHeadlineOverrideState(next ?? undefined);
     onHeadlineHookChange(next ?? undefined);
+  }
+
+  // EP5 U7 (HERO-71): change the background music after the render. Same seeding rule as the
+  // headline override: the agent's pending draft wins once (and on each new revision, below),
+  // after that the project draft prop. No change = the video's own audio, exported as today.
+  const [musicOverride, setMusicOverrideState] = useState<BackgroundMusicEdit | undefined>(
+    () => pendingDraft?.backgroundMusic,
+  );
+  const changedMusic = musicOverride ?? backgroundMusic;
+  const baseMusic = useMemo(() => baseBackgroundMusicEdit(preview?.config), [preview?.config]);
+  // Same voice the burn re-mixes (backgroundMusicVoiceFile on the server): without one the music
+  // cannot be changed, so the panel says so and the export never sends a change.
+  const configVoiceFile = preview?.config?.voiceFile;
+  const musicVoiceSrc = preview?.voiceUrl?.trim()
+    || (typeof configVoiceFile === "string" && configVoiceFile.trim() ? configVoiceFile : null);
+  const musicSegments = useMemo(
+    () => speechSegments({ words: preview?.words, captions: preview?.captions }),
+    [preview?.captions, preview?.words],
+  );
+  useBackgroundMusicPreview({
+    videoRef,
+    music: changedMusic,
+    voiceSrc: musicVoiceSrc,
+    segments: musicSegments,
+  });
+
+  function setBackgroundMusic(patch: Partial<BackgroundMusicEdit>) {
+    const current = changedMusic ?? baseMusic.edit;
+    const isNewTrack = patch.track !== undefined && patch.track !== current.track;
+    const next: BackgroundMusicEdit = {
+      track: patch.track !== undefined ? patch.track : current.track,
+      volume: Math.min(1, Math.max(0, patch.volume ?? current.volume)),
+      // A newly picked track ducks under the voice unless the creator says otherwise.
+      ducking: patch.ducking ?? (isNewTrack ? true : current.ducking),
+    };
+    if (next.track === null) next.ducking = false;
+    setMusicOverrideState(next);
+    onBackgroundMusicChange(next);
+  }
+
+  function resetBackgroundMusic() {
+    setMusicOverrideState(undefined);
+    // Step 2 goes back to the rendered music too, unless that path is not a library track.
+    onBackgroundMusicChange(undefined, baseMusic.hasMusic && !baseMusic.edit.track ? undefined : baseMusic.edit);
   }
 
   // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
@@ -1030,6 +1090,8 @@ export function usePostPhaseEditor(
     // remove the headline, and the override must follow the draft back to `undefined` instead
     // of keeping the previous revision's stale value.
     setHeadlineOverrideState(draft.headlineHook);
+    // EP5 U7: same rule — a draft without music falls back to the project's own choice.
+    setMusicOverrideState(draft.backgroundMusic);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 
@@ -1394,6 +1456,8 @@ export function usePostPhaseEditor(
         effectiveLayerVisibility,
         resolvedHeadlineHook,
       );
+      // EP5 U7: only a changed music is sent; the server re-mixes it from the source's own voice.
+      const exportMusic = changedMusic && musicVoiceSrc ? changedMusic : undefined;
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
@@ -1408,6 +1472,7 @@ export function usePostPhaseEditor(
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
         ...(pendingEdit ? { expectedPendingRevision: pendingEdit.revision } : {}),
+        ...(exportMusic ? { backgroundMusic: exportMusic } : {}),
       });
       if (!result.ok) {
         // T8 (ADR 0064, G21): the AI agent changed the draft while the web was editing. Reload
@@ -1421,6 +1486,9 @@ export function usePostPhaseEditor(
         }
         throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
       }
+      // The burned music is the project's music from now on (it may have come from the agent's
+      // pending draft, which this export clears without writing the project draft).
+      if (exportMusic) onBackgroundMusicChange(exportMusic);
       const submittedBrollSummary = brollAppliedSummariesRef.current.get(exportSource.jobId);
       if (submittedBrollSummary) {
         trackEvent("editor_broll_export_submitted", {
@@ -1544,6 +1612,14 @@ export function usePostPhaseEditor(
     headlineSuggestionState,
     headlineSuggestionError,
     setHeadlineHook,
+    backgroundMusic: {
+      value: changedMusic ?? baseMusic.edit,
+      changed: !!changedMusic,
+      baseHasMusic: baseMusic.hasMusic,
+      available: !!musicVoiceSrc,
+    },
+    setBackgroundMusic,
+    resetBackgroundMusic,
     selectHeadlineSuggestion,
     generateHeadlineSuggestions,
     previewConfig,

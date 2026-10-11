@@ -1,3 +1,4 @@
+import type { SubtitleAudioMix } from "../lib/background-music";
 import type { LogoPosition } from "../lib/logo-overlay";
 import type { HeadlineHookConfig } from "../lib/headline-hook";
 
@@ -128,6 +129,9 @@ export interface SubtitleOverlayConfig {
   subtitleOutlineSize?: number;
   bgmFile?: string;
   bgmVolume?: number;
+  /** EP5 U7: the music was changed after creation. The base video is muted and the voice track
+   *  is re-mixed with the new music (optionally ducked). Absent = today's audio, untouched. */
+  audioMix?: SubtitleAudioMix;
   logoOverlay?: {
     src: string;
     position: LogoPosition;

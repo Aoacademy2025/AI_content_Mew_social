@@ -1026,10 +1026,48 @@ export async function POST(req: Request) {
       const resolvedBgm = subtitleOverlayConfig.bgmFile
         ? await safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
+      // EP5 U7: a changed music re-mixes the voice track with the new music (the composition
+      // mutes the base). The voice is required media (refused → 422, never a silent video); the
+      // music is best-effort like every BGM; numbers are clamped again by the composition. No
+      // voice string → the mix is dropped and the base audio plays as before.
+      const rawAudioMix = subtitleOverlayConfig.audioMix;
+      let resolvedAudioMix: Record<string, unknown> | undefined;
+      if (rawAudioMix && typeof rawAudioMix === "object" && !Array.isArray(rawAudioMix)
+        && typeof rawAudioMix.voiceFile === "string" && rawAudioMix.voiceFile.trim()) {
+        const mixVoice = await requiredMediaSrc(
+          toAbsolute(resolveStockUrl(rawAudioMix.voiceFile)),
+          "audio",
+          "subtitleOverlayConfig.audioMix.voiceFile",
+        );
+        assertExistingAsset(mixVoice, "voice");
+        const mixBgm = typeof rawAudioMix.bgmFile === "string" && rawAudioMix.bgmFile
+          ? await safeBgmOrDrop(toAbsolute(resolveStockUrl(rawAudioMix.bgmFile)))
+          : undefined;
+        // Only plain numbers pass through (a direct POST can send anything); ranges are clamped
+        // by the composition's normalizeAudioMix.
+        const mixNumber = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+        const duckSegments = Array.isArray(rawAudioMix.duckSegments)
+          ? rawAudioMix.duckSegments.slice(0, 2_000).flatMap((segment: unknown) => {
+            const startMs = mixNumber((segment as { startMs?: unknown } | null)?.startMs);
+            const endMs = mixNumber((segment as { endMs?: unknown } | null)?.endMs);
+            return startMs !== undefined && endMs !== undefined && endMs > startMs ? [{ startMs, endMs }] : [];
+          })
+          : [];
+        resolvedAudioMix = {
+          voiceFile: mixVoice,
+          voiceVolume: mixNumber(rawAudioMix.voiceVolume),
+          ...(mixBgm ? { bgmFile: mixBgm } : {}),
+          bgmVolume: mixNumber(rawAudioMix.bgmVolume),
+          ducking: rawAudioMix.ducking === true,
+          ...(duckSegments.length ? { duckSegments } : {}),
+        };
+        console.log(`[render] subtitle-overlay audioMix: bgm=${mixBgm ?? "(none)"} ducking=${rawAudioMix.ducking === true}`);
+      }
       resolvedSubtitleConfig = {
         ...subtitleOverlayConfig,
         videoUrl: resolvedUrl,
         bgmFile: resolvedBgm,
+        audioMix: resolvedAudioMix,
         headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
         ...(normalizedLogoOverlay
           ? {
