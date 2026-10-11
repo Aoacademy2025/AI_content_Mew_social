@@ -183,7 +183,12 @@ function makeTargets(
       cursor = span.start;
     }
 
-    const start = Math.max(cursor, span.start);
+    // A <= one-frame gap is accepted by the coverage policy, but must still be
+    // filled in the emitted geometry. Keeping span.start here produced complete
+    // previews with a real one-frame hole that later blocked all timing edits.
+    // Larger gaps already have their own repair target above. Start this target
+    // at the shared cursor and let normal playable-duration checks cover it.
+    const start = cursor;
     if (span.end > start + EPSILON_SEC) {
       const previous = targets[targets.length - 1];
       const sameContinuousSource = previous?.preferred?.src === span.src

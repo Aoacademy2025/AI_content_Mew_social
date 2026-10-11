@@ -7,7 +7,8 @@
 // charge — see the render route's `rerenderOf` skip).
 //
 // Invariants enforced here (violating any = broken subtitle timing or a charge/SSRF hole):
-//  - timing edits may move only a shared boundary: the full timeline stays contiguous and keeps
+//  - timing edits may move only a shared boundary: the full timeline stays contiguous (apart
+//    from an unchanged legacy generated frame gap) and keeps
 //    its original outer bounds; windows are never reordered/added/dropped and captions stay fixed.
 //  - optional `src` is the ONLY place a client-named asset path enters the re-render, so it
 //    is whitelisted to a single flat `.mp4` under our own /api/renders or /api/stocks route
@@ -296,7 +297,23 @@ export function mergeWindowEdits(
       if (index > 0) {
         const previousEnd = Number(merged[index - 1]?.end);
         if (Math.abs(boundaryMs(previousEnd) - boundaryMs(start)) > BROLL_TIMELINE_TOLERANCE_MS) {
-          return { error: "เส้นแบ่ง B-roll ต้องต่อเนื่องและห้ามซ้อนกัน" };
+          const sourcePrevious = bgVideos[index - 1] as Record<string, unknown> | null;
+          const sourceCurrent = bgVideos[index] as Record<string, unknown> | null;
+          // HERO-72: legacy 30fps previews were accepted by coverage with one
+          // missing frame. Preserve only that server-stored, untouched geometry;
+          // never permit a client to introduce, shift, or resize a gap. Both
+          // edges must lie on consecutive frame ticks, not an arbitrary offset.
+          // New coverage fills this hole; the shared-boundary policy stays exact.
+          const previousFrame = previousEnd * 30;
+          const startFrame = start * 30;
+          const unchangedLegacyFrameGap = previousEnd === sourcePrevious?.end
+            && start === sourceCurrent?.start
+            && Math.abs(previousFrame - Math.round(previousFrame)) < 1e-6
+            && Math.abs(startFrame - Math.round(startFrame)) < 1e-6
+            && Math.round(startFrame) - Math.round(previousFrame) === 1;
+          if (!unchangedLegacyFrameGap) {
+            return { error: "เส้นแบ่ง B-roll ต้องต่อเนื่องและห้ามซ้อนกัน" };
+          }
         }
       }
     }

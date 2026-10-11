@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { mergeWindowEdits, type WindowEdit } from "../src/lib/broll-rerender";
 import { brollWindowSpans } from "../src/lib/broll-spans";
 import { moveBrollBoundary } from "../src/lib/broll-timeline-boundary";
+import "./verify-broll-source-frame-gap";
 
 /** The 27 windows of the failing preview, exactly as production stored them. */
 const BOUNDARIES: [number, number][] = [
