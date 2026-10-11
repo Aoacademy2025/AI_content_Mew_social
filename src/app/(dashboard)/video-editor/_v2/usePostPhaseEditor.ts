@@ -310,9 +310,9 @@ export function usePostPhaseEditor(
     () => pendingDraft?.headlineHook,
   );
   const resolvedHeadlineHook = useMemo(() => (
-    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs)
+    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs, cfg.verticalPos)
     ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
-  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs]);
+  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs, cfg.verticalPos]);
   const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
   const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
@@ -322,6 +322,7 @@ export function usePostPhaseEditor(
     const next = normalizeHeadlineHookDraft(
       { ...resolvedHeadlineHook, ...patch },
       totalDurationMs,
+      cfg.verticalPos,
     );
     setHeadlineOverrideState(next ?? undefined);
     onHeadlineHookChange(next ?? undefined);

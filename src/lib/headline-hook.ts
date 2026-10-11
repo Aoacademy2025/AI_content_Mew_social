@@ -15,13 +15,33 @@ export type HeadlineHookFontFamily = (typeof HEADLINE_HOOK_FONTS)[number]["value
 export const HEADLINE_HOOK_FONT_WEIGHTS = [400, 600, 900] as const;
 export type HeadlineHookFontWeight = (typeof HEADLINE_HOOK_FONT_WEIGHTS)[number];
 
+export const HEADLINE_HOOK_ANCHORS = ["top", "bottom"] as const;
+export type HeadlineHookAnchor = (typeof HEADLINE_HOOK_ANCHORS)[number];
+
 export type HeadlineHookConfig = {
   enabled: boolean;
   headline: string;
   subheadline?: string;
   durationMs: number;
   preset: HeadlineHookPreset;
+  /**
+   * % from the top edge of the 1080×1920 canvas to the headline's vertical CENTER — the value
+   * the renderer (`HeadlineHookOverlay`/`HeadlineHookPreview`) actually reads.
+   * When `anchor`/`offsetPercent` are present, this is DERIVED from them (clamped against the
+   * subtitle band and the safe area, `clampHeadlineHookCenterPercent`) and may fall outside
+   * 10–42. Omitted `anchor`/`offsetPercent` means this field alone is authoritative and stays
+   * clamped to 10–42 exactly as it always has — old headlines render exactly as today (EP5 #13).
+   */
   topPercent: number;
+  /** Omitted means anchored to the top, same as today (EP5 #13). */
+  anchor?: HeadlineHookAnchor;
+  /**
+   * Offset from the anchored edge, as % (0–100) of the canvas height. Omitted means the legacy
+   * `topPercent`-only placement above. The MCP tool and the web control also accept the same
+   * offset in px of the 1080×1920 canvas (`offsetPx` on input) — it is converted to this field
+   * immediately and never stored separately, so this is always the single canonical position.
+   */
+  offsetPercent?: number;
   /** Omitted means the legacy Kanit default. */
   fontFamily?: HeadlineHookFontFamily;
   /** Omitted means size automatically follows headline length. */
@@ -50,6 +70,29 @@ export const MIN_HEADLINE_HOOK_FONT_SIZE = 52;
 export const MAX_HEADLINE_HOOK_FONT_SIZE = 120;
 export const MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE = 32;
 export const MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE = 88;
+
+/** The canvas every px-based headline field (`offsetPx` on input) is expressed against. */
+export const HEADLINE_HOOK_CANVAS_WIDTH_PX = 1080;
+export const HEADLINE_HOOK_CANVAS_HEIGHT_PX = 1920;
+
+export const MIN_HEADLINE_HOOK_OFFSET_PERCENT = 0;
+export const MAX_HEADLINE_HOOK_OFFSET_PERCENT = 100;
+
+/** Never closer than this to the very top/bottom edge of the canvas (the horizontal equivalent
+ *  — `left/right: 6%` — already guards `HeadlineHookOverlay`/`HeadlineHookPreview`). */
+export const HEADLINE_HOOK_SAFE_AREA_PERCENT = 4;
+/** Generous half-height reserve (% of canvas height) for the headline's own text block, so the
+ *  clamp below never lets its box crowd the canvas edge or the subtitle band. */
+export const HEADLINE_HOOK_HALF_HEIGHT_PERCENT = 9;
+/** Generous half-height reserve (% of canvas height) around the subtitle's own vertical
+ *  position — the "subtitle band" `clampHeadlineHookCenterPercent` keeps the headline out of.
+ *  Deliberately generous (covers a 2–3 line card at the largest allowed subtitle font) rather
+ *  than exact, since the real card height depends on text length/wrapping too. */
+export const SUBTITLE_BAND_HALF_HEIGHT_PERCENT = 10;
+/** `DEFAULT_V2_SUB.verticalPos` (subtitle-style.ts) duplicated as a literal to avoid a circular
+ *  import. Used only as the subtitle band reference when a caller normalizes a headline without
+ *  the project's actual subtitle position at hand — keep in sync if that default ever changes. */
+const DEFAULT_SUBTITLE_VERTICAL_POS_FOR_CLAMP = 82;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -156,9 +199,66 @@ export function clampHeadlineHookDurationMs(value: number, totalDurationMs: numb
   return Math.round(clamp(finiteOr(value, autoHeadlineHookDurationMs(total)), minimum, maximum));
 }
 
+/**
+ * EP5 #13: keeps the headline's own reserved band off both the subtitle's reserved band and the
+ * very top/bottom edge of the canvas. `centerPercent` and the result are both "% from the top
+ * edge of the canvas to the headline's vertical center" — the same meaning `topPercent` always
+ * had. `anchor` only decides which side the clamp prefers to push towards when the requested
+ * position overlaps the subtitle band; the physical result is identical either way once pushed
+ * to the limit, since both anchors are clamping the same rectangle.
+ */
+export function clampHeadlineHookCenterPercent(
+  centerPercent: number,
+  anchor: HeadlineHookAnchor,
+  subtitleVerticalPos: number = DEFAULT_SUBTITLE_VERTICAL_POS_FOR_CLAMP,
+): number {
+  const safeSubtitlePos = clamp(
+    finiteOr(subtitleVerticalPos, DEFAULT_SUBTITLE_VERTICAL_POS_FOR_CLAMP),
+    0,
+    100,
+  );
+  const lo = Math.min(
+    HEADLINE_HOOK_SAFE_AREA_PERCENT + HEADLINE_HOOK_HALF_HEIGHT_PERCENT,
+    100 - HEADLINE_HOOK_SAFE_AREA_PERCENT - HEADLINE_HOOK_HALF_HEIGHT_PERCENT,
+  );
+  const hi = Math.max(
+    HEADLINE_HOOK_SAFE_AREA_PERCENT + HEADLINE_HOOK_HALF_HEIGHT_PERCENT,
+    100 - HEADLINE_HOOK_SAFE_AREA_PERCENT - HEADLINE_HOOK_HALF_HEIGHT_PERCENT,
+  );
+  let next = clamp(finiteOr(centerPercent, DEFAULT_HEADLINE_HOOK_TOP_PERCENT), lo, hi);
+
+  const subTop = safeSubtitlePos - SUBTITLE_BAND_HALF_HEIGHT_PERCENT;
+  const subBottom = safeSubtitlePos + SUBTITLE_BAND_HALF_HEIGHT_PERCENT;
+  const overlapsBand = next + HEADLINE_HOOK_HALF_HEIGHT_PERCENT > subTop
+    && next - HEADLINE_HOOK_HALF_HEIGHT_PERCENT < subBottom;
+  if (overlapsBand) {
+    const above = subTop - HEADLINE_HOOK_HALF_HEIGHT_PERCENT;
+    const below = subBottom + HEADLINE_HOOK_HALF_HEIGHT_PERCENT;
+    const aboveOk = above >= lo;
+    const belowOk = below <= hi;
+    if (anchor === "bottom" && aboveOk) next = clamp(above, lo, hi);
+    else if (belowOk) next = clamp(below, lo, hi);
+    else if (aboveOk) next = clamp(above, lo, hi);
+    // else: the safe area is too narrow to clear the band at all with these constants — keep
+    // the safe-area clamp already applied above as the best-effort fallback.
+  }
+  return Math.round(next);
+}
+
+/** The offset-from-anchor-edge (%) implied by `hook`, whether it was set through the new
+ *  `anchor`/`offsetPercent` fields or is still a legacy `topPercent`-only headline. Shared by the
+ *  web controls/preview so both read and write the one number the renderer will apply. */
+export function headlineHookOffsetPercent(hook: HeadlineHookConfig): number {
+  if (typeof hook.offsetPercent === "number" && Number.isFinite(hook.offsetPercent)) {
+    return hook.offsetPercent;
+  }
+  return hook.anchor === "bottom" ? 100 - hook.topPercent : hook.topPercent;
+}
+
 export function normalizeHeadlineHook(
   value: unknown,
   totalDurationMs = 60_000,
+  subtitleVerticalPos?: number,
 ): HeadlineHookConfig | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
@@ -170,6 +270,49 @@ export function normalizeHeadlineHook(
     maxChars: MAX_HEADLINE_HOOK_SUBHEAD_CHARS,
     maxLines: 1,
   });
+
+  // EP5 #13: `anchor`/`offsetPx`/`offsetPercent` are the new position fields. Absent all three,
+  // `topPercent` alone is authoritative and keeps its original hard-coded 10–42 clamp exactly —
+  // old headlines with none of these fields render exactly as today. `offsetPx` is in px of the
+  // 1080×1920 canvas and is converted to `offsetPercent` immediately; only the percent form is
+  // ever stored, so a later patch can never leave a stale px/percent pair out of sync.
+  const offsetPxInput = typeof input.offsetPx === "number" && Number.isFinite(input.offsetPx)
+    ? input.offsetPx
+    : undefined;
+  const offsetPercentInput = typeof input.offsetPercent === "number" && Number.isFinite(input.offsetPercent)
+    ? input.offsetPercent
+    : undefined;
+  const hasNewPositionFields = input.anchor !== undefined
+    || offsetPxInput !== undefined
+    || offsetPercentInput !== undefined;
+
+  let topPercent: number;
+  let anchor: HeadlineHookAnchor | undefined;
+  let offsetPercent: number | undefined;
+
+  if (!hasNewPositionFields) {
+    topPercent = Math.round(clamp(
+      finiteOr(input.topPercent, DEFAULT_HEADLINE_HOOK_TOP_PERCENT),
+      MIN_HEADLINE_HOOK_TOP_PERCENT,
+      MAX_HEADLINE_HOOK_TOP_PERCENT,
+    ));
+  } else {
+    anchor = input.anchor === "bottom" ? "bottom" : "top";
+    const requestedOffsetPercent = offsetPxInput !== undefined
+      ? (offsetPxInput / HEADLINE_HOOK_CANVAS_HEIGHT_PX) * 100
+      : offsetPercentInput !== undefined
+        ? offsetPercentInput
+        : DEFAULT_HEADLINE_HOOK_TOP_PERCENT;
+    const clampedRequested = clamp(
+      requestedOffsetPercent,
+      MIN_HEADLINE_HOOK_OFFSET_PERCENT,
+      MAX_HEADLINE_HOOK_OFFSET_PERCENT,
+    );
+    const rawCenterPercent = anchor === "bottom" ? 100 - clampedRequested : clampedRequested;
+    topPercent = clampHeadlineHookCenterPercent(rawCenterPercent, anchor, subtitleVerticalPos);
+    offsetPercent = Math.round(anchor === "bottom" ? 100 - topPercent : topPercent);
+  }
+
   return {
     enabled: input.enabled === true && headline.length > 0,
     headline,
@@ -181,11 +324,9 @@ export function normalizeHeadlineHook(
     preset: isHeadlineHookPreset(input.preset)
       ? input.preset
       : DEFAULT_HEADLINE_HOOK_PRESET,
-    topPercent: Math.round(clamp(
-      finiteOr(input.topPercent, DEFAULT_HEADLINE_HOOK_TOP_PERCENT),
-      MIN_HEADLINE_HOOK_TOP_PERCENT,
-      MAX_HEADLINE_HOOK_TOP_PERCENT,
-    )),
+    topPercent,
+    ...(anchor ? { anchor } : {}),
+    ...(offsetPercent !== undefined ? { offsetPercent } : {}),
     ...(isHeadlineHookFontFamily(input.fontFamily)
       ? { fontFamily: input.fontFamily }
       : {}),
@@ -207,8 +348,9 @@ export function normalizeHeadlineHook(
 export function normalizeHeadlineHookDraft(
   value: unknown,
   totalDurationMs = 60_000,
+  subtitleVerticalPos?: number,
 ): HeadlineHookConfig | null {
-  const normalized = normalizeHeadlineHook(value, totalDurationMs);
+  const normalized = normalizeHeadlineHook(value, totalDurationMs, subtitleVerticalPos);
   if (!normalized || !value || typeof value !== "object" || Array.isArray(value)) return normalized;
   const input = value as Record<string, unknown>;
   const headline = sanitizeHeadlineHookDraftText(input.headline, {

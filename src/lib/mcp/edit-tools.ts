@@ -38,9 +38,13 @@ import type { SubPreset, SubTextEffect } from "@/app/(dashboard)/video-editor/_c
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { shiftCaptionOverrides } from "@/lib/caption-card-editing";
 import {
+  HEADLINE_HOOK_ANCHORS,
+  HEADLINE_HOOK_CANVAS_HEIGHT_PX,
   HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_OFFSET_PERCENT,
+  MIN_HEADLINE_HOOK_OFFSET_PERCENT,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
   type HeadlineHookFontFamily,
@@ -145,7 +149,10 @@ export const setHeadlineHookInputShape = {
   subheadline: z.string().optional().describe("ข้อความรอง (ไม่เกิน 90 ตัวอักษร 1 บรรทัด, ส่งว่างเพื่อลบ)"),
   durationMs: z.number().int().describe("ระยะเวลาที่พาดหัวค้างอยู่ (ms)").optional(),
   preset: z.enum(nonEmptyEnum(HEADLINE_HOOK_PRESETS)).optional().describe("สไตล์พาดหัว"),
-  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัว 10-42 (% จากขอบบน)").optional(),
+  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัวแบบเดิม 10-42 (% จากขอบบน) — ใช้ได้เฉพาะตอนไม่ส่ง anchor/offsetPx/offsetPercent เลย (ของเดิมที่ไม่มี field ใหม่ยังเรนเดอร์เหมือนก่อนทุกอย่าง); ถ้าต้องการวางใกล้ขอบล่างหรือกำหนดระยะเป็นพิกเซล ให้ใช้ anchor + offsetPx/offsetPercent แทน").optional(),
+  anchor: z.enum(HEADLINE_HOOK_ANCHORS).optional().describe("อ้างอิงตำแหน่งจากขอบบนหรือขอบล่างของจอ (ไม่ระบุ = บน เหมือนเดิม) — ใช้ร่วมกับ offsetPx/offsetPercent"),
+  offsetPx: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วยพิกเซลของจอ 1080×${HEADLINE_HOOK_CANVAS_HEIGHT_PX} — ระบบจะกันไม่ให้พาดหัวทับแถบซับหรือหลุดขอบจอให้อัตโนมัติ (ตำแหน่งที่ได้จริงอาจถูกขยับเข้ามาถ้าชนขอบเขตเหล่านี้ ดูค่าจริงที่ topPercent/offsetPercent ในผลลัพธ์) ส่งอย่างใดอย่างหนึ่งจาก offsetPx/offsetPercent ถ้าส่งทั้งคู่ offsetPx ชนะ`).optional(),
+  offsetPercent: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วย % ของความสูงจอ (${MIN_HEADLINE_HOOK_OFFSET_PERCENT}-${MAX_HEADLINE_HOOK_OFFSET_PERCENT}) — ส่งแทน offsetPx ก็ได้ ระบบกันทับแถบซับ/ขอบจอให้อัตโนมัติเช่นกัน`).optional(),
   fontFamily: z.enum(nonEmptyEnum(HEADLINE_HOOK_FONT_VALUES)).optional().describe("ฟอนต์พาดหัว"),
   fontSize: z.number().int().describe("ขนาดฟอนต์พาดหัว 52-120 px").optional(),
   fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์พาดหัว"),
@@ -274,7 +281,14 @@ const ALLOWED = {
     headlineMaxChars: 64,
     subheadlineMaxChars: 90,
     durationMs: { min: 3_000, max: 20_000 },
+    // Legacy placement — only applies when anchor/offsetPx/offsetPercent are all omitted.
     topPercent: { min: 10, max: 42 },
+    // EP5 #13: anchor + offset, in px of a 1080×1920 canvas or in % of its height. The server
+    // always keeps the headline off the subtitle band and off the canvas edge, so the applied
+    // position (echoed back as topPercent/offsetPercent) may differ from what was requested.
+    anchors: [...HEADLINE_HOOK_ANCHORS],
+    offsetPercent: { min: MIN_HEADLINE_HOOK_OFFSET_PERCENT, max: MAX_HEADLINE_HOOK_OFFSET_PERCENT },
+    offsetPxCanvasHeight: HEADLINE_HOOK_CANVAS_HEIGHT_PX,
     presets: [...HEADLINE_HOOK_PRESETS],
     fonts: HEADLINE_HOOK_FONT_VALUES,
     fontWeight: HEADLINE_HOOK_FONT_WEIGHTS.map((weight) => String(weight)),
@@ -804,6 +818,9 @@ function headlineHookPatchFields(args: ShapeArgs<typeof setHeadlineHookInputShap
   if (args.durationMs !== undefined) fields.durationMs = args.durationMs;
   if (args.preset !== undefined) fields.preset = args.preset;
   if (args.topPercent !== undefined) fields.topPercent = args.topPercent;
+  if (args.anchor !== undefined) fields.anchor = args.anchor;
+  if (args.offsetPx !== undefined) fields.offsetPx = args.offsetPx;
+  if (args.offsetPercent !== undefined) fields.offsetPercent = args.offsetPercent;
   if (args.fontFamily !== undefined) fields.fontFamily = args.fontFamily;
   if (args.fontSize !== undefined) fields.fontSize = args.fontSize;
   if (args.fontWeight !== undefined) fields.fontWeight = Number(args.fontWeight);
@@ -819,7 +836,7 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
   const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
     const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
     const merged = { ...(draft.headlineHook ?? {}), ...headlineHookPatchFields(args) };
-    const normalized = normalizeHeadlineHook(merged, totalDurationMs);
+    const normalized = normalizeHeadlineHook(merged, totalDurationMs, draft.subtitleConfig.verticalPos);
     if (!normalized) return { ok: false, code: "invalid_input", message: "ค่าพาดหัวไม่ถูกต้อง" };
     draft.headlineHook = normalized;
     return { ok: true, draft };
