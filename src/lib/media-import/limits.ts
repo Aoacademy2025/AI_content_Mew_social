@@ -31,10 +31,12 @@ function envWhole(name: string, fallback: number, floor: number): number {
 /**
  * Imports one user may have pending/processing at once (`MEDIA_IMPORT_MAX_ACTIVE_PER_USER`).
  * Was 3: an agent filling 9 windows got 429 `too_many_active_imports` on its 4th and 8th PUT and
- * had to back off (EP5 backlog #16). 25 lets one agent upload a whole video's windows in a burst;
- * the bytes those imports may hold are bounded by MAX_ACTIVE_IMPORT_BYTES_PER_USER, not this count.
+ * had to back off (EP5 backlog #16). 12 lets one agent PUT a typical video's B-roll windows (about
+ * 9) in one burst; a bigger batch PUTs 12, waits retryAfterSeconds for the lane (seconds per
+ * image), then PUTs the rest on the same links. The bytes those imports may hold are bounded by
+ * MAX_ACTIVE_IMPORT_BYTES_PER_USER, not this count.
  */
-export const MAX_ACTIVE_IMPORTS = envWhole("MEDIA_IMPORT_MAX_ACTIVE_PER_USER", 25, 1);
+export const MAX_ACTIVE_IMPORTS = envWhole("MEDIA_IMPORT_MAX_ACTIVE_PER_USER", 12, 1);
 
 /**
  * Bytes one user may import in any rolling hour (`MEDIA_IMPORT_USER_BYTES_PER_HOUR`) and any
@@ -43,7 +45,7 @@ export const MAX_ACTIVE_IMPORTS = envWhole("MEDIA_IMPORT_MAX_ACTIVE_PER_USER", 2
  * and drive the disk down to the free-disk floor).
  */
 export const MAX_IMPORT_BYTES_PER_HOUR = envWhole("MEDIA_IMPORT_USER_BYTES_PER_HOUR", 2 * GIB, MAX_PRESENTER_IMPORT_BYTES);
-export const MAX_IMPORT_BYTES_PER_DAY = envWhole("MEDIA_IMPORT_USER_BYTES_PER_DAY", 5 * GIB, MAX_PRESENTER_IMPORT_BYTES);
+export const MAX_IMPORT_BYTES_PER_DAY = envWhole("MEDIA_IMPORT_USER_BYTES_PER_DAY", 3 * GIB, MAX_PRESENTER_IMPORT_BYTES);
 
 /**
  * Global staging budget, all users (`MEDIA_IMPORT_STAGING_BUDGET_BYTES`): every live import
@@ -69,7 +71,7 @@ export const MAX_ACTIVE_IMPORT_BYTES_PER_USER = Math.min(
 
 /**
  * How long a queued import ("pending") may wait for the import lane before the watchdog fails it
- * (`MEDIA_IMPORT_QUEUE_DEADLINE_MS`). Was the 10-minute processing budget; a burst of 25 queued
+ * (`MEDIA_IMPORT_QUEUE_DEADLINE_MS`). Was the 10-minute processing budget; a full burst queued
  * behind other users' bursts (one lane slot per user) needs longer. The lane still resets the
  * deadline to IMPORT_DEADLINE_MS when it claims the row. Never shorter than that budget.
  */

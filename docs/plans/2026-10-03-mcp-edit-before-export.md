@@ -386,7 +386,7 @@ Most MCP verify scripts already run via `verify:subtitle-audio-sync` → `verify
 Sources: the per-task and whole-branch reviews in the execute ledger. None of these block the internal beta.
 
 **Before flipping `MCP_EDITOR_PROJECT_PUBLIC` (after AC11):**
-1. **Done 2026-10-11** (`mew/mcp-import-capacity-guards`): per-user byte budget, 2 GiB per rolling hour and 5 GiB per rolling 24 h (ADR 0065 notes). Was: the free-disk floor stops imports at about 5 GiB free, but one user can still drive the disk down to that floor (about 15 GB/h). This is PR-B security S2, the residual of B1.
+1. **Done 2026-10-11** (`mew/mcp-import-capacity-guards`): per-user byte budget, 2 GiB per rolling hour and 3 GiB per rolling 24 h (ADR 0065 notes). Was: the free-disk floor stops imports at about 5 GiB free, but one user can still drive the disk down to that floor (about 15 GB/h). This is PR-B security S2, the residual of B1.
 2. **Done 2026-10-11**: the upload PUT floor counts in-flight bytes, not only bytes already staged (T11 F1).
 3. Import lane fairness (**partly done 2026-10-11**: the queue deadline is 30 min and the claim picks per user, so deep queues cannot starve a user; slow-drip URLs and the boot-time fail of claimed rows remain):
    - slow-drip URLs from two principals can starve the lane, and other users' imports then expire in the queue;

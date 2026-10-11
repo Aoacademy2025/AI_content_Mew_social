@@ -3,8 +3,10 @@
 //
 //   A. limits: documented defaults; every env override honoured in a fresh process; a missing,
 //      malformed or below-floor value falls back to the default (fail closed).
-//   B. burst (#16): 25 upload links, then 25 PUTs (sequential and concurrent) with nothing
-//      processed yet — all admitted; the 26th import is refused with retryAfterSeconds.
+//   B. burst (#16): 25 upload links issued back to back; PUTs with nothing processed yet are
+//      admitted up to MAX_ACTIVE_IMPORTS (12), the next is refused with retryAfterSeconds and its
+//      link kept, and once the lane drains the same links finish the batch (sequential and
+//      concurrent).
 //   C. per-user byte budget over a rolling hour and a rolling 24 h, at create_upload_url, at the
 //      PUT (the declared Content-Length is what counts, not the kind's cap; link kept on refusal)
 //      and at url admission; retryAfterSeconds = when enough counted bytes age out; ready/live
@@ -212,11 +214,11 @@ async function main(): Promise<void> {
   try {
     // ── A. limits ──────────────────────────────────────────────────────────────────────────
     await section("A1) documented defaults", async () => {
-      check("MAX_ACTIVE_IMPORTS = 25 (was 3; EP5 #16 burst)", limits.MAX_ACTIVE_IMPORTS === 25 && lib.MAX_ACTIVE_IMPORTS === 25, String(lib.MAX_ACTIVE_IMPORTS));
+      check("MAX_ACTIVE_IMPORTS = 12 (was 3; EP5 #16 burst)", limits.MAX_ACTIVE_IMPORTS === 12 && lib.MAX_ACTIVE_IMPORTS === 12, String(lib.MAX_ACTIVE_IMPORTS));
       check("per-user staging share = 1.5 GiB (three 500 MB presenter clips)", limits.MAX_ACTIVE_IMPORT_BYTES_PER_USER === 1536 * MIB
         && limits.MAX_ACTIVE_IMPORT_BYTES_PER_USER >= 3 * lib.MAX_PRESENTER_IMPORT_BYTES);
       check("per-user bytes per rolling hour = 2 GiB", limits.MAX_IMPORT_BYTES_PER_HOUR === 2 * GIB);
-      check("per-user bytes per rolling 24 h = 5 GiB", limits.MAX_IMPORT_BYTES_PER_DAY === 5 * GIB);
+      check("per-user bytes per rolling 24 h = 3 GiB", limits.MAX_IMPORT_BYTES_PER_DAY === 3 * GIB);
       check("global staging budget = 15 GiB", limits.MAX_STAGED_IMPORT_BYTES === 15 * GIB && lib.MAX_STAGED_IMPORT_BYTES === 15 * GIB);
       check("queue deadline = 30 min; processing budget stays 10 min", limits.IMPORT_QUEUE_DEADLINE_MS === 30 * MINUTE && lib.IMPORT_DEADLINE_MS === 10 * MINUTE);
       check("HERO-69 hourly count caps unchanged (60 imports, 60 links)", lib.MAX_IMPORTS_PER_HOUR === 60 && lib.MAX_UPLOAD_LINKS_PER_HOUR === 60);
@@ -256,24 +258,42 @@ async function main(): Promise<void> {
         MEDIA_IMPORT_QUEUE_DEADLINE_MS: String(MINUTE),
       });
       check("0 / unit suffix / negative / below the 500 MB floor / exponent / below 10 min → defaults",
-        bad.active === 25 && bad.share === 1536 * MIB && bad.hour === 2 * GIB && bad.day === 5 * GIB && bad.staging === 15 * GIB && bad.queue === 30 * MINUTE,
+        bad.active === 12 && bad.share === 1536 * MIB && bad.hour === 2 * GIB && bad.day === 3 * GIB && bad.staging === 15 * GIB && bad.queue === 30 * MINUTE,
         JSON.stringify(bad));
       const capped = read({ MEDIA_IMPORT_USER_STAGING_SHARE_BYTES: String(4 * GIB), MEDIA_IMPORT_STAGING_BUDGET_BYTES: String(3 * GIB) });
       check("a share above the global budget is clamped to the budget", capped.share === 3 * GIB && capped.staging === 3 * GIB, JSON.stringify(capped));
     });
 
     // ── B. burst ───────────────────────────────────────────────────────────────────────────
-    await section("B1) burst (#16): 25 links, then 25 sequential PUTs with nothing processed yet — all admitted", async () => {
+    await section("B1) burst (#16): 25 links, then sequential PUTs — MAX admitted, the next waits retryAfterSeconds, the same links finish the batch", async () => {
       await reset();
+      const MAX = lib.MAX_ACTIVE_IMPORTS;
       const links = [];
       for (let i = 0; i < 25; i += 1) links.push(await lib.issueUploadToken(owner.id, i % 2 ? "video" : "image"));
-      check("25 links issued back to back", links.every((l) => l.ok), JSON.stringify(links.filter((l) => !l.ok)));
+      check("25 links issued back to back (an unused link is not an active import)", links.every((l) => l.ok), JSON.stringify(links.filter((l) => !l.ok)));
+      const body = (link: { kind: string }) => link.kind === "image" ? pngOf(64 * 1024) : mp4Of(64 * 1024);
       const statuses: number[] = [];
-      for (const link of links) if (link.ok) statuses.push((await put(link.token, link.kind === "image" ? pngOf(64 * 1024) : mp4Of(64 * 1024))).status);
-      check("25 PUTs in a row → 25 × 202 (the old 3-active cap refused the 4th)", statuses.length === 25 && statuses.every((s) => s === 202), JSON.stringify(statuses));
-      check("25 imports pending for the lane", (await prisma.mediaImport.count({ where: { userId: owner.id, status: "pending" } })) === 25);
+      for (const link of links.slice(0, MAX)) if (link.ok) statuses.push((await put(link.token, body(link))).status);
+      check(`${MAX} PUTs in a row → ${MAX} × 202 (the old 3-active cap refused the 4th)`, statuses.length === MAX && statuses.every((s) => s === 202), JSON.stringify(statuses));
+      check(`${MAX} imports pending for the lane`, (await prisma.mediaImport.count({ where: { userId: owner.id, status: "pending" } })) === MAX);
+      const next = links[MAX];
+      const refusedPut = next.ok ? await put(next.token, body(next)) : null;
+      check(`PUT #${MAX + 1} → 429 too_many_active_imports with retryAfterSeconds (wait for the lane, not a blind 8 s)`,
+        refusedPut?.status === 429 && refusedPut.body.code === "too_many_active_imports" && refusedPut.body.retryAfterSeconds === limits.ACTIVE_IMPORT_RETRY_SECONDS
+          && checkFailureEnvelope(refusedPut.body).length === 0, JSON.stringify(refusedPut));
+      check("…its link is kept", next.ok && (await linkUnused(next.importId)));
+      // The lane finishes the queued burst (a B-roll image takes seconds); the agent re-PUTs on the same links.
+      await prisma.mediaImport.updateMany({ where: { userId: owner.id, status: "pending" }, data: { status: "ready" } });
+      const rest: number[] = [];
+      for (const link of links.slice(MAX, 2 * MAX)) if (link.ok) rest.push((await put(link.token, body(link))).status);
+      await prisma.mediaImport.updateMany({ where: { userId: owner.id, status: "pending" }, data: { status: "ready" } });
+      for (const link of links.slice(2 * MAX)) if (link.ok) rest.push((await put(link.token, body(link))).status);
+      check("after the lane drains, the same links finish the batch → all 25 imported inside the hourly caps",
+        rest.length === 25 - MAX && rest.every((s) => s === 202)
+          && (await prisma.mediaImport.count({ where: { userId: owner.id, status: { in: ["pending", "ready"] } } })) === 25, JSON.stringify(rest));
+      await prisma.mediaImport.updateMany({ where: { userId: owner.id, status: "ready" }, data: { status: "pending" } });
       const more = await lib.issueUploadToken(owner.id, "image");
-      check("the 26th import is refused too_many_active_imports", !more.ok && more.code === "too_many_active_imports", JSON.stringify(more));
+      check("with MAX or more imports live, create_upload_url is refused too_many_active_imports", !more.ok && more.code === "too_many_active_imports", JSON.stringify(more));
       check("…with retryAfterSeconds (wait for the lane, not a blind 8 s)", !more.ok && more.retryAfterSeconds === limits.ACTIVE_IMPORT_RETRY_SECONDS, JSON.stringify(more));
       const envelope = await tools.createUploadUrlTool(owner.id, { kind: "image" }) as Record<string, unknown>;
       check("tool envelope: G14 + top-level retryAfterSeconds + the cap in the message",
@@ -281,12 +301,20 @@ async function main(): Promise<void> {
           && String(envelope.message).includes(String(lib.MAX_ACTIVE_IMPORTS)), JSON.stringify(envelope));
     });
 
-    await section("B2) burst: 25 PUTs at once → all admitted", async () => {
+    await section("B2) burst: 25 PUTs at once → exactly MAX admitted, the rest 429 with retryAfterSeconds and links kept", async () => {
       await reset();
+      const MAX = lib.MAX_ACTIVE_IMPORTS;
       const links = [];
       for (let i = 0; i < 25; i += 1) links.push(await issue(owner.id, "video"));
       const results = await Promise.all(links.map((l) => put(l.token, mp4Of(32 * 1024))));
-      check("25 concurrent PUTs → 25 × 202", results.every((r) => r.status === 202), JSON.stringify(results.filter((r) => r.status !== 202).slice(0, 3)));
+      const admitted = results.filter((r) => r.status === 202).length;
+      const refused = results.filter((r) => r.status === 429);
+      check(`25 concurrent PUTs → exactly ${MAX} × 202`, admitted === MAX, JSON.stringify(results.map((r) => r.status)));
+      check(`…the other ${25 - MAX} → 429 too_many_active_imports with retryAfterSeconds`, refused.length === 25 - MAX
+        && refused.every((r) => r.body.code === "too_many_active_imports" && r.body.retryAfterSeconds === limits.ACTIVE_IMPORT_RETRY_SECONDS),
+        JSON.stringify(refused.slice(0, 2)));
+      const unused = (await Promise.all(links.map((l) => linkUnused(l.importId)))).filter(Boolean).length;
+      check("…and their links are kept for the retry", unused === 25 - MAX, String(unused));
     });
 
     // ── C. per-user byte budget ────────────────────────────────────────────────────────────
@@ -317,25 +345,25 @@ async function main(): Promise<void> {
 
     await section("C2) rolling 24 h: refused with the day's retryAfterSeconds; rows older than 24 h do not count", async () => {
       await reset();
-      // 10 × 500 MiB ready, 23 h … 14 h ago = 5000 MiB of the 5120 MiB day; nothing in the last hour.
-      await rows(Array.from({ length: 10 }, (_, i) => ({ userId: owner.id, purpose: "presenter", bytes: 500 * MIB, createdAt: ago((23 - i) * HOUR) })));
+      // 6 × 500 MiB ready, 23 h … 18 h ago = 3000 MiB of the 3072 MiB day; nothing in the last hour.
+      await rows(Array.from({ length: 6 }, (_, i) => ({ userId: owner.id, purpose: "presenter", bytes: 500 * MIB, createdAt: ago((23 - i) * HOUR) })));
       const refused = await lib.createUrlImport(owner.id, "https://media.example.test/p.mp4", new Date(), "presenter");
       check("presenter url import → import_bytes_daily_limit", !refused.ok && refused.code === "import_bytes_daily_limit", JSON.stringify(refused));
       check("…retryAfterSeconds = when the 23-h-old row leaves the day (~3600 s)", !refused.ok && near(refused.retryAfterSeconds, 3600), JSON.stringify(refused));
-      check("…no import row created", (await prisma.mediaImport.count({ where: { userId: owner.id } })) === 10);
+      check("…no import row created", (await prisma.mediaImport.count({ where: { userId: owner.id } })) === 6);
       const env = copy.admissionRefusal("import_bytes_daily_limit", "replace_broll_window", 3600) as Record<string, unknown>;
       check("replace_broll_window envelope names the tool to retry and the budget", checkFailureEnvelope(env).length === 0
-        && String(env.next).includes("replace_broll_window") && String(env.message).includes("5 GB") && env.retryAfterSeconds === 3600, JSON.stringify(env));
+        && String(env.next).includes("replace_broll_window") && String(env.message).includes("3 GB") && env.retryAfterSeconds === 3600, JSON.stringify(env));
       await prisma.mediaImport.updateMany({ where: { userId: owner.id }, data: { createdAt: ago(25 * HOUR) } });
       check("rows older than 24 h do not count", (await lib.createUrlImport(owner.id, "https://media.example.test/p.mp4", new Date(), "presenter")).ok);
     });
 
     await section("C3) both windows over → the refusal with the longer wait", async () => {
       await reset();
-      // Hour: 4 × 500 MiB, the oldest 10 min ago → ~3000 s. Day: + 6 × 500 MiB, the oldest 23 h 55 m ago → ~300 s.
+      // Hour: 4 × 500 MiB, the oldest 10 min ago → ~3000 s. Day: + 2 × 500 MiB, the oldest 23 h 55 m ago → ~300 s.
       await rows([
         ...[10, 9, 8, 7].map((m) => ({ userId: owner.id, purpose: "presenter", bytes: 500 * MIB, createdAt: ago(m * MINUTE) })),
-        ...[0, 1, 2, 3, 4, 5].map((i) => ({ userId: owner.id, purpose: "presenter", bytes: 500 * MIB, createdAt: ago(23 * HOUR + 55 * MINUTE - i * HOUR) })),
+        ...[0, 1].map((i) => ({ userId: owner.id, purpose: "presenter", bytes: 500 * MIB, createdAt: ago(23 * HOUR + 55 * MINUTE - i * HOUR) })),
       ]);
       const refused = await lib.issueUploadToken(owner.id, "video");
       check("hourly wait (~3000 s) beats the daily one (~300 s)", !refused.ok && refused.code === "import_bytes_hourly_limit" && near(refused.retryAfterSeconds, 3000), JSON.stringify(refused));
@@ -484,23 +512,27 @@ async function main(): Promise<void> {
 
     await section("F2) the lane claims fairly even when every user has a deep queue", async () => {
       await reset();
+      // Every user queues a full burst (MAX_ACTIVE_IMPORTS), enough users that the queued rows
+      // outnumber the claim's 200-row scan — the old "200 oldest rows" read never saw `late`.
+      const depth = lib.MAX_ACTIVE_IMPORTS;
       const deep = [];
-      for (let i = 0; i < 9; i += 1) deep.push(await makeUser(`deep-${i}`));
+      for (let i = 0; i < Math.ceil(200 / depth) + 1; i += 1) deep.push(await makeUser(`deep-${i}`));
       const late = await makeUser("late");
+      const users = deep.length + 1;
       const base = Date.now() - 20 * MINUTE;
       let s = 0;
-      await rows(deep.flatMap((u) => Array.from({ length: 25 }, () => ({
+      await rows(deep.flatMap((u) => Array.from({ length: depth }, () => ({
         userId: u.id, purpose: "broll_image", status: "pending", bytes: MIB, createdAt: new Date(base + (s += 1) * 1000), deadlineAt: new Date(Date.now() + 20 * MINUTE),
       }))));
       await rows([{ userId: late.id, purpose: "broll_image", status: "pending", bytes: MIB, createdAt: new Date(base + (s += 1) * 1000), deadlineAt: new Date(Date.now() + 20 * MINUTE) }]);
       const claimedUsers: string[] = [];
-      for (let i = 0; i < 10; i += 1) {
+      for (let i = 0; i < users; i += 1) {
         const row = await laneMod.claimNextMediaImport();
         if (row) claimedUsers.push(row.userId);
       }
-      check("10 claims serve 10 different users, including the one queued behind 225 older rows",
-        new Set(claimedUsers).size === 10 && claimedUsers.includes(late.id), JSON.stringify(claimedUsers));
-      check("one lane slot per user still holds (an 11th claim finds nothing)", (await laneMod.claimNextMediaImport()) === null);
+      check(`${users} claims serve ${users} different users, including the one queued behind ${deep.length * depth} older rows`,
+        new Set(claimedUsers).size === users && claimedUsers.includes(late.id) && deep.length * depth > 200, JSON.stringify(claimedUsers));
+      check("one lane slot per user still holds (one more claim finds nothing)", (await laneMod.claimNextMediaImport()) === null);
     });
 
     await section("F3) the lane records a url import's real size", async () => {
