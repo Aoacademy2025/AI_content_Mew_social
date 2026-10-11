@@ -167,7 +167,7 @@
     "verify:mcp-chain-linkage": "node --conditions=react-server --import tsx scripts/verify-mcp-chain-linkage.ts",
     "verify:mcp-edit-draft": "node --conditions=react-server --import tsx scripts/verify-mcp-edit-draft.ts",
     "verify:mcp-transport-disconnect": "node --conditions=react-server --import tsx scripts/verify-mcp-transport-disconnect.ts",
-    "verify:mcp-edit-tools": "node --conditions=react-server --import tsx scripts/verify-mcp-edit-tools.ts",
+    "verify:mcp-edit-tools": "node --conditions=react-server --import tsx scripts/verify-mcp-edit-tools.ts && node --conditions=react-server --import tsx scripts/verify-mcp-edit-persist-export.ts",
     "verify:mcp-cancel": "node --conditions=react-server --experimental-test-module-mocks --import tsx scripts/verify-mcp-cancel.ts",
     "verify:mcp-onboarding": "node --conditions=react-server --import tsx scripts/verify-mcp-onboarding.ts",
     "verify:mcp-audit-status": "tsx scripts/verify-mcp-audit-status.ts",

@@ -19,7 +19,7 @@ import {
 } from "@/lib/mcp/orchestrator-steps";
 import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-hook";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
-import { MAX_EDITOR_PROJECT_DRAFT_BYTES } from "@/lib/editor-projects";
+import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -188,8 +188,9 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
  *  - originalCaptions / words / fullText: the latest export snapshot, else the base preview;
  *  - cardLen / subtitleConfig: the snapshot, else the root's resolved MCP design (T4);
  *  - captionOverrides: the snapshot (carried unchanged), else none;
- *  - headlineHook / logoOverlay: the project's `draftJson`;
- *  - windowEdits: empty.
+ *  - headlineHook / logoOverlay: the project's `draftJson` (an MCP export writes the headline it
+ *    applied there, #7 — see `clearPendingEditDraftIfRevision`);
+ *  - windowEdits: empty (replacements an export already rendered live in the base itself).
  */
 export function seedPendingEditDraft(input: {
   rootJobId: string;
@@ -367,6 +368,28 @@ export async function updatePendingEditDraft(
 }
 
 /**
+ * #7 (ADR 0066 §4): the project draft (`EditorProject.draftJson`, which the web editor loads and
+ * every later seed reads) with `headlineHook` set. `null` = nothing to write: the headline is
+ * already there, the stored draft is not a JSON object (never overwritten), the result would be
+ * too large, or `draftRevision` cannot grow.
+ */
+function projectDraftWithHeadline(
+  draftJson: string | null,
+  draftRevision: number,
+  headlineHook: HeadlineHookConfig,
+): string | null {
+  if (!Number.isInteger(draftRevision) || draftRevision < 0 || draftRevision >= MAX_EDITOR_PROJECT_DRAFT_REVISION) return null;
+  const draft = draftJson ? record(parseJson(draftJson)) : {};
+  if (!draft) return null;
+  const current = draft.headlineHook === undefined ? null : normalizeHeadlineHook(draft.headlineHook, 86_400_000);
+  if (current && JSON.stringify(current) === JSON.stringify(headlineHook)) return null;
+  const next = JSON.stringify({ ...draft, headlineHook });
+  return Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES ? null : next;
+}
+
+const PROJECT_DRAFT_RACE = new Error("pending_edit_project_draft_race");
+
+/**
  * G12: clear the draft after a successful export of `appliedRevision` — only if no edit landed
  * while the export ran. The clear bumps the revision so the next export gets a fresh key.
  *
@@ -376,48 +399,78 @@ export async function updatePendingEditDraft(
  * over (with the stored baseJobId, so an in-flight re-render's hop can still rebase), and the
  * agent's next export_video applies them. If that re-seed cannot be built, the draft is left
  * exactly as it is; window edits are never dropped silently.
+ *
+ * #7 (ADR 0064 "the new draft starts from that Export's edits", ADR 0066 §4): the headline hook
+ * is the one draft field the export snapshot does not carry — seeds read it from the project
+ * draft. With `persistHeadlineHook` (an MCP export, where the stored draft is exactly what was
+ * burned) the applied headline is written into `EditorProject.draftJson` in the SAME transaction
+ * as the clear, bumping `draftRevision` so an open web session reloads instead of overwriting it.
+ * A web export never sets it: the web autosaves its own headline, and the stored draft may hold
+ * an agent value the creator already changed there. If the project draft moved under us twice,
+ * nothing is cleared — the draft keeps the headline and the next export re-applies it.
  */
 export async function clearPendingEditDraftIfRevision(
   userId: string,
   projectId: string,
   appliedRevision: number,
+  options: { persistHeadlineHook?: boolean } = {},
 ): Promise<boolean> {
   if (!Number.isInteger(appliedRevision) || appliedRevision < 0 || appliedRevision > MAX_PENDING_EDIT_REVISION) {
     return false;
   }
-  const project = await prisma.editorProject.findFirst({
-    where: { id: projectId, userId, pendingEditRevision: appliedRevision },
-    select: { pendingEditJson: true },
-  });
-  if (!project) return false;
-  const stored = parsePendingEditDraft(project.pendingEditJson);
-  let next: string | null = null;
-  if (stored && stored.windowEdits.length > 0) {
-    const root = await prisma.videoJob.findFirst({
-      where: { id: stored.rootJobId, userId, projectId },
-      select: { id: true, inputJson: true, projectId: true },
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const project = await prisma.editorProject.findFirst({
+      where: { id: projectId, userId, pendingEditRevision: appliedRevision },
+      select: { pendingEditJson: true, draftJson: true, draftRevision: true },
     });
-    const resolved = root ? await resolveProjectAndBase(userId, root) : null;
-    if (!root || !resolved?.ok) return false;
-    const seed = seedPendingEditDraft({
-      rootJobId: root.id,
-      rootInputJson: root.inputJson,
-      base: resolved.base,
-      latestExportSnapshot: await latestExportSnapshot(userId, projectId),
-      projectDraftJson: resolved.project.draftJson,
-    });
-    // R1/N1: keep the stored base. A re-render's hop rebases this draft only while baseJobId
-    // still names the job it started from; re-basing on the export here would make that CAS miss
-    // and leave the window edits it already applied pending, to be re-rendered a second time.
-    next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
-    if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
+    if (!project) return false;
+    const stored = parsePendingEditDraft(project.pendingEditJson);
+    const projectDraftJson = options.persistHeadlineHook && stored?.headlineHook
+      ? projectDraftWithHeadline(project.draftJson, project.draftRevision, stored.headlineHook)
+      : null;
+    let next: string | null = null;
+    if (stored && stored.windowEdits.length > 0) {
+      const root = await prisma.videoJob.findFirst({
+        where: { id: stored.rootJobId, userId, projectId },
+        select: { id: true, inputJson: true, projectId: true },
+      });
+      const resolved = root ? await resolveProjectAndBase(userId, root) : null;
+      if (!root || !resolved?.ok) return false;
+      const seed = seedPendingEditDraft({
+        rootJobId: root.id,
+        rootInputJson: root.inputJson,
+        base: resolved.base,
+        latestExportSnapshot: await latestExportSnapshot(userId, projectId),
+        projectDraftJson: projectDraftJson ?? resolved.project.draftJson,
+      });
+      // R1/N1: keep the stored base. A re-render's hop rebases this draft only while baseJobId
+      // still names the job it started from; re-basing on the export here would make that CAS miss
+      // and leave the window edits it already applied pending, to be re-rendered a second time.
+      next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
+      if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
+    }
+    try {
+      return await prisma.$transaction(async (tx) => {
+        // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
+        const cleared = await tx.editorProject.updateMany({
+          where: { id: projectId, userId, pendingEditRevision: appliedRevision },
+          data: { pendingEditJson: next, pendingEditRevision: appliedRevision + 1 },
+        });
+        if (cleared.count !== 1) return false;
+        if (projectDraftJson === null) return true;
+        // CAS on the project draft: a web autosave that landed since the read rolls the clear back.
+        const persisted = await tx.editorProject.updateMany({
+          where: { id: projectId, userId, draftRevision: project.draftRevision },
+          data: { draftJson: projectDraftJson, draftRevision: { increment: 1 } },
+        });
+        if (persisted.count !== 1) throw PROJECT_DRAFT_RACE;
+        return true;
+      });
+    } catch (error) {
+      if (error !== PROJECT_DRAFT_RACE) throw error;
+    }
   }
-  // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
-  const cleared = await prisma.editorProject.updateMany({
-    where: { id: projectId, userId, pendingEditRevision: appliedRevision },
-    data: { pendingEditJson: next, pendingEditRevision: appliedRevision + 1 },
-  });
-  return cleared.count === 1;
+  return false;
 }
 
 /** The export's burn config, built exactly the way the web editor builds it (`buildV2BurnConfig`). */

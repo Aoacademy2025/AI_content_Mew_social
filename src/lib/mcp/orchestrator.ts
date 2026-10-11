@@ -1915,7 +1915,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // T6 (G12): the export applied this draft revision; clear the draft only if no edit
         // landed while it ran (CAS). Best-effort: the export is already delivered, and a
         // draft that is not cleared only means the next export re-applies the same edits.
-        await clearPendingEditDraftIfRevision(userId, job.projectId, input.mcpPendingEditRevision)
+        // #7: an MCP export (server-set root link) also persists the headline it applied into
+        // the project draft, so the next seed, get_edit_state and the web editor keep it.
+        await clearPendingEditDraftIfRevision(userId, job.projectId, input.mcpPendingEditRevision, {
+          persistHeadlineHook: typeof input.mcpRootJobId === "string" && input.mcpRootJobId.length > 0,
+        })
           .catch((error) => {
             console.warn(`[mcp-worker] job ${jobId} could not clear the pending edit draft:`, error);
           });
