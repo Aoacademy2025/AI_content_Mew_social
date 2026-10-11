@@ -25,6 +25,13 @@ import {
  * cache (one bundle, rebuilt only when src/remotion changes). The bundle itself is the render
  * worker's when it has published one; otherwise it is built by a separate low-priority process
  * (scripts/build-preview-bundle.mjs), never by webpack on this server's event loop.
+ *
+ * Known fidelity gap: the compositions load their Thai fonts from a Google Fonts `<link>` with no
+ * delayRender, and Remotion's `document.fonts.ready` wait does not cover a stylesheet that has
+ * not arrived yet. A single still in a fresh browser therefore usually draws text in the host's
+ * fallback face (measured locally: 8/8 stills identical with Google Fonts blocked), and on a host
+ * with NO Thai system font the Thai text can be blank. The export only meets this on each render
+ * page's first frame. Fixing it means a capped font gate in src/remotion — out of W4's scope.
  */
 
 export const PREVIEW_STILL_SCALE = 0.5; // 1080x1920 → 540x960

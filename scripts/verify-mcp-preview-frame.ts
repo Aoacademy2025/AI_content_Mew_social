@@ -658,10 +658,11 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 500));
     const tmpAfter = listTmp();
     const added = tmpAfter.filter((name) => !tmpBefore.includes(name));
-    // Chrome's own per-launch entry (Linux: `com.google.Chrome.XXXXXX`, a socket dir) survives
-    // because Remotion stops Chrome with SIGKILL — exactly as after every render-worker render
-    // today. It is tiny and not ours to name or delete; anything else would be a real leftover.
-    const chromeOwn = /^\.?(com\.google\.Chrome|org\.chromium\.Chromium)\.[A-Za-z0-9]{6}$/;
+    // Chrome's own per-launch entries (Linux: `com.google.Chrome.XXXXXX`, a socket dir, and
+    // `com.google.Chrome.chrome_chrome_url_fetcher_.XXXXXX`) survive because Remotion stops Chrome
+    // with SIGKILL — exactly as after every render-worker render today. They are tiny and not
+    // ours to name or delete; anything else would be a real leftover.
+    const chromeOwn = /^\.?(com\.google\.Chrome|org\.chromium\.Chromium)\.[A-Za-z0-9_.]+$/;
     const ours = added.filter((name) => !chromeOwn.test(name));
     check("no new entries in TMPDIR (browser profiles, frame dirs, downloads all removed)", ours.length === 0, ours.join(", "));
     const chromeBytes = added.filter((name) => chromeOwn.test(name)).reduce((sum, name) => sum + treeBytes(join(privateTmp, name)), 0);
