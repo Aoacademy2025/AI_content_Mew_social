@@ -17,6 +17,8 @@ import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { brollWindowSpans } from "@/lib/broll-spans";
+import { renderedWindowSpansMs, type RenderedWindowSpan } from "@/lib/broll-coverage";
+import { RENDER_FPS } from "@/lib/mcp/orchestrator-steps";
 import { SUBTITLE_FONT_WEIGHTS, normalizeSubtitleFontWeight } from "@/lib/subtitle-font-weight";
 import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import {
@@ -318,14 +320,25 @@ function windowOwner(preview: VideoJobPreviewData, index: number): "presenter" |
     : "broll";
 }
 
-/** The B-roll windows the agent sees (and may address) on `preview`. */
-function previewWindowSpans(preview: VideoJobPreviewData) {
+/** The Held Preview's total clip length — shared by the window spans below and the real
+ *  rendered-timeline computation (U1), so both agree on the same outer bound. */
+function previewDurationMs(preview: VideoJobPreviewData): number {
   const frames = Number((preview.config as { durationInFrames?: unknown }).durationInFrames);
-  const durMs = Math.max(preview.audioDurationMs || 0, Number.isFinite(frames) && frames > 0 ? (frames / 30) * 1_000 : 0);
-  return brollWindowSpans(preview.config, durMs);
+  return Math.max(preview.audioDurationMs || 0, Number.isFinite(frames) && frames > 0 ? (frames / RENDER_FPS) * 1_000 : 0);
 }
 
-type ImportView = { status: string; errorCode: string | null };
+/** The B-roll windows the agent sees (and may address) on `preview`. */
+function previewWindowSpans(preview: VideoJobPreviewData) {
+  return brollWindowSpans(preview.config, previewDurationMs(preview));
+}
+
+type ImportView = {
+  status: string;
+  errorCode: string | null;
+  resultSrc: string | null;
+  durationMs: number | null;
+  purpose: string | null;
+};
 
 /** T13: the caller's own Media Imports the draft's window edits point at (owner-scoped). */
 async function draftImportViews(userId: string, draft: PendingEditDraft): Promise<Map<string, ImportView>> {
@@ -333,15 +346,21 @@ async function draftImportViews(userId: string, draft: PendingEditDraft): Promis
   if (ids.length === 0) return new Map();
   const rows = await prisma.mediaImport.findMany({
     where: { id: { in: ids }, userId },
-    select: { id: true, status: true, errorCode: true },
+    select: { id: true, status: true, errorCode: true, resultSrc: true, durationMs: true, purpose: true },
   });
-  return new Map(rows.map((row) => [row.id, { status: row.status, errorCode: row.errorCode }]));
+  return new Map(rows.map((row) => [row.id, {
+    status: row.status,
+    errorCode: row.errorCode,
+    resultSrc: row.resultSrc,
+    durationMs: row.durationMs,
+    purpose: row.purpose,
+  }]));
 }
 
 /** A window edit's import as the agent sees it; a vanished row reads as failed. */
 function importViewOf(edit: PendingEditWindowEdit | undefined, imports: Map<string, ImportView>): ImportView | null {
   if (!edit?.importId) return null;
-  return imports.get(edit.importId) ?? { status: "failed", errorCode: "import_missing" };
+  return imports.get(edit.importId) ?? { status: "failed", errorCode: "import_missing", resultSrc: null, durationMs: null, purpose: null };
 }
 
 /**
@@ -362,18 +381,96 @@ function windowReplacedInBase(
   return baseWindow.src !== rootWindow.src || windowOwner(base.preview, index) !== windowOwner(rootPreview, index);
 }
 
+/**
+ * U1 (read-only, best-effort companion to `rerenderEditsFor`): the same per-edit resolution —
+ * a ready import's `resultSrc`/`durationMs`, or an "original" edit resolved against the root's
+ * own window — but TOLERANT of a pending/failed import or an unavailable original: that one
+ * edit is simply left out (its window reports the unedited base's own rendered span) instead of
+ * refusing the whole read. Intentionally a separate, lenient copy rather than a refactor of
+ * `rerenderEditsFor`'s export-critical strict control flow (which must keep failing fast there).
+ */
+function reportableWindowEdits(
+  root: McpChainRow,
+  windowEdits: PendingEditWindowEdit[],
+  imports: Map<string, ImportView>,
+): WindowEdit[] {
+  const rootPreview = rootPreviewOf(root);
+  const edits: WindowEdit[] = [];
+  for (const edit of windowEdits) {
+    if (edit.importId) {
+      const row = imports.get(edit.importId);
+      if (!row || row.status !== "ready" || !row.resultSrc) continue;
+      const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
+      edits.push({
+        index: edit.index,
+        src: row.resultSrc,
+        enabled: true,
+        replacementKind: "upload",
+        ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
+        ...(seconds ? { clipDuration: seconds } : {}),
+      });
+      continue;
+    }
+    if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) continue;
+    if (windowOwner(rootPreview, edit.index) === "presenter") {
+      edits.push({ index: edit.index, enabled: false });
+      continue;
+    }
+    const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
+    edits.push({
+      index: edit.index,
+      src: edit.src ?? "",
+      enabled: true,
+      ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
+      ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+    });
+  }
+  return edits;
+}
+
+/**
+ * U1: `base`'s own `bgVideos[]` with every RESOLVABLE pending window edit merged on top, exactly
+ * as `export_video`'s free re-render would (`mergeWindowEdits`) — the input `renderedWindowSpansMs`
+ * needs to report the timeline the renderer will actually produce. Never throws: any edit that
+ * can't yet be resolved, or a merge that fails validation, falls back to the unedited base.
+ */
+function mergedBgVideosForReport(
+  root: McpChainRow,
+  base: PendingEditState["base"],
+  windowEdits: PendingEditWindowEdit[],
+  imports: Map<string, ImportView>,
+): unknown[] {
+  const baseBgVideos = ((base.preview.config as { bgVideos?: unknown }).bgVideos ?? []) as unknown[];
+  if (windowEdits.length === 0) return baseBgVideos;
+  const edits = reportableWindowEdits(root, windowEdits, imports);
+  if (edits.length === 0) return baseBgVideos;
+  const validated = validateWindowEdits(edits);
+  if ("error" in validated) return baseBgVideos;
+  const merged = mergeWindowEdits(baseBgVideos, validated);
+  return "error" in merged ? baseBgVideos : merged.bgVideos;
+}
+
 /** `replaced` = this window differs from the Held Preview (pending edit, or already rendered);
  *  `pending` = the draft holds an edit for it that the next export_video will re-render. */
-function editWindows(root: McpChainRow, draft: PendingEditDraft, base: PendingEditState["base"], imports: Map<string, ImportView>) {
+function editWindows(
+  root: McpChainRow,
+  draft: PendingEditDraft,
+  base: PendingEditState["base"],
+  imports: Map<string, ImportView>,
+  rendered: Map<number, RenderedWindowSpan>,
+) {
   const preview = base.preview;
   const rootPreview = base.id === root.id ? preview : rootPreviewOf(root);
   return previewWindowSpans(preview).map((span) => {
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
     const view = importViewOf(edit, imports);
+    const renderedSpan = rendered.get(span.index) ?? null;
     return {
       index: span.index,
       startMs: span.startMs,
       endMs: span.endMs,
+      renderedStartMs: renderedSpan?.startMs ?? null,
+      renderedEndMs: renderedSpan?.endMs ?? null,
       owner: windowOwner(preview, span.index),
       replaced: edit !== undefined || windowReplacedInBase(root, rootPreview, base, span.index),
       pending: edit !== undefined,
@@ -401,6 +498,12 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
   const { state } = loaded;
   const status = await getVideoJobStatusTool(userId, held.root.id);
   const statusFields = (status ?? {}) as { status?: string; previewUrl?: string | null; editorUrl?: string | null };
+  const imports = await draftImportViews(userId, state.draft);
+  // U1: report the timeline the renderer actually produces, not the raw stored boundaries —
+  // same coverage function the render route calls, fed the base's bgVideos with every
+  // resolvable pending window edit merged on (mirrors the free re-render's own merge).
+  const mergedBgVideos = mergedBgVideosForReport(held.root, state.base, state.draft.windowEdits, imports);
+  const rendered = renderedWindowSpansMs(mergedBgVideos, previewDurationMs(state.base.preview) / 1_000, RENDER_FPS);
   return {
     jobId: held.root.id,
     status: statusFields.status ?? "held",
@@ -410,10 +513,10 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
-    windows: editWindows(held.root, state.draft, state.base, await draftImportViews(userId, state.draft)),
+    windows: editWindows(held.root, state.draft, state.base, imports, rendered),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -1368,7 +1471,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "get_edit_state",
     {
       title: "Get edit state",
-      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป. ไม่แก้อะไร ไม่เสียโควต้า.",
+      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
       inputSchema: getEditStateInputShape,
     },
     async (args, extra) =>
@@ -1472,7 +1575,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "replace_broll_window",
     {
       title: "Replace B-roll window",
-      description: "เปลี่ยนภาพของช่วง B-roll 1 ช่วง (windowIndex จาก get_edit_state.windows) ในดราฟต์ของวิดีโอ exportMode \"hold\" — ส่งอย่างใดอย่างหนึ่ง: url (ลิงก์ https สาธารณะของรูป/วิดีโอ ระบบดาวน์โหลดเอง), uploadId (จาก create_upload_url ต้อง PUT ไฟล์เสร็จก่อน) หรือ source \"original\" (คืนภาพเดิม). เสียงในไฟล์ถูกปิดเสมอ (ใช้เสียงพากย์เดิม). ไฟล์นำเข้าแบบเบื้องหลัง — ดูความคืบหน้าที่ get_edit_state.windows[].importStatus. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      description: "เปลี่ยนภาพของช่วง B-roll 1 ช่วง (windowIndex จาก get_edit_state.windows — ตำแหน่งในช่วง ไม่ใช่เวลา) ในดราฟต์ของวิดีโอ exportMode \"hold\" — ส่งอย่างใดอย่างหนึ่ง: url (ลิงก์ https สาธารณะของรูป/วิดีโอ ระบบดาวน์โหลดเอง), uploadId (จาก create_upload_url ต้อง PUT ไฟล์เสร็จก่อน) หรือ source \"original\" (คืนภาพเดิม). เสียงในไฟล์ถูกปิดเสมอ (ใช้เสียงพากย์เดิม). ไฟล์นำเข้าแบบเบื้องหลัง — ดูความคืบหน้าที่ get_edit_state.windows[].importStatus. ถ้าไฟล์ที่ส่งสั้นกว่าช่วงนั้น ช่วงถัดไปอาจถูกดึงมาเติมก่อนเวลาของมันเอง — เรียก get_edit_state อีกครั้งแล้วดู windows[].renderedStartMs/renderedEndMs เพื่อดูผลจริงก่อนแก้ช่วงถัดไป. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
       inputSchema: replaceBrollWindowInputShape,
     },
     async (args, extra) =>
