@@ -242,6 +242,8 @@ async function main() {
   const second = await makeUser("u-bwe-2", "qa-bwe-2@aoacademy.co");
   // Fix round 1 (M): its own rerender budget, untouched by C–I.
   const fixer = await makeUser("u-bwe-3", "qa-bwe-3@aoacademy.co");
+  // EP5 #11 / U3 (S): its own rerender budget too.
+  const styler = await makeUser("u-bwe-4", "qa-bwe-4@aoacademy.co");
   const outsider = await makeUser("u-bwe-outsider", "bwe-outsider@example.com");
 
   // ── fixtures: real media (tiny) ──
@@ -842,6 +844,147 @@ async function main() {
         inputJson: { contains: `"sourceJobId":"${completed.id}"` } } });
       check(`${purpose}: chained export completes`, (await runJob(burn.id, fixer.user.id)).status === "done");
     }
+  });
+
+  // ── S ── EP5 #11 hard cut + U3 fit, one edit model (ADR 0066): set_broll_style → export → base
+  await section("S) set_broll_style: per-window cut/contain + project default ride the free rerender into the base and survive the next export", async () => {
+    const STYLE_TOOL = "set_broll_style";
+    const betaTools = await listTools(styler.token);
+    check("beta tools/list includes set_broll_style", betaTools.some((tool) => tool.name === STYLE_TOOL), betaTools.map((t) => t.name).join(","));
+    const problems = verifyAgentNeutralSchemas(betaTools, [STYLE_TOOL]);
+    check("G13: set_broll_style's emitted schema is agent-neutral", problems.length === 0, problems.join("; "));
+    check("non-beta tools/list hides set_broll_style", !(await listTools(outsider.token)).some((tool) => tool.name === STYLE_TOOL));
+    const outsiderReply = await callTool(outsider.token, STYLE_TOOL, { jobId: "any", windowIndex: 0, transition: "cut" });
+    check("non-beta direct call → feature_not_enabled envelope", outsiderReply.error === "feature_not_enabled" && checkFailureEnvelope(outsiderReply).length === 0, JSON.stringify(outsiderReply));
+
+    const { root, projectId } = await heldRootVia(styler);
+    const moneyBefore = await money(styler.user.id);
+    let state = await callTool(styler.token, "get_edit_state", { jobId: root.id });
+    let windows = state.windows as Json[];
+    check("legacy defaults: every window dissolve + cover, project default dissolve",
+      windows.every((w) => w.transition === "dissolve" && w.fit === "cover" && w.transitionFollowsDefault === true) && state.brollTransition === "dissolve",
+      JSON.stringify({ windows, brollTransition: state.brollTransition }));
+    const allowed = state.allowed as Json;
+    check("allowed lists the transitions and fits", JSON.stringify(allowed.brollTransitions) === JSON.stringify(["dissolve", "cut"])
+      && JSON.stringify(allowed.brollWindowTransitions) === JSON.stringify(["dissolve", "cut", "default"])
+      && JSON.stringify(allowed.brollFits) === JSON.stringify(["cover", "contain"]), JSON.stringify(allowed));
+
+    const cases: Array<[string, Json]> = [
+      ["no style", { jobId: root.id, windowIndex: 0 }],
+      ["fit without a window", { jobId: root.id, fit: "contain" }],
+      ["\"default\" without a window", { jobId: root.id, transition: "default" }],
+      ["window out of range", { jobId: root.id, windowIndex: 99, transition: "cut" }],
+      ["negative window", { jobId: root.id, windowIndex: -1, transition: "cut" }],
+      ["unknown job", { jobId: "no-such-job", windowIndex: 0, transition: "cut" }],
+    ];
+    for (const [label, args] of cases) {
+      const reply = await callTool(styler.token, STYLE_TOOL, args);
+      check(`${label} → invalid_input envelope`, reply.error === "invalid_input" && checkFailureEnvelope(reply).length === 0, JSON.stringify(reply));
+    }
+    check("no refusal wrote anything", (await projectRow(projectId)).pendingEditJson === null);
+
+    const w0 = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 0, transition: "cut", fit: "contain" });
+    check("window 0 → cut + contain", w0.ok === true && w0.transition === "cut" && w0.fit === "contain" && w0.pending === true, JSON.stringify(w0));
+    const projectCut = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, transition: "cut" });
+    check("project default → cut", projectCut.ok === true && projectCut.brollTransition === "cut", JSON.stringify(projectCut));
+    const w1 = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 1, transition: "dissolve" });
+    check("window 1 keeps its own dissolve under a cut default", w1.ok === true && w1.transition === "dissolve" && w1.transitionFollowsDefault === false, JSON.stringify(w1));
+    const noop = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 1, fit: "cover" });
+    check("fit equal to the base is a no-op (no fit stored)", noop.ok === true && noop.fit === "cover", JSON.stringify(noop));
+    let draft = await storedDraft(projectId);
+    check("draft: style-only edits + pending project default",
+      JSON.stringify(draft?.windowEdits) === JSON.stringify([
+        { index: 0, src: null, replacementKind: "style", transition: "cut", fit: "contain" },
+        { index: 1, src: null, replacementKind: "style", transition: "dissolve" },
+      ]) && draft?.brollTransition === "cut", JSON.stringify({ edits: draft?.windowEdits, def: draft?.brollTransition }));
+
+    state = await callTool(styler.token, "get_edit_state", { jobId: root.id });
+    windows = state.windows as Json[];
+    check("get_edit_state reports the pending style; a style-only window is pending but NOT replaced",
+      windows[0]?.transition === "cut" && windows[0]?.fit === "contain" && windows[0]?.pending === true && windows[0]?.replaced === false
+      && windows[1]?.transition === "dissolve" && windows[1]?.fit === "cover" && state.brollTransition === "cut", JSON.stringify(windows));
+
+    // A media change keeps the window's style.
+    const ready = await prisma.mediaImport.create({ data: {
+      userId: styler.user.id, purpose: "broll_video", source: "upload", status: "ready",
+      resultSrc: "/api/stocks/broll-upload-style.mp4", durationMs: 4_000, deadlineAt: new Date(Date.now() + 60_000),
+    } });
+    const replaced = await callTool(styler.token, NEW_TOOL, { jobId: root.id, windowIndex: 0, uploadId: ready.id });
+    check("replace_broll_window on a styled window accepted", replaced.ok === true, JSON.stringify(replaced));
+    draft = await storedDraft(projectId);
+    check("…and the window keeps its cut + contain",
+      JSON.stringify(draft?.windowEdits.find((e) => e.index === 0)) === JSON.stringify({ index: 0, src: null, importId: ready.id, replacementKind: "upload", transition: "cut", fit: "contain" }),
+      JSON.stringify(draft?.windowEdits));
+
+    renderCalls.length = 0;
+    callerLog.length = 0;
+    const exported = await callTool(styler.token, "export_video", { jobId: root.id });
+    check("export_video → rerendering", exported.status === "rerendering" && typeof exported.rerenderJobId === "string", JSON.stringify(exported));
+    const rr = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(exported.rerenderJobId) } });
+    const rrInput = inputOf(rr);
+    const rrEdits = rrInput.windowEdits as Json[];
+    check("rerender input carries the style edits and the project default",
+      rrInput.brollTransition === "cut" && rrEdits[0]?.src === ready.resultSrc && rrEdits[0]?.transition === "cut" && rrEdits[0]?.fit === "contain"
+      && rrEdits[1]?.transition === "dissolve" && rrEdits[1]?.src === undefined, JSON.stringify(rrInput));
+    const rrDone = await runJob(rr.id, styler.user.id);
+    check("rerender done", rrDone.status === "done", String(rrDone.errorMessage));
+    const call = renderCalls.find((c) => c.rerenderOf);
+    const rendered = (call?.config?.bgVideos ?? []) as Json[];
+    check("the render config carries brollTransition + per-window transition/fit, and was free",
+      call?.free === true && call?.config?.brollTransition === "cut"
+      && rendered[0]?.src === ready.resultSrc && rendered[0]?.transition === "cut" && rendered[0]?.fit === "contain"
+      && rendered[1]?.src === ORIGINAL_SRC[1] && rendered[1]?.transition === "dissolve" && rendered[1]?.fit === undefined,
+      JSON.stringify({ free: call?.free, def: call?.config?.brollTransition, rendered }));
+    const rebased = await storedDraft(projectId);
+    check("the hop dropped the applied edits and the applied default",
+      rebased?.baseJobId === rr.id && rebased.windowEdits.length === 0 && rebased.brollTransition === undefined,
+      JSON.stringify({ base: rebased?.baseJobId, edits: rebased?.windowEdits, def: rebased?.brollTransition }));
+    const ex = await prisma.videoJob.findFirstOrThrow({ where: { userId: styler.user.id, type: "export", inputJson: { contains: `"sourceJobId":"${rr.id}"` } } });
+    check("the chained export clears the draft (nothing left pending)", typeof inputOf(ex).mcpPendingEditRevision === "number", JSON.stringify(inputOf(ex)));
+    check("chained export done", (await runJob(ex.id, styler.user.id)).status === "done");
+    check("draft cleared after the export", (await projectRow(projectId)).pendingEditJson === null);
+
+    // Persisted in the base: a fresh read (no pending edit) still shows the style.
+    state = await callTool(styler.token, "get_edit_state", { jobId: root.id });
+    windows = state.windows as Json[];
+    check("after export the base itself keeps cut/contain and the cut default (nothing pending)",
+      windows[0]?.transition === "cut" && windows[0]?.fit === "contain" && windows[0]?.pending === false
+      && windows[1]?.transition === "dissolve" && windows[1]?.transitionFollowsDefault === false && state.brollTransition === "cut",
+      JSON.stringify({ windows, def: state.brollTransition }));
+    const baseConfig = parseVideoJobOutput(rrDone.outputJson)?.preview?.config as Json | undefined;
+    check("the base preview config persisted brollTransition + window style",
+      baseConfig?.brollTransition === "cut" && ((baseConfig?.bgVideos as Json[])[0])?.fit === "contain", JSON.stringify(baseConfig));
+
+    // Project-default-only change: a rerender with no window edits.
+    const back = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, transition: "dissolve" });
+    check("project default back to dissolve is pending (the base says cut)", back.ok === true && back.pending === true && back.brollTransition === "dissolve", JSON.stringify(back));
+    const same = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 0, transition: "cut" });
+    check("window 0 \"cut\" equal to its base value is a no-op", same.ok === true && (await storedDraft(projectId))?.windowEdits.length === 0, JSON.stringify(same));
+    renderCalls.length = 0;
+    const exported2 = await callTool(styler.token, "export_video", { jobId: root.id });
+    check("default-only export → rerendering", exported2.status === "rerendering", JSON.stringify(exported2));
+    const rr2 = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(exported2.rerenderJobId) } });
+    check("rerender input: no window edits, default dissolve", JSON.stringify(inputOf(rr2).windowEdits) === "[]" && inputOf(rr2).brollTransition === "dissolve", JSON.stringify(inputOf(rr2)));
+    const rr2Done = await runJob(rr2.id, styler.user.id);
+    check("default-only rerender done", rr2Done.status === "done", String(rr2Done.errorMessage));
+    const call2 = renderCalls.find((c) => c.rerenderOf);
+    const rendered2 = (call2?.config?.bgVideos ?? []) as Json[];
+    check("render config: default dissolve, window 0 keeps its own cut + contain + replacement",
+      call2?.free === true && call2?.config?.brollTransition === "dissolve" && rendered2[0]?.transition === "cut" && rendered2[0]?.fit === "contain"
+      && rendered2[0]?.src === ready.resultSrc, JSON.stringify({ def: call2?.config?.brollTransition, rendered2 }));
+    const ex2 = await prisma.videoJob.findFirstOrThrow({ where: { userId: styler.user.id, type: "export", inputJson: { contains: `"sourceJobId":"${rr2.id}"` } } });
+    check("default-only chained export done", (await runJob(ex2.id, styler.user.id)).status === "done");
+    check("draft cleared again", (await projectRow(projectId)).pendingEditJson === null);
+
+    // discard_edits drops a pending style and default.
+    await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 1, fit: "contain" });
+    await callTool(styler.token, STYLE_TOOL, { jobId: root.id, transition: "cut" });
+    const discarded = await callTool(styler.token, "discard_edits", { jobId: root.id });
+    draft = await storedDraft(projectId);
+    check("discard_edits drops pending style + default", discarded.ok === true && (!draft || (draft.windowEdits.length === 0 && draft.brollTransition === undefined)),
+      JSON.stringify({ discarded, edits: draft?.windowEdits, def: draft?.brollTransition }));
+    check("no charge for any style change", moneyKey(await money(styler.user.id)) === moneyKey(moneyBefore));
+    check("no provider call during the style rerenders", !callerLog.some((line) => PROVIDER_PATH.test(line)), callerLog.join(","));
   });
 
   // ── I ──

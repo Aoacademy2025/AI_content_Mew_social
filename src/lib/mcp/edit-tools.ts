@@ -11,6 +11,16 @@ import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import { assertMcpRenderFree, McpRenderNotFreeError } from "@/lib/mcp/render-free";
 import { brollWindowEditEnabled, enqueueBrollRerender, enqueueEditorExport } from "@/lib/editor-export-enqueue";
 import { mergeWindowEdits, validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import {
+  BROLL_FITS,
+  BROLL_TRANSITIONS,
+  BROLL_TRANSITION_FOLLOW_DEFAULT,
+  effectiveBrollFit,
+  effectiveBrollTransition,
+  isBrollFit,
+  isBrollTransition,
+  isBrollTransitionEdit,
+} from "@/lib/broll-window-style";
 import { createUrlImport, failMediaImport, findOwnedMediaImport } from "@/lib/media-import/imports";
 import { admissionRefusal } from "@/lib/mcp/media-import-copy";
 import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
@@ -51,6 +61,8 @@ import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-j
 import {
   discardPendingEditDraft,
   draftDurationMs,
+  draftHasBrollChanges,
+  STYLE_ONLY_REPLACEMENT_KIND,
   loadPendingEditState,
   savePendingEditDraft,
   toBurnConfig,
@@ -78,6 +90,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "set_headline_hook",
   "discard_edits",
   "replace_broll_window",
+  "set_broll_style",
   "export_video",
 ] as const;
 
@@ -163,6 +176,16 @@ export const replaceBrollWindowInputShape = {
   url: z.string().optional().describe("ลิงก์สาธารณะ https ของรูปหรือวิดีโอ (ระบบดาวน์โหลดเอง) — ส่งอย่างใดอย่างหนึ่งจาก url / uploadId / source"),
   uploadId: z.string().optional().describe("uploadId จาก create_upload_url ที่ PUT ไฟล์เสร็จแล้ว"),
   source: z.enum(["original"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง"),
+} satisfies z.ZodRawShape;
+
+export const setBrollStyleInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  windowIndex: z.number().int().optional()
+    .describe("ช่วง B-roll ที่จะตั้งค่า (windows[].index จาก get_edit_state) — ไม่ส่ง = ตั้งค่าหลักของทั้งคลิป (ใช้ได้กับ transition เท่านั้น)"),
+  transition: z.enum(["dissolve", "cut", "default"]).optional()
+    .describe("ตอนจบของช่วง: dissolve = ภาพละลายเข้าช่วงถัดไป (ค่าเดิม), cut = ตัดชนทันที, default = ให้ช่วงนี้ตามค่าหลักของคลิป (ใช้ได้เฉพาะเมื่อส่ง windowIndex). ช่วงสุดท้าย: dissolve = จางเป็นสีดำตอนจบคลิป, cut = จบแบบไม่จาง"),
+  fit: z.enum(["cover", "contain"]).optional()
+    .describe("การจัดภาพของช่วง: cover = เต็มจอ ครอปขอบ (ค่าเดิม), contain = เห็นภาพครบทั้งภาพ ขอบบน-ล่างเป็นภาพเดียวกันแบบเบลอและมืดลง (ต้องส่ง windowIndex)"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -262,6 +285,10 @@ const ALLOWED = {
   outlineSize: { min: 1, max: 8 },
   verticalPos: { min: 10, max: 95 },
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
+  // EP5 #11 / U3 (set_broll_style).
+  brollTransitions: [...BROLL_TRANSITIONS],
+  brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
+  brollFits: [...BROLL_FITS],
   // headline-hook.ts's own bounds (set_headline_hook, G18).
   headlineHook: {
     headlineMaxChars: 64,
@@ -397,6 +424,7 @@ function reportableWindowEdits(
   const rootPreview = rootPreviewOf(root);
   const edits: WindowEdit[] = [];
   for (const edit of windowEdits) {
+    const style = windowEditStyle(edit);
     if (edit.importId) {
       const row = imports.get(edit.importId);
       if (!row || row.status !== "ready" || !row.resultSrc) continue;
@@ -408,12 +436,17 @@ function reportableWindowEdits(
         replacementKind: "upload",
         ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
         ...(seconds ? { clipDuration: seconds } : {}),
+        ...style,
       });
+      continue;
+    }
+    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND) {
+      if (Object.keys(style).length > 0) edits.push({ index: edit.index, ...style });
       continue;
     }
     if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) continue;
     if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false });
+      edits.push({ index: edit.index, enabled: false, ...style });
       continue;
     }
     const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
@@ -423,9 +456,41 @@ function reportableWindowEdits(
       enabled: true,
       ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
       ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+      ...style,
     });
   }
   return edits;
+}
+
+/** EP5 #11 / U3: the style half of a pending window edit, as `WindowEdit` fields. */
+function windowEditStyle(edit: PendingEditWindowEdit): Pick<WindowEdit, "transition" | "fit"> {
+  return {
+    ...(isBrollTransitionEdit(edit.transition) ? { transition: edit.transition } : {}),
+    ...(isBrollFit(edit.fit) ? { fit: edit.fit } : {}),
+  };
+}
+
+/** The project-default transition the next export renders with (pending value, else the base's). */
+function draftProjectTransition(draft: PendingEditDraft, base: PendingEditState["base"]) {
+  return effectiveBrollTransition(undefined, draft.brollTransition ?? (base.preview.config as { brollTransition?: unknown }).brollTransition);
+}
+
+/** A window's transition and fit after its pending edit (if any) — what the next export renders. */
+function windowStyleView(
+  draft: PendingEditDraft,
+  base: PendingEditState["base"],
+  edit: PendingEditWindowEdit | undefined,
+  index: number,
+) {
+  const baseWindow = bgVideoAt(base.preview.config, index);
+  const ownTransition = edit?.transition === BROLL_TRANSITION_FOLLOW_DEFAULT
+    ? undefined
+    : edit?.transition ?? baseWindow?.transition;
+  return {
+    transition: effectiveBrollTransition(ownTransition, draftProjectTransition(draft, base)),
+    transitionFollowsDefault: !isBrollTransition(ownTransition),
+    fit: effectiveBrollFit(edit?.fit ?? baseWindow?.fit),
+  };
 }
 
 /**
@@ -465,6 +530,8 @@ function editWindows(
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
     const view = importViewOf(edit, imports);
     const renderedSpan = rendered.get(span.index) ?? null;
+    // A style-only edit changes how the window looks, not its media.
+    const replacesMedia = edit !== undefined && edit.replacementKind !== STYLE_ONLY_REPLACEMENT_KIND;
     return {
       index: span.index,
       startMs: span.startMs,
@@ -472,10 +539,11 @@ function editWindows(
       renderedStartMs: renderedSpan?.startMs ?? null,
       renderedEndMs: renderedSpan?.endMs ?? null,
       owner: windowOwner(preview, span.index),
-      replaced: edit !== undefined || windowReplacedInBase(root, rootPreview, base, span.index),
+      replaced: replacesMedia || windowReplacedInBase(root, rootPreview, base, span.index),
       pending: edit !== undefined,
       importStatus: view?.status ?? null,
       importError: view?.status === "failed" ? view.errorCode ?? "import_failed" : null,
+      ...windowStyleView(draft, base, edit, span.index),
     };
   });
 }
@@ -514,9 +582,10 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered),
+    brollTransition: draftProjectTransition(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -1031,6 +1100,12 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
       }
       edit = original.edit;
     }
+    // EP5 #11 / U3: a transition/fit set on this window (set_broll_style) survives a media change.
+    const previous = draft.windowEdits.find((candidate) => candidate.index === index);
+    const style = previous ? windowEditStyle(previous) : {};
+    if (Object.keys(style).length > 0) {
+      edit = edit ? { ...edit, ...style } : { index, src: null, replacementKind: STYLE_ONLY_REPLACEMENT_KIND, ...style };
+    }
     const others = draft.windowEdits.filter((candidate) => candidate.index !== index);
     draft.windowEdits = edit ? [...others, edit] : others;
     if (draft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
@@ -1057,6 +1132,100 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
       : importStatus === "ready"
         ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
         : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
+  };
+}
+
+// ── set_broll_style (EP5 #11 hard cut, U3 fit) ─────────────────────────────────────────────
+
+const NEXT_STYLE = "ส่ง transition (\"dissolve\" / \"cut\" / \"default\") และ/หรือ fit (\"cover\" / \"contain\") — ดูค่าที่ใช้ได้ที่ allowed.brollWindowTransitions / allowed.brollFits ของ get_edit_state";
+const NO_STYLE = editToolFailure("invalid_input", "ต้องส่ง transition หรือ fit อย่างน้อยหนึ่งค่า", NEXT_STYLE);
+const BAD_TRANSITION = editToolFailure("invalid_input", "รูปแบบการเปลี่ยนฉาก b-roll ไม่ถูกต้อง", NEXT_STYLE);
+const BAD_FIT = editToolFailure("invalid_input", "รูปแบบการจัดภาพ b-roll ไม่ถูกต้อง", NEXT_STYLE);
+const PROJECT_TRANSITION_ONLY = editToolFailure(
+  "invalid_input",
+  "ค่าหลักของทั้งคลิปตั้งได้เฉพาะ transition เป็น \"dissolve\" หรือ \"cut\" — fit และ \"default\" ต้องระบุ windowIndex",
+  "ส่ง windowIndex (windows[].index จาก get_edit_state) เพื่อตั้งค่าทีละช่วง หรือส่งแค่ transition \"dissolve\"/\"cut\" เพื่อตั้งค่าหลัก",
+);
+
+/**
+ * EP5 #11 / U3: how B-roll windows end (dissolve / hard cut) and fit (cover / contain), without
+ * replacing media. With `windowIndex` it sets that window (last-wins, kept through a later
+ * replace_broll_window); without it, the project default every window follows unless it has its
+ * own transition. A value equal to the current base is a no-op that drops the pending change.
+ * Recorded in the Pending Edit Draft (CAS) — the next export_video re-renders it for free.
+ */
+export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBrollStyleInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const { transition, fit } = args;
+  if (transition === undefined && fit === undefined) return NO_STYLE;
+  if (transition !== undefined && !isBrollTransitionEdit(transition)) return BAD_TRANSITION;
+  if (fit !== undefined && !isBrollFit(fit)) return BAD_FIT;
+  const index = args.windowIndex;
+  const projectLevel = index === undefined;
+  if (projectLevel && (fit !== undefined || !isBrollTransition(transition))) return PROJECT_TRANSITION_ONLY;
+  if (!projectLevel && (typeof index !== "number" || !Number.isInteger(index) || index < 0)) return NO_WINDOW;
+
+  const held = await resolveHeldRoot(user.id, args.jobId);
+  if (!held.ok) return held.failure;
+  const { root } = held;
+  const loaded = await loadState(user.id, root);
+  if (!loaded.ok) return loaded.failure;
+  const { base } = loaded.state;
+  if (!projectLevel && !previewWindowSpans(base.preview).some((span) => span.index === index)) return NO_WINDOW;
+  const baseRow = await prisma.videoJob.findFirst({
+    where: { id: base.id, userId: user.id },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
+  });
+  if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
+
+  const refused: { failure: EditToolFailure | null } = { failure: null };
+  const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
+    const baseConfig = state.base.preview.config as { brollTransition?: unknown };
+    if (projectLevel) {
+      if (transition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) delete draft.brollTransition;
+      else if (isBrollTransition(transition)) draft.brollTransition = transition;
+      return { ok: true, draft };
+    }
+    if (!previewWindowSpans(state.base.preview).some((span) => span.index === index)) {
+      refused.failure = NO_WINDOW;
+      return { ok: false, code: NO_WINDOW.code, message: NO_WINDOW.message };
+    }
+    const baseWindow = bgVideoAt(state.base.preview.config, index);
+    const previous = draft.windowEdits.find((candidate) => candidate.index === index);
+    const next: PendingEditWindowEdit = previous
+      ? { ...previous }
+      : { index, src: null, replacementKind: STYLE_ONLY_REPLACEMENT_KIND };
+    if (transition !== undefined) {
+      const baseOwn = isBrollTransition(baseWindow?.transition) ? baseWindow.transition : BROLL_TRANSITION_FOLLOW_DEFAULT;
+      if (transition === baseOwn) delete next.transition;
+      else next.transition = transition;
+    }
+    if (fit !== undefined) {
+      if (fit === effectiveBrollFit(baseWindow?.fit)) delete next.fit;
+      else next.fit = fit;
+    }
+    const others = draft.windowEdits.filter((candidate) => candidate.index !== index);
+    const emptyStyleOnly = next.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+      && next.transition === undefined && next.fit === undefined;
+    draft.windowEdits = emptyStyleOnly ? others : [...others, next];
+    if (draft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
+      refused.failure = TOO_MANY_WINDOW_EDITS;
+      return { ok: false, code: TOO_MANY_WINDOW_EDITS.code, message: TOO_MANY_WINDOW_EDITS.message };
+    }
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return refused.failure ?? mapUpdateFailure(updated.code, updated.message, NEXT_WINDOWS);
+  const { draft, base: updatedBase } = updated.state;
+  const edit = projectLevel ? undefined : draft.windowEdits.find((candidate) => candidate.index === index);
+  return {
+    ok: true,
+    jobId: root.id,
+    ...(projectLevel
+      ? { brollTransition: draftProjectTransition(draft, updatedBase) }
+      : { windowIndex: index, ...windowStyleView(draft, updatedBase, edit, index) }),
+    pending: draftHasBrollChanges(draft),
+    draftRevision: updated.state.revision,
+    next: "ยังไม่เรนเดอร์ — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ (ระบบเรนเดอร์ช่วง B-roll ใหม่ให้ ไม่ตัดโควต้าเพิ่ม)",
   };
 }
 
@@ -1186,6 +1355,7 @@ async function rerenderEditsFor(
   const rootPreview = rootPreviewOf(root);
   const edits: WindowEdit[] = [];
   for (const edit of ordered) {
+    const style = windowEditStyle(edit);
     const row = edit.importId ? byId.get(edit.importId) : undefined;
     if (row) {
       const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
@@ -1196,14 +1366,19 @@ async function rerenderEditsFor(
         replacementKind: "upload",
         ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
         ...(seconds ? { clipDuration: seconds } : {}),
+        ...style,
       });
+      continue;
+    }
+    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND && Object.keys(style).length > 0) {
+      edits.push({ index: edit.index, ...style });
       continue;
     }
     if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) {
       return { ok: false, failure: ORIGINAL_UNAVAILABLE };
     }
     if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false });
+      edits.push({ index: edit.index, enabled: false, ...style });
       continue;
     }
     const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
@@ -1213,8 +1388,11 @@ async function rerenderEditsFor(
       enabled: true,
       ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
       ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+      ...style,
     });
   }
+  // EP5 #11: only a new project default is pending — the re-render changes no window.
+  if (edits.length === 0 && state.draft.brollTransition !== undefined) return { ok: true, edits };
   const validated = validateWindowEdits(edits);
   const merged = "error" in validated
     ? validated
@@ -1299,7 +1477,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       if (!reloaded.ok) return reloaded.failure;
       state = reloaded.state;
       checked = null;
-      if (state.draft.windowEdits.length === 0) {
+      if (!draftHasBrollChanges(state.draft)) {
         return depth >= 1 ? STALE_REVISION : exportVideoTool(user, root.id, depth + 1);
       }
     }
@@ -1317,6 +1495,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       user,
       sourceJobId: state.base.id,
       windowEdits: checked,
+      ...(state.draft.brollTransition ? { brollTransition: state.draft.brollTransition } : {}),
       idempotencyKey,
       rootJobId: root.id,
       mcpExportAfter: { appliedDraftWindowEdits: state.draft.windowEdits },
@@ -1359,7 +1538,7 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
   const loaded = await loadState(user.id, root);
   if (!loaded.ok) return loaded.failure;
   let state: PendingEditState = loaded.state;
-  if (state.draft.windowEdits.length > 0) return exportWithWindowEdits(user, root, state, depth);
+  if (draftHasBrollChanges(state.draft)) return exportWithWindowEdits(user, root, state, depth);
 
   let checkedBaseUrl: string | null = null;
   const assertFree = async (): Promise<EditToolFailure | null> => {
@@ -1471,7 +1650,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "get_edit_state",
     {
       title: "Get edit state",
-      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
+      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป, windows[].transition/fit = ตอนจบ (dissolve/cut) และการจัดภาพ (cover/contain) ของช่วงนั้น, brollTransition = ค่าหลักของทั้งคลิป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
       inputSchema: getEditStateInputShape,
     },
     async (args, extra) =>
@@ -1585,10 +1764,23 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
   registerGatedTool(
     server,
     principal,
+    "set_broll_style",
+    {
+      title: "Set B-roll style",
+      description: "ตั้งรูปแบบของช่วง B-roll โดยไม่เปลี่ยนภาพ ในดราฟต์ของวิดีโอ exportMode \"hold\": transition = ตอนจบของช่วง (\"dissolve\" ละลายเข้าช่วงถัดไป ค่าเดิม / \"cut\" ตัดชน / \"default\" ตามค่าหลักของคลิป), fit = การจัดภาพ (\"cover\" เต็มจอครอปขอบ ค่าเดิม / \"contain\" เห็นภาพครบ ขอบเป็นภาพเดียวกันแบบเบลอและมืด). ส่ง windowIndex เพื่อตั้งทีละช่วง หรือไม่ส่ง windowIndex แล้วส่ง transition \"dissolve\"/\"cut\" เพื่อตั้งค่าหลักของทั้งคลิป (ช่วงที่ตั้งเองแล้วไม่เปลี่ยน). ค่าที่ตั้งยังอยู่แม้เปลี่ยนภาพด้วย replace_broll_window. ดูค่าปัจจุบันที่ get_edit_state.windows[].transition/fit และ brollTransition. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: setBrollStyleInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_broll_style", extra, (p) => setBrollStyleTool(p.user, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
     "export_video",
     {
       title: "Export video",
-      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). ถ้ามีช่วง B-roll ที่เปลี่ยน ระบบเรนเดอร์ช่วงเหล่านั้นใหม่ก่อน (status \"rerendering\") แล้วส่งออกต่อให้เอง — ไฟล์นำเข้าทุกช่วงต้อง \"ready\" ก่อน. เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานเดิม. แล้ว poll get_video_status.",
+      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). ถ้ามีช่วง B-roll ที่เปลี่ยนภาพหรือรูปแบบ (replace_broll_window / set_broll_style) ระบบเรนเดอร์ B-roll ใหม่ก่อน (status \"rerendering\") แล้วส่งออกต่อให้เอง — ไฟล์นำเข้าทุกช่วงต้อง \"ready\" ก่อน. เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานเดิม. แล้ว poll get_video_status.",
       inputSchema: exportVideoInputShape,
     },
     async (args, extra) =>

@@ -35,7 +35,7 @@ import {
 import type { EditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
   firstPassVisualRejectionReasonForWindow,
-  validateWindowEdits,
+  validateBrollRerenderRequest,
   mergeWindowEdits,
   type WindowEdit,
 } from "@/lib/broll-rerender";
@@ -274,6 +274,8 @@ interface CreateInput {
    */
   sourceJobId?: string;
   windowEdits?: WindowEdit[];
+  /** EP5 #11: new project default B-roll transition, written into the re-rendered config. */
+  brollTransition?: string;
   /**
    * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
    * finished video to Gallery from the worker, not from a mounted browser component.
@@ -1460,8 +1462,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if (!preview || !Array.isArray(srcBgVideos)) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูล b-roll ที่แก้ไขได้"); return; }
 
       // Re-validate the edits server-side (defense-in-depth; the jobs route already validated).
-      const editsRes = validateWindowEdits(input.windowEdits);
-      if ("error" in editsRes) { await failJob(jobId, editsRes.error); return; }
+      const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition);
+      if ("error" in requestRes) { await failJob(jobId, requestRes.error); return; }
+      const editsRes = requestRes.windowEdits;
       const mergeRes = mergeWindowEdits(srcBgVideos, editsRes);
       if ("error" in mergeRes) { await failJob(jobId, mergeRes.error); return; }
 
@@ -1470,6 +1473,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(preview.config as Record<string, unknown>),
         bgVideos: mergeRes.bgVideos,
         keywordPopups: [] as unknown[],
+        // EP5 #11: a new project default lives in the base config, so every later re-render
+        // and export (which burns onto this base) keeps it. Absent = the source's own value.
+        ...(requestRes.brollTransition ? { brollTransition: requestRes.brollTransition } : {}),
       };
 
       await step("render", 40);

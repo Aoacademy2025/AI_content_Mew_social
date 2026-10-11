@@ -19,6 +19,14 @@ import {
   MIN_BROLL_TIMELINE_WINDOW_MS,
   boundaryMs,
 } from "./broll-timeline-boundary";
+import {
+  isBrollFit,
+  isBrollTransition,
+  isBrollTransitionEdit,
+  type BrollFit,
+  type BrollTransition,
+  type BrollTransitionEdit,
+} from "./broll-window-style";
 
 export type WindowEdit = {
   index: number;
@@ -38,6 +46,10 @@ export type WindowEdit = {
   replacementKind?: "stock" | "upload" | "ai";
   /** Durable paid image candidate. It is promoted to the Visual Beat only after Apply succeeds. */
   imageJobId?: string;
+  /** EP5 #11: how the window ends. "default" drops the window's own value (follow the project). */
+  transition?: BrollTransitionEdit;
+  /** U3: "cover" (crop to fill) or "contain" (letterbox over a blurred copy). */
+  fit?: BrollFit;
 };
 
 /** The exact media/job pair an export must bind to after any pending B-roll apply. */
@@ -71,11 +83,12 @@ const IMAGE_JOB_ID_RE = /^[a-z0-9_-]{8,120}$/iu;
 const MAX_EDITS = 40;
 const KEYWORD_MAX = 200;
 const MAX_CLIP_DURATION_SECONDS = 24 * 60 * 60;
+const TRANSITION_ERROR = "รูปแบบการเปลี่ยนฉาก b-roll ไม่ถูกต้อง";
 
 /**
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
  * per index) or `{ error }` with a Thai message. Every item must change `src`, `enabled`, `start`,
- * or `end`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
+ * `end`, `transition`, or `fit`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
  * that isn't a single flat `.mp4` under /api/renders or /api/stocks, non-boolean `enabled`, and
  * a keyword without a replacement source.
  */
@@ -88,7 +101,9 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId, stillImage } = raw as Record<string, unknown>;
+    const {
+      index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId, stillImage, transition, fit,
+    } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
@@ -96,8 +111,16 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     const hasEnabled = enabled !== undefined;
     const hasStart = start !== undefined;
     const hasEnd = end !== undefined;
-    if (!hasSrc && !hasEnabled && !hasStart && !hasEnd) {
+    const hasTransition = transition !== undefined;
+    const hasFit = fit !== undefined;
+    if (!hasSrc && !hasEnabled && !hasStart && !hasEnd && !hasTransition && !hasFit) {
       return { error: "รายการแก้ b-roll ไม่มีการเปลี่ยนแปลง" };
+    }
+    if (hasTransition && !isBrollTransitionEdit(transition)) {
+      return { error: TRANSITION_ERROR };
+    }
+    if (hasFit && !isBrollFit(fit)) {
+      return { error: "รูปแบบการจัดภาพ b-roll ไม่ถูกต้อง" };
     }
     if (hasSrc && (typeof src !== "string" || !SRC_RE.test(src))) {
       return { error: "ไฟล์ b-roll ไม่ถูกต้อง (ต้องเป็นไฟล์ .mp4 ในระบบ)" };
@@ -170,10 +193,35 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
         ? { replacementKind }
         : {}),
       ...(typeof imageJobId === "string" ? { imageJobId } : {}),
+      ...(isBrollTransitionEdit(transition) ? { transition } : {}),
+      ...(isBrollFit(fit) ? { fit } : {}),
     };
     byIndex.set(index, edit); // last-wins
   }
   return Array.from(byIndex.values());
+}
+
+/** One free re-render: the window edits plus an optional new project default transition. */
+export type BrollRerenderRequest = { windowEdits: WindowEdit[]; brollTransition?: BrollTransition };
+
+/**
+ * Validate a whole `broll-rerender` request. A project default (`brollTransition`, EP5 #11)
+ * is a change on its own, so it may come with no window edits at all; without one this is
+ * exactly `validateWindowEdits` (same errors, same result).
+ */
+export function validateBrollRerenderRequest(
+  windowEdits: unknown,
+  brollTransition: unknown,
+): BrollRerenderRequest | { error: string } {
+  if (brollTransition !== undefined && !isBrollTransition(brollTransition)) return { error: TRANSITION_ERROR };
+  if (isBrollTransition(brollTransition)) {
+    if (windowEdits === undefined || (Array.isArray(windowEdits) && windowEdits.length === 0)) {
+      return { windowEdits: [], brollTransition };
+    }
+  }
+  const edits = validateWindowEdits(windowEdits);
+  if ("error" in edits) return edits;
+  return { windowEdits: edits, ...(isBrollTransition(brollTransition) ? { brollTransition } : {}) };
 }
 
 export type AppliedFirstPassVisualRejectionReason =
@@ -269,6 +317,10 @@ export function mergeWindowEdits(
       // true is required to turn B-roll ON over a window that used to show the uploaded speaker.
       base.brollEnabled = e.enabled;
     }
+    // EP5 #11 / U3: style belongs to the window, so a replacement above keeps it.
+    if (e.transition === "default") delete base.transition;
+    else if (e.transition) base.transition = e.transition;
+    if (e.fit) base.fit = e.fit;
     merged.push(base);
   }
 

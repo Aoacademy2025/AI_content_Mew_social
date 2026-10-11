@@ -6,7 +6,7 @@ import {
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
 import { assertCurrentEditorExportSource } from "@/lib/editor-projects";
-import { validateWindowEdits } from "@/lib/broll-rerender";
+import { validateBrollRerenderRequest } from "@/lib/broll-rerender";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
 import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
@@ -297,6 +297,8 @@ export async function enqueueBrollRerender(input: {
   user: EditorEnqueueUser;
   sourceJobId: string | undefined;
   windowEdits: unknown;
+  /** EP5 #11: optional new project default transition (may come with no window edits). */
+  brollTransition?: unknown;
   idempotencyKey: string;
   idempotencyFingerprint?: string | null;
   rootJobId?: string;
@@ -310,8 +312,8 @@ export async function enqueueBrollRerender(input: {
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
-  const editsRes = validateWindowEdits(input.windowEdits);
-  if ("error" in editsRes) return refuse(400, "invalid_edits", editsRes.error);
+  const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition);
+  if ("error" in requestRes) return refuse(400, "invalid_edits", requestRes.error);
 
   const srcJob = await prisma.videoJob.findUnique({
     where: { id: sourceJobId },
@@ -343,7 +345,8 @@ export async function enqueueBrollRerender(input: {
       mode: "broll-rerender",
       previewMode: true,
       sourceJobId,
-      windowEdits: editsRes,
+      windowEdits: requestRes.windowEdits,
+      ...(requestRes.brollTransition ? { brollTransition: requestRes.brollTransition } : {}),
       ...rootLinkInput(input.rootJobId),
       ...(input.rootJobId && input.mcpExportAfter
         ? {

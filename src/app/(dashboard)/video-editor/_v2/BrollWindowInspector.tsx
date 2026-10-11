@@ -52,6 +52,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
+function transitionLabel(transition: "dissolve" | "cut") {
+  return transition === "cut" ? "ตัดชน" : "ละลาย";
+}
+
 function fmtMs(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -127,7 +131,7 @@ type SearchCandidate = { id: string; provider: "pexels" | "pixabay"; thumb: stri
 // level (not inside the inspector) so it stays visible while the user keeps editing
 // more windows with the inspector closed. ──────────────────────────────────────
 export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
-  if (ed.windowEdits.size === 0) return null;
+  if (ed.pendingBrollEditCount === 0) return null;
   const busy = !!ed.applyingWindows && ed.applyingWindows.phase !== "disconnected";
   const pending = !!ed.applyingWindows;
   return (
@@ -150,7 +154,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
             : "ตัวอย่างยังเป็นวิดีโอเดิม"}
         </span>
         <span style={{ fontSize: 10.5, color: color.textFaint }}>
-          แก้ B-roll ไว้ {ed.windowEdits.size} ช่วง · กดอัปเดตครั้งเดียวเพื่อเรนเดอร์ทั้งคลิป
+          แก้ B-roll ไว้ {ed.pendingBrollEditCount} จุด · กดอัปเดตครั้งเดียวเพื่อเรนเดอร์ทั้งคลิป
         </span>
       </span>
       <button
@@ -192,7 +196,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       >
         {busy ? ed.applyingWindowsLabel
           : pending ? "ตรวจสถานะอีกครั้ง"
-            : `อัปเดตวิดีโอ (${ed.windowEdits.size} ช่วง) — ฟรี ไม่ใช้นาทีเพิ่ม`}
+            : `อัปเดตวิดีโอ (${ed.pendingBrollEditCount} จุด) — ฟรี ไม่ใช้นาทีเพิ่ม`}
       </BtnPrimary>
     </div>
   );
@@ -201,7 +205,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
 /** Blocks destructive navigation and stale export while browser-only B-roll edits are pending. */
 export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
   const intent = ed.pendingBrollIntent;
-  const count = ed.windowEdits.size;
+  const count = ed.pendingBrollEditCount;
   const isExport = intent === "export";
   return (
     <AlertDialog
@@ -377,6 +381,7 @@ export function BrollWindowInspector({
   if (index == null || !span) return null;
 
   const existingEdit = ed.windowEdits.get(index) ?? null;
+  const windowStyle = ed.brollWindowStyle(index);
   const currentSourceLabel = existingEdit?.kind
     ? sourceLabel(existingEdit.kind)
     : entrySourceLabel(rawEntry);
@@ -787,6 +792,54 @@ export function BrollWindowInspector({
           />
         </div>
       )}
+      {fullBrollEditEnabled && (
+        <div
+          className="flex flex-col gap-2"
+          style={{
+            padding: "10px 12px",
+            borderRadius: radius.card,
+            border: `1px solid ${color.cardBorder}`,
+            background: "rgba(255,255,255,.025)",
+          }}
+        >
+          <GroupLabel>การจัดภาพ</GroupLabel>
+          <Segmented
+            ariaLabel="การจัดภาพช่วงนี้"
+            value={windowStyle.fit}
+            onChange={(fit) => ed.setBrollWindowStyle(index, { fit })}
+            options={[
+              { value: "cover", label: "เต็มจอ (ครอป)", title: "ภาพเต็มจอ ตัดขอบที่เกินออก (ค่าเดิม)" },
+              { value: "contain", label: "พอดีภาพ", title: "เห็นภาพครบ ขอบบน-ล่างเป็นภาพเดียวกันแบบเบลอ" },
+            ]}
+          />
+          <GroupLabel>ตอนจบช่วงนี้</GroupLabel>
+          <Segmented
+            ariaLabel="ตอนจบช่วงนี้"
+            value={windowStyle.followsDefault ? "default" : windowStyle.transition}
+            onChange={(transition) => ed.setBrollWindowStyle(index, { transition })}
+            options={[
+              { value: "default", label: `ตามค่าหลัก (${transitionLabel(ed.brollTransitionDefault)})` },
+              { value: "dissolve", label: "ละลาย" },
+              { value: "cut", label: "ตัดชน" },
+            ]}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span style={{ fontSize: 10.5, color: color.textFaint }}>ค่าหลักทั้งคลิป</span>
+            <Segmented
+              ariaLabel="ค่าหลักการเปลี่ยนฉากทั้งคลิป"
+              value={ed.brollTransitionDefault}
+              onChange={(transition) => ed.setBrollTransitionDefault(transition)}
+              options={[
+                { value: "dissolve", label: "ละลาย" },
+                { value: "cut", label: "ตัดชน" },
+              ]}
+            />
+          </div>
+          <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.45 }}>
+            ละลาย = ภาพค่อยๆ เปลี่ยนเข้าช่วงถัดไป · ตัดชน = เปลี่ยนทันที (ช่วงสุดท้ายจะจบโดยไม่จางเป็นสีดำ) · เห็นผลหลังกดอัปเดตวิดีโอ
+          </span>
+        </div>
+      )}
       {hasPendingWindowEdit && fullBrollEditEnabled && (
         <div
           role="status"
@@ -1058,9 +1111,14 @@ export function BrollWindowInspector({
     </div>
   );
 
-  const footerSummary = ed.windowEdits.size > 0 && (
+  const footerSummary = ed.pendingBrollEditCount > 0 && (
     <div className="flex flex-col gap-1.5 pt-3" style={{ borderTop: `1px solid ${color.cardBorder}` }}>
-      <GroupLabel>แก้ไขแล้ว ({ed.windowEdits.size})</GroupLabel>
+      <GroupLabel>แก้ไขแล้ว ({ed.pendingBrollEditCount})</GroupLabel>
+      {ed.brollTransitionDefaultStaged && (
+        <span style={{ fontSize: 11.5, color: color.textSecondary }}>
+          ค่าหลักทั้งคลิป · {transitionLabel(ed.brollTransitionDefault)}
+        </span>
+      )}
       {Array.from(ed.windowEdits.entries()).map(([idx, e]) => {
         const pos = (spans.findIndex((s) => s.index === idx) + 1) || idx + 1;
         return (
@@ -1070,6 +1128,8 @@ export function BrollWindowInspector({
               {e.src ? ` · ${sourceLabel(e.kind ?? null)}` : ""}
               {typeof e.enabled === "boolean" ? ` · ${e.enabled ? "เปิด" : "ปิด"}` : ""}
               {typeof e.startSec === "number" || typeof e.endSec === "number" ? " · ปรับเวลา" : ""}
+              {e.fit ? ` · ${e.fit === "contain" ? "พอดีภาพ" : "เต็มจอ"}` : ""}
+              {e.transition ? ` · ตอนจบ${e.transition === "default" ? "ตามค่าหลัก" : transitionLabel(e.transition)}` : ""}
             </span>
             <button
               onClick={() => ed.clearWindowEdit(idx)}
