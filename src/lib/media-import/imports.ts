@@ -2,6 +2,26 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { MediaImport, McpUploadToken, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { MAX_BROLL_IMAGE_BYTES, MAX_BROLL_VIDEO_BYTES } from "@/lib/media-import/broll-pipeline";
+import {
+  ACTIVE_IMPORT_RETRY_SECONDS,
+  IMPORT_QUEUE_DEADLINE_MS,
+  MAX_ACTIVE_IMPORTS,
+  MAX_ACTIVE_IMPORT_BYTES_PER_USER,
+  MAX_IMPORT_BYTES_PER_DAY,
+  MAX_IMPORT_BYTES_PER_HOUR,
+  MAX_PRESENTER_IMPORT_BYTES,
+  MAX_STAGED_IMPORT_BYTES,
+} from "@/lib/media-import/limits";
+
+export {
+  IMPORT_QUEUE_DEADLINE_MS,
+  MAX_ACTIVE_IMPORTS,
+  MAX_ACTIVE_IMPORT_BYTES_PER_USER,
+  MAX_IMPORT_BYTES_PER_DAY,
+  MAX_IMPORT_BYTES_PER_HOUR,
+  MAX_PRESENTER_IMPORT_BYTES,
+  MAX_STAGED_IMPORT_BYTES,
+};
 
 /**
  * Media Import rows, upload links and their DB admission (Task 11, PR-B — plan
@@ -22,8 +42,14 @@ import { MAX_BROLL_IMAGE_BYTES, MAX_BROLL_VIDEO_BYTES } from "@/lib/media-import
  *
  * "Active" means pending/processing AND still inside `deadlineAt`: a row past its deadline is
  * one the watchdog (Task 12) fails, so it holds neither a user's slot nor staging budget — a
- * stalled lane can never lock a user out. The disk itself is guarded separately by the
- * free-space floor the PUT checks before staging (upload-staging.ts).
+ * stalled lane can never lock a user out. The disk itself is guarded by the free-space floor,
+ * which the PUT's admission checks inside the same transaction (upload-staging.ts).
+ *
+ * Byte budgets (limits.ts): each import counts `bytes` — the declared Content-Length while an
+ * upload streams in, then what was staged or fetched — or, while that is unknown, its purpose's
+ * byte cap. Live imports count against the user's staging share and the global budget; ready and
+ * live imports count against the user's rolling hour / 24 h budgets; failed or expired ones count
+ * nowhere (their files are deleted).
  */
 
 export const UPLOAD_KINDS = ["image", "video", "presenter"] as const;
@@ -37,9 +63,6 @@ export const UPLOAD_KIND_PURPOSE: Record<UploadKind, MediaImportPurpose> = {
   video: "broll_video",
   presenter: "presenter",
 };
-
-/** Presenter clip limit — the same 500 MB as the web upload (/api/videos/upload-avatar, G22). */
-export const MAX_PRESENTER_IMPORT_BYTES = 500 * 1024 * 1024;
 
 export const UPLOAD_KIND_MAX_BYTES: Record<UploadKind, number> = {
   image: MAX_BROLL_IMAGE_BYTES,
@@ -56,26 +79,20 @@ const PURPOSE_MAX_BYTES: Record<MediaImportPurpose, number> = {
 // G25 — accepted by Mew 2026-10-03. Raised 2026-10-05 (HERO-69): a real 22-window video needed
 // 22 upload links in one agent run and hit the old 10/hour link cap twice (two ~1h waits) — real
 // demand, not waste. The old 30/hour import cap was the next wall, at two such videos an hour.
-export const MAX_ACTIVE_IMPORTS = 3;
+// The active-import cap and the byte budgets live in limits.ts (env-overridable).
 export const MAX_IMPORTS_PER_HOUR = 60;
 export const MAX_UPLOAD_LINKS_PER_HOUR = 60;
 const HOUR_MS = 60 * 60 * 1000;
-
-/**
- * Global staging budget (all users): every active import reserves its purpose's byte cap, and
- * one more is admitted only while the sum stays within this — e.g. 20 presenter clips at once.
- * Bounds what can be parked on the disk prod SQLite shares (security review A1).
- */
-export const MAX_STAGED_IMPORT_BYTES = 10 * 1024 ** 3;
+const DAY_MS = 24 * HOUR_MS;
 
 /** G26: an upload link dies 15 minutes after it was issued. */
 export const UPLOAD_TOKEN_TTL_MS = 15 * 60 * 1000;
 /** Watchdog bound for a row whose bytes are still streaming in (status "processing"). */
 export const UPLOAD_RECEIVE_DEADLINE_MS = 15 * 60 * 1000;
 /**
- * G23: wall-clock budget of one import phase in the import lane — waiting in the queue
- * ("pending", set when it is queued), then again from the moment the lane claims it
- * ("processing", reset at claim by lane.ts so a long queue wait cannot eat the fetch budget).
+ * G23: wall-clock budget of an import once the lane claims it ("processing", set at claim by
+ * lane.ts so a long queue wait cannot eat the fetch budget). Waiting in the queue ("pending")
+ * has its own, longer IMPORT_QUEUE_DEADLINE_MS (limits.ts): a burst queues behind other users'.
  */
 export const IMPORT_DEADLINE_MS = 10 * 60 * 1000;
 
@@ -102,13 +119,21 @@ export function hashUploadToken(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-export type AdmissionCode = "too_many_active_imports" | "import_hourly_limit" | "upload_link_hourly_limit" | "storage_busy";
+export type AdmissionCode =
+  | "too_many_active_imports"
+  | "import_hourly_limit"
+  | "upload_link_hourly_limit"
+  | "active_import_bytes_limit"
+  | "import_bytes_hourly_limit"
+  | "import_bytes_daily_limit"
+  | "storage_busy";
 
 class AdmissionRefused extends Error {
   constructor(
     readonly code: AdmissionCode | "upload_link_invalid",
-    /** HERO-69: how long until the oldest row counted against an hourly cap leaves the rolling
-     *  1-hour window. Only set for `import_hourly_limit` / `upload_link_hourly_limit`. */
+    /** HERO-69: seconds until the refusal is expected to clear — for a rolling-window cap, when
+     *  enough of what it counts ages out of the window; for the active-import caps, a fixed hint
+     *  (ACTIVE_IMPORT_RETRY_SECONDS). Unset for `storage_busy`. */
     readonly retryAfterSeconds?: number,
   ) {
     super(code);
@@ -116,42 +141,131 @@ class AdmissionRefused extends Error {
 }
 
 /**
- * HERO-69: seconds until `oldest` (the earliest row still counted in the rolling 1-hour window)
- * ages out of it — `ceil((oldest + 1h − now) / 1000)`, floored at 1. Since `oldest` is inside the
- * window by construction (`> now - 1h`), this is always in `[1, 3600]`.
+ * HERO-69: seconds until `oldest` (the earliest row still counted in the rolling window) ages
+ * out of it — `ceil((oldest + window − now) / 1000)`, floored at 1. Since `oldest` is inside the
+ * window by construction (`> now - window`), this is always in `[1, window]`.
  */
-function retryAfterSecondsFor(oldest: Date, now: Date): number {
-  return Math.max(1, Math.ceil((oldest.getTime() + HOUR_MS - now.getTime()) / 1000));
+function retryAfterSecondsFor(oldest: Date, now: Date, windowMs = HOUR_MS): number {
+  return Math.max(1, Math.ceil((oldest.getTime() + windowMs - now.getTime()) / 1000));
+}
+
+/** What one import counts for in the byte budgets: its known size, else its purpose's cap. */
+function countedBytes(row: { purpose: string; bytes: number | null }): number {
+  return row.bytes ?? PURPOSE_MAX_BYTES[row.purpose as MediaImportPurpose] ?? MAX_PRESENTER_IMPORT_BYTES;
 }
 
 /**
- * Throws AdmissionRefused when one more import of `purpose` would break a G25 cap or the budget.
- * `excludeId` is the row the caller already inserted in this transaction (write first), which
- * must not count against itself.
+ * A rolling byte window over the user's ready/live imports: null when `reservation` more still
+ * fits, else the seconds until enough of the oldest counted bytes leave the window for it to fit.
+ */
+function byteWindowRetry(
+  rows: ReadonlyArray<{ createdAt: Date; counted: number }>,
+  reservation: number,
+  limit: number,
+  windowMs: number,
+  now: Date,
+): number | null {
+  const inWindow = rows.filter((row) => row.createdAt.getTime() > now.getTime() - windowMs);
+  let excess = inWindow.reduce((sum, row) => sum + row.counted, 0) + reservation - limit;
+  if (excess <= 0) return null;
+  for (const row of [...inWindow].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+    excess -= row.counted;
+    if (excess <= 0) return retryAfterSecondsFor(row.createdAt, now, windowMs);
+  }
+  return Math.ceil(windowMs / 1000);
+}
+
+type CapacityOptions = {
+  /** The row the caller already inserted in this transaction (write first) — never counts against itself. */
+  excludeId?: string;
+  /** Bytes this import reserves (a declared Content-Length); default its purpose's byte cap. */
+  bytes?: number;
+  /** The PUT: the staging disk must keep its free-space floor after this import AND every upload
+   *  still streaming in or import being processed (plan follow-up 2). Throwing = cannot tell. */
+  diskRoomFor?: (bytes: number) => boolean;
+};
+
+/**
+ * Throws AdmissionRefused when one more import of `purpose` would break a G25 cap, a byte budget
+ * (limits.ts) or the free-disk floor. Reads the user's own rows from the last 24 h (plus any older
+ * one still live), then one grouped sum over every live import for the global budget.
  */
 async function assertImportCapacity(
   tx: Prisma.TransactionClient,
   userId: string,
   now: Date,
   purpose: MediaImportPurpose,
-  excludeId?: string,
+  options: CapacityOptions = {},
 ): Promise<void> {
-  const notSelf = excludeId ? { id: { not: excludeId } } : {};
-  const active = await tx.mediaImport.count({ where: { userId, ...notSelf, ...liveImportsWhere(now) } });
-  if (active >= MAX_ACTIVE_IMPORTS) throw new AdmissionRefused("too_many_active_imports");
-  const hourlyWhere = { userId, ...notSelf, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } };
-  const lastHour = await tx.mediaImport.count({ where: hourlyWhere });
-  if (lastHour >= MAX_IMPORTS_PER_HOUR) {
-    const oldest = await tx.mediaImport.findFirst({ where: hourlyWhere, orderBy: { createdAt: "asc" }, select: { createdAt: true } });
-    throw new AdmissionRefused("import_hourly_limit", oldest ? retryAfterSecondsFor(oldest.createdAt, now) : undefined);
+  const notSelf = options.excludeId ? { id: { not: options.excludeId } } : {};
+  const reservation = options.bytes ?? PURPOSE_MAX_BYTES[purpose];
+  const live = liveImportsWhere(now);
+
+  // Two index range reads (an OR of both would scan every row the user ever had): the last 24 h,
+  // and — normally none — rows created earlier that are somehow still live.
+  const dayAgo = new Date(now.getTime() - DAY_MS);
+  const select = { status: true, purpose: true, bytes: true, createdAt: true, deadlineAt: true } as const;
+  const mine = [
+    ...await tx.mediaImport.findMany({ where: { userId, ...notSelf, createdAt: { gt: dayAgo } }, select }),
+    // (userId, status) index: only the user's few live rows, of which the older ones are kept.
+    ...(await tx.mediaImport.findMany({ where: { userId, ...notSelf, ...live }, select }))
+      .filter((row) => row.createdAt.getTime() <= dayAgo.getTime()),
+  ];
+  const isLive = (row: (typeof mine)[number]) =>
+    (MEDIA_IMPORT_ACTIVE_STATUSES as readonly string[]).includes(row.status) && row.deadlineAt.getTime() > now.getTime();
+  const mineLive = mine.filter(isLive);
+
+  if (mineLive.length >= MAX_ACTIVE_IMPORTS) throw new AdmissionRefused("too_many_active_imports", ACTIVE_IMPORT_RETRY_SECONDS);
+
+  const lastHour = mine.filter((row) => row.createdAt.getTime() > now.getTime() - HOUR_MS);
+  if (lastHour.length >= MAX_IMPORTS_PER_HOUR) {
+    const oldest = lastHour.reduce((a, b) => (a.createdAt.getTime() <= b.createdAt.getTime() ? a : b));
+    throw new AdmissionRefused("import_hourly_limit", retryAfterSecondsFor(oldest.createdAt, now));
   }
-  const reserved = await tx.mediaImport.groupBy({ by: ["purpose"], where: { ...notSelf, ...liveImportsWhere(now) }, _count: { _all: true } });
-  const reservedBytes = reserved.reduce(
+
+  // Follow-up 1: bytes over a rolling hour / 24 h (ready + live; failed and expired count 0).
+  const counted = mine
+    .filter((row) => row.status === "ready" || isLive(row))
+    .map((row) => ({ createdAt: row.createdAt, counted: countedBytes(row) }));
+  const hourRetry = byteWindowRetry(counted, reservation, MAX_IMPORT_BYTES_PER_HOUR, HOUR_MS, now);
+  const dayRetry = byteWindowRetry(counted, reservation, MAX_IMPORT_BYTES_PER_DAY, DAY_MS, now);
+  if (hourRetry !== null || dayRetry !== null) {
+    throw (dayRetry ?? 0) > (hourRetry ?? 0)
+      ? new AdmissionRefused("import_bytes_daily_limit", dayRetry!)
+      : new AdmissionRefused("import_bytes_hourly_limit", hourRetry!);
+  }
+
+  // Follow-up 4: one user's live imports may hold at most their share of the staging budget.
+  const mineLiveBytes = mineLive.reduce((sum, row) => sum + countedBytes(row), 0);
+  if (mineLiveBytes + reservation > MAX_ACTIVE_IMPORT_BYTES_PER_USER) throw new AdmissionRefused("active_import_bytes_limit", ACTIVE_IMPORT_RETRY_SECONDS);
+
+  const groups = await tx.mediaImport.groupBy({
+    by: ["purpose", "status"],
+    where: { ...notSelf, ...live },
+    _count: { _all: true, bytes: true },
+    _sum: { bytes: true },
+  });
+  let reserved = 0;
+  let inFlight = 0;
+  for (const group of groups) {
+    const unknown = group._count._all - group._count.bytes;
     // An unknown purpose reserves the largest cap.
-    (sum, group) => sum + (PURPOSE_MAX_BYTES[group.purpose as MediaImportPurpose] ?? MAX_PRESENTER_IMPORT_BYTES) * group._count._all,
-    0,
-  );
-  if (reservedBytes + PURPOSE_MAX_BYTES[purpose] > MAX_STAGED_IMPORT_BYTES) throw new AdmissionRefused("storage_busy");
+    const bytes = (group._sum.bytes ?? 0) + unknown * countedBytes({ purpose: group.purpose, bytes: null });
+    reserved += bytes;
+    // "processing" = bytes still streaming in, being fetched, or being written out by the lane.
+    if (group.status === "processing") inFlight += bytes;
+  }
+  if (reserved + reservation > MAX_STAGED_IMPORT_BYTES) throw new AdmissionRefused("storage_busy");
+
+  if (options.diskRoomFor) {
+    let room = false;
+    try {
+      room = options.diskRoomFor(reservation + inFlight);
+    } catch {
+      room = false; // cannot tell → fail closed
+    }
+    if (!room) throw new AdmissionRefused("storage_busy");
+  }
 }
 
 export type IssuedUploadToken = {
@@ -204,7 +318,8 @@ export type UrlImportAdmissionCode = Exclude<AdmissionCode, "upload_link_hourly_
 
 /**
  * `replace_broll_window(url)`'s admission (T13, G23/G25): queue a url B-roll import for the
- * import lane — "pending", fresh deadline (the lane resets it again when it claims the row).
+ * import lane — "pending", queue deadline (the lane resets it to IMPORT_DEADLINE_MS when it
+ * claims the row). Its size is unknown until fetched, so it reserves its purpose's byte cap.
  * Queued as broll_video (the lane accepts an image or a video and records what the bytes were),
  * or as presenter for a create_video_job clip (T14: video only, T9's presenter checks).
  * The url is only stored for the lane's guarded fetch (G23 is enforced there, at connect time)
@@ -231,10 +346,10 @@ export async function createUrlImport(
           source: "url",
           status: "pending",
           sourceUrl,
-          deadlineAt: new Date(now.getTime() + IMPORT_DEADLINE_MS),
+          deadlineAt: new Date(now.getTime() + IMPORT_QUEUE_DEADLINE_MS),
         },
       });
-      await assertImportCapacity(tx, userId, now, purpose, importId);
+      await assertImportCapacity(tx, userId, now, purpose, { excludeId: importId });
     });
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid" && error.code !== "upload_link_hourly_limit") {
@@ -265,16 +380,26 @@ export type AdmittedUpload = {
 
 /**
  * The PUT's admission: consume the link (single use) and create its MediaImport in
- * "processing" — atomically, and only when the G25 import caps still allow it. A refused
- * admission rolls back, so the link stays usable for a retry within its 15 minutes.
+ * "processing" — atomically, and only when the G25 import caps, the byte budgets and (when
+ * `diskRoomFor` is given) the free-disk floor still allow it. A refused admission rolls back, so
+ * the link stays usable for a retry within its 15 minutes.
+ *
+ * `declaredBytes` (a valid Content-Length within the kind's cap) is what the upload reserves and
+ * is recorded on the row; without it the upload reserves the kind's cap. The route then stages
+ * at most that many bytes.
  */
 export async function admitUpload(
   link: McpUploadToken,
   now: Date = new Date(),
+  options: { declaredBytes?: number; diskRoomFor?: (bytes: number) => boolean } = {},
 ): Promise<AdmittedUpload | { ok: false; code: AdmissionCode | "upload_link_invalid"; retryAfterSeconds?: number }> {
   if (!isUploadKind(link.kind)) return { ok: false, code: "upload_link_invalid" };
   const kind = link.kind;
   const purpose = UPLOAD_KIND_PURPOSE[kind];
+  const declared = options.declaredBytes;
+  const declaredBytes = declared !== undefined && Number.isSafeInteger(declared) && declared > 0 && declared <= UPLOAD_KIND_MAX_BYTES[kind]
+    ? declared
+    : undefined;
   try {
     await prisma.$transaction(async (tx) => {
       // Write first (writer lock), and the conditional write IS the single-use guarantee:
@@ -284,7 +409,7 @@ export async function admitUpload(
         data: { usedAt: now },
       });
       if (consumed.count !== 1) throw new AdmissionRefused("upload_link_invalid");
-      await assertImportCapacity(tx, link.userId, now, purpose);
+      await assertImportCapacity(tx, link.userId, now, purpose, { bytes: declaredBytes, diskRoomFor: options.diskRoomFor });
       await tx.mediaImport.create({
         data: {
           id: link.importId,
@@ -292,6 +417,7 @@ export async function admitUpload(
           purpose,
           source: "upload",
           status: "processing",
+          bytes: declaredBytes ?? null,
           deadlineAt: new Date(now.getTime() + UPLOAD_RECEIVE_DEADLINE_MS),
         },
       });
@@ -300,18 +426,18 @@ export async function admitUpload(
     if (error instanceof AdmissionRefused) return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     throw error;
   }
-  return { ok: true, importId: link.importId, userId: link.userId, kind, purpose, maxBytes: UPLOAD_KIND_MAX_BYTES[kind] };
+  return { ok: true, importId: link.importId, userId: link.userId, kind, purpose, maxBytes: declaredBytes ?? UPLOAD_KIND_MAX_BYTES[kind] };
 }
 
 /**
- * Bytes fully staged: hand the row to the import lane ("pending", fresh deadline). False when
- * the row is no longer "processing" (e.g. the watchdog already failed it) — the caller then
- * discards the staged file.
+ * Bytes fully staged: record how many, and hand the row to the import lane ("pending", queue
+ * deadline). False when the row is no longer "processing" (e.g. the watchdog already failed
+ * it) — the caller then discards the staged file.
  */
-export async function markUploadStaged(importId: string, now: Date = new Date()): Promise<boolean> {
+export async function markUploadStaged(importId: string, bytes: number, now: Date = new Date()): Promise<boolean> {
   const moved = await prisma.mediaImport.updateMany({
     where: { id: importId, status: "processing", source: "upload" },
-    data: { status: "pending", deadlineAt: new Date(now.getTime() + IMPORT_DEADLINE_MS) },
+    data: { status: "pending", bytes, deadlineAt: new Date(now.getTime() + IMPORT_QUEUE_DEADLINE_MS) },
   });
   return moved.count === 1;
 }

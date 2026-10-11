@@ -940,11 +940,15 @@ async function main() {
       && (await prisma.videoJob.count({ where: { userId: duper.user.id } })) === jobs0);
 
     // At the active-import cap, a retry still answers duplicate (never too_many_active_imports).
+    // Fillers are small uploads still streaming in (1 kB each, never claimed by the lane), so the
+    // active-import COUNT binds, not the per-user byte share.
     const importsMod = fromSrc("lib/media-import/imports") as typeof import("../src/lib/media-import/imports");
-    for (let i = 0; i < importsMod.MAX_ACTIVE_IMPORTS; i += 1) {
-      const filler = await importsMod.createUrlImport(duper.user.id, clipLink(`dup-filler-${i}`), new Date(), "broll_video");
-      if (!filler.ok && filler.code !== "too_many_active_imports") throw new Error(`fixture: ${filler.code}`);
-    }
+    await prisma.mediaImport.createMany({
+      data: Array.from({ length: importsMod.MAX_ACTIVE_IMPORTS }, () => ({
+        userId: duper.user.id, purpose: "broll_image", source: "upload", status: "processing", bytes: 1000,
+        deadlineAt: new Date(Date.now() + 10 * 60_000),
+      })),
+    });
     const capped = await callTool(duper.token, TOOL, { clipUrl: clipLink("dup-new"), idempotencyKey: "cij-dup-2" });
     check("fixture: a new clip is refused at the active-import cap", capped.error === "too_many_active_imports", JSON.stringify(capped));
     const imports1 = await prisma.mediaImport.count({ where: { userId: duper.user.id } });

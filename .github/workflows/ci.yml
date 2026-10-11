@@ -389,6 +389,9 @@ jobs:
       - name: Verify Media Import fetch pins the vetted IP, re-checks every redirect, caps bytes and times out (G23)
         run: npm run verify:media-import-fetch
 
+      - name: Verify Media Import per-user byte budgets, staging fair share and upload burst
+        run: npm run verify:media-import-capacity
+
       - name: Verify support tickets link to trusted Sentry and Linear issues
         run: npm run verify:support-observability-links
 

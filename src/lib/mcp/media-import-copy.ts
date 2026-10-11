@@ -4,6 +4,12 @@ import {
   MAX_UPLOAD_LINKS_PER_HOUR,
   type AdmissionCode,
 } from "@/lib/media-import/imports";
+import {
+  MAX_ACTIVE_IMPORT_BYTES_PER_USER,
+  MAX_IMPORT_BYTES_PER_DAY,
+  MAX_IMPORT_BYTES_PER_HOUR,
+  formatImportBytes,
+} from "@/lib/media-import/limits";
 
 /**
  * The G14 refusal copy for a Media Import admission refused by the DB caps (G25). Shared by
@@ -11,18 +17,38 @@ import {
  * kept in its own module so edit-tools.ts and media-import-tools.ts do not import each other.
  * `retryTool` is the tool the agent calls again once there is room.
  *
- * `retryAfterSeconds` (HERO-69): for the two hourly-cap codes, how long until the oldest row
- * counted against the cap ages out of the rolling 1-hour window (computed in imports.ts and
- * carried through `AdmissionRefused`). When present it is also surfaced as a top-level numeric
- * field on the envelope, flat beside `error`/`code`/`message`/`next` (G13/G14: one flat reply,
- * agent-neutral) — never nested. Other refusal codes never get it.
+ * `retryAfterSeconds` (HERO-69): how long until the refusal should clear — for a rolling-window
+ * cap, when enough of what it counts ages out of the window; for the active-import caps, a short
+ * fixed hint (computed in imports.ts and carried through `AdmissionRefused`). When present it is
+ * also surfaced as a top-level numeric field on the envelope, flat beside
+ * `error`/`code`/`message`/`next` (G13/G14: one flat reply, agent-neutral) — never nested.
+ * `storage_busy` never gets it (it depends on other users).
+ *
+ * The byte-budget codes (limits.ts) carry a short English gloss after the Thai, so an agent that
+ * does not read Thai still knows which budget it hit.
  */
 export function admissionRefusal(code: AdmissionCode, retryTool = "create_upload_url", retryAfterSeconds?: number) {
   const minutes = retryAfterSeconds !== undefined ? Math.max(1, Math.ceil(retryAfterSeconds / 60)) : undefined;
+  const wait = minutes === undefined ? undefined : minutes > 90 ? `ประมาณ ${Math.ceil(minutes / 60)} ชั่วโมง` : `ประมาณ ${minutes} นาที`;
+  const share = formatImportBytes(MAX_ACTIVE_IMPORT_BYTES_PER_USER);
+  const perHour = formatImportBytes(MAX_IMPORT_BYTES_PER_HOUR);
+  const perDay = formatImportBytes(MAX_IMPORT_BYTES_PER_DAY);
   const copy: Record<AdmissionCode, { message: string; next: string }> = {
     too_many_active_imports: {
       message: `มีไฟล์กำลังนำเข้าอยู่ครบ ${MAX_ACTIVE_IMPORTS} ไฟล์แล้ว`,
-      next: `รอให้ไฟล์ที่กำลังนำเข้าเสร็จก่อน แล้วค่อยเรียก ${retryTool} อีกครั้ง`,
+      next: `รอให้ไฟล์ที่กำลังนำเข้าเสร็จก่อน${wait ? ` (${wait})` : ""} แล้วค่อยเรียก ${retryTool} อีกครั้ง`,
+    },
+    active_import_bytes_limit: {
+      message: `ไฟล์ที่กำลังนำเข้าของคุณรวมกันเกิน ${share} แล้ว (your imports in progress would exceed ${share})`,
+      next: `รอให้ไฟล์ที่กำลังนำเข้าเสร็จก่อน${wait ? ` (${wait})` : ""} แล้วค่อยเรียก ${retryTool} อีกครั้ง`,
+    },
+    import_bytes_hourly_limit: {
+      message: `นำเข้าไฟล์รวมครบ ${perHour} ในหนึ่งชั่วโมงแล้ว (import limit of ${perHour} per hour reached)`,
+      next: `รอ${wait ?? "สักพัก (ไม่เกิน 1 ชั่วโมง)"} แล้วเรียก ${retryTool} อีกครั้ง หรือใช้ไฟล์ที่เล็กลง`,
+    },
+    import_bytes_daily_limit: {
+      message: `นำเข้าไฟล์รวมครบ ${perDay} ใน 24 ชั่วโมงแล้ว (import limit of ${perDay} per 24 hours reached)`,
+      next: `รอ${wait ?? "สักพัก (ไม่เกิน 24 ชั่วโมง)"} แล้วเรียก ${retryTool} อีกครั้ง หรือใช้ไฟล์ที่เล็กลง`,
     },
     import_hourly_limit: {
       message: `นำเข้าไฟล์ครบ ${MAX_IMPORTS_PER_HOUR} ไฟล์ในหนึ่งชั่วโมงแล้ว`,

@@ -70,7 +70,9 @@ export function stageFetchedFile(importId: string, fromPath: string): void {
 /**
  * Free-disk floor for staging (security review A1): an upload is admitted only while the staging
  * filesystem — the root disk prod SQLite lives on — would keep at least this much free after
- * the kind's full byte cap lands. Below it the PUT refuses with 503 `storage_busy`, link kept.
+ * its bytes (the declared size, else the kind's cap) AND every upload still in flight land
+ * (checked inside the admission transaction, imports.ts). Below it the PUT refuses with 503
+ * `storage_busy`, link kept.
  */
 export const STAGING_MIN_FREE_BYTES = 5 * 1024 ** 3;
 
