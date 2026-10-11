@@ -211,6 +211,8 @@
     "verify:upload-probe-whitelist": "node --experimental-test-module-mocks --import tsx scripts/verify-upload-probe-whitelist.ts",
     "verify:ffmpeg-input-hardening": "node --experimental-test-module-mocks --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-ffmpeg-input-hardening.ts",
     "verify:export-audio-sync": "tsx scripts/verify-export-audio-sync.ts",
+    "verify:export-loudnorm": "tsx scripts/verify-export-loudnorm.ts",
+    "verify:tail-hold": "tsx scripts/verify-tail-hold.ts && node --conditions=react-server --import tsx scripts/verify-tail-hold-pending-draft.ts",
     "verify:media-import-broll-pipeline": "tsx scripts/verify-media-import-broll-pipeline.ts",
     "verify:broll-upload-color-levels": "tsx scripts/verify-broll-upload-color-levels.ts",
     "verify:media-import-presenter-checks": "tsx scripts/verify-media-import-presenter-checks.ts",

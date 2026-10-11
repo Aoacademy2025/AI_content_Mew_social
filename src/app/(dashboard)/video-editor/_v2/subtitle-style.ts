@@ -26,6 +26,7 @@ import {
   normalizeHeadlineHook,
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -235,6 +236,10 @@ export function buildV2BurnConfig(
   logoOverlay?: LogoOverlayConfig,
   layerVisibility: EditorLayerVisibility = DEFAULT_EDITOR_LAYER_VISIBILITY,
   headlineHook?: HeadlineHookConfig,
+  /** EP5 backlog #14: hold the last frame this many ms after the voice ends (0-3000, default 0
+   *  = today's behaviour exactly). Added to `durationInFrames` AFTER every caption/popup is
+   *  clamped against the ORIGINAL (pre-hold) duration below, so subtitles never show in it. */
+  tailHoldMs = 0,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -266,11 +271,12 @@ export function buildV2BurnConfig(
     return [{ ...popup, start, end }];
   }) : [];
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
-  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs);
+  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs, cfg.verticalPos);
+  const tailHoldFrames = Math.round((clampTailHoldMs(tailHoldMs) / 1000) * fps);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
-    durationInFrames,
+    durationInFrames: durationInFrames + tailHoldFrames,
     fontFamily: cfg.fontFamily,
     subtitleStylePreset: cfg.preset,
     subtitleTextEffect: cfg.effect,
@@ -278,6 +284,7 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(tailHoldFrames > 0 ? { tailHoldFrames } : {}),
     ...(normalizedHeadlineHook?.enabled ? { headlineHook: normalizedHeadlineHook } : {}),
     ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),
   };

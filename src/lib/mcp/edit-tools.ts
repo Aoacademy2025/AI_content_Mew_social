@@ -48,9 +48,13 @@ import type { SubPreset, SubTextEffect } from "@/app/(dashboard)/video-editor/_c
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { shiftCaptionOverrides } from "@/lib/caption-card-editing";
 import {
+  HEADLINE_HOOK_ANCHORS,
+  HEADLINE_HOOK_CANVAS_HEIGHT_PX,
   HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_OFFSET_PERCENT,
+  MIN_HEADLINE_HOOK_OFFSET_PERCENT,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
   type HeadlineHookFontFamily,
@@ -58,6 +62,7 @@ import {
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
+import { clampTailHoldMs, TAIL_HOLD_MS_MAX, TAIL_HOLD_MS_MIN } from "@/lib/tail-hold";
 import {
   discardPendingEditDraft,
   draftDurationMs,
@@ -88,6 +93,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "regroup_captions",
   "set_subtitle_style",
   "set_headline_hook",
+  "set_tail_hold",
   "discard_edits",
   "replace_broll_window",
   "set_broll_style",
@@ -156,11 +162,19 @@ export const setHeadlineHookInputShape = {
   subheadline: z.string().optional().describe("ข้อความรอง (ไม่เกิน 90 ตัวอักษร 1 บรรทัด, ส่งว่างเพื่อลบ)"),
   durationMs: z.number().int().describe("ระยะเวลาที่พาดหัวค้างอยู่ (ms)").optional(),
   preset: z.enum(nonEmptyEnum(HEADLINE_HOOK_PRESETS)).optional().describe("สไตล์พาดหัว"),
-  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัว 10-42 (% จากขอบบน)").optional(),
+  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัวแบบเดิม 10-42 (% จากขอบบน) — ใช้ได้เฉพาะตอนไม่ส่ง anchor/offsetPx/offsetPercent เลย (ของเดิมที่ไม่มี field ใหม่ยังเรนเดอร์เหมือนก่อนทุกอย่าง); ถ้าต้องการวางใกล้ขอบล่างหรือกำหนดระยะเป็นพิกเซล ให้ใช้ anchor + offsetPx/offsetPercent แทน").optional(),
+  anchor: z.enum(HEADLINE_HOOK_ANCHORS).optional().describe("อ้างอิงตำแหน่งจากขอบบนหรือขอบล่างของจอ (ไม่ระบุ = บน เหมือนเดิม) — ใช้ร่วมกับ offsetPx/offsetPercent"),
+  offsetPx: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วยพิกเซลของจอ 1080×${HEADLINE_HOOK_CANVAS_HEIGHT_PX} — ระบบจะกันไม่ให้พาดหัวทับแถบซับหรือหลุดขอบจอให้อัตโนมัติ (ตำแหน่งที่ได้จริงอาจถูกขยับเข้ามาถ้าชนขอบเขตเหล่านี้ ดูค่าจริงที่ topPercent/offsetPercent ในผลลัพธ์) ส่งอย่างใดอย่างหนึ่งจาก offsetPx/offsetPercent ถ้าส่งทั้งคู่ offsetPx ชนะ`).optional(),
+  offsetPercent: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วย % ของความสูงจอ (${MIN_HEADLINE_HOOK_OFFSET_PERCENT}-${MAX_HEADLINE_HOOK_OFFSET_PERCENT}) — ส่งแทน offsetPx ก็ได้ ระบบกันทับแถบซับ/ขอบจอให้อัตโนมัติเช่นกัน`).optional(),
   fontFamily: z.enum(nonEmptyEnum(HEADLINE_HOOK_FONT_VALUES)).optional().describe("ฟอนต์พาดหัว"),
   fontSize: z.number().int().describe("ขนาดฟอนต์พาดหัว 52-120 px").optional(),
   fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์พาดหัว"),
   subheadlineFontSize: z.number().int().describe("ขนาดฟอนต์ข้อความรอง 32-88 px").optional(),
+} satisfies z.ZodRawShape;
+
+export const setTailHoldInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  tailHoldMs: z.number().int().describe(`ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card) — ${TAIL_HOLD_MS_MIN}-${TAIL_HOLD_MS_MAX}, ค่าเริ่มต้น 0 = ไม่ค้าง`),
 } satisfies z.ZodRawShape;
 
 export const discardEditsInputShape = {
@@ -294,13 +308,22 @@ const ALLOWED = {
     headlineMaxChars: 64,
     subheadlineMaxChars: 90,
     durationMs: { min: 3_000, max: 20_000 },
+    // Legacy placement — only applies when anchor/offsetPx/offsetPercent are all omitted.
     topPercent: { min: 10, max: 42 },
+    // EP5 #13: anchor + offset, in px of a 1080×1920 canvas or in % of its height. The server
+    // always keeps the headline off the subtitle band and off the canvas edge, so the applied
+    // position (echoed back as topPercent/offsetPercent) may differ from what was requested.
+    anchors: [...HEADLINE_HOOK_ANCHORS],
+    offsetPercent: { min: MIN_HEADLINE_HOOK_OFFSET_PERCENT, max: MAX_HEADLINE_HOOK_OFFSET_PERCENT },
+    offsetPxCanvasHeight: HEADLINE_HOOK_CANVAS_HEIGHT_PX,
     presets: [...HEADLINE_HOOK_PRESETS],
     fonts: HEADLINE_HOOK_FONT_VALUES,
     fontWeight: HEADLINE_HOOK_FONT_WEIGHTS.map((weight) => String(weight)),
     fontSize: { min: 52, max: 120 },
     subheadlineFontSize: { min: 32, max: 88 },
   },
+  // tail-hold.ts's own bounds (set_tail_hold, EP5 backlog #14).
+  tailHoldMs: { min: TAIL_HOLD_MS_MIN, max: TAIL_HOLD_MS_MAX },
 };
 
 // get_edit_state's `allowed.fonts` (and set_subtitle_style's schema) list only the canonical
@@ -581,11 +604,12 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
+    tailHoldMs: state.draft.tailHoldMs,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered),
     brollTransition: draftProjectTransition(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -863,6 +887,9 @@ function headlineHookPatchFields(args: ShapeArgs<typeof setHeadlineHookInputShap
   if (args.durationMs !== undefined) fields.durationMs = args.durationMs;
   if (args.preset !== undefined) fields.preset = args.preset;
   if (args.topPercent !== undefined) fields.topPercent = args.topPercent;
+  if (args.anchor !== undefined) fields.anchor = args.anchor;
+  if (args.offsetPx !== undefined) fields.offsetPx = args.offsetPx;
+  if (args.offsetPercent !== undefined) fields.offsetPercent = args.offsetPercent;
   if (args.fontFamily !== undefined) fields.fontFamily = args.fontFamily;
   if (args.fontSize !== undefined) fields.fontSize = args.fontSize;
   if (args.fontWeight !== undefined) fields.fontWeight = Number(args.fontWeight);
@@ -878,7 +905,7 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
   const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
     const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
     const merged = { ...(draft.headlineHook ?? {}), ...headlineHookPatchFields(args) };
-    const normalized = normalizeHeadlineHook(merged, totalDurationMs);
+    const normalized = normalizeHeadlineHook(merged, totalDurationMs, draft.subtitleConfig.verticalPos);
     if (!normalized) return { ok: false, code: "invalid_input", message: "ค่าพาดหัวไม่ถูกต้อง" };
     draft.headlineHook = normalized;
     return { ok: true, draft };
@@ -888,6 +915,30 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
     ok: true,
     jobId: held.root.id,
     headlineHook: updated.state.draft.headlineHook ?? null,
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_tail_hold (EP5 backlog #14) ──────────────────────────────────────────────────────────
+
+export async function setTailHoldTool(userId: string, args: ShapeArgs<typeof setTailHoldInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (!Number.isFinite(args.tailHoldMs)) {
+    return editToolFailure("invalid_input", "ค่า tailHoldMs ต้องเป็นตัวเลข", "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  }
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    draft.tailHoldMs = clampTailHoldMs(args.tailHoldMs);
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    tailHoldMs: updated.state.draft.tailHoldMs,
     draftRevision: updated.state.revision,
     next: NEXT_MORE_EDITS,
   };
@@ -1742,6 +1793,19 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("set_headline_hook", extra, (p) => setHeadlineHookTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_tail_hold",
+    {
+      title: "Set tail hold",
+      description: "ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card/ชวนแอ็กชัน) — 0-3000, ค่าเริ่มต้น 0 = ไม่ค้าง (เหมือนเดิม). เพลงพื้นหลังเล่นต่อตลอดช่วงที่ค้าง ซับไม่โชว์ในช่วงนี้. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: setTailHoldInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_tail_hold", extra, (p) => setTailHoldTool(p.userId, args), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(

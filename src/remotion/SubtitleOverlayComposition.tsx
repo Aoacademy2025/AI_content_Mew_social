@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Freeze, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import { logoOverlayFrame } from "../lib/logo-overlay";
 import { headlineHookEndFrame } from "../lib/headline-hook";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
@@ -30,6 +30,7 @@ export function SubtitleOverlayComposition({
   bgmFile,
   bgmVolume = 0.12,
   logoOverlay,
+  tailHoldFrames = 0,
 }: SubtitleOverlayConfig) {
   const { width, height, fps, durationInFrames } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
@@ -37,16 +38,25 @@ export function SubtitleOverlayComposition({
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
   const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
+  // EP5 backlog #14: `durationInFrames` already includes the hold (buildV2BurnConfig adds it).
+  // `baseDurationInFrames` is where the ORIGINAL video/captions end; freezing only kicks in past
+  // it, so tailHoldFrames=0 (today's default) leaves every frame unfrozen — identical output.
+  const baseDurationInFrames = Math.max(1, durationInFrames - tailHoldFrames);
+  const lastFrame = Math.max(0, baseDurationInFrames - 1);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Background video — plays WITH its original audio (TTS / voice). */}
-      <OffthreadVideo
-        src={videoUrl}
-        style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: "cover" }}
-      />
+      {/* Background video — plays WITH its original audio (TTS / voice). Past
+          baseDurationInFrames (the tail hold), it freezes on the last frame instead of going
+          black/ending early. */}
+      <Freeze frame={lastFrame} active={(f) => f >= baseDurationInFrames}>
+        <OffthreadVideo
+          src={videoUrl}
+          style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: "cover" }}
+        />
+      </Freeze>
 
       {/* Background music — mixed in here so the avatar path (whose composite has
           voice only) still gets BGM in the final burned video. Looped to cover

@@ -29,6 +29,7 @@ import {
   type BrollTransition,
   type BrollTransitionEdit,
 } from "@/lib/broll-window-style";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -79,6 +80,9 @@ export type PendingEditDraft = {
   headlineHook?: HeadlineHookConfig;
   /** Carried through unchanged from the project draft (MCP never edits the logo). */
   logoOverlay?: LogoOverlayConfig;
+  /** EP5 backlog #14 (ADR 0066: shared draft field, exposed to both web and MCP). 0-3000 ms,
+   *  default 0 = today's behaviour. */
+  tailHoldMs: number;
   windowEdits: PendingEditWindowEdit[];
   /** EP5 #11: a new project-default B-roll transition the next export re-renders with. */
   brollTransition?: BrollTransition;
@@ -141,7 +145,7 @@ export function draftDurationMs(preview: VideoJobPreviewData, captions: readonly
   return Math.max(preview.audioDurationMs || 0, captions[captions.length - 1]?.endMs ?? 0, 1_000);
 }
 
-function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides">): EditorExportDraft {
+function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides" | "tailHoldMs">): EditorExportDraft {
   return {
     version: 1,
     captions: draft.captions,
@@ -149,6 +153,7 @@ function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptio
     subtitleConfig: draft.subtitleConfig,
     cardLen: draft.cardLen,
     captionOverrides: draft.captionOverrides,
+    tailHoldMs: draft.tailHoldMs,
   };
 }
 
@@ -190,7 +195,9 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   if (!editor || !windowEdits) return null;
   const words = Array.isArray(input.words) ? input.words as PendingEditDraft["words"] : undefined;
   const fullText = typeof input.fullText === "string" ? input.fullText : undefined;
-  const headlineHook = input.headlineHook === undefined ? undefined : normalizeHeadlineHook(input.headlineHook, 86_400_000);
+  const headlineHook = input.headlineHook === undefined
+    ? undefined
+    : normalizeHeadlineHook(input.headlineHook, 86_400_000, editor.subtitleConfig.verticalPos);
   const logoOverlay = input.logoOverlay === undefined ? undefined : normalizeLogoOverlayConfig(input.logoOverlay);
   if (headlineHook === null || logoOverlay === null) return null;
   if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
@@ -207,6 +214,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     captionOverrides: editor.captionOverrides,
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
+    tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
     ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
   };
@@ -238,7 +246,12 @@ export function seedPendingEditDraft(input: {
   const words = snapshot?.preview.words ?? preview.words;
   const fullText = snapshot?.preview.fullText ?? preview.fullText;
   const projectDraft = record(parseJson(input.projectDraftJson)) ?? {};
-  const headlineHook = normalizeHeadlineHook(projectDraft.headlineHook, draftDurationMs(preview, captions));
+  const subtitleConfig = (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design };
+  const headlineHook = normalizeHeadlineHook(
+    projectDraft.headlineHook,
+    draftDurationMs(preview, captions),
+    subtitleConfig.verticalPos,
+  );
   const logoOverlay = normalizeLogoOverlayConfig(projectDraft.logoOverlay);
   return {
     version: 1,
@@ -249,10 +262,11 @@ export function seedPendingEditDraft(input: {
     ...(Array.isArray(words) ? { words } : {}),
     ...(typeof fullText === "string" ? { fullText } : {}),
     cardLen: snapshot?.cardLen ?? design.cardLen,
-    subtitleConfig: (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design },
+    subtitleConfig,
     captionOverrides: snapshot?.captionOverrides ?? {},
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
+    tailHoldMs: clampTailHoldMs(snapshot?.tailHoldMs),
     windowEdits: [],
   };
 }
@@ -539,6 +553,7 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     draft.logoOverlay,
     undefined,
     draft.headlineHook,
+    draft.tailHoldMs,
   );
 }
 
@@ -565,6 +580,7 @@ export type PendingEditForWeb = {
     subtitleConfig: V2SubConfig;
     captionOverrides: V2CardOverrides;
     headlineHook?: HeadlineHookConfig;
+    tailHoldMs: number;
   };
 };
 
@@ -587,6 +603,7 @@ export function pendingEditForWeb(project: {
       subtitleConfig: draft.subtitleConfig,
       captionOverrides: draft.captionOverrides,
       ...(draft.headlineHook ? { headlineHook: draft.headlineHook } : {}),
+      tailHoldMs: draft.tailHoldMs,
     },
   };
 }
