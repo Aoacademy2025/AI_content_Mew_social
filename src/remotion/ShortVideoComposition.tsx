@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useRef } from "react";
 import { backgroundGradientCss } from "../lib/render-background";
 import {
   AbsoluteFill,
@@ -18,6 +18,7 @@ import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "
 import { renderSubtitle } from "./renderSubtitle";
 import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
+import { brollCutAfter, effectiveBrollFit, type BrollFit } from "../lib/broll-window-style";
 import { headlineHookEndFrame } from "../lib/headline-hook";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 
@@ -38,6 +39,45 @@ if (process.env.NODE_ENV !== "production" && BROLL_SEQUENCE_GUARD_FRAMES < CROSS
 }
 
 const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
+// U3 "contain": the letterbox bands show the same frame, blurred and darkened, behind the
+// whole picture. A CSS blur on a 1080x1920 layer made a contain window render 2-3x slower in
+// software (measured 2026-10-12), so each decoded frame is instead drawn into a tiny canvas
+// (blurred + darkened there, ~5k pixels) and the browser's bilinear upscale of that canvas is
+// the blur: about +27% CPU on a contain window (one more full-frame draw), nothing elsewhere.
+const CONTAIN_BACKDROP_WIDTH = 54;
+const CONTAIN_BACKDROP_HEIGHT = 96;
+const CONTAIN_BACKDROP_FILTER = "blur(2px) brightness(0.5) saturate(1.1)";
+const CONTAIN_BACKDROP_OVERSCAN = 4;
+
+/** Cover-crop `frame` into the tiny backdrop canvas. */
+function paintContainBackdrop(canvas: HTMLCanvasElement | null, frame: CanvasImageSource) {
+  const ctx = canvas?.getContext("2d");
+  if (!canvas || !ctx) return;
+  const source = frame as { naturalWidth?: number; naturalHeight?: number; videoWidth?: number; videoHeight?: number; width?: number; height?: number };
+  const sourceWidth = source.naturalWidth || source.videoWidth || Number(source.width) || 0;
+  const sourceHeight = source.naturalHeight || source.videoHeight || Number(source.height) || 0;
+  if (sourceWidth <= 0 || sourceHeight <= 0) return;
+  // Overscan by the blur radius so the canvas edges blur into picture, not into transparency.
+  const pad = CONTAIN_BACKDROP_OVERSCAN;
+  const targetWidth = canvas.width + pad * 2;
+  const targetHeight = canvas.height + pad * 2;
+  const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const cropWidth = targetWidth / scale;
+  const cropHeight = targetHeight / scale;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.filter = CONTAIN_BACKDROP_FILTER;
+  ctx.drawImage(
+    frame,
+    (sourceWidth - cropWidth) / 2,
+    (sourceHeight - cropHeight) / 2,
+    cropWidth,
+    cropHeight,
+    -pad,
+    -pad,
+    targetWidth,
+    targetHeight,
+  );
+}
 
 // ─── VideoClip ────────────────────────────────────────────────────────────────
 function VideoClip({
@@ -49,6 +89,7 @@ function VideoClip({
   clipDurFrames,
   clipIndex,
   kenBurns = false,
+  fit = "cover",
 }: {
   src: string;
   startFrom: number;
@@ -58,6 +99,7 @@ function VideoClip({
   clipDurFrames: number | null;
   clipIndex: number;
   kenBurns?: boolean;
+  fit?: BrollFit;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
@@ -82,8 +124,12 @@ function VideoClip({
     ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { easing: ease, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
   const opacity = Math.min(fadeIn, fadeOut);
+  const backdropRef = useRef<HTMLCanvasElement>(null);
+  const onContainFrame = useCallback((videoFrame: CanvasImageSource) => {
+    paintContainBackdrop(backdropRef.current, videoFrame);
+  }, []);
 
-  const video = (
+  const foreground = (
       <OffthreadVideo
         src={src}
         startFrom={playback.safeStart}
@@ -94,13 +140,26 @@ function VideoClip({
           left: 0,
           width,
           height,
-          objectFit: "cover",
+          objectFit: fit === "contain" ? "contain" : "cover",
           filter: GRADE_FILTER,
           ...(kenBurns ? { transform: `scale(${kbScale})`, transformOrigin: "center center" } : {}),
         }}
+        {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
         muted
       />
   );
+  // "cover" renders exactly the single element it always did.
+  const video = fit === "contain" ? (
+    <>
+      <canvas
+        ref={backdropRef}
+        width={CONTAIN_BACKDROP_WIDTH}
+        height={CONTAIN_BACKDROP_HEIGHT}
+        style={{ position: "absolute", top: 0, left: 0, width, height }}
+      />
+      {foreground}
+    </>
+  ) : foreground;
 
   return (
     <AbsoluteFill style={{ opacity }}>
@@ -567,8 +626,11 @@ export function ShortVideoComposition({
   kenBurns = false,
   watermark = false,
   backgroundColors,
+  brollTransition,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
+  // EP5 #11: the last window set to "cut" ends the video on a hard cut instead of the fade.
+  const endsOnCut = bgVideos.length > 0 && brollCutAfter(bgVideos.slice(-1), brollTransition)[0] === true;
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   const preset = subtitleStylePreset ?? "stroke";
@@ -599,6 +661,8 @@ export function ShortVideoComposition({
           clipOffset: number;
           clipDuration: number | null;
           brollEnabled: boolean;
+          transition?: unknown;
+          fit: BrollFit;
         };
         const segs: Seg[] = [];
         for (const v of bgVideos) {
@@ -616,8 +680,12 @@ export function ShortVideoComposition({
             clipDuration,
             // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
             brollEnabled: v.brollEnabled !== false && Boolean(v.src),
+            transition: v.transition,
+            fit: effectiveBrollFit(v.fit),
           });
         }
+        // EP5 #11: a window set to "cut" ends on a hard cut — no dissolve into the next one.
+        const cutAfter = brollCutAfter(segs, brollTransition);
 
         // 2. Render each segment as a Sequence
         //    - Each clip's Sequence starts AT its hard-cut frame (no early start)
@@ -634,10 +702,10 @@ export function ShortVideoComposition({
           const cfAt = (a: number, b: number) => Math.min(CROSSFADE_FRAMES, Math.floor(Math.min(a, b) / 3));
           const nextDur = isLast ? 0 : segs[i + 1].endFrame - segs[i + 1].startFrame;
           const prevDur = i === 0 ? 0 : segs[i - 1].endFrame - segs[i - 1].startFrame;
-          const tailFrames = isLast || !v.brollEnabled || !segs[i + 1].brollEnabled
+          const tailFrames = isLast || cutAfter[i] || !v.brollEnabled || !segs[i + 1].brollEnabled
             ? 0
             : cfAt(segDurFrames, nextDur);
-          const headFrames = i === 0 || !v.brollEnabled || !segs[i - 1].brollEnabled
+          const headFrames = i === 0 || cutAfter[i - 1] || !v.brollEnabled || !segs[i - 1].brollEnabled
             ? 0
             : cfAt(prevDur, segDurFrames);
 
@@ -664,6 +732,7 @@ export function ShortVideoComposition({
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
                 kenBurns={kenBurns}
+                fit={v.fit}
               />
             </Sequence>
           );
@@ -708,8 +777,8 @@ export function ShortVideoComposition({
         );
       })}
 
-      {/* Fade to black at end */}
-      <EndFade totalFrames={durationInFrames} />
+      {/* Fade to black at end (unless the last window ends on a hard cut) */}
+      {!endsOnCut && <EndFade totalFrames={durationInFrames} />}
 
       {/* FREE-tier watermark — sits above all content, invisible on paid plans */}
       {watermark && (

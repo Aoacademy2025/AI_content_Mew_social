@@ -1,6 +1,7 @@
 import type { SubtitleAudioMix } from "../lib/background-music";
 import type { LogoPosition } from "../lib/logo-overlay";
 import type { HeadlineHookConfig } from "../lib/headline-hook";
+import type { BrollFit, BrollTransition } from "../lib/broll-window-style";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -51,6 +52,10 @@ export interface BrollVideo {
   timelineAligned?: boolean;
   /** Uploaded still converted to a motion clip: repeat this image inside its selected window. */
   stillImage?: boolean;
+  /** EP5 #11: how this window ends. Absent = the config's `brollTransition`, else "dissolve". */
+  transition?: BrollTransition;
+  /** U3: "contain" letterboxes the whole picture over a blurred copy. Absent = "cover". */
+  fit?: BrollFit;
   keyword?: string;
   title?: string;
   query?: string;
@@ -155,6 +160,8 @@ export interface ShortVideoConfig {
   backgroundColors?: string[];
   /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
   requestedBrollWindowCount?: number;
+  /** EP5 #11 project default for every window without its own `transition`. Absent = "dissolve". */
+  brollTransition?: BrollTransition;
   keywordPopups: KeywordPopupItem[];
   headlineHook?: HeadlineHookConfig;
   voiceFile: string;

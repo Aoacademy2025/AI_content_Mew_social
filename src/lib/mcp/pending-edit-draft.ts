@@ -22,6 +22,14 @@ import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-h
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
 import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
+import {
+  isBrollFit,
+  isBrollTransition,
+  isBrollTransitionEdit,
+  type BrollFit,
+  type BrollTransition,
+  type BrollTransitionEdit,
+} from "@/lib/broll-window-style";
 import { clampTailHoldMs } from "@/lib/tail-hold";
 
 /**
@@ -45,8 +53,16 @@ export type PendingEditWindowEdit = {
   index: number;
   src: string | null;
   importId?: string;
+  /** "upload" / "original", or "style" = only `transition`/`fit` change (src stays null). */
   replacementKind: string;
+  /** EP5 #11: how this window ends ("default" = drop its own value, follow the project default). */
+  transition?: BrollTransitionEdit;
+  /** U3: "cover" (fill, crop) or "contain" (whole picture over a blurred, darkened copy). */
+  fit?: BrollFit;
 };
+
+/** EP5 #11 / U3: a window edit that changes only how the window looks, not its media. */
+export const STYLE_ONLY_REPLACEMENT_KIND = "style";
 
 export type PendingEditDraft = {
   version: 1;
@@ -72,7 +88,14 @@ export type PendingEditDraft = {
    *  default 0 = today's behaviour. */
   tailHoldMs: number;
   windowEdits: PendingEditWindowEdit[];
+  /** EP5 #11: a new project-default B-roll transition the next export re-renders with. */
+  brollTransition?: BrollTransition;
 };
+
+/** True when the next export must re-render the B-roll (window edits or a new project default). */
+export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition">): boolean {
+  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined;
+}
 
 /** The base render an export burns onto: `project.activeJobId`'s finished preview. */
 export type PendingEditBase = {
@@ -150,12 +173,16 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       || (item.src !== null && typeof item.src !== "string")
       || (item.importId !== undefined && typeof item.importId !== "string")
       || typeof item.replacementKind !== "string"
+      || (item.transition !== undefined && !isBrollTransitionEdit(item.transition))
+      || (item.fit !== undefined && !isBrollFit(item.fit))
     ) return null;
     edits.push({
       index: item.index as number,
       src: item.src as string | null,
       ...(typeof item.importId === "string" ? { importId: item.importId } : {}),
       replacementKind: item.replacementKind,
+      ...(isBrollTransitionEdit(item.transition) ? { transition: item.transition } : {}),
+      ...(isBrollFit(item.fit) ? { fit: item.fit } : {}),
     });
   }
   return edits;
@@ -178,6 +205,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   const logoOverlay = input.logoOverlay === undefined ? undefined : normalizeLogoOverlayConfig(input.logoOverlay);
   const backgroundMusic = input.backgroundMusic === undefined ? undefined : normalizeBackgroundMusicEdit(input.backgroundMusic);
   if (headlineHook === null || logoOverlay === null || backgroundMusic === null) return null;
+  if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -194,6 +222,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     ...(backgroundMusic ? { backgroundMusic } : {}),
     tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
+    ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
   };
 }
 
@@ -483,7 +512,7 @@ export async function clearPendingEditDraftIfRevision(
     }
     const projectDraftJson = headlineWrite?.kind === "write" ? headlineWrite.json : null;
     let next: string | null = null;
-    if (stored && stored.windowEdits.length > 0) {
+    if (stored && draftHasBrollChanges(stored)) {
       const root = await prisma.videoJob.findFirst({
         where: { id: stored.rootJobId, userId, projectId },
         select: { id: true, inputJson: true, projectId: true },
@@ -500,7 +529,12 @@ export async function clearPendingEditDraftIfRevision(
       // R1/N1: keep the stored base. A re-render's hop rebases this draft only while baseJobId
       // still names the job it started from; re-basing on the export here would make that CAS miss
       // and leave the window edits it already applied pending, to be re-rendered a second time.
-      next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
+      next = JSON.stringify({
+        ...seed,
+        baseJobId: stored.baseJobId,
+        windowEdits: stored.windowEdits,
+        ...(stored.brollTransition ? { brollTransition: stored.brollTransition } : {}),
+      });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
     // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.

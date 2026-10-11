@@ -1,3 +1,5 @@
+import { isBrollTransition, type BrollTransition } from "./broll-window-style";
+
 /** Browser journal for one unresolved, account-scoped B-roll VideoJob operation. */
 export type PendingBrollApply = {
   version: 1;
@@ -8,6 +10,8 @@ export type PendingBrollApply = {
   jobId: string | null;
   draftEdits: [number, Record<string, string | number | boolean>][];
   windowEdits: Record<string, string | number | boolean>[];
+  /** EP5 #11 staged project default; with one, the edit lists may be empty. */
+  brollTransition?: BrollTransition;
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -24,8 +28,8 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function validEdits(value: unknown): value is Record<string, string | number | boolean>[] {
-  return Array.isArray(value) && value.length > 0 && value.length <= 1000
+function validEdits(value: unknown, allowEmpty = false): value is Record<string, string | number | boolean>[] {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.length <= 1000
     && value.every((entry) => record(entry)
       && Number.isSafeInteger(entry.index) && (entry.index as number) >= 0
       && Object.values(entry).every((field) => field === undefined || typeof field === "string"
@@ -33,16 +37,19 @@ function validEdits(value: unknown): value is Record<string, string | number | b
 }
 
 function parse(value: unknown, accountId: string, projectId: string): PendingBrollApply | null {
-  if (!record(value) || value.version !== 1 || value.accountId !== accountId
+  if (!record(value)) return null;
+  if (value.brollTransition !== undefined && !isBrollTransition(value.brollTransition)) return null;
+  const defaultOnly = value.brollTransition !== undefined;
+  if (value.version !== 1 || value.accountId !== accountId
     || value.projectId !== projectId || typeof value.sourceJobId !== "string"
     || !value.sourceJobId || typeof value.idempotencyKey !== "string"
     || !/^editor-v2-broll-rerender-[a-f0-9-]{36}$/.test(value.idempotencyKey)
     || !(value.jobId === null || (typeof value.jobId === "string" && value.jobId.length > 0))
-    || !validEdits(value.windowEdits) || !Array.isArray(value.draftEdits)
+    || !validEdits(value.windowEdits, defaultOnly) || !Array.isArray(value.draftEdits)
     || !validEdits(value.draftEdits.map((entry: unknown) => {
       if (!Array.isArray(entry) || entry.length !== 2 || !record(entry[1])) return null;
       return { index: entry[0], ...entry[1] };
-    }))) return null;
+    }), defaultOnly)) return null;
   return value as PendingBrollApply;
 }
 

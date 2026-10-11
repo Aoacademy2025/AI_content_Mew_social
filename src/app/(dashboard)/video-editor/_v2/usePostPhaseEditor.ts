@@ -69,6 +69,14 @@ import {
 } from "@/lib/broll-rerender";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import {
+  effectiveBrollFit,
+  effectiveBrollTransition,
+  isBrollTransition,
+  type BrollFit,
+  type BrollTransition,
+  type BrollTransitionEdit,
+} from "@/lib/broll-window-style";
+import {
   BROLL_TIMELINE_TOLERANCE_MS,
   moveBrollBoundary as calculateBrollBoundaryMove,
 } from "@/lib/broll-timeline-boundary";
@@ -113,6 +121,10 @@ export type WindowEdit = {
   label?: string;
   enabled?: boolean;
   imageJobId?: string;
+  /** EP5 #11: how this window ends ("default" = follow the project default again). */
+  transition?: BrollTransitionEdit;
+  /** U3: "cover" fills the frame; "contain" shows the whole picture over a blurred copy. */
+  fit?: BrollFit;
 };
 
 export type PendingBrollIntent = "export" | "new-project";
@@ -483,6 +495,15 @@ export function usePostPhaseEditor(
   const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
+  // EP5 #11: a staged project-default transition (null = keep the base's). Applied with the
+  // window edits through the same free re-render; counts as one pending B-roll change.
+  const [brollTransitionDraft, setBrollTransitionDraft] = useState<BrollTransition | null>(null);
+  const pendingBrollEditCount = windowEdits.size + (brollTransitionDraft ? 1 : 0);
+  const baseBrollTransition = effectiveBrollTransition(
+    undefined,
+    (previewConfig as { brollTransition?: unknown } | null)?.brollTransition,
+  );
+  const brollTransitionDefault = brollTransitionDraft ?? baseBrollTransition;
   const baseBrollTimelineSpans = useMemo(
     () => brollWindowSpans(previewConfig, totalDurationMs),
     [previewConfig, totalDurationMs],
@@ -544,14 +565,14 @@ export function usePostPhaseEditor(
   // until `applyWindowEdits` succeeds. A refresh/close must therefore use the browser's native
   // unsaved-changes guard instead of silently orphaning the staged edits.
   useEffect(() => {
-    if (windowEdits.size === 0) return;
+    if (pendingBrollEditCount === 0) return;
     const warnAboutPendingBroll = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warnAboutPendingBroll);
     return () => window.removeEventListener("beforeunload", warnAboutPendingBroll);
-  }, [windowEdits.size]);
+  }, [pendingBrollEditCount]);
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
     if (pendingApplyRef.current) return;
@@ -661,6 +682,51 @@ export function usePostPhaseEditor(
     }
     commitWindowEdits(next);
   }
+  /** The base window (rendered config) this editor stages edits against. */
+  function baseBrollWindow(index: number): { transition?: unknown; fit?: unknown } | null {
+    const bgVideos = (previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
+    const raw = Array.isArray(bgVideos) ? bgVideos[index] : null;
+    return raw && typeof raw === "object" ? raw as { transition?: unknown; fit?: unknown } : null;
+  }
+
+  /** EP5 #11 / U3: a window's transition/fit after its staged edit — what the next apply renders. */
+  function brollWindowStyle(index: number) {
+    const staged = windowEdits.get(index);
+    const base = baseBrollWindow(index);
+    const own = staged?.transition === "default" ? undefined : staged?.transition ?? base?.transition;
+    return {
+      transition: effectiveBrollTransition(own, brollTransitionDefault),
+      followsDefault: !isBrollTransition(own),
+      fit: effectiveBrollFit(staged?.fit ?? base?.fit),
+    };
+  }
+
+  /** Stage a window's transition and/or fit. A value equal to the base drops that staged field. */
+  function setBrollWindowStyle(index: number, style: { transition?: BrollTransitionEdit; fit?: BrollFit }) {
+    if (pendingApplyRef.current) return;
+    const base = baseBrollWindow(index);
+    const edit: WindowEdit = { ...(windowEdits.get(index) ?? {}) };
+    if (style.transition !== undefined) {
+      const baseOwn = isBrollTransition(base?.transition) ? base.transition : "default";
+      if (style.transition === baseOwn) delete edit.transition;
+      else edit.transition = style.transition;
+    }
+    if (style.fit !== undefined) {
+      if (style.fit === effectiveBrollFit(base?.fit)) delete edit.fit;
+      else edit.fit = style.fit;
+    }
+    const next = new Map(windowEdits);
+    if (Object.values(edit).some((value) => value !== undefined)) next.set(index, edit);
+    else next.delete(index);
+    commitWindowEdits(next);
+  }
+
+  /** Stage the project-default transition; choosing the base's own value un-stages it. */
+  function setBrollTransitionDefault(value: BrollTransition) {
+    if (pendingApplyRef.current) return;
+    setBrollTransitionDraft(value === baseBrollTransition ? null : value);
+  }
+
   function undoWindowEdits() {
     if (pendingApplyRef.current) return;
     const previous = windowUndoRef.current.pop();
@@ -721,8 +787,9 @@ export function usePostPhaseEditor(
         return null;
       }
       setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+      setBrollTransitionDraft(operation.brollTransition ?? null);
     } else {
-      if (windowEdits.size === 0) return null;
+      if (pendingBrollEditCount === 0) return null;
       const sourceJobId = job.jobId;
       if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
       const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
@@ -736,6 +803,8 @@ export function usePostPhaseEditor(
         ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
         ...(e.kind ? { replacementKind: e.kind } : {}),
         ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
+        ...(e.transition ? { transition: e.transition } : {}),
+        ...(e.fit ? { fit: e.fit } : {}),
       }));
       operation = {
         version: 1, accountId, projectId, sourceJobId,
@@ -743,6 +812,7 @@ export function usePostPhaseEditor(
         jobId: null,
         draftEdits: Array.from(windowEdits.entries()),
         windowEdits: edits,
+        ...(brollTransitionDraft ? { brollTransition: brollTransitionDraft } : {}),
       };
       if (!writePendingBrollApply(storage, operation)) {
         toast.error("บันทึกสถานะ B-roll ไม่ได้ กรุณาลองอีกครั้ง");
@@ -771,7 +841,8 @@ export function usePostPhaseEditor(
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ idempotencyKey: operation.idempotencyKey,
             mode: "broll-rerender", sourceJobId: operation.sourceJobId,
-            windowEdits: operation.windowEdits }),
+            windowEdits: operation.windowEdits,
+            ...(operation.brollTransition ? { brollTransition: operation.brollTransition } : {}) }),
         }) : await fetch(`/api/videos/jobs?idempotencyKey=${encodeURIComponent(operation.idempotencyKey)}&sourceJobId=${encodeURIComponent(operation.sourceJobId)}`);
         const d = await res.json().catch(() => null);
         if (!ownsContext()) return null;
@@ -857,6 +928,7 @@ export function usePostPhaseEditor(
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
+          setBrollTransitionDraft(null);
           windowUndoRef.current = [];
           windowRedoRef.current = [];
           setWindowHistory({ undo: 0, redo: 0 });
@@ -920,6 +992,7 @@ export function usePostPhaseEditor(
       windowApplyInFlightRef.current = null;
       setApplyingWindows(null);
       setWindowEditsState(new Map());
+      setBrollTransitionDraft(null);
       windowUndoRef.current = [];
       windowRedoRef.current = [];
       setWindowHistory({ undo: 0, redo: 0 });
@@ -934,6 +1007,7 @@ export function usePostPhaseEditor(
       ? current : saved.operation;
     pendingApplyRef.current = operation;
     setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+    setBrollTransitionDraft(operation.brollTransition ?? null);
     if (job.jobId === operation.sourceJobId || job.jobId === operation.jobId || !operation.jobId) {
       void applyWindowEdits();
     } else {
@@ -1429,13 +1503,13 @@ export function usePostPhaseEditor(
       return;
     }
 
-    if (windowEdits.size > 0 && !pendingConfirmed) {
+    if (pendingBrollEditCount > 0 && !pendingConfirmed) {
       setPendingBrollIntent("export");
       trackEvent("editor_pending_broll_dialog_opened", {
         status: "info",
         properties: {
           intent: "export",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1444,7 +1518,7 @@ export function usePostPhaseEditor(
 
     try {
       const exportSource = await resolveBrollExportSource({
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         current: {
           jobId: job.jobId,
           videoUrl: baseUrl,
@@ -1543,13 +1617,13 @@ export function usePostPhaseEditor(
       toast("ตรวจสถานะ B-roll ให้เสร็จก่อนเปิดโปรเจกต์ใหม่");
       return;
     }
-    if (windowEdits.size > 0) {
+    if (pendingBrollEditCount > 0) {
       setPendingBrollIntent("new-project");
       trackEvent("editor_pending_broll_dialog_opened", {
         status: "info",
         properties: {
           intent: "new-project",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1565,7 +1639,7 @@ export function usePostPhaseEditor(
         properties: {
           intent: pendingBrollIntent,
           action: "cancel",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1581,7 +1655,7 @@ export function usePostPhaseEditor(
       properties: {
         intent,
         action: "apply",
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         surface,
       },
     });
@@ -1604,7 +1678,7 @@ export function usePostPhaseEditor(
       properties: {
         intent: "new-project",
         action: "discard",
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         surface,
       },
     });
@@ -1646,6 +1720,9 @@ export function usePostPhaseEditor(
     moveBrollBoundary,
     compositeBaseUrl,
     windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,
+    pendingBrollEditCount,
+    brollWindowStyle, setBrollWindowStyle,
+    brollTransitionDefault, brollTransitionDefaultStaged: brollTransitionDraft !== null, setBrollTransitionDefault,
     undoWindowEdits, redoWindowEdits,
     canUndoWindowEdits: windowHistory.undo > 0,
     canRedoWindowEdits: windowHistory.redo > 0,
