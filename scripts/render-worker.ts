@@ -22,6 +22,7 @@ import {
 import { runRender, type ResolvedRenderInput } from "../src/lib/render/run-render";
 import { recordChargedClip } from "../src/lib/clip-charge";
 import { HeavyMediaAdmission, type HeavyMediaLease } from "../src/lib/heavy-media-admission";
+import { publishRenderWorkerBundle } from "../src/lib/render/remotion-bundle-pointer";
 import os from "node:os";
 import path from "node:path";
 
@@ -60,6 +61,8 @@ const workerBundleCache = {
   set: (location: string | null, mtime: string) => {
     workerBundleLocation = location;
     workerBundleMtime = mtime;
+    // W4: let get_preview_frame (web process) reuse this bundle instead of building its own.
+    publishRenderWorkerBundle(location, mtime);
   },
 };
 
