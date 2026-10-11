@@ -113,10 +113,20 @@ export async function normalizeForRemotion(filePath: string, options: FfmpegInpu
       // so extra resolution is wasted). decrease = never upscale; the trailing
       // trunc pair forces even dimensions (yuv420p requires it) and is compatible
       // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
-      "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      // `out_range=tv` on the first scale is the backlog #10 fix: it performs a REAL
+      // numeric rescale (not just a tag) into studio-swing levels, so an upload whose
+      // source happens to be full-range (some screen recordings/exports) converges to
+      // the same tv/bt709 domain every other B-roll clip in this system already uses —
+      // instead of relying on libx264's implicit "copy whatever range the decoder
+      // reported" default, which is correct for ordinary tv-range phone video (the
+      // common case, unaffected by this no-op conversion) but silently propagates a
+      // mismatched range for the rare full-range source. See applyKenBurns below for
+      // the still-image path, where this was reproducibly wrong.
+      "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:out_range=tv,scale=trunc(iw/2)*2:trunc(ih/2)*2",
       "-c:v", "libx264", "-preset", NORMALIZE_PRESET, "-crf", "20",
       "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
       "-pix_fmt", "yuv420p",
+      "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
       "-r", String(TARGET_FPS),           // force constant frame rate
       "-g", String(TARGET_FPS),           // keyframe interval = 1s
       "-keyint_min", String(TARGET_FPS),
@@ -312,7 +322,17 @@ export async function applyKenBurns(
   // never stretched. Scale to a larger 1350x2400 (9:16) intermediate first so
   // the zoompan zoom stays crisp, then crop to that exact box; zoompan then
   // does its usual zoom/pan and downsamples to the final 1080x1920 output.
-  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase,crop=1350:2400,zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
+  // out_range=tv (backlog #10): a still image is decoded full-range (JPEG/PNG convention
+  // — libavcodec tags it yuvj420p/pc, often with a legacy/default matrix like bt470bg).
+  // Without this, that full-range tag + those actual 0-255 sample values ride untouched
+  // through crop/zoompan into the encode, and ffmpeg's encoder then auto-promotes the
+  // requested "-pix_fmt yuv420p" BACK to yuvj420p to avoid lying about the range — so the
+  // Ken Burns clip comes out full-range/yuvj420p/bt470bg while every other B-roll clip in
+  // this system (uploaded video via normalizeForRemotion, stock downloads) is tv/bt709.
+  // Measured effect on a real export: ~12 levels darker with crushed blacks (backlog #10).
+  // `out_range=tv` does a REAL numeric rescale here (not just a tag), converging the still
+  // onto the same tv/bt709 domain as everything else it gets composited with.
+  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase:out_range=tv,crop=1350:2400,zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [
@@ -322,6 +342,7 @@ export async function applyKenBurns(
     "-an",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-pix_fmt", "yuv420p",
+    "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
     "-r", String(TARGET_FPS),
     "-g", String(TARGET_FPS),
     "-keyint_min", String(TARGET_FPS),
