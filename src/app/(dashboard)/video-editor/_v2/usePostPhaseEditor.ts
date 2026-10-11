@@ -50,6 +50,7 @@ import {
   type HeadlineHookSuggestion,
 } from "@/lib/headline-hook";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
   buildLogoTelemetryProperties,
@@ -68,6 +69,14 @@ import {
 } from "@/lib/broll-rerender";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import {
+  effectiveBrollFit,
+  effectiveBrollTransition,
+  isBrollTransition,
+  type BrollFit,
+  type BrollTransition,
+  type BrollTransitionEdit,
+} from "@/lib/broll-window-style";
+import {
   BROLL_TIMELINE_TOLERANCE_MS,
   moveBrollBoundary as calculateBrollBoundaryMove,
 } from "@/lib/broll-timeline-boundary";
@@ -83,6 +92,12 @@ import {
   type PendingBrollApply,
 } from "@/lib/broll-apply-recovery";
 import { PENDING_EDIT_BANNER_TEXT, type WebPendingEdit } from "./pending-edit-view";
+import {
+  baseBackgroundMusicEdit,
+  speechSegments,
+  type BackgroundMusicEdit,
+} from "@/lib/background-music";
+import { useBackgroundMusicPreview } from "./useBackgroundMusicPreview";
 
 export type ExportState =
   | { phase: "idle" }
@@ -106,6 +121,10 @@ export type WindowEdit = {
   label?: string;
   enabled?: boolean;
   imageJobId?: string;
+  /** EP5 #11: how this window ends ("default" = follow the project default again). */
+  transition?: BrollTransitionEdit;
+  /** U3: "cover" fills the frame; "contain" shows the whole picture over a blurred copy. */
+  fit?: BrollFit;
 };
 
 export type PendingBrollIntent = "export" | "new-project";
@@ -149,6 +168,10 @@ const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
 const ignoreHeadlineHookChange = (_next: HeadlineHookConfig | undefined) => {
   void _next;
 };
+const ignoreBackgroundMusicChange = (_next: BackgroundMusicEdit | undefined, _mirror?: BackgroundMusicEdit) => {
+  void _next;
+  void _mirror;
+};
 const ignoreProjectSaveRetry = () => undefined;
 const alwaysReadyForProjectOperation = () => true;
 const ignoreReloadPendingEdit = async () => null;
@@ -173,6 +196,10 @@ export type UsePostPhaseEditorOptions = {
   onLayerVisibilityChange?: (next: LayerVisibilityChange) => void;
   headlineHook?: HeadlineHookConfig;
   onHeadlineHookChange?: (next: HeadlineHookConfig | undefined) => void;
+  /** EP5 U7: the project's changed background music (undefined = the rendered video's own). */
+  backgroundMusic?: BackgroundMusicEdit;
+  /** `mirror` = the music Step 2 should re-render with (defaults to `next`). */
+  onBackgroundMusicChange?: (next: BackgroundMusicEdit | undefined, mirror?: BackgroundMusicEdit) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
@@ -218,6 +245,8 @@ export function usePostPhaseEditor(
     onLayerVisibilityChange = ignoreLayerVisibilityChange,
     headlineHook,
     onHeadlineHookChange = ignoreHeadlineHookChange,
+    backgroundMusic,
+    onBackgroundMusicChange = ignoreBackgroundMusicChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
@@ -268,6 +297,15 @@ export function usePostPhaseEditor(
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => (
     pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {}
   ));
+  // EP5 backlog #14: hold the last frame N ms after the voice ends (0-3000, default 0 = today's
+  // behaviour exactly). Same "pendingDraft, else editSnapshot, else default" precedence as cfg/
+  // cardLen above — a legacy snapshot without this field reads as 0.
+  const [tailHoldMs, setTailHoldMsState] = useState<number>(() => (
+    pendingDraft?.tailHoldMs ?? (editSnapshot?.tailHoldMs as number | undefined) ?? 0
+  ));
+  function setTailHoldMs(next: number) {
+    setTailHoldMsState(clampTailHoldMs(next));
+  }
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
@@ -300,9 +338,9 @@ export function usePostPhaseEditor(
     () => pendingDraft?.headlineHook,
   );
   const resolvedHeadlineHook = useMemo(() => (
-    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs)
+    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs, cfg.verticalPos)
     ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
-  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs]);
+  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs, cfg.verticalPos]);
   const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
   const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
@@ -312,9 +350,54 @@ export function usePostPhaseEditor(
     const next = normalizeHeadlineHookDraft(
       { ...resolvedHeadlineHook, ...patch },
       totalDurationMs,
+      cfg.verticalPos,
     );
     setHeadlineOverrideState(next ?? undefined);
     onHeadlineHookChange(next ?? undefined);
+  }
+
+  // EP5 U7 (HERO-71): change the background music after the render. Same seeding rule as the
+  // headline override: the agent's pending draft wins once (and on each new revision, below),
+  // after that the project draft prop. No change = the video's own audio, exported as today.
+  const [musicOverride, setMusicOverrideState] = useState<BackgroundMusicEdit | undefined>(
+    () => pendingDraft?.backgroundMusic,
+  );
+  const changedMusic = musicOverride ?? backgroundMusic;
+  const baseMusic = useMemo(() => baseBackgroundMusicEdit(preview?.config), [preview?.config]);
+  // Same voice the burn re-mixes (backgroundMusicVoiceFile on the server): without one the music
+  // cannot be changed, so the panel says so and the export never sends a change.
+  const configVoiceFile = preview?.config?.voiceFile;
+  const musicVoiceSrc = preview?.voiceUrl?.trim()
+    || (typeof configVoiceFile === "string" && configVoiceFile.trim() ? configVoiceFile : null);
+  const musicSegments = useMemo(
+    () => speechSegments({ words: preview?.words, captions: preview?.captions }),
+    [preview?.captions, preview?.words],
+  );
+  useBackgroundMusicPreview({
+    videoRef,
+    music: changedMusic,
+    voiceSrc: musicVoiceSrc,
+    segments: musicSegments,
+  });
+
+  function setBackgroundMusic(patch: Partial<BackgroundMusicEdit>) {
+    const current = changedMusic ?? baseMusic.edit;
+    const isNewTrack = patch.track !== undefined && patch.track !== current.track;
+    const next: BackgroundMusicEdit = {
+      track: patch.track !== undefined ? patch.track : current.track,
+      volume: Math.min(1, Math.max(0, patch.volume ?? current.volume)),
+      // A newly picked track ducks under the voice unless the creator says otherwise.
+      ducking: patch.ducking ?? (isNewTrack ? true : current.ducking),
+    };
+    if (next.track === null) next.ducking = false;
+    setMusicOverrideState(next);
+    onBackgroundMusicChange(next);
+  }
+
+  function resetBackgroundMusic() {
+    setMusicOverrideState(undefined);
+    // Step 2 goes back to the rendered music too, unless that path is not a library track.
+    onBackgroundMusicChange(undefined, baseMusic.hasMusic && !baseMusic.edit.track ? undefined : baseMusic.edit);
   }
 
   // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
@@ -412,6 +495,15 @@ export function usePostPhaseEditor(
   const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
+  // EP5 #11: a staged project-default transition (null = keep the base's). Applied with the
+  // window edits through the same free re-render; counts as one pending B-roll change.
+  const [brollTransitionDraft, setBrollTransitionDraft] = useState<BrollTransition | null>(null);
+  const pendingBrollEditCount = windowEdits.size + (brollTransitionDraft ? 1 : 0);
+  const baseBrollTransition = effectiveBrollTransition(
+    undefined,
+    (previewConfig as { brollTransition?: unknown } | null)?.brollTransition,
+  );
+  const brollTransitionDefault = brollTransitionDraft ?? baseBrollTransition;
   const baseBrollTimelineSpans = useMemo(
     () => brollWindowSpans(previewConfig, totalDurationMs),
     [previewConfig, totalDurationMs],
@@ -473,14 +565,14 @@ export function usePostPhaseEditor(
   // until `applyWindowEdits` succeeds. A refresh/close must therefore use the browser's native
   // unsaved-changes guard instead of silently orphaning the staged edits.
   useEffect(() => {
-    if (windowEdits.size === 0) return;
+    if (pendingBrollEditCount === 0) return;
     const warnAboutPendingBroll = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warnAboutPendingBroll);
     return () => window.removeEventListener("beforeunload", warnAboutPendingBroll);
-  }, [windowEdits.size]);
+  }, [pendingBrollEditCount]);
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
     if (pendingApplyRef.current) return;
@@ -590,6 +682,51 @@ export function usePostPhaseEditor(
     }
     commitWindowEdits(next);
   }
+  /** The base window (rendered config) this editor stages edits against. */
+  function baseBrollWindow(index: number): { transition?: unknown; fit?: unknown } | null {
+    const bgVideos = (previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
+    const raw = Array.isArray(bgVideos) ? bgVideos[index] : null;
+    return raw && typeof raw === "object" ? raw as { transition?: unknown; fit?: unknown } : null;
+  }
+
+  /** EP5 #11 / U3: a window's transition/fit after its staged edit — what the next apply renders. */
+  function brollWindowStyle(index: number) {
+    const staged = windowEdits.get(index);
+    const base = baseBrollWindow(index);
+    const own = staged?.transition === "default" ? undefined : staged?.transition ?? base?.transition;
+    return {
+      transition: effectiveBrollTransition(own, brollTransitionDefault),
+      followsDefault: !isBrollTransition(own),
+      fit: effectiveBrollFit(staged?.fit ?? base?.fit),
+    };
+  }
+
+  /** Stage a window's transition and/or fit. A value equal to the base drops that staged field. */
+  function setBrollWindowStyle(index: number, style: { transition?: BrollTransitionEdit; fit?: BrollFit }) {
+    if (pendingApplyRef.current) return;
+    const base = baseBrollWindow(index);
+    const edit: WindowEdit = { ...(windowEdits.get(index) ?? {}) };
+    if (style.transition !== undefined) {
+      const baseOwn = isBrollTransition(base?.transition) ? base.transition : "default";
+      if (style.transition === baseOwn) delete edit.transition;
+      else edit.transition = style.transition;
+    }
+    if (style.fit !== undefined) {
+      if (style.fit === effectiveBrollFit(base?.fit)) delete edit.fit;
+      else edit.fit = style.fit;
+    }
+    const next = new Map(windowEdits);
+    if (Object.values(edit).some((value) => value !== undefined)) next.set(index, edit);
+    else next.delete(index);
+    commitWindowEdits(next);
+  }
+
+  /** Stage the project-default transition; choosing the base's own value un-stages it. */
+  function setBrollTransitionDefault(value: BrollTransition) {
+    if (pendingApplyRef.current) return;
+    setBrollTransitionDraft(value === baseBrollTransition ? null : value);
+  }
+
   function undoWindowEdits() {
     if (pendingApplyRef.current) return;
     const previous = windowUndoRef.current.pop();
@@ -650,8 +787,9 @@ export function usePostPhaseEditor(
         return null;
       }
       setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+      setBrollTransitionDraft(operation.brollTransition ?? null);
     } else {
-      if (windowEdits.size === 0) return null;
+      if (pendingBrollEditCount === 0) return null;
       const sourceJobId = job.jobId;
       if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
       const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
@@ -665,6 +803,8 @@ export function usePostPhaseEditor(
         ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
         ...(e.kind ? { replacementKind: e.kind } : {}),
         ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
+        ...(e.transition ? { transition: e.transition } : {}),
+        ...(e.fit ? { fit: e.fit } : {}),
       }));
       operation = {
         version: 1, accountId, projectId, sourceJobId,
@@ -672,6 +812,7 @@ export function usePostPhaseEditor(
         jobId: null,
         draftEdits: Array.from(windowEdits.entries()),
         windowEdits: edits,
+        ...(brollTransitionDraft ? { brollTransition: brollTransitionDraft } : {}),
       };
       if (!writePendingBrollApply(storage, operation)) {
         toast.error("บันทึกสถานะ B-roll ไม่ได้ กรุณาลองอีกครั้ง");
@@ -700,7 +841,8 @@ export function usePostPhaseEditor(
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ idempotencyKey: operation.idempotencyKey,
             mode: "broll-rerender", sourceJobId: operation.sourceJobId,
-            windowEdits: operation.windowEdits }),
+            windowEdits: operation.windowEdits,
+            ...(operation.brollTransition ? { brollTransition: operation.brollTransition } : {}) }),
         }) : await fetch(`/api/videos/jobs?idempotencyKey=${encodeURIComponent(operation.idempotencyKey)}&sourceJobId=${encodeURIComponent(operation.sourceJobId)}`);
         const d = await res.json().catch(() => null);
         if (!ownsContext()) return null;
@@ -786,6 +928,7 @@ export function usePostPhaseEditor(
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
+          setBrollTransitionDraft(null);
           windowUndoRef.current = [];
           windowRedoRef.current = [];
           setWindowHistory({ undo: 0, redo: 0 });
@@ -849,6 +992,7 @@ export function usePostPhaseEditor(
       windowApplyInFlightRef.current = null;
       setApplyingWindows(null);
       setWindowEditsState(new Map());
+      setBrollTransitionDraft(null);
       windowUndoRef.current = [];
       windowRedoRef.current = [];
       setWindowHistory({ undo: 0, redo: 0 });
@@ -863,6 +1007,7 @@ export function usePostPhaseEditor(
       ? current : saved.operation;
     pendingApplyRef.current = operation;
     setWindowEditsState(new Map(operation.draftEdits as [number, WindowEdit][]));
+    setBrollTransitionDraft(operation.brollTransition ?? null);
     if (job.jobId === operation.sourceJobId || job.jobId === operation.jobId || !operation.jobId) {
       void applyWindowEdits();
     } else {
@@ -1030,6 +1175,14 @@ export function usePostPhaseEditor(
     // remove the headline, and the override must follow the draft back to `undefined` instead
     // of keeping the previous revision's stale value.
     setHeadlineOverrideState(draft.headlineHook);
+    // EP5 U7: same rule — a draft without music falls back to the project's own choice.
+    setMusicOverrideState(draft.backgroundMusic);
+    // Review B1 (PR #593): this effect is the ONLY place a draft that arrives after the lazy
+    // useState initializers (the normal case, and the 409 stale_revision reload) gets applied —
+    // tailHoldMs was missing here, so an agent-set hold silently read back as 0 in the web, and
+    // an unreviewed web export would then clear the agent's draft with tailHoldMs: 0. Set
+    // unconditionally, same reasoning as headlineHook above: absent/legacy reads as 0.
+    setTailHoldMsState(clampTailHoldMs(draft.tailHoldMs ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 
@@ -1350,13 +1503,13 @@ export function usePostPhaseEditor(
       return;
     }
 
-    if (windowEdits.size > 0 && !pendingConfirmed) {
+    if (pendingBrollEditCount > 0 && !pendingConfirmed) {
       setPendingBrollIntent("export");
       trackEvent("editor_pending_broll_dialog_opened", {
         status: "info",
         properties: {
           intent: "export",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1365,7 +1518,7 @@ export function usePostPhaseEditor(
 
     try {
       const exportSource = await resolveBrollExportSource({
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         current: {
           jobId: job.jobId,
           videoUrl: baseUrl,
@@ -1393,7 +1546,10 @@ export function usePostPhaseEditor(
         logoOverlay,
         effectiveLayerVisibility,
         resolvedHeadlineHook,
+        tailHoldMs,
       );
+      // EP5 U7: only a changed music is sent; the server re-mixes it from the source's own voice.
+      const exportMusic = changedMusic && musicVoiceSrc ? changedMusic : undefined;
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
@@ -1404,10 +1560,12 @@ export function usePostPhaseEditor(
           subtitleConfig: { ...cfg },
           cardLen,
           captionOverrides: cloneOverrides(overrides),
+          tailHoldMs,
         },
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
         ...(pendingEdit ? { expectedPendingRevision: pendingEdit.revision } : {}),
+        ...(exportMusic ? { backgroundMusic: exportMusic } : {}),
       });
       if (!result.ok) {
         // T8 (ADR 0064, G21): the AI agent changed the draft while the web was editing. Reload
@@ -1421,6 +1579,9 @@ export function usePostPhaseEditor(
         }
         throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
       }
+      // The burned music is the project's music from now on (it may have come from the agent's
+      // pending draft, which this export clears without writing the project draft).
+      if (exportMusic) onBackgroundMusicChange(exportMusic);
       const submittedBrollSummary = brollAppliedSummariesRef.current.get(exportSource.jobId);
       if (submittedBrollSummary) {
         trackEvent("editor_broll_export_submitted", {
@@ -1456,13 +1617,13 @@ export function usePostPhaseEditor(
       toast("ตรวจสถานะ B-roll ให้เสร็จก่อนเปิดโปรเจกต์ใหม่");
       return;
     }
-    if (windowEdits.size > 0) {
+    if (pendingBrollEditCount > 0) {
       setPendingBrollIntent("new-project");
       trackEvent("editor_pending_broll_dialog_opened", {
         status: "info",
         properties: {
           intent: "new-project",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1478,7 +1639,7 @@ export function usePostPhaseEditor(
         properties: {
           intent: pendingBrollIntent,
           action: "cancel",
-          pendingEditCount: windowEdits.size,
+          pendingEditCount: pendingBrollEditCount,
           surface,
         },
       });
@@ -1494,7 +1655,7 @@ export function usePostPhaseEditor(
       properties: {
         intent,
         action: "apply",
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         surface,
       },
     });
@@ -1517,7 +1678,7 @@ export function usePostPhaseEditor(
       properties: {
         intent: "new-project",
         action: "discard",
-        pendingEditCount: windowEdits.size,
+        pendingEditCount: pendingBrollEditCount,
         surface,
       },
     });
@@ -1544,6 +1705,14 @@ export function usePostPhaseEditor(
     headlineSuggestionState,
     headlineSuggestionError,
     setHeadlineHook,
+    backgroundMusic: {
+      value: changedMusic ?? baseMusic.edit,
+      changed: !!changedMusic,
+      baseHasMusic: baseMusic.hasMusic,
+      available: !!musicVoiceSrc,
+    },
+    setBackgroundMusic,
+    resetBackgroundMusic,
     selectHeadlineSuggestion,
     generateHeadlineSuggestions,
     previewConfig,
@@ -1551,6 +1720,9 @@ export function usePostPhaseEditor(
     moveBrollBoundary,
     compositeBaseUrl,
     windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,
+    pendingBrollEditCount,
+    brollWindowStyle, setBrollWindowStyle,
+    brollTransitionDefault, brollTransitionDefaultStaged: brollTransitionDraft !== null, setBrollTransitionDefault,
     undoWindowEdits, redoWindowEdits,
     canUndoWindowEdits: windowHistory.undo > 0,
     canRedoWindowEdits: windowHistory.redo > 0,
@@ -1571,6 +1743,7 @@ export function usePostPhaseEditor(
     cardLen,
     scope, setScope,
     overrides, setOverrides,
+    tailHoldMs, setTailHoldMs,
     videoRef,
     timeMs, setTimeMs,
     playing, setPlaying,

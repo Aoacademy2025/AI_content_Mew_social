@@ -94,6 +94,7 @@ async function main() {
       let polls = 0;
       window.__postCount = 0;
       window.__postKeys = [];
+      window.__postBodies = [];
       window.__lookupCount = 0;
       window.__finish = new URLSearchParams(location.search).has("done");
       window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -111,6 +112,7 @@ async function main() {
           window.__postCount++;
           const key = JSON.parse(String(init.body)).idempotencyKey;
           window.__postKeys.push(key);
+          window.__postBodies.push(JSON.parse(String(init.body)));
           if (!window.__postNotAccepted) sessionStorage.setItem("accepted:" + key, "apply-job");
           if (window.__postAmbiguous && window.__postCount === 1) throw new TypeError("connection lost after submit");
           return new Response(JSON.stringify({ jobId: "apply-job", idempotencyKey: key }), { status: 200 });
@@ -349,6 +351,73 @@ async function main() {
     await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1,
       { timeout: 5_000 });
     console.log("PASS: development StrictMode remount keeps one known-job recovery alive");
+
+    // EP5 #11 / U3: a staged transition/fit and project default travel in the POST body and the
+    // journal, survive a refresh, and clear once the re-render is adopted.
+    type StyleEd = {
+      pendingBrollEditCount: number;
+      brollTransitionDefault: string;
+      brollTransitionDefaultStaged: boolean;
+      windowEdits: Map<number, Record<string, unknown>>;
+      brollWindowStyle: (index: number) => Record<string, unknown>;
+      setBrollWindowStyle: (index: number, style: Record<string, string>) => void;
+      setBrollTransitionDefault: (value: string) => void;
+    };
+    const styleEd = () => page.evaluate(() => {
+      const ed = (window as unknown as { __ed: StyleEd }).__ed;
+      return { count: ed.pendingBrollEditCount, def: ed.brollTransitionDefault, staged: ed.brollTransitionDefaultStaged,
+        edit0: ed.windowEdits.get(0) ?? null, style0: ed.brollWindowStyle(0) };
+    });
+    const waitCount = (count: number) => page.waitForFunction(
+      (n) => (window as unknown as { __ed: StyleEd }).__ed.pendingBrollEditCount === n, { timeout: 5_000 }, count);
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor`);
+    await page.waitForSelector("#stage");
+    assert.deepEqual((await styleEd()).style0, { transition: "dissolve", followsDefault: true, fit: "cover" },
+      "legacy window reads as dissolve + cover");
+    await page.evaluate(() => (window as unknown as { __ed: StyleEd }).__ed.setBrollWindowStyle(0, { transition: "cut", fit: "contain" }));
+    await waitCount(1);
+    await page.evaluate(() => (window as unknown as { __ed: StyleEd }).__ed.setBrollTransitionDefault("cut"));
+    await waitCount(2);
+    await page.evaluate(() => (window as unknown as { __ed: StyleEd }).__ed.setBrollTransitionDefault("dissolve"));
+    await waitCount(1);
+    assert.equal((await styleEd()).staged, false, "choosing the base default un-stages it");
+    await page.evaluate(() => (window as unknown as { __ed: StyleEd }).__ed.setBrollTransitionDefault("cut"));
+    await waitCount(2);
+    await page.evaluate(() => (window as unknown as { __ed: StyleEd }).__ed.setBrollWindowStyle(0, { fit: "cover" }));
+    await page.waitForFunction(() => (window as unknown as { __ed: StyleEd }).__ed.windowEdits.get(0)?.fit === undefined);
+    const staged = await styleEd();
+    assert.deepEqual(staged.edit0, { transition: "cut" }, "fit equal to the base drops only that field");
+    assert.deepEqual(staged.style0, { transition: "cut", followsDefault: false, fit: "cover" });
+    assert.equal(staged.def, "cut");
+    await page.click("#apply");
+    await page.waitForFunction(() => (window as unknown as { __postBodies: unknown[] }).__postBodies.length === 1);
+    const body = await page.evaluate(() => (window as unknown as { __postBodies: Record<string, unknown>[] }).__postBodies[0]);
+    assert.deepEqual(body.windowEdits, [{ index: 0, transition: "cut" }], "window style rides the broll-rerender body");
+    assert.equal(body.brollTransition, "cut", "the project default rides the broll-rerender body");
+    const journal = await page.evaluate(() => JSON.parse(localStorage.getItem("editor-v2-broll-apply:account-a:project-a") ?? "{}"));
+    assert.equal(journal.brollTransition, "cut", "the journal keeps the project default");
+    // While the apply runs the base is about to change, so a revert staged now could be lost:
+    // style and default edits are locked exactly like media edits.
+    await page.evaluate(() => {
+      const ed = (window as unknown as { __ed: StyleEd }).__ed;
+      ed.setBrollWindowStyle(0, { transition: "dissolve" });
+      ed.setBrollTransitionDefault("dissolve");
+    });
+    const locked = await styleEd();
+    assert.equal(locked.count, 2, "style edits are locked while the apply is pending");
+    assert.deepEqual(locked.edit0, { transition: "cut" });
+    assert.equal(locked.def, "cut", "the project default is locked while the apply is pending");
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("queued"));
+    const recovered = await styleEd();
+    assert.equal(recovered.count, 2, "refresh restores the window style and the default");
+    assert.equal(recovered.staged, true);
+    await page.evaluate(() => { (window as unknown as { __finish: boolean }).__finish = true; });
+    await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1,
+      { timeout: 5_000 });
+    await waitCount(0);
+    assert.equal((await styleEd()).staged, false, "adoption clears the staged default");
+    console.log("PASS: staged transition/fit + project default reach the request, lock during apply, survive refresh, clear on adopt");
   } finally {
     await browser.close(); await new Promise<void>((done) => server.close(() => done()));
     rmSync(directory, { recursive: true, force: true });

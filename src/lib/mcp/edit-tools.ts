@@ -11,6 +11,16 @@ import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import { assertMcpRenderFree, McpRenderNotFreeError } from "@/lib/mcp/render-free";
 import { brollWindowEditEnabled, enqueueBrollRerender, enqueueEditorExport } from "@/lib/editor-export-enqueue";
 import { mergeWindowEdits, validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import {
+  BROLL_FITS,
+  BROLL_TRANSITIONS,
+  BROLL_TRANSITION_FOLLOW_DEFAULT,
+  effectiveBrollFit,
+  effectiveBrollTransition,
+  isBrollFit,
+  isBrollTransition,
+  isBrollTransitionEdit,
+} from "@/lib/broll-window-style";
 import { createUrlImport, failMediaImport, findOwnedMediaImport } from "@/lib/media-import/imports";
 import { admissionRefusal } from "@/lib/mcp/media-import-copy";
 import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
@@ -38,9 +48,13 @@ import type { SubPreset, SubTextEffect } from "@/app/(dashboard)/video-editor/_c
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { shiftCaptionOverrides } from "@/lib/caption-card-editing";
 import {
+  HEADLINE_HOOK_ANCHORS,
+  HEADLINE_HOOK_CANVAS_HEIGHT_PX,
   HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_OFFSET_PERCENT,
+  MIN_HEADLINE_HOOK_OFFSET_PERCENT,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
   type HeadlineHookFontFamily,
@@ -48,9 +62,22 @@ import {
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
+import { clampTailHoldMs, TAIL_HOLD_MS_MAX, TAIL_HOLD_MS_MIN } from "@/lib/tail-hold";
+import {
+  DEFAULT_BGM_VOLUME,
+  normalizeBackgroundMusicEdit,
+  type BackgroundMusicEdit,
+} from "@/lib/background-music";
+import {
+  findBackgroundMusicTrackById,
+  findBackgroundMusicTrackByPath,
+  listBackgroundMusicTracks,
+} from "@/lib/background-music.server";
 import {
   discardPendingEditDraft,
   draftDurationMs,
+  draftHasBrollChanges,
+  STYLE_ONLY_REPLACEMENT_KIND,
   loadPendingEditState,
   savePendingEditDraft,
   toBurnConfig,
@@ -76,8 +103,11 @@ export const MCP_EDIT_TOOL_NAMES = [
   "regroup_captions",
   "set_subtitle_style",
   "set_headline_hook",
+  "set_background_music",
+  "set_tail_hold",
   "discard_edits",
   "replace_broll_window",
+  "set_broll_style",
   "export_video",
 ] as const;
 
@@ -143,11 +173,26 @@ export const setHeadlineHookInputShape = {
   subheadline: z.string().optional().describe("ข้อความรอง (ไม่เกิน 90 ตัวอักษร 1 บรรทัด, ส่งว่างเพื่อลบ)"),
   durationMs: z.number().int().describe("ระยะเวลาที่พาดหัวค้างอยู่ (ms)").optional(),
   preset: z.enum(nonEmptyEnum(HEADLINE_HOOK_PRESETS)).optional().describe("สไตล์พาดหัว"),
-  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัว 10-42 (% จากขอบบน)").optional(),
+  topPercent: z.number().int().describe("ตำแหน่งแนวตั้งของพาดหัวแบบเดิม 10-42 (% จากขอบบน) — ใช้ได้เฉพาะตอนไม่ส่ง anchor/offsetPx/offsetPercent เลย (ของเดิมที่ไม่มี field ใหม่ยังเรนเดอร์เหมือนก่อนทุกอย่าง); ถ้าต้องการวางใกล้ขอบล่างหรือกำหนดระยะเป็นพิกเซล ให้ใช้ anchor + offsetPx/offsetPercent แทน").optional(),
+  anchor: z.enum(HEADLINE_HOOK_ANCHORS).optional().describe("อ้างอิงตำแหน่งจากขอบบนหรือขอบล่างของจอ (ไม่ระบุ = บน เหมือนเดิม) — ใช้ร่วมกับ offsetPx/offsetPercent"),
+  offsetPx: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วยพิกเซลของจอ 1080×${HEADLINE_HOOK_CANVAS_HEIGHT_PX} — ระบบจะกันไม่ให้พาดหัวทับแถบซับหรือหลุดขอบจอให้อัตโนมัติ (ตำแหน่งที่ได้จริงอาจถูกขยับเข้ามาถ้าชนขอบเขตเหล่านี้ ดูค่าจริงที่ topPercent/offsetPercent ในผลลัพธ์) ส่งอย่างใดอย่างหนึ่งจาก offsetPx/offsetPercent ถ้าส่งทั้งคู่ offsetPx ชนะ`).optional(),
+  offsetPercent: z.number().describe(`ระยะห่างจากขอบที่ anchor กำหนด หน่วย % ของความสูงจอ (${MIN_HEADLINE_HOOK_OFFSET_PERCENT}-${MAX_HEADLINE_HOOK_OFFSET_PERCENT}) — ส่งแทน offsetPx ก็ได้ ระบบกันทับแถบซับ/ขอบจอให้อัตโนมัติเช่นกัน`).optional(),
   fontFamily: z.enum(nonEmptyEnum(HEADLINE_HOOK_FONT_VALUES)).optional().describe("ฟอนต์พาดหัว"),
   fontSize: z.number().int().describe("ขนาดฟอนต์พาดหัว 52-120 px").optional(),
   fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์พาดหัว"),
   subheadlineFontSize: z.number().int().describe("ขนาดฟอนต์ข้อความรอง 32-88 px").optional(),
+} satisfies z.ZodRawShape;
+
+export const setBackgroundMusicInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\") — ส่ง jobId อย่างเดียวเพื่อดูรายการเพลง (tracks) และเพลงปัจจุบัน"),
+  trackId: z.string().optional().describe("เพลงที่จะใช้: tracks[].trackId จากการเรียกด้วย jobId อย่างเดียว หรือ \"none\" = ไม่ใส่เพลง"),
+  volume: z.number().int().optional().describe("ความดังเพลง 0-100 (%) — ค่าเริ่มต้นของระบบคือ 12"),
+  ducking: z.boolean().optional().describe("ลดเสียงเพลงอัตโนมัติตอนมีเสียงพูด (เลือกเพลงใหม่ = เปิดให้เอง, ส่ง false เพื่อปิด)"),
+} satisfies z.ZodRawShape;
+
+export const setTailHoldInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  tailHoldMs: z.number().int().describe(`ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card) — ${TAIL_HOLD_MS_MIN}-${TAIL_HOLD_MS_MAX}, ค่าเริ่มต้น 0 = ไม่ค้าง`),
 } satisfies z.ZodRawShape;
 
 export const discardEditsInputShape = {
@@ -163,6 +208,16 @@ export const replaceBrollWindowInputShape = {
   url: z.string().optional().describe("ลิงก์สาธารณะ https ของรูปหรือวิดีโอ (ระบบดาวน์โหลดเอง) — ส่งอย่างใดอย่างหนึ่งจาก url / uploadId / source"),
   uploadId: z.string().optional().describe("uploadId จาก create_upload_url ที่ PUT ไฟล์เสร็จแล้ว"),
   source: z.enum(["original"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง"),
+} satisfies z.ZodRawShape;
+
+export const setBrollStyleInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  windowIndex: z.number().int().optional()
+    .describe("ช่วง B-roll ที่จะตั้งค่า (windows[].index จาก get_edit_state) — ไม่ส่ง = ตั้งค่าหลักของทั้งคลิป (ใช้ได้กับ transition เท่านั้น)"),
+  transition: z.enum(["dissolve", "cut", "default"]).optional()
+    .describe("ตอนจบของช่วง: dissolve = ภาพละลายเข้าช่วงถัดไป (ค่าเดิม), cut = ตัดชนทันที, default = ให้ช่วงนี้ตามค่าหลักของคลิป (ใช้ได้เฉพาะเมื่อส่ง windowIndex). ช่วงสุดท้าย: dissolve = จางเป็นสีดำตอนจบคลิป, cut = จบแบบไม่จาง"),
+  fit: z.enum(["cover", "contain"]).optional()
+    .describe("การจัดภาพของช่วง: cover = เต็มจอ ครอปขอบ (ค่าเดิม), contain = เห็นภาพครบทั้งภาพ ขอบบน-ล่างเป็นภาพเดียวกันแบบเบลอและมืดลง (ต้องส่ง windowIndex)"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -262,19 +317,63 @@ const ALLOWED = {
   outlineSize: { min: 1, max: 8 },
   verticalPos: { min: 10, max: 95 },
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
+  // EP5 #11 / U3 (set_broll_style).
+  brollTransitions: [...BROLL_TRANSITIONS],
+  brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
+  brollFits: [...BROLL_FITS],
   // headline-hook.ts's own bounds (set_headline_hook, G18).
   headlineHook: {
     headlineMaxChars: 64,
     subheadlineMaxChars: 90,
     durationMs: { min: 3_000, max: 20_000 },
+    // Legacy placement — only applies when anchor/offsetPx/offsetPercent are all omitted.
     topPercent: { min: 10, max: 42 },
+    // EP5 #13: anchor + offset, in px of a 1080×1920 canvas or in % of its height. The server
+    // always keeps the headline off the subtitle band and off the canvas edge, so the applied
+    // position (echoed back as topPercent/offsetPercent) may differ from what was requested.
+    anchors: [...HEADLINE_HOOK_ANCHORS],
+    offsetPercent: { min: MIN_HEADLINE_HOOK_OFFSET_PERCENT, max: MAX_HEADLINE_HOOK_OFFSET_PERCENT },
+    offsetPxCanvasHeight: HEADLINE_HOOK_CANVAS_HEIGHT_PX,
     presets: [...HEADLINE_HOOK_PRESETS],
     fonts: HEADLINE_HOOK_FONT_VALUES,
     fontWeight: HEADLINE_HOOK_FONT_WEIGHTS.map((weight) => String(weight)),
     fontSize: { min: 52, max: 120 },
     subheadlineFontSize: { min: 32, max: 88 },
   },
+  // set_background_music (EP5 U7): volume in %, trackId "none" removes the music.
+  backgroundMusic: {
+    volume: { min: 0, max: 100 },
+    noneTrackId: "none",
+  },
+  // tail-hold.ts's own bounds (set_tail_hold, EP5 backlog #14).
+  tailHoldMs: { min: TAIL_HOLD_MS_MIN, max: TAIL_HOLD_MS_MAX },
 };
+
+/** The music the export will use: the draft's edit, else the base render's own music. */
+function effectiveBackgroundMusic(draft: PendingEditDraft, preview: VideoJobPreviewData): BackgroundMusicEdit {
+  if (draft.backgroundMusic) return draft.backgroundMusic;
+  const bgmFile = preview.config?.bgmFile;
+  const bgmVolume = preview.config?.bgmVolume;
+  return {
+    track: typeof bgmFile === "string" && bgmFile ? bgmFile : null,
+    volume: typeof bgmVolume === "number" && Number.isFinite(bgmVolume) ? Math.min(1, Math.max(0, bgmVolume)) : DEFAULT_BGM_VOLUME,
+    ducking: false,
+  };
+}
+
+/** Agent view: `trackId` ("none" = no music; null = a track no longer in the library), volume in
+ *  %, and `changed` = the draft overrides the preview's own music. */
+async function backgroundMusicView(userId: string, draft: PendingEditDraft, preview: VideoJobPreviewData) {
+  const current = effectiveBackgroundMusic(draft, preview);
+  const option = current.track ? await findBackgroundMusicTrackByPath(userId, current.track) : null;
+  return {
+    trackId: current.track === null ? "none" : option?.trackId ?? null,
+    title: current.track === null ? null : option?.title ?? null,
+    volume: Math.round(current.volume * 100),
+    ducking: current.ducking,
+    changed: draft.backgroundMusic !== undefined,
+  };
+}
 
 // get_edit_state's `allowed.fonts` (and set_subtitle_style's schema) list only the canonical
 // FONTS_LIST values (e.g. "'Kanit', sans-serif"), but a seed built before this task can carry
@@ -397,6 +496,7 @@ export function reportableWindowEdits(
   const rootPreview = rootPreviewOf(root);
   const edits: WindowEdit[] = [];
   for (const edit of windowEdits) {
+    const style = windowEditStyle(edit);
     if (edit.importId) {
       const row = imports.get(edit.importId);
       if (!row || row.status !== "ready" || !row.resultSrc) continue;
@@ -408,12 +508,17 @@ export function reportableWindowEdits(
         replacementKind: "upload",
         ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
         ...(seconds ? { clipDuration: seconds } : {}),
+        ...style,
       });
+      continue;
+    }
+    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND) {
+      if (Object.keys(style).length > 0) edits.push({ index: edit.index, ...style });
       continue;
     }
     if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) continue;
     if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false });
+      edits.push({ index: edit.index, enabled: false, ...style });
       continue;
     }
     const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
@@ -423,9 +528,41 @@ export function reportableWindowEdits(
       enabled: true,
       ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
       ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+      ...style,
     });
   }
   return edits;
+}
+
+/** EP5 #11 / U3: the style half of a pending window edit, as `WindowEdit` fields. */
+function windowEditStyle(edit: PendingEditWindowEdit): Pick<WindowEdit, "transition" | "fit"> {
+  return {
+    ...(isBrollTransitionEdit(edit.transition) ? { transition: edit.transition } : {}),
+    ...(isBrollFit(edit.fit) ? { fit: edit.fit } : {}),
+  };
+}
+
+/** The project-default transition the next export renders with (pending value, else the base's). */
+function draftProjectTransition(draft: PendingEditDraft, base: PendingEditState["base"]) {
+  return effectiveBrollTransition(undefined, draft.brollTransition ?? (base.preview.config as { brollTransition?: unknown }).brollTransition);
+}
+
+/** A window's transition and fit after its pending edit (if any) — what the next export renders. */
+function windowStyleView(
+  draft: PendingEditDraft,
+  base: PendingEditState["base"],
+  edit: PendingEditWindowEdit | undefined,
+  index: number,
+) {
+  const baseWindow = bgVideoAt(base.preview.config, index);
+  const ownTransition = edit?.transition === BROLL_TRANSITION_FOLLOW_DEFAULT
+    ? undefined
+    : edit?.transition ?? baseWindow?.transition;
+  return {
+    transition: effectiveBrollTransition(ownTransition, draftProjectTransition(draft, base)),
+    transitionFollowsDefault: !isBrollTransition(ownTransition),
+    fit: effectiveBrollFit(edit?.fit ?? baseWindow?.fit),
+  };
 }
 
 /**
@@ -465,6 +602,8 @@ function editWindows(
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
     const view = importViewOf(edit, imports);
     const renderedSpan = rendered.get(span.index) ?? null;
+    // A style-only edit changes how the window looks, not its media.
+    const replacesMedia = edit !== undefined && edit.replacementKind !== STYLE_ONLY_REPLACEMENT_KIND;
     return {
       index: span.index,
       startMs: span.startMs,
@@ -472,10 +611,11 @@ function editWindows(
       renderedStartMs: renderedSpan?.startMs ?? null,
       renderedEndMs: renderedSpan?.endMs ?? null,
       owner: windowOwner(preview, span.index),
-      replaced: edit !== undefined || windowReplacedInBase(root, rootPreview, base, span.index),
+      replaced: replacesMedia || windowReplacedInBase(root, rootPreview, base, span.index),
       pending: edit !== undefined,
       importStatus: view?.status ?? null,
       importError: view?.status === "failed" ? view.errorCode ?? "import_failed" : null,
+      ...windowStyleView(draft, base, edit, span.index),
     };
   });
 }
@@ -513,10 +653,13 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
+    backgroundMusic: await backgroundMusicView(userId, state.draft, state.base.preview),
+    tailHoldMs: state.draft.tailHoldMs,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered),
+    brollTransition: draftProjectTransition(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -794,6 +937,9 @@ function headlineHookPatchFields(args: ShapeArgs<typeof setHeadlineHookInputShap
   if (args.durationMs !== undefined) fields.durationMs = args.durationMs;
   if (args.preset !== undefined) fields.preset = args.preset;
   if (args.topPercent !== undefined) fields.topPercent = args.topPercent;
+  if (args.anchor !== undefined) fields.anchor = args.anchor;
+  if (args.offsetPx !== undefined) fields.offsetPx = args.offsetPx;
+  if (args.offsetPercent !== undefined) fields.offsetPercent = args.offsetPercent;
   if (args.fontFamily !== undefined) fields.fontFamily = args.fontFamily;
   if (args.fontSize !== undefined) fields.fontSize = args.fontSize;
   if (args.fontWeight !== undefined) fields.fontWeight = Number(args.fontWeight);
@@ -809,7 +955,7 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
   const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
     const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
     const merged = { ...(draft.headlineHook ?? {}), ...headlineHookPatchFields(args) };
-    const normalized = normalizeHeadlineHook(merged, totalDurationMs);
+    const normalized = normalizeHeadlineHook(merged, totalDurationMs, draft.subtitleConfig.verticalPos);
     if (!normalized) return { ok: false, code: "invalid_input", message: "ค่าพาดหัวไม่ถูกต้อง" };
     draft.headlineHook = normalized;
     return { ok: true, draft };
@@ -819,6 +965,97 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
     ok: true,
     jobId: held.root.id,
     headlineHook: updated.state.draft.headlineHook ?? null,
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_background_music (EP5 U7, HERO-71) ────────────────────────────────────────────────────
+
+const NEXT_LIST_MUSIC = "เรียก set_background_music(jobId) อย่างเดียวเพื่อดูรายการ tracks แล้วใช้ trackId จากรายการนั้น";
+const MAX_TRACK_ID_CHARS = 200;
+
+export async function setBackgroundMusicTool(userId: string, args: ShapeArgs<typeof setBackgroundMusicInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  if (args.trackId === undefined && args.volume === undefined && args.ducking === undefined) {
+    const loaded = await loadState(userId, held.root);
+    if (!loaded.ok) return loaded.failure;
+    const tracks = await listBackgroundMusicTracks(userId);
+    return {
+      ok: true,
+      jobId: held.root.id,
+      backgroundMusic: await backgroundMusicView(userId, loaded.state.draft, loaded.state.base.preview),
+      tracks: tracks.map(({ trackId, title, kind, mood }) => ({ trackId, title, kind, mood })),
+      draftRevision: loaded.state.revision,
+      next: "ถาม user ว่าอยากได้เพลงไหน แล้วเรียก set_background_music(jobId, trackId, volume) — trackId \"none\" = ไม่ใส่เพลง; เลือกเพลงใหม่ระบบจะลดเสียงเพลงตอนมีเสียงพูดให้เอง (ducking:false เพื่อปิด)",
+    };
+  }
+
+  if (args.volume !== undefined && (!Number.isInteger(args.volume) || args.volume < 0 || args.volume > 100)) {
+    return editToolFailure("invalid_input", "ความดังเพลงต้องเป็นจำนวนเต็ม 0-100", "ส่ง volume ระหว่าง 0-100 (ค่าเริ่มต้น 12)");
+  }
+  let pickedTrack: string | null | undefined;
+  if (args.trackId !== undefined) {
+    const trackId = args.trackId.trim();
+    if (trackId.toLowerCase() === "none") {
+      pickedTrack = null;
+    } else {
+      const option = trackId && trackId.length <= MAX_TRACK_ID_CHARS
+        ? await findBackgroundMusicTrackById(userId, trackId)
+        : null;
+      if (!option) return editToolFailure("invalid_input", "ไม่พบเพลงนี้ในคลังเพลงของคุณ", NEXT_LIST_MUSIC);
+      pickedTrack = option.track;
+    }
+  }
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
+    const current = effectiveBackgroundMusic(draft, state.base.preview);
+    const track = pickedTrack === undefined ? current.track : pickedTrack;
+    // Ducking is on by default only for a NEW music picked here; otherwise it keeps its value.
+    const newPick = typeof pickedTrack === "string" && pickedTrack !== current.track;
+    const next = normalizeBackgroundMusicEdit({
+      track,
+      volume: args.volume === undefined ? current.volume : args.volume / 100,
+      ducking: track === null ? false : args.ducking ?? (newPick ? true : current.ducking),
+    });
+    if (!next) {
+      return { ok: false, code: "invalid_input", message: "เพลงเดิมของคลิปนี้ปรับไม่ได้ — เลือกเพลงจากรายการด้วย trackId" };
+    }
+    draft.backgroundMusic = next;
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, NEXT_LIST_MUSIC);
+  return {
+    ok: true,
+    jobId: held.root.id,
+    backgroundMusic: await backgroundMusicView(userId, updated.state.draft, updated.state.base.preview),
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_tail_hold (EP5 backlog #14) ──────────────────────────────────────────────────────────
+
+export async function setTailHoldTool(userId: string, args: ShapeArgs<typeof setTailHoldInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (!Number.isFinite(args.tailHoldMs)) {
+    return editToolFailure("invalid_input", "ค่า tailHoldMs ต้องเป็นตัวเลข", "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  }
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft) => {
+    draft.tailHoldMs = clampTailHoldMs(args.tailHoldMs);
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, "เรียก get_edit_state เพื่อดูค่าปัจจุบัน");
+  return {
+    ok: true,
+    jobId: held.root.id,
+    tailHoldMs: updated.state.draft.tailHoldMs,
     draftRevision: updated.state.revision,
     next: NEXT_MORE_EDITS,
   };
@@ -1031,6 +1268,12 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
       }
       edit = original.edit;
     }
+    // EP5 #11 / U3: a transition/fit set on this window (set_broll_style) survives a media change.
+    const previous = draft.windowEdits.find((candidate) => candidate.index === index);
+    const style = previous ? windowEditStyle(previous) : {};
+    if (Object.keys(style).length > 0) {
+      edit = edit ? { ...edit, ...style } : { index, src: null, replacementKind: STYLE_ONLY_REPLACEMENT_KIND, ...style };
+    }
     const others = draft.windowEdits.filter((candidate) => candidate.index !== index);
     draft.windowEdits = edit ? [...others, edit] : others;
     if (draft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
@@ -1057,6 +1300,104 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
       : importStatus === "ready"
         ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
         : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
+  };
+}
+
+// ── set_broll_style (EP5 #11 hard cut, U3 fit) ─────────────────────────────────────────────
+
+const NEXT_STYLE = "ส่ง transition (\"dissolve\" / \"cut\" / \"default\") และ/หรือ fit (\"cover\" / \"contain\") — ดูค่าที่ใช้ได้ที่ allowed.brollWindowTransitions / allowed.brollFits ของ get_edit_state";
+const NO_STYLE = editToolFailure("invalid_input", "ต้องส่ง transition หรือ fit อย่างน้อยหนึ่งค่า", NEXT_STYLE);
+const BAD_TRANSITION = editToolFailure("invalid_input", "รูปแบบการเปลี่ยนฉาก b-roll ไม่ถูกต้อง", NEXT_STYLE);
+const BAD_FIT = editToolFailure("invalid_input", "รูปแบบการจัดภาพ b-roll ไม่ถูกต้อง", NEXT_STYLE);
+const PROJECT_TRANSITION_ONLY = editToolFailure(
+  "invalid_input",
+  "ค่าหลักของทั้งคลิปตั้งได้เฉพาะ transition เป็น \"dissolve\" หรือ \"cut\" — fit และ \"default\" ต้องระบุ windowIndex",
+  "ส่ง windowIndex (windows[].index จาก get_edit_state) เพื่อตั้งค่าทีละช่วง หรือส่งแค่ transition \"dissolve\"/\"cut\" เพื่อตั้งค่าหลัก",
+);
+
+/**
+ * EP5 #11 / U3: how B-roll windows end (dissolve / hard cut) and fit (cover / contain), without
+ * replacing media. With `windowIndex` it sets that window (last-wins, kept through a later
+ * replace_broll_window); without it, the project default every window follows unless it has its
+ * own transition. A value equal to the current base is a no-op that drops the pending change.
+ * Recorded in the Pending Edit Draft (CAS) — the next export_video re-renders it for free.
+ */
+export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBrollStyleInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const { transition, fit } = args;
+  if (transition === undefined && fit === undefined) return NO_STYLE;
+  if (transition !== undefined && !isBrollTransitionEdit(transition)) return BAD_TRANSITION;
+  if (fit !== undefined && !isBrollFit(fit)) return BAD_FIT;
+  const index = args.windowIndex;
+  const projectLevel = index === undefined;
+  if (projectLevel && (fit !== undefined || !isBrollTransition(transition))) return PROJECT_TRANSITION_ONLY;
+  if (!projectLevel && (typeof index !== "number" || !Number.isInteger(index) || index < 0)) return NO_WINDOW;
+
+  const held = await resolveHeldRoot(user.id, args.jobId);
+  if (!held.ok) return held.failure;
+  const { root } = held;
+  const loaded = await loadState(user.id, root);
+  if (!loaded.ok) return loaded.failure;
+  const { base } = loaded.state;
+  if (!projectLevel && !previewWindowSpans(base.preview).some((span) => span.index === index)) return NO_WINDOW;
+  const baseRow = await prisma.videoJob.findFirst({
+    where: { id: base.id, userId: user.id },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
+  });
+  if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
+  // Like replace_broll_window's A1: while a re-render of this root runs, the base the "equal to
+  // the base → drop the pending value" decision reads is about to be replaced, so a revert decided
+  // now would be lost when the re-render lands. Refuse instead of answering ok.
+  if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return STYLE_DURING_RERENDER;
+
+  const refused: { failure: EditToolFailure | null } = { failure: null };
+  const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
+    const baseConfig = state.base.preview.config as { brollTransition?: unknown };
+    if (projectLevel) {
+      if (transition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) delete draft.brollTransition;
+      else if (isBrollTransition(transition)) draft.brollTransition = transition;
+      return { ok: true, draft };
+    }
+    if (!previewWindowSpans(state.base.preview).some((span) => span.index === index)) {
+      refused.failure = NO_WINDOW;
+      return { ok: false, code: NO_WINDOW.code, message: NO_WINDOW.message };
+    }
+    const baseWindow = bgVideoAt(state.base.preview.config, index);
+    const previous = draft.windowEdits.find((candidate) => candidate.index === index);
+    const next: PendingEditWindowEdit = previous
+      ? { ...previous }
+      : { index, src: null, replacementKind: STYLE_ONLY_REPLACEMENT_KIND };
+    if (transition !== undefined) {
+      const baseOwn = isBrollTransition(baseWindow?.transition) ? baseWindow.transition : BROLL_TRANSITION_FOLLOW_DEFAULT;
+      if (transition === baseOwn) delete next.transition;
+      else next.transition = transition;
+    }
+    if (fit !== undefined) {
+      if (fit === effectiveBrollFit(baseWindow?.fit)) delete next.fit;
+      else next.fit = fit;
+    }
+    const others = draft.windowEdits.filter((candidate) => candidate.index !== index);
+    const emptyStyleOnly = next.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+      && next.transition === undefined && next.fit === undefined;
+    draft.windowEdits = emptyStyleOnly ? others : [...others, next];
+    if (draft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
+      refused.failure = TOO_MANY_WINDOW_EDITS;
+      return { ok: false, code: TOO_MANY_WINDOW_EDITS.code, message: TOO_MANY_WINDOW_EDITS.message };
+    }
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return refused.failure ?? mapUpdateFailure(updated.code, updated.message, NEXT_WINDOWS);
+  const { draft, base: updatedBase } = updated.state;
+  const edit = projectLevel ? undefined : draft.windowEdits.find((candidate) => candidate.index === index);
+  return {
+    ok: true,
+    jobId: root.id,
+    ...(projectLevel
+      ? { brollTransition: draftProjectTransition(draft, updatedBase) }
+      : { windowIndex: index, ...windowStyleView(draft, updatedBase, edit, index) }),
+    pending: draftHasBrollChanges(draft),
+    draftRevision: updated.state.revision,
+    next: "ยังไม่เรนเดอร์ — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ (ระบบเรนเดอร์ช่วง B-roll ใหม่ให้ ไม่ตัดโควต้าเพิ่ม)",
   };
 }
 
@@ -1093,6 +1434,7 @@ const ENQUEUE_NEXT: Record<string, string> = {
   too_many_jobs: "รอให้งานที่ค้างอยู่เสร็จก่อน (เช็คด้วย get_video_status) แล้วเรียก export_video อีกครั้ง",
   stale_export_source: NEXT_RELOAD,
   invalid_headline_hook: NEXT_EDITOR,
+  invalid_background_music: NEXT_LIST_MUSIC,
 };
 
 // T13: export with pending B-roll window edits = a free re-render of the current base that
@@ -1113,6 +1455,11 @@ const ORIGINAL_DURING_RERENDER = editToolFailure(
   "rerender_in_progress",
   "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังสั่งให้ช่วงนี้กลับเป็นภาพเดิมไม่ได้ — ยังไม่ได้บันทึกอะไร",
   "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก replace_broll_window ด้วย source \"original\" อีกครั้ง",
+);
+const STYLE_DURING_RERENDER = editToolFailure(
+  "rerender_in_progress",
+  "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังเปลี่ยนการตัดต่อหรือการจัดภาพของ B-roll ไม่ได้ — ยังไม่ได้บันทึกอะไร",
+  "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก set_broll_style อีกครั้ง",
 );
 const IMPORT_ERROR_HINT: Record<string, string> = {
   fetch_timeout: "ดาวน์โหลดไม่ทันเวลา หรือคิวนำเข้าไม่ว่างในตอนนั้น — ส่งไฟล์เดิมใหม่ได้",
@@ -1186,6 +1533,7 @@ async function rerenderEditsFor(
   const rootPreview = rootPreviewOf(root);
   const edits: WindowEdit[] = [];
   for (const edit of ordered) {
+    const style = windowEditStyle(edit);
     const row = edit.importId ? byId.get(edit.importId) : undefined;
     if (row) {
       const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
@@ -1196,14 +1544,19 @@ async function rerenderEditsFor(
         replacementKind: "upload",
         ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
         ...(seconds ? { clipDuration: seconds } : {}),
+        ...style,
       });
+      continue;
+    }
+    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND && Object.keys(style).length > 0) {
+      edits.push({ index: edit.index, ...style });
       continue;
     }
     if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) {
       return { ok: false, failure: ORIGINAL_UNAVAILABLE };
     }
     if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false });
+      edits.push({ index: edit.index, enabled: false, ...style });
       continue;
     }
     const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
@@ -1213,8 +1566,11 @@ async function rerenderEditsFor(
       enabled: true,
       ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
       ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
+      ...style,
     });
   }
+  // EP5 #11: only a new project default is pending — the re-render changes no window.
+  if (edits.length === 0 && state.draft.brollTransition !== undefined) return { ok: true, edits };
   const validated = validateWindowEdits(edits);
   const merged = "error" in validated
     ? validated
@@ -1299,7 +1655,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       if (!reloaded.ok) return reloaded.failure;
       state = reloaded.state;
       checked = null;
-      if (state.draft.windowEdits.length === 0) {
+      if (!draftHasBrollChanges(state.draft)) {
         return depth >= 1 ? STALE_REVISION : exportVideoTool(user, root.id, depth + 1);
       }
     }
@@ -1317,6 +1673,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       user,
       sourceJobId: state.base.id,
       windowEdits: checked,
+      ...(state.draft.brollTransition ? { brollTransition: state.draft.brollTransition } : {}),
       idempotencyKey,
       rootJobId: root.id,
       mcpExportAfter: { appliedDraftWindowEdits: state.draft.windowEdits },
@@ -1359,7 +1716,7 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
   const loaded = await loadState(user.id, root);
   if (!loaded.ok) return loaded.failure;
   let state: PendingEditState = loaded.state;
-  if (state.draft.windowEdits.length > 0) return exportWithWindowEdits(user, root, state, depth);
+  if (draftHasBrollChanges(state.draft)) return exportWithWindowEdits(user, root, state, depth);
 
   let checkedBaseUrl: string | null = null;
   const assertFree = async (): Promise<EditToolFailure | null> => {
@@ -1420,6 +1777,7 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
       exportSceneCount: state.draft.captions.length,
       rootJobId: root.id,
       pendingEditRevision: state.revision,
+      ...(state.draft.backgroundMusic ? { backgroundMusic: state.draft.backgroundMusic } : {}),
     });
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
@@ -1473,7 +1831,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "get_edit_state",
     {
       title: "Get edit state",
-      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
+      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, เพลงประกอบ, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป, windows[].transition/fit = ตอนจบ (dissolve/cut) และการจัดภาพ (cover/contain) ของช่วงนั้น, brollTransition = ค่าหลักของทั้งคลิป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
       inputSchema: getEditStateInputShape,
     },
     async (args, extra) =>
@@ -1561,6 +1919,32 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
   registerGatedTool(
     server,
     principal,
+    "set_background_music",
+    {
+      title: "Set background music",
+      description: "เปลี่ยนเพลงประกอบ (BGM) และความดังของวิดีโอ exportMode \"hold\" หลังสร้างแล้ว โดยไม่ต้องสร้างใหม่. เรียกด้วย jobId อย่างเดียว = ดูรายการเพลง (tracks) + เพลงปัจจุบัน ไม่แก้อะไร. ส่ง trackId (จาก tracks หรือ \"none\" = ไม่ใส่เพลง) และ/หรือ volume 0-100 เพื่อแก้. เลือกเพลงใหม่ = ระบบลดเสียงเพลงตอนมีเสียงพูดให้อัตโนมัติ (ducking) ปิดได้ด้วย ducking:false. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: setBackgroundMusicInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_background_music", extra, (p) => setBackgroundMusicTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_tail_hold",
+    {
+      title: "Set tail hold",
+      description: "ค้างเฟรมสุดท้ายของวิดีโอไว้กี่ ms หลังเสียงพากย์จบ (ใส่ end card/ชวนแอ็กชัน) — 0-3000, ค่าเริ่มต้น 0 = ไม่ค้าง (เหมือนเดิม). เพลงพื้นหลังเล่นต่อตลอดช่วงที่ค้าง ซับไม่โชว์ในช่วงนี้. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ.",
+      inputSchema: setTailHoldInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_tail_hold", extra, (p) => setTailHoldTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
     "discard_edits",
     {
       title: "Discard edits",
@@ -1587,10 +1971,23 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
   registerGatedTool(
     server,
     principal,
+    "set_broll_style",
+    {
+      title: "Set B-roll style",
+      description: "ตั้งรูปแบบของช่วง B-roll โดยไม่เปลี่ยนภาพ ในดราฟต์ของวิดีโอ exportMode \"hold\": transition = ตอนจบของช่วง (\"dissolve\" ละลายเข้าช่วงถัดไป ค่าเดิม / \"cut\" ตัดชน / \"default\" ตามค่าหลักของคลิป), fit = การจัดภาพ (\"cover\" เต็มจอครอปขอบ ค่าเดิม / \"contain\" เห็นภาพครบ ขอบเป็นภาพเดียวกันแบบเบลอและมืด). ส่ง windowIndex เพื่อตั้งทีละช่วง หรือไม่ส่ง windowIndex แล้วส่ง transition \"dissolve\"/\"cut\" เพื่อตั้งค่าหลักของทั้งคลิป (ช่วงที่ตั้งเองแล้วไม่เปลี่ยน). ค่าที่ตั้งยังอยู่แม้เปลี่ยนภาพด้วย replace_broll_window. ดูค่าปัจจุบันที่ get_edit_state.windows[].transition/fit และ brollTransition. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: setBrollStyleInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_broll_style", extra, (p) => setBrollStyleTool(p.user, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
     "export_video",
     {
       title: "Export video",
-      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). ถ้ามีช่วง B-roll ที่เปลี่ยน ระบบเรนเดอร์ช่วงเหล่านั้นใหม่ก่อน (status \"rerendering\") แล้วส่งออกต่อให้เอง — ไฟล์นำเข้าทุกช่วงต้อง \"ready\" ก่อน. เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานเดิม. แล้ว poll get_video_status.",
+      description: "ส่งออกวิดีโอ exportMode \"hold\" พร้อมการแก้ในดราฟต์ (เบิร์นซับบนวิดีโอตัวอย่างที่จ่ายแล้ว ไม่ตัดโควต้าเพิ่ม). ถ้ามีช่วง B-roll ที่เปลี่ยนภาพหรือรูปแบบ (replace_broll_window / set_broll_style) ระบบเรนเดอร์ B-roll ใหม่ก่อน (status \"rerendering\") แล้วส่งออกต่อให้เอง — ไฟล์นำเข้าทุกช่วงต้อง \"ready\" ก่อน. เรียกซ้ำโดยไม่แก้เพิ่ม = ได้งานเดิม. แล้ว poll get_video_status.",
       inputSchema: exportVideoInputShape,
     },
     async (args, extra) =>

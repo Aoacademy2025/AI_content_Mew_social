@@ -2551,6 +2551,15 @@ async function runExactReplayRouteScenario(input: {
     // headline-hook/etc., none of which this scenario exercises, so stub just the constant
     // the route actually uses (kept byte-equal to the real module's value).
     if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
+    // EP5 U7: editor-export-enqueue builds the music mix only for an export that carries a
+    // backgroundMusic edit. No exact-replay scenario sends one, so a call here is a harness bug.
+    if (specifier === "@/lib/background-music.server") {
+      return {
+        buildBackgroundMusicAudioMix: async () => {
+          throw new Error("exact-replay scenario unexpectedly sent backgroundMusic");
+        },
+      };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

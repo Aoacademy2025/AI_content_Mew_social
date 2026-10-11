@@ -6,6 +6,7 @@ import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import { INTERNAL_JOB_FAILURE_CODE } from "@/lib/mcp/video-job";
 import {
+  draftHasBrollChanges,
   loadPendingEditState,
   savePendingEditDraft,
   toBurnConfig,
@@ -187,6 +188,10 @@ export async function continueMcpRerenderChain(input: {
       baseJobId: rerender.id,
       windowEdits: loaded.state.draft.windowEdits.filter((edit) => !applied.has(JSON.stringify(edit))),
     };
+    // EP5 #11: the project default this re-render wrote into its config is no longer pending.
+    if (draft.brollTransition !== undefined && draft.brollTransition === rerenderInput.brollTransition) {
+      delete draft.brollTransition;
+    }
     if (await savePendingEditDraft(userId, loaded.state.projectId, loaded.state.revision, draft)) {
       state = { ...loaded.state, revision: loaded.state.revision + 1, draft };
       break;
@@ -219,7 +224,8 @@ export async function continueMcpRerenderChain(input: {
       rootJobId: root.id,
       // G12: clear the draft on success only when nothing is left pending in it — window
       // edits the agent added while the re-render ran stay for the next export_video.
-      ...(state.draft.windowEdits.length === 0 ? { pendingEditRevision: state.revision } : {}),
+      ...(!draftHasBrollChanges(state.draft) ? { pendingEditRevision: state.revision } : {}),
+      ...(state.draft.backgroundMusic ? { backgroundMusic: state.draft.backgroundMusic } : {}),
       // The customer already ordered this export (export_video); the server finishes it.
       inflightCap: false,
       projectTransition: "while_in_flight",

@@ -1,4 +1,5 @@
 import type { BrollVideo } from "../remotion/types";
+import { brollWindowStyle } from "./broll-window-style";
 
 export const BROLL_SEQUENCE_GUARD_FRAMES = 10;
 export const BROLL_PROBE_SAFETY_MARGIN_SEC = 0.5;
@@ -194,6 +195,8 @@ function makeTargets(
       const sameContinuousSource = previous?.preferred?.src === span.src
         && previous.preferred.sourceIndex === span.sourceIndex
         && previous.preferred.brollEnabled === span.brollEnabled
+        && previous.preferred.transition === span.transition
+        && previous.preferred.fit === span.fit
         && Math.abs(previous.end - start) <= toleranceSec
         && Math.abs(
           finiteOr(previous.preferred.clipOffset, 0) - finiteOr(span.clipOffset, 0),
@@ -314,6 +317,8 @@ function compactContinuousPlayback(
     const canMerge = previous?.src === segment.src
       && sameSourceIndex
       && previous.brollEnabled === segment.brollEnabled
+      && previous.transition === segment.transition
+      && previous.fit === segment.fit
       && Math.abs(previous.end - segment.start) <= toleranceSec
       && Math.abs(expectedOffset - Math.max(0, finiteOr(segment.clipOffset, 0))) <= toleranceSec
       && segment.end - previous.start
@@ -367,6 +372,10 @@ export function coverBrollTimeline(
     // A still-derived motion clip can repeat safely. Keep its selected identity
     // for the whole window; only ordinary finite footage uses the fallback pool.
     const selectedImage = target.preferred?.stillImage === true ? target.preferred : undefined;
+    // EP5 #11 / U3: transition and fit belong to the WINDOW being filled, so every segment
+    // on its span (borrowed fallback footage included) carries the window's own style and
+    // never the style of the window the footage was borrowed from. Legacy: adds no keys.
+    const windowStyle = brollWindowStyle(target.preferred);
     let attemptsWithoutProgress = 0;
 
     while (cursor < target.end - EPSILON_SEC) {
@@ -424,8 +433,12 @@ export function coverBrollTimeline(
         break targetLoop;
       }
 
+      const { transition: _borrowedTransition, fit: _borrowedFit, ...assetFields } = asset;
+      void _borrowedTransition;
+      void _borrowedFit;
       segments.push({
-        ...asset,
+        ...assetFields,
+        ...windowStyle,
         start: cursor,
         end: cursor + spanSec,
         clipOffset: offset,

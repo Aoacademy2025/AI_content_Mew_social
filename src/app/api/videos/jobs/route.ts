@@ -126,11 +126,13 @@ type Body = {
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
   confirmedMeteredMinutes?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
-  sourceJobId?: unknown; windowEdits?: unknown;
+  sourceJobId?: unknown; windowEdits?: unknown; brollTransition?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
   // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
   expectedPendingRevision?: unknown;
+  // EP5 U7: music changed in the Post phase (validated by enqueueEditorExport).
+  backgroundMusic?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -324,6 +326,7 @@ export async function POST(req: Request) {
           user,
           sourceJobId: str(body.sourceJobId, 120),
           windowEdits: body.windowEdits,
+          brollTransition: body.brollTransition,
           idempotencyKey,
           idempotencyFingerprint,
         });
@@ -359,6 +362,7 @@ export async function POST(req: Request) {
           exportScript: str(body.script, 20000),
           exportSceneCount: num(body.exportSceneCount, 1, 1000),
           expectedPendingRevision: num(body.expectedPendingRevision, 0, MAX_PENDING_EDIT_REVISION),
+          backgroundMusic: body.backgroundMusic,
         });
         if (!result.ok) return editorEnqueueRefusalResponse(result);
         return queuedJobResponse(result.job.id, idempotencyKey, idempotencyFingerprint, legacyClient);

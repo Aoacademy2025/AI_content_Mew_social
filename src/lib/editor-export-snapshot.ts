@@ -1,4 +1,5 @@
 import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 export type EditorExportCardLen = "sentence" | "1" | "2" | "3" | "4";
 
@@ -29,6 +30,9 @@ export type EditorExportDraft = {
   subtitleConfig: EditorExportSubtitleConfig;
   cardLen: EditorExportCardLen;
   captionOverrides: EditorExportCaptionOverrides;
+  /** EP5 backlog #14. Optional so a pre-existing snapshot (written before this field existed)
+   *  still parses — absent means 0, today's behaviour. */
+  tailHoldMs?: number;
 };
 
 export type EditorExportSnapshot = EditorExportDraft & {
@@ -153,6 +157,10 @@ export function normalizeEditorExportDraft(value: unknown): EditorExportDraft | 
   if (!captions || !originalCaptions || !subtitleConfig) return null;
   const captionOverrides = normalizeCaptionOverrides(input.captionOverrides, captions.length);
   if (!captionOverrides) return null;
+  // Absent (legacy snapshot) stays absent rather than being forced to 0, but a present value
+  // must be a valid number — a corrupt field fails the whole parse like every other field here.
+  const tailHoldMs = input.tailHoldMs === undefined ? undefined : clampTailHoldMs(input.tailHoldMs);
+  if (input.tailHoldMs !== undefined && typeof input.tailHoldMs !== "number") return null;
   return {
     version: 1,
     captions,
@@ -160,6 +168,7 @@ export function normalizeEditorExportDraft(value: unknown): EditorExportDraft | 
     subtitleConfig,
     cardLen: input.cardLen as EditorExportCardLen,
     captionOverrides,
+    ...(tailHoldMs === undefined ? {} : { tailHoldMs }),
   };
 }
 

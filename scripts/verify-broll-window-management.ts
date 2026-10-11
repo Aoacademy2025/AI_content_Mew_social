@@ -58,7 +58,9 @@ const exportEnd = editor.indexOf("\n  return {", exportStart);
 assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
 const exportSource = editor.slice(exportStart, exportEnd);
 assert.match(exportSource, /resolveBrollExportSource/u);
-assert.match(exportSource, /pendingEditCount:\s*windowEdits\.size/u);
+// EP5 #11: a staged project-default transition is a pending B-roll change too.
+assert.match(exportSource, /pendingEditCount:\s*pendingBrollEditCount/u);
+assert.match(editor, /const pendingBrollEditCount = windowEdits\.size \+ \(brollTransitionDraft \? 1 : 0\);/u);
 assert.doesNotMatch(exportSource, /sourceJobId:\s*job\.jobId/u);
 assert.match(editor, /pendingBrollIntent/u);
 assert.match(editor, /requestNewProject/u);

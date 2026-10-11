@@ -59,6 +59,7 @@ export function TimelinePanel({
   layerVisibility, layerAvailability, onLayerVisibilityChange,
   layerControlsDisabled = false,
   headlineHook, onHeadlineHookDurationChange,
+  musicChange,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -103,6 +104,8 @@ export function TimelinePanel({
   onLayerVisibilityChange: (layer: EditableEditorLayer, enabled: boolean) => void;
   layerControlsDisabled?: boolean;
   headlineHook?: HeadlineHookConfig;
+  /** EP5 U7: the music changed in the Post phase (null = the video's own music, as before). */
+  musicChange?: { present: boolean; label: string } | null;
   onHeadlineHookDurationChange?: (durationMs: number) => void;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
@@ -672,12 +675,12 @@ export function TimelinePanel({
           </div>
 
           {/* เพลง */}
-          {bgmFile && (
+          {(musicChange ? musicChange.present : !!bgmFile) && (
             <div className="relative flex items-center" style={{ height: TRACK_H }}>
               {trackLabel("เพลง", color.trackMusic)}
               <div className="relative flex-1" style={{ height: TRACK_H }}>
                 <div data-clip style={{ ...clipStyle(color.trackMusic), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
-                  ♪ ลดเสียงใต้เสียงพูดอัตโนมัติ
+                  {musicChange?.label ?? "♪ ลดเสียงใต้เสียงพูดอัตโนมัติ"}
                 </div>
               </div>
             </div>

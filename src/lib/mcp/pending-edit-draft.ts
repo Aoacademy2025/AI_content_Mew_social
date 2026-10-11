@@ -20,7 +20,17 @@ import {
 } from "@/lib/mcp/orchestrator-steps";
 import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-hook";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
+import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
 import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
+import {
+  isBrollFit,
+  isBrollTransition,
+  isBrollTransitionEdit,
+  type BrollFit,
+  type BrollTransition,
+  type BrollTransitionEdit,
+} from "@/lib/broll-window-style";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -43,8 +53,16 @@ export type PendingEditWindowEdit = {
   index: number;
   src: string | null;
   importId?: string;
+  /** "upload" / "original", or "style" = only `transition`/`fit` change (src stays null). */
   replacementKind: string;
+  /** EP5 #11: how this window ends ("default" = drop its own value, follow the project default). */
+  transition?: BrollTransitionEdit;
+  /** U3: "cover" (fill, crop) or "contain" (whole picture over a blurred, darkened copy). */
+  fit?: BrollFit;
 };
+
+/** EP5 #11 / U3: a window edit that changes only how the window looks, not its media. */
+export const STYLE_ONLY_REPLACEMENT_KIND = "style";
 
 export type PendingEditDraft = {
   version: 1;
@@ -63,8 +81,21 @@ export type PendingEditDraft = {
   headlineHook?: HeadlineHookConfig;
   /** Carried through unchanged from the project draft (MCP never edits the logo). */
   logoOverlay?: LogoOverlayConfig;
+  /** EP5 U7: the music chosen after creation (`set_background_music`). Absent = the base
+   *  render's own music, burned exactly as today. */
+  backgroundMusic?: BackgroundMusicEdit;
+  /** EP5 backlog #14 (ADR 0066: shared draft field, exposed to both web and MCP). 0-3000 ms,
+   *  default 0 = today's behaviour. */
+  tailHoldMs: number;
   windowEdits: PendingEditWindowEdit[];
+  /** EP5 #11: a new project-default B-roll transition the next export re-renders with. */
+  brollTransition?: BrollTransition;
 };
+
+/** True when the next export must re-render the B-roll (window edits or a new project default). */
+export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition">): boolean {
+  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined;
+}
 
 /** The base render an export burns onto: `project.activeJobId`'s finished preview. */
 export type PendingEditBase = {
@@ -118,7 +149,7 @@ export function draftDurationMs(preview: VideoJobPreviewData, captions: readonly
   return Math.max(preview.audioDurationMs || 0, captions[captions.length - 1]?.endMs ?? 0, 1_000);
 }
 
-function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides">): EditorExportDraft {
+function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptions" | "subtitleConfig" | "cardLen" | "captionOverrides" | "tailHoldMs">): EditorExportDraft {
   return {
     version: 1,
     captions: draft.captions,
@@ -126,6 +157,7 @@ function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptio
     subtitleConfig: draft.subtitleConfig,
     cardLen: draft.cardLen,
     captionOverrides: draft.captionOverrides,
+    tailHoldMs: draft.tailHoldMs,
   };
 }
 
@@ -141,12 +173,16 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       || (item.src !== null && typeof item.src !== "string")
       || (item.importId !== undefined && typeof item.importId !== "string")
       || typeof item.replacementKind !== "string"
+      || (item.transition !== undefined && !isBrollTransitionEdit(item.transition))
+      || (item.fit !== undefined && !isBrollFit(item.fit))
     ) return null;
     edits.push({
       index: item.index as number,
       src: item.src as string | null,
       ...(typeof item.importId === "string" ? { importId: item.importId } : {}),
       replacementKind: item.replacementKind,
+      ...(isBrollTransitionEdit(item.transition) ? { transition: item.transition } : {}),
+      ...(isBrollFit(item.fit) ? { fit: item.fit } : {}),
     });
   }
   return edits;
@@ -163,9 +199,13 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   if (!editor || !windowEdits) return null;
   const words = Array.isArray(input.words) ? input.words as PendingEditDraft["words"] : undefined;
   const fullText = typeof input.fullText === "string" ? input.fullText : undefined;
-  const headlineHook = input.headlineHook === undefined ? undefined : normalizeHeadlineHook(input.headlineHook, 86_400_000);
+  const headlineHook = input.headlineHook === undefined
+    ? undefined
+    : normalizeHeadlineHook(input.headlineHook, 86_400_000, editor.subtitleConfig.verticalPos);
   const logoOverlay = input.logoOverlay === undefined ? undefined : normalizeLogoOverlayConfig(input.logoOverlay);
-  if (headlineHook === null || logoOverlay === null) return null;
+  const backgroundMusic = input.backgroundMusic === undefined ? undefined : normalizeBackgroundMusicEdit(input.backgroundMusic);
+  if (headlineHook === null || logoOverlay === null || backgroundMusic === null) return null;
+  if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -179,7 +219,10 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     captionOverrides: editor.captionOverrides,
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
+    ...(backgroundMusic ? { backgroundMusic } : {}),
+    tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
+    ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
   };
 }
 
@@ -189,8 +232,9 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
  *  - originalCaptions / words / fullText: the latest export snapshot, else the base preview;
  *  - cardLen / subtitleConfig: the snapshot, else the root's resolved MCP design (T4);
  *  - captionOverrides: the snapshot (carried unchanged), else none;
- *  - headlineHook / logoOverlay: the project's `draftJson` (an MCP export writes the headline it
- *    applied there, #7 — see `clearPendingEditDraftIfRevision`);
+ *  - headlineHook / logoOverlay / backgroundMusic: the project's `draftJson` (an MCP export writes
+ *    the headline and music it applied there, #7 — see `clearPendingEditDraftIfRevision`; the web
+ *    autosaves its own values there);
  *  - windowEdits: empty (replacements an export already rendered live in the base itself).
  */
 export function seedPendingEditDraft(input: {
@@ -209,8 +253,14 @@ export function seedPendingEditDraft(input: {
   const words = snapshot?.preview.words ?? preview.words;
   const fullText = snapshot?.preview.fullText ?? preview.fullText;
   const projectDraft = record(parseJson(input.projectDraftJson)) ?? {};
-  const headlineHook = normalizeHeadlineHook(projectDraft.headlineHook, draftDurationMs(preview, captions));
+  const subtitleConfig = (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design };
+  const headlineHook = normalizeHeadlineHook(
+    projectDraft.headlineHook,
+    draftDurationMs(preview, captions),
+    subtitleConfig.verticalPos,
+  );
   const logoOverlay = normalizeLogoOverlayConfig(projectDraft.logoOverlay);
+  const backgroundMusic = normalizeBackgroundMusicEdit(projectDraft.backgroundMusic);
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -220,10 +270,12 @@ export function seedPendingEditDraft(input: {
     ...(Array.isArray(words) ? { words } : {}),
     ...(typeof fullText === "string" ? { fullText } : {}),
     cardLen: snapshot?.cardLen ?? design.cardLen,
-    subtitleConfig: (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design },
+    subtitleConfig,
     captionOverrides: snapshot?.captionOverrides ?? {},
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
+    ...(backgroundMusic ? { backgroundMusic } : {}),
+    tailHoldMs: clampTailHoldMs(snapshot?.tailHoldMs),
     windowEdits: [],
   };
 }
@@ -375,7 +427,8 @@ type ProjectDraftHeadlineWrite =
 
 /**
  * #7 (ADR 0066 §4): the project draft (`EditorProject.draftJson`, which the web editor loads and
- * every later seed reads) with `headlineHook` set. `unchanged` = the headline is already there;
+ * every later seed reads) with the exported `headlineHook` and/or `backgroundMusic` set (EP5 U7
+ * persists the music the same way). `unchanged` = the values are already there;
  * `blocked` = the project draft cannot take it (not a JSON object — never overwritten; the result
  * would exceed the draft cap; `draftRevision` cannot grow), so the caller must keep the pending
  * draft, the headline's only copy.
@@ -383,16 +436,24 @@ type ProjectDraftHeadlineWrite =
 function projectDraftWithHeadline(
   draftJson: string | null,
   draftRevision: number,
-  headlineHook: HeadlineHookConfig,
+  exported: { headlineHook?: HeadlineHookConfig; backgroundMusic?: BackgroundMusicEdit },
 ): ProjectDraftHeadlineWrite {
   const draft = draftJson ? record(parseJson(draftJson)) : {};
   if (!draft) return { kind: "blocked", reason: "draft_not_object" };
-  const current = draft.headlineHook === undefined ? null : normalizeHeadlineHook(draft.headlineHook, 86_400_000);
-  if (current && JSON.stringify(current) === JSON.stringify(headlineHook)) return { kind: "unchanged" };
+  const patch: Record<string, unknown> = {};
+  if (exported.headlineHook) {
+    const current = draft.headlineHook === undefined ? null : normalizeHeadlineHook(draft.headlineHook, 86_400_000);
+    if (!current || JSON.stringify(current) !== JSON.stringify(exported.headlineHook)) patch.headlineHook = exported.headlineHook;
+  }
+  if (exported.backgroundMusic) {
+    const current = normalizeBackgroundMusicEdit(draft.backgroundMusic);
+    if (!current || JSON.stringify(current) !== JSON.stringify(exported.backgroundMusic)) patch.backgroundMusic = exported.backgroundMusic;
+  }
+  if (Object.keys(patch).length === 0) return { kind: "unchanged" };
   if (!Number.isInteger(draftRevision) || draftRevision < 0 || draftRevision >= MAX_EDITOR_PROJECT_DRAFT_REVISION) {
     return { kind: "blocked", reason: "draft_revision_exhausted" };
   }
-  const json = JSON.stringify({ ...draft, headlineHook });
+  const json = JSON.stringify({ ...draft, ...patch });
   if (Buffer.byteLength(json, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return { kind: "blocked", reason: "draft_too_large" };
   return { kind: "write", json };
 }
@@ -411,8 +472,9 @@ const PROJECT_DRAFT_RACE = new Error("pending_edit_project_draft_race");
  * exactly as it is; window edits are never dropped silently.
  *
  * #7 (ADR 0064 "the new draft starts from that Export's edits", ADR 0066 §4): the headline hook
- * is the one draft field the export snapshot does not carry — seeds read it from the project
- * draft. With `persistHeadlineHook` (an MCP export, where the stored draft is exactly what was
+ * (and, EP5 U7, the background music) are the draft fields the export snapshot does not carry —
+ * seeds read them from the project draft. `persistHeadlineHook` persists BOTH (the name predates
+ * the music). With it (an MCP export, where the stored draft is exactly what was
  * burned) the applied headline is written into `EditorProject.draftJson` in the SAME transaction
  * as the clear, bumping `draftRevision` so an open web session reloads instead of overwriting it.
  * A web export never sets it: the web autosaves its own headline, and the stored draft may hold
@@ -437,17 +499,20 @@ export async function clearPendingEditDraftIfRevision(
     });
     if (!project) return false;
     const stored = parsePendingEditDraft(project.pendingEditJson);
-    const headlineWrite = options.persistHeadlineHook && stored?.headlineHook
-      ? projectDraftWithHeadline(project.draftJson, project.draftRevision, stored.headlineHook)
+    const headlineWrite = options.persistHeadlineHook && (stored?.headlineHook || stored?.backgroundMusic)
+      ? projectDraftWithHeadline(project.draftJson, project.draftRevision, {
+        headlineHook: stored.headlineHook,
+        backgroundMusic: stored.backgroundMusic,
+      })
       : null;
     if (headlineWrite?.kind === "blocked") {
       // Same rule as the oversized re-seed below: keep the draft rather than drop an edit.
-      console.warn(`[pending-edit] project ${projectId}: exported headline not persisted (${headlineWrite.reason}); pending draft kept`);
+      console.warn(`[pending-edit] project ${projectId}: exported headline/music not persisted (${headlineWrite.reason}); pending draft kept`);
       return false;
     }
     const projectDraftJson = headlineWrite?.kind === "write" ? headlineWrite.json : null;
     let next: string | null = null;
-    if (stored && stored.windowEdits.length > 0) {
+    if (stored && draftHasBrollChanges(stored)) {
       const root = await prisma.videoJob.findFirst({
         where: { id: stored.rootJobId, userId, projectId },
         select: { id: true, inputJson: true, projectId: true },
@@ -464,7 +529,12 @@ export async function clearPendingEditDraftIfRevision(
       // R1/N1: keep the stored base. A re-render's hop rebases this draft only while baseJobId
       // still names the job it started from; re-basing on the export here would make that CAS miss
       // and leave the window edits it already applied pending, to be re-rendered a second time.
-      next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
+      next = JSON.stringify({
+        ...seed,
+        baseJobId: stored.baseJobId,
+        windowEdits: stored.windowEdits,
+        ...(stored.brollTransition ? { brollTransition: stored.brollTransition } : {}),
+      });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
     // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
@@ -505,6 +575,7 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     draft.logoOverlay,
     undefined,
     draft.headlineHook,
+    draft.tailHoldMs,
   );
 }
 
@@ -531,6 +602,8 @@ export type PendingEditForWeb = {
     subtitleConfig: V2SubConfig;
     captionOverrides: V2CardOverrides;
     headlineHook?: HeadlineHookConfig;
+    backgroundMusic?: BackgroundMusicEdit;
+    tailHoldMs: number;
   };
 };
 
@@ -553,6 +626,8 @@ export function pendingEditForWeb(project: {
       subtitleConfig: draft.subtitleConfig,
       captionOverrides: draft.captionOverrides,
       ...(draft.headlineHook ? { headlineHook: draft.headlineHook } : {}),
+      ...(draft.backgroundMusic ? { backgroundMusic: draft.backgroundMusic } : {}),
+      tailHoldMs: draft.tailHoldMs,
     },
   };
 }

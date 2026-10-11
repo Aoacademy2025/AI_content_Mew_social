@@ -1,5 +1,7 @@
+import type { SubtitleAudioMix } from "../lib/background-music";
 import type { LogoPosition } from "../lib/logo-overlay";
 import type { HeadlineHookConfig } from "../lib/headline-hook";
+import type { BrollFit, BrollTransition } from "../lib/broll-window-style";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -50,6 +52,10 @@ export interface BrollVideo {
   timelineAligned?: boolean;
   /** Uploaded still converted to a motion clip: repeat this image inside its selected window. */
   stillImage?: boolean;
+  /** EP5 #11: how this window ends. Absent = the config's `brollTransition`, else "dissolve". */
+  transition?: BrollTransition;
+  /** U3: "contain" letterboxes the whole picture over a blurred copy. Absent = "cover". */
+  fit?: BrollFit;
   keyword?: string;
   title?: string;
   query?: string;
@@ -118,6 +124,12 @@ export interface SubtitleOverlayConfig {
   videoUrl: string;
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
+  /** EP5 backlog #14: hold the last frame for this many extra frames after
+   *  `durationInFrames - tailHoldFrames` (0/absent = today's behaviour exactly — the video
+   *  plays to its own end and stops there, no freeze). Already folded into `durationInFrames`
+   *  by `buildV2BurnConfig`; subtitles never show in this window because their own timing
+   *  never extends past the original (pre-hold) duration. */
+  tailHoldFrames?: number;
   headlineHook?: HeadlineHookConfig;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;
@@ -128,6 +140,9 @@ export interface SubtitleOverlayConfig {
   subtitleOutlineSize?: number;
   bgmFile?: string;
   bgmVolume?: number;
+  /** EP5 U7: the music was changed after creation. The base video is muted and the voice track
+   *  is re-mixed with the new music (optionally ducked). Absent = today's audio, untouched. */
+  audioMix?: SubtitleAudioMix;
   logoOverlay?: {
     src: string;
     position: LogoPosition;
@@ -145,6 +160,8 @@ export interface ShortVideoConfig {
   backgroundColors?: string[];
   /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
   requestedBrollWindowCount?: number;
+  /** EP5 #11 project default for every window without its own `transition`. Absent = "dissolve". */
+  brollTransition?: BrollTransition;
   keywordPopups: KeywordPopupItem[];
   headlineHook?: HeadlineHookConfig;
   voiceFile: string;
