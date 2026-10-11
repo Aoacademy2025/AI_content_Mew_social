@@ -22,7 +22,7 @@
 // Run: node --conditions=react-server --import tsx scripts/verify-mcp-preview-frame.ts
 
 import { execFileSync, execSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -172,7 +172,8 @@ async function main() {
   runtime.bundleWaitMs = 600_000;
   // One-time browser download (CI) happens here, before the leftover snapshot, not inside a render.
   const { ensureBrowser } = realRequire("@remotion/renderer") as typeof import("@remotion/renderer");
-  await ensureBrowser({ browserExecutable: runtime.browserExecutable });
+  const browserStatus = await ensureBrowser({ browserExecutable: runtime.browserExecutable });
+  const realChrome = "path" in browserStatus ? browserStatus.path : null;
 
   // ── REAL MCP route, compiled; only Clerk + the network key preflight are stubbed ──
   const routeRequire = (specifier: string): unknown => {
@@ -645,6 +646,28 @@ async function main() {
     }
     check("slot released after the timed-out render settles", typeof slot === "function");
     slot?.();
+  });
+
+  // ── K0 ──
+  await section("K0) Chrome runs with a private TMPDIR that is deleted after the still (Linux leaves com.google.Chrome.* behind otherwise)", async () => {
+    if (!realChrome) { check("a browser was resolved", false); return; }
+    const record = join(dir, "chrome-tmpdir.txt");
+    const probe = join(dir, "probe-chrome.sh");
+    writeFileSync(probe, `#!/bin/sh\nprintf '%s' "$TMPDIR" > '${record}'\nexec '${realChrome}' "$@"\n`, { mode: 0o700 });
+    const stale = join(runtime.cacheRoot, "chrome-stale");
+    mkdirSync(join(stale, "tmp"), { recursive: true });
+    utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+    const saved = runtime.browserExecutable;
+    runtime.browserExecutable = probe;
+    previewFrame.resetPreviewFrameRateForTests();
+    const still = await preview(tester.token, { jobId: root.id, atMs: 500 });
+    runtime.browserExecutable = saved;
+    check("rendered through the launcher", !!still.jpeg, JSON.stringify(still.body).slice(0, 300));
+    const seen = existsSync(record) ? readFileSync(record, "utf8") : "";
+    check("Chrome's TMPDIR was a per-call dir inside the preview cache",
+      seen.startsWith(join(runtime.cacheRoot, "chrome-")) && seen.endsWith("/tmp"), seen);
+    check("…and that dir is gone once the still is answered", !!seen && !existsSync(join(seen, "..")), seen);
+    check("a launcher dir left by a dead process (older than 10 min) is swept", !existsSync(stale));
   });
 
   // ── K ──
