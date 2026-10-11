@@ -60,7 +60,7 @@ async function main() {
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   const browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_BIN ||
-    (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : puppeteer.executablePath()),
+    (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : await puppeteer.executablePath()),
     args: ['--no-sandbox'] });
   try {
     for (const [trigger, message] of [
