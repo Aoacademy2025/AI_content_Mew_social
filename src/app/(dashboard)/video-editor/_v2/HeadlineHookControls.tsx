@@ -3,6 +3,8 @@
 import { Check, Sparkles } from "lucide-react";
 import {
   DEFAULT_HEADLINE_HOOK_FONT,
+  HEADLINE_HOOK_ANCHORS,
+  HEADLINE_HOOK_CANVAS_HEIGHT_PX,
   HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
@@ -17,6 +19,8 @@ import {
   autoHeadlineHookDurationMs,
   headlineHookFontCssFamily,
   headlineHookFontSizes,
+  headlineHookOffsetPercent,
+  type HeadlineHookAnchor,
   type HeadlineHookFontFamily,
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
@@ -134,6 +138,16 @@ export function HeadlineHookControls({
     && logo?.enabled
     && logo.position.startsWith("top")
   );
+  const anchor: HeadlineHookAnchor = hook.anchor ?? "top";
+  const offsetPercent = headlineHookOffsetPercent(hook);
+  const offsetPx = Math.round((offsetPercent / 100) * HEADLINE_HOOK_CANVAS_HEIGHT_PX);
+
+  function setAnchor(nextAnchor: HeadlineHookAnchor) {
+    if (nextAnchor === anchor) return;
+    // Flip which edge the offset is measured from while keeping the headline at the same
+    // on-screen position (% from one edge = 100 − % from the other).
+    editor.setHeadlineHook({ anchor: nextAnchor, offsetPercent: Math.round(100 - offsetPercent) });
+  }
 
   return (
     <div className="flex flex-col gap-5" aria-label="ตั้งค่าพาดหัวเปิดคลิป">
@@ -515,21 +529,51 @@ export function HeadlineHookControls({
           </div>
         </details>
 
-        <section className="flex flex-col gap-2">
+        <section className="flex flex-col gap-2.5" aria-label="ตำแหน่งแนวตั้งของพาดหัว">
           <div className="flex items-center justify-between">
             <GroupLabel>ตำแหน่งแนวตั้ง</GroupLabel>
-            <span style={{ fontSize: 10, color: color.textSecondary }}>{hook.topPercent}%</span>
+            <span style={{ fontSize: 10, color: color.textSecondary }}>
+              {Math.round(offsetPercent)}% · {offsetPx}px {anchor === "top" ? "จากบน" : "จากล่าง"}
+            </span>
+          </div>
+          <div role="group" aria-label="อ้างอิงตำแหน่งจากขอบ" className="grid grid-cols-2 gap-2">
+            {HEADLINE_HOOK_ANCHORS.map((value) => {
+              const selected = anchor === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setAnchor(value)}
+                  className="min-h-9"
+                  style={{
+                    borderRadius: radius.control,
+                    border: `1px solid ${selected ? "rgba(249,115,22,.55)" : color.cardBorder}`,
+                    background: selected ? "rgba(249,115,22,.12)" : "rgba(255,255,255,.025)",
+                    color: selected ? "#FDBA74" : color.textSecondary,
+                    font: `500 11px ${font.heading}`,
+                    cursor: "pointer",
+                  }}
+                >
+                  {value === "top" ? "จากขอบบน" : "จากขอบล่าง"}
+                </button>
+              );
+            })}
           </div>
           <input
             type="range"
-            min={10}
-            max={42}
-            value={hook.topPercent}
-            aria-label="ตำแหน่งแนวตั้งของพาดหัว"
-            onChange={(event) => editor.setHeadlineHook({ topPercent: Number(event.target.value) })}
+            min={0}
+            max={100}
+            value={Math.round(offsetPercent)}
+            aria-label={`ระยะห่างจากขอบ${anchor === "top" ? "บน" : "ล่าง"} (%)`}
+            onChange={(event) => editor.setHeadlineHook({ offsetPercent: Number(event.target.value) })}
             style={{ width: "100%", accentColor: "#F97316" }}
           />
-          <span style={{ fontSize: 9.5, color: color.textFaint }}>ลากพาดหัวบน preview เพื่อจัดตำแหน่งได้เช่นกัน</span>
+          <span style={{ fontSize: 9.5, color: color.textFaint }}>
+            {anchor === "top"
+              ? "ลากพาดหัวบน preview เพื่อจัดตำแหน่งได้เช่นกัน — ระบบกันไม่ให้ทับแถบซับหรือหลุดขอบจอให้อัตโนมัติ"
+              : "ระบบกันไม่ให้พาดหัวทับแถบซับหรือหลุดขอบจอให้อัตโนมัติ"}
+          </span>
           {overlapsTopLogo && (
             <span role="note" style={{ padding: "7px 9px", borderRadius: 8, background: "rgba(251,191,36,.08)", color: color.warning, fontSize: 10, lineHeight: 1.45 }}>
               พาดหัวอาจทับโลโก้ด้านบน ลองเลื่อนพาดหัวลงหรือย้ายโลโก้

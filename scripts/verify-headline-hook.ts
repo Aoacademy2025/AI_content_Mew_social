@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 
 import {
   autoHeadlineHookDurationMs,
+  clampHeadlineHookCenterPercent,
   createDefaultHeadlineHook,
   headlineHookDraftFragment,
   headlineHookFontCssFamily,
   headlineHookEndFrame,
   headlineHookFontSizes,
   headlineHookFontWeights,
+  headlineHookOffsetPercent,
   normalizeHeadlineHook,
   normalizeHeadlineHookDraft,
   normalizeHeadlineHookSuggestions,
@@ -212,5 +214,101 @@ assert.match(
   /const next = normalizeHeadlineHookDraft\(/,
   "the controlled input path must use the whitespace-preserving draft normalizer",
 );
+
+// ── EP5 #13: anchor + offset (top/bottom, px or %) ──────────────────────────────────────────
+
+// Old headlines with none of the new fields render exactly as today: same shape, same 10–42
+// clamp, no anchor/offsetPercent keys at all.
+const legacyOnly = normalizeHeadlineHook({ enabled: true, headline: "เดิม", topPercent: 25 }, 60_000)!;
+assert.equal(Object.hasOwn(legacyOnly, "anchor"), false);
+assert.equal(Object.hasOwn(legacyOnly, "offsetPercent"), false);
+assert.equal(legacyOnly.topPercent, 25);
+
+// anchor "bottom" + offsetPercent: measured from the bottom edge, converted to the same
+// top-from-center `topPercent` the renderer reads, then clamped off the (default) subtitle band.
+const bottomNearEdge = normalizeHeadlineHook({
+  enabled: true,
+  headline: "ล่างสุด",
+  anchor: "bottom",
+  offsetPercent: 0,
+}, 60_000)!;
+assert.equal(bottomNearEdge.anchor, "bottom");
+assert.equal(
+  bottomNearEdge.topPercent,
+  clampHeadlineHookCenterPercent(100, "bottom"),
+  "flush-bottom request is clamped off the safe area + default subtitle band",
+);
+assert.ok(bottomNearEdge.topPercent < 70, "must not overlap the default subtitle band near 82%");
+
+// offsetPx (px of the 1080×1920 canvas) converts to the same result as the equivalent %.
+const halfwayByPx = normalizeHeadlineHook({
+  enabled: true,
+  headline: "กลางจอ",
+  anchor: "bottom",
+  offsetPx: 960, // 50%
+}, 60_000)!;
+const halfwayByPercent = normalizeHeadlineHook({
+  enabled: true,
+  headline: "กลางจอ",
+  anchor: "bottom",
+  offsetPercent: 50,
+}, 60_000)!;
+assert.equal(halfwayByPx.topPercent, halfwayByPercent.topPercent);
+assert.equal(halfwayByPx.offsetPercent, 50);
+
+// Both offsetPx and offsetPercent given: offsetPx wins (documented in the MCP tool schema).
+const bothUnits = normalizeHeadlineHook({
+  enabled: true,
+  headline: "ทั้งคู่",
+  anchor: "top",
+  offsetPx: 384, // 20%, inside the safe area so the clamp does not also intervene
+  offsetPercent: 80,
+}, 60_000)!;
+assert.equal(bothUnits.offsetPercent, 20);
+
+// A headline anchored "top" is pushed below a subtitle band that has moved near the top instead
+// of its default near-bottom position — the clamp reacts to the REAL subtitle position, not a
+// hard-coded assumption that subtitles are always at the bottom.
+const pushedBelowTopSubtitles = normalizeHeadlineHook({
+  enabled: true,
+  headline: "ดันลง",
+  anchor: "top",
+  offsetPercent: 20,
+}, 60_000, 15)!;
+assert.ok(
+  pushedBelowTopSubtitles.topPercent > 29,
+  `expected the headline pushed clear of a subtitle band at 15%, got ${pushedBelowTopSubtitles.topPercent}`,
+);
+
+// headlineHookOffsetPercent reads the same number back regardless of representation.
+assert.equal(headlineHookOffsetPercent(legacyOnly), 25);
+assert.equal(headlineHookOffsetPercent(bottomNearEdge), 100 - bottomNearEdge.topPercent);
+
+// The draft normalizer forwards the subtitle position too, and keeps the same whitespace-safe
+// headline/subheadline handling it always had.
+const bottomDraft = normalizeHeadlineHookDraft({
+  enabled: true,
+  headline: "กำลังพิมพ์ ",
+  anchor: "bottom",
+  offsetPercent: 20,
+}, 60_000, 15)!;
+assert.equal(bottomDraft.headline, "กำลังพิมพ์ ");
+assert.equal(bottomDraft.anchor, "bottom");
+
+// The Remotion overlay must still read the single resolved `topPercent` field directly — the
+// anchor/offset resolution happens entirely in normalizeHeadlineHook, so the render layer needs
+// no anchor-awareness of its own.
+const overlaySource = readFileSync("src/remotion/HeadlineHookOverlay.tsx", "utf8");
+assert.match(
+  overlaySource,
+  /top: `\$\{hook\.topPercent\}%`/,
+  "HeadlineHookOverlay must position from the resolved topPercent (anchor/offset already baked in)",
+);
+
+const headlineControlsSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/HeadlineHookControls.tsx",
+  "utf8",
+);
+assert.match(headlineControlsSource, /อ้างอิงตำแหน่งจากขอบ/, "controls must expose the new anchor toggle");
 
 console.log("headline-hook: all checks passed");

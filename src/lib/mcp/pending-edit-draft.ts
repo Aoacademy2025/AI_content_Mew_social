@@ -163,7 +163,9 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   if (!editor || !windowEdits) return null;
   const words = Array.isArray(input.words) ? input.words as PendingEditDraft["words"] : undefined;
   const fullText = typeof input.fullText === "string" ? input.fullText : undefined;
-  const headlineHook = input.headlineHook === undefined ? undefined : normalizeHeadlineHook(input.headlineHook, 86_400_000);
+  const headlineHook = input.headlineHook === undefined
+    ? undefined
+    : normalizeHeadlineHook(input.headlineHook, 86_400_000, editor.subtitleConfig.verticalPos);
   const logoOverlay = input.logoOverlay === undefined ? undefined : normalizeLogoOverlayConfig(input.logoOverlay);
   if (headlineHook === null || logoOverlay === null) return null;
   return {
@@ -209,7 +211,12 @@ export function seedPendingEditDraft(input: {
   const words = snapshot?.preview.words ?? preview.words;
   const fullText = snapshot?.preview.fullText ?? preview.fullText;
   const projectDraft = record(parseJson(input.projectDraftJson)) ?? {};
-  const headlineHook = normalizeHeadlineHook(projectDraft.headlineHook, draftDurationMs(preview, captions));
+  const subtitleConfig = (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design };
+  const headlineHook = normalizeHeadlineHook(
+    projectDraft.headlineHook,
+    draftDurationMs(preview, captions),
+    subtitleConfig.verticalPos,
+  );
   const logoOverlay = normalizeLogoOverlayConfig(projectDraft.logoOverlay);
   return {
     version: 1,
@@ -220,7 +227,7 @@ export function seedPendingEditDraft(input: {
     ...(Array.isArray(words) ? { words } : {}),
     ...(typeof fullText === "string" ? { fullText } : {}),
     cardLen: snapshot?.cardLen ?? design.cardLen,
-    subtitleConfig: (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design },
+    subtitleConfig,
     captionOverrides: snapshot?.captionOverrides ?? {},
     ...(headlineHook ? { headlineHook } : {}),
     ...(logoOverlay ? { logoOverlay } : {}),
