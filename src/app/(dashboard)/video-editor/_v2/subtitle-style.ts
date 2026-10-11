@@ -266,7 +266,7 @@ export function buildV2BurnConfig(
     return [{ ...popup, start, end }];
   }) : [];
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
-  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs);
+  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs, cfg.verticalPos);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
