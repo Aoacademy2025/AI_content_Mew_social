@@ -257,7 +257,8 @@ async function coveredBgVideos(
   }
 }
 
-async function planStill(
+/** Exported for the verify only (it inspects the props a still would be rendered with). */
+export async function planStill(
   user: User,
   root: McpChainRow,
   state: PendingEditState,
@@ -323,11 +324,14 @@ async function planStill(
       if (burn.logoOverlay?.enabled) {
         notes.push("ภาพนี้จำลองช่วง B-roll ที่แก้ไว้ จึงยังไม่แสดงโลโก้ — วิดีโอที่ส่งออกจะมีโลโก้ตามเดิม");
       }
-      notes.push(`ช่วง B-roll #${pendingWindowIndex} แสดงไฟล์ใหม่ที่จะเรนเดอร์ตอน export_video`);
+      notes.push(`ช่วง B-roll #${pendingWindowIndex} แสดงตามที่แก้ไว้ (ภาพ/การจัดภาพใหม่) ที่จะเรนเดอร์ตอน export_video`);
       return {
         compositionId: "ShortVideoComposition",
         inputProps: {
           ...config,
+          // the draft's project-wide transition (set_broll_style without windowIndex), as the
+          // export's B-roll re-render applies it
+          ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}),
           ...subtitleLayer,
           // exactly the draft's headline (or none) — never one baked into the base config
           headlineHook: burn.headlineHook,
@@ -351,12 +355,17 @@ async function planStill(
     return editToolFailure("preview_failed", "สร้างภาพตัวอย่างของวิดีโอนี้ไม่ได้", NEXT_RETRY_LATER);
   }
   const logo = await previewLogo(user, state, burn, notes);
+  if (draft.brollTransition) {
+    notes.push("รอยต่อ B-roll แบบใหม่ทั้งคลิป (set_broll_style transition) ยังไม่แสดงในภาพนี้ — เห็นได้เฉพาะรอยต่อระหว่างช่วงในวิดีโอที่ส่งออก");
+  }
   return {
     compositionId: "SubtitleOverlayComposition",
     inputProps: {
       ...subtitleLayer,
       videoUrl,
       durationInFrames: burn.durationInFrames,
+      // set_tail_hold: past the voice the export freezes the last video frame
+      ...(burn.tailHoldFrames ? { tailHoldFrames: burn.tailHoldFrames } : {}),
       ...(logo ? { logoOverlay: logo } : {}),
     },
     durationInFrames: burn.durationInFrames,

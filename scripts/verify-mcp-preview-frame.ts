@@ -122,6 +122,7 @@ async function main() {
   const { getFfmpegPath } = fromSrc("lib/ffmpeg-path") as typeof import("../src/lib/ffmpeg-path");
   const { SERVER_INSTRUCTIONS } = fromSrc("lib/mcp/onboarding") as typeof import("../src/lib/mcp/onboarding");
   const previewFrame = fromSrc("lib/mcp/preview-frame") as typeof import("../src/lib/mcp/preview-frame");
+  const editTools = fromSrc("lib/mcp/edit-tools") as typeof import("../src/lib/mcp/edit-tools");
   const previewStill = fromSrc("lib/render/preview-still") as typeof import("../src/lib/render/preview-still");
   const pointer = fromSrc("lib/render/remotion-bundle-pointer") as typeof import("../src/lib/render/remotion-bundle-pointer");
   const sharpModule = realRequire("sharp") as { default?: typeof import("sharp") } & typeof import("sharp");
@@ -565,6 +566,88 @@ async function main() {
     check("…reported in includes + notes", (missing.body.includes as Json | undefined)?.logo === false
       && ((missing.body.notes ?? []) as string[]).some((note) => note.includes("โลโก้")), JSON.stringify(missing.body));
     await setLogo(null);
+  });
+
+  async function planProps(atMs: number): Promise<Json | null> {
+    const held = await editTools.resolveHeldRoot(tester.user.id, root.id);
+    if (!held.ok) return null;
+    const loaded = await editTools.loadState(tester.user.id, held.root);
+    if (!loaded.ok) return null;
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: tester.user.id } });
+    const burn = draftLib.toBurnConfig(loaded.state.draft, loaded.state.base);
+    const plan = await previewFrame.planStill(user, held.root, loaded.state, burn, atMs, []);
+    return "error" in plan ? null : (plan.inputProps as Json);
+  }
+
+  // ── F3 ──
+  await section("F3) a pending tail hold (set_tail_hold) is in the still: the last frame is held, as the export holds it", async () => {
+    const held = await callTool(tester.token, "set_tail_hold", { jobId: root.id, tailHoldMs: 1_000 });
+    check("fixture: set_tail_hold 1000 accepted", !held.error, JSON.stringify(held));
+    const still = await preview(tester.token, { jobId: root.id, atMs: 4_500 });
+    if (!still.jpeg) { check("rendered inside the hold", false, JSON.stringify(still.body)); }
+    else {
+      check("frame 135 is inside the hold (atMs range grew by the hold)", still.body.frame === 135, JSON.stringify(still.body));
+      check("the held frame is the base's last frame (green), not black", isGreen(await pixel(still.jpeg, 270, 480)), JSON.stringify(await pixel(still.jpeg, 270, 480)));
+    }
+    // Remotion clamps a past-the-end OffthreadVideo to its last frame, so pixels cannot tell a
+    // Freeze from no Freeze on a solid fixture: the plan itself must carry the export's prop.
+    const props = await planProps(4_500);
+    check("path A carries the export's tailHoldFrames (30)", props?.tailHoldFrames === 30, JSON.stringify(props?.tailHoldFrames));
+    const reset = await callTool(tester.token, "set_tail_hold", { jobId: root.id, tailHoldMs: 0 });
+    check("fixture: tail hold back to 0", !reset.error, JSON.stringify(reset));
+    check("no hold → no tailHoldFrames prop (today's burn, unchanged)", (await planProps(500))?.tailHoldFrames === undefined);
+  });
+
+  // ── F4 ──
+  await section("F4) the draft's headline anchor and B-roll style (fit / transition) are in the still", async () => {
+    const isYellow = (p: { r: number; g: number; b: number }) => p.r > 140 && p.g > 140 && p.b < 90;
+    // Headline anchored to the bottom: nothing in the top band any more.
+    const bottom = await callTool(tester.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวทดสอบ", durationMs: 3_000, anchor: "bottom", offsetPercent: 30 });
+    check("fixture: headline anchored bottom", !bottom.error, JSON.stringify(bottom));
+    const anchored = await preview(tester.token, { jobId: root.id, atMs: 1_000 });
+    if (!anchored.jpeg) check("rendered (anchored headline)", false, JSON.stringify(anchored.body));
+    else {
+      check("headline anchored bottom → the top band is empty", await foreignPixels(anchored.jpeg, 60, 400, isGreen) < 500);
+      check("…and it is drawn lower down", await foreignPixels(anchored.jpeg, 400, 960, isGreen) > 2_000);
+      check("text: headline in the frame", (anchored.body.includes as Json | undefined)?.headline === true, JSON.stringify(anchored.body.includes));
+    }
+    check("plan carries the anchor", ((await planProps(1_000))?.headlineHook as Json | undefined)?.anchor === "bottom");
+    const top = await callTool(tester.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวทดสอบ", durationMs: 3_000, anchor: "top", offsetPercent: 12 });
+    check("fixture: headline back to the top", !top.error, JSON.stringify(top));
+
+    // A style-only window edit (no new media) is a pending re-render too: drawn through path B.
+    const fit = await callTool(tester.token, "set_broll_style", { jobId: root.id, windowIndex: 1, fit: "contain", transition: "cut" });
+    check("fixture: set_broll_style window 1 contain + cut", !fit.error, JSON.stringify(fit));
+    const styled = await preview(tester.token, { jobId: root.id, atMs: 3_300 });
+    if (!styled.jpeg) check("rendered (styled window)", false, JSON.stringify(styled.body));
+    else {
+      check("style-only window → path B shows window #1's own stock (yellow), not the base render",
+        isYellow(await pixel(styled.jpeg, 270, 480)), JSON.stringify(await pixel(styled.jpeg, 270, 480)));
+      check("text: names the pending window", (styled.body.includes as Json | undefined)?.pendingWindowIndex === 1, JSON.stringify(styled.body.includes));
+    }
+    const styledProps = await planProps(3_300);
+    const window1 = ((styledProps?.bgVideos ?? []) as Json[]).find((video) => video.sourceIndex === 1 || video.windowIndex === 1) ?? ((styledProps?.bgVideos ?? []) as Json[])[1];
+    check("plan: window #1 carries fit contain + cut", window1?.fit === "contain" && window1?.transition === "cut", JSON.stringify(window1));
+
+    // Project-wide transition: carried into path B; on path A the still says it cannot show it.
+    const project = await callTool(tester.token, "set_broll_style", { jobId: root.id, transition: "cut" });
+    check("fixture: project transition cut", !project.error, JSON.stringify(project));
+    check("plan (path B): the draft's project transition is applied", (await planProps(3_300))?.brollTransition === "cut");
+    const notes: string[] = [];
+    const held = await editTools.resolveHeldRoot(tester.user.id, root.id);
+    if (held.ok) {
+      const loaded = await editTools.loadState(tester.user.id, held.root);
+      if (loaded.ok) {
+        const user = await prisma.user.findUniqueOrThrow({ where: { id: tester.user.id } });
+        await previewFrame.planStill(user, held.root, loaded.state, draftLib.toBurnConfig(loaded.state.draft, loaded.state.base), 500, notes);
+      }
+    }
+    check("path A: a pending project transition is named in notes", notes.some((note) => note.includes("transition")), JSON.stringify(notes));
+    await draftLib.updatePendingEditDraft(tester.user.id, root, (draft) => {
+      draft.windowEdits = [];
+      delete draft.brollTransition;
+      return { ok: true, draft };
+    });
   });
 
   // ── G ──
