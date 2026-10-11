@@ -2566,7 +2566,7 @@ export async function POST(req: Request) {
         const code = error instanceof HeroImageGenerationError
           ? error.code
           : isSqliteWriteContentionError(error)
-            ? "PROVIDER_POLL_FAILED"
+            ? "DB_CONTENTION"
             : "OUTPUT_INVALID";
         const message = error instanceof Error ? error.message : "Hero AI Image failed";
         const providerFailure = error instanceof HeroImageGenerationError

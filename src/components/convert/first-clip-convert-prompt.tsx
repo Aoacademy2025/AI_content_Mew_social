@@ -76,11 +76,18 @@ export function FirstClipConvertPrompt() {
 
   const load = useCallback(async () => {
     const [res, meData] = await Promise.all([
-      authenticatedFetch("/api/convert/first-clip"),
+      authenticatedFetch("/api/convert/first-clip").catch((error: unknown) => {
+        // This optional prompt can retry on the next clip event. Only absorb
+        // browser transport failures; JSON and application errors stay visible.
+        if (error instanceof TypeError && /^(Load failed|Failed to fetch|NetworkError when attempting to fetch resource\.?)$/.test(error.message)) {
+          return null;
+        }
+        throw error;
+      }),
       fetchMe().catch(() => null),
     ]);
     setMe(meData);
-    if (!res.ok) return;
+    if (!res?.ok) return;
     const data = await res.json() as FirstClipConvertDecision;
     setDecision(data.show ? data : null);
   }, []);

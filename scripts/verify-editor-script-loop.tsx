@@ -32,6 +32,12 @@ const browserEntry = `
   window.__heroErrors = [];
   window.__heroCreatedProjects = 0;
   window.__heroPatchBodies = [];
+  window.__heroHoldSaves = false;
+  window.__heroPendingSaves = [];
+  window.__heroReleaseSaves = () => {
+    window.__heroHoldSaves = false;
+    window.__heroPendingSaves.splice(0).forEach(resolve => resolve());
+  };
   window.__heroCaptureDepth = () => beforeSendSentryEvent({
     release: "hero-editor-probe-release",
     exception: { values: [{ type: "Error", value: "Maximum update depth exceeded. This can happen when a component repeatedly calls setState." }] },
@@ -55,6 +61,7 @@ const browserEntry = `
     if (path.startsWith("/api/editor-projects/") && init?.method === "PATCH") {
       const body = JSON.parse(String(init.body));
       window.__heroPatchBodies.push(body);
+      if (window.__heroHoldSaves) await new Promise(resolve => window.__heroPendingSaves.push(resolve));
       return json({ project: {
         id: path.split("/").pop(),
         status: "draft",
@@ -294,12 +301,43 @@ async function main() {
       (window as unknown as { __heroPatchBodies?: Array<{ draft?: { script?: string } }> })
         .__heroPatchBodies?.some((body) => body.draft?.script === text) === true
     ), {}, composedScript);
+    // Keep an older autosave in flight while actual keyboard input advances the
+    // same hook, then release it. This probes the response/edit race rather than
+    // only typing after persistence has settled.
+    await page.evaluate(() => {
+      (window as unknown as { __heroHoldSaves: boolean }).__heroHoldSaves = true;
+    });
+    await page.click("textarea");
+    await page.$eval("textarea", node => {
+      const textarea = node as HTMLTextAreaElement;
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+    await page.keyboard.type("a".repeat(60));
+    await page.waitForFunction(() => (
+      (window as unknown as { __heroPendingSaves: unknown[] }).__heroPendingSaves.length > 0
+    ));
+    await page.keyboard.type("b".repeat(60));
+    const stressScript = await page.$eval("textarea", node => (node as HTMLTextAreaElement).value);
+    assert.ok(stressScript.endsWith("a".repeat(60) + "b".repeat(60)));
+    await page.evaluate(() => (
+      (window as unknown as { __heroReleaseSaves: () => void }).__heroReleaseSaves()
+    ));
+    await page.waitForFunction((text) => (
+      (window as unknown as { __heroPatchBodies: Array<{ draft?: { script?: string } }> })
+        .__heroPatchBodies.some(body => body.draft?.script === text)
+    ), {}, stressScript);
+    await page.evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    assert.equal(await page.$eval("textarea", node => (node as HTMLTextAreaElement).value), stressScript,
+      "older save response must not replace newer keyboard edits");
     const resetErrors = await page.evaluate(() => (
       (window as unknown as { __heroErrors: string[] }).__heroErrors
     ));
     assert.doesNotMatch([...pageErrors, ...resetErrors].join("\n"), reactMaximumDepthError);
     console.log("ok: existing-project keyboard edit settles and autosaves");
     console.log("ok: reset-project keyboard, paste, and IME edits settle and autosave");
+    console.log("ok: 120 keyboard edits across delayed autosave settle without stale draft overwrite");
     console.log("NO_REPRO: Maximum update depth did not occur in the bounded production-runtime probes");
   } finally {
     await browser.close();
