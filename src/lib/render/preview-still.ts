@@ -18,7 +18,10 @@ import {
  * touches; here at most ONE still renders at a time, with ONE caller allowed to wait for it (any
  * further caller is refused at once); every render has a hard deadline; and the output is an
  * in-memory buffer — Remotion's own frame/download dirs and the browser profile are removed when
- * the browser closes, so nothing per call is left on disk. The only files kept are the bundle
+ * the browser closes, so nothing of ours per call is left on disk. (On Linux, Chrome's own empty
+ * socket dir `com.google.Chrome.XXXXXX` stays in TMPDIR because Remotion SIGKILLs the browser —
+ * the same as after every render-worker render; Chrome is deliberately launched exactly as the
+ * export launches it.) The only files kept are the bundle
  * cache (one bundle, rebuilt only when src/remotion changes). The bundle itself is the render
  * worker's when it has published one; otherwise it is built by a separate low-priority process
  * (scripts/build-preview-bundle.mjs), never by webpack on this server's event loop.
@@ -274,62 +277,6 @@ async function fitJpeg(buffer: Buffer): Promise<Buffer> {
  * slot is released only once the render has actually stopped (bounded), so a timed-out render
  * can never overlap the next one for long.
  */
-// ── the browser's own temp dir ──────────────────────────────────────────────────────────────
-// Remotion stops Chrome with SIGKILL, so Chrome never removes what it created in TMPDIR (on Linux
-// one `com.google.Chrome.XXXXXX` dir per launch, holding its singleton socket — CI caught it).
-// Each still therefore starts Chrome through a tiny per-call launcher that points TMPDIR at a
-// private directory, and that whole directory is deleted once the browser has exited. A directory
-// left by a killed process is swept by the next still once it is clearly dead.
-//
-// The private directory sits directly in the system temp dir with a short name: Chrome binds a
-// Unix socket at $TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket, Linux caps that path at 107
-// bytes, and Chrome aborts on a longer one (CI: SIGABRT with a TMPDIR under the project dir).
-// When even that would be too long, the still runs without the launcher (works; may leave the
-// one entry) rather than fail.
-
-const CHROME_DIR_PREFIX = "hero-pv-";
-const STALE_CHROME_DIR_MS = 10 * 60_000;
-const CHROME_SOCKET_TAIL = "/com.google.Chrome.XXXXXX/SingletonSocket".length;
-const MAX_SOCKET_PATH = 100;
-
-const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-
-function sweepStaleChromeDirs(root: string, now = Date.now()): void {
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(root);
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    if (!name.startsWith(CHROME_DIR_PREFIX)) continue;
-    const dir = path.join(root, name);
-    try {
-      if (now - fs.statSync(dir).mtimeMs > STALE_CHROME_DIR_MS) fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best effort; the next still tries again
-    }
-  }
-}
-
-/** A launcher script that runs `realBinary` with TMPDIR set to a fresh per-call directory. */
-function makeChromeLauncher(realBinary: string): { dir: string; executable: string } | null {
-  if (process.platform === "win32") return null; // no /bin/sh; Windows never serves previews
-  const root = os.tmpdir();
-  sweepStaleChromeDirs(root);
-  const dir = fs.mkdtempSync(path.join(root, CHROME_DIR_PREFIX));
-  if (dir.length + CHROME_SOCKET_TAIL > MAX_SOCKET_PATH) {
-    fs.rmSync(dir, { recursive: true, force: true });
-    return null;
-  }
-  const executable = path.join(dir, "chrome.sh");
-  // `exec` keeps the pid and process group Remotion kills.
-  fs.writeFileSync(executable, `#!/bin/sh\nTMPDIR=${shellQuote(dir)}\nexport TMPDIR\nexec ${shellQuote(realBinary)} "$@"\n`, {
-    mode: 0o700,
-  });
-  return { dir, executable };
-}
-
 export async function renderPreviewStill(input: {
   serveUrl: string;
   compositionId: string;
@@ -349,41 +296,20 @@ export async function renderPreviewStill(input: {
     console.error(`[preview-still] cannot load @remotion/renderer: ${(error as Error)?.message ?? String(error)}`);
     return { ok: false, reason: "failed" };
   }
-  const { ensureBrowser, openBrowser, selectComposition, renderStill, makeCancelSignal } = remotion;
+  const { openBrowser, selectComposition, renderStill, makeCancelSignal } = remotion;
   const { cancelSignal, cancel } = makeCancelSignal();
   const timeoutMs = previewStillRuntime.timeoutMs;
   let timedOut = false;
   let browser: { close: (opts: { silent: boolean }) => Promise<void> } | null = null;
-  let launcherDir: string | null = null;
   const closeBrowser = async () => {
     const open = browser;
     browser = null;
     if (open) await open.close({ silent: true }).catch(() => {});
   };
-  // Only after the browser has exited (closeBrowser resolves on the process's exit).
-  const removeLauncher = () => {
-    const dir = launcherDir;
-    launcherDir = null;
-    if (dir) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // swept by a later still
-      }
-    }
-  };
 
   const work = (async () => {
-    // Same browser the render worker uses (Remotion's Chrome Headless Shell unless overridden).
-    const status = await ensureBrowser({ browserExecutable: previewStillRuntime.browserExecutable, logLevel: "error" });
-    if (status.type !== "local-puppeteer-browser" && status.type !== "user-defined-path") {
-      throw new Error(`no browser to render with (${status.type})`);
-    }
-    const launcher = makeChromeLauncher(status.path);
-    launcherDir = launcher?.dir ?? null;
-    if (timedOut) throw new PreviewDeadlineError();
     const opened = await openBrowser("chrome", {
-      browserExecutable: launcher?.executable ?? status.path,
+      browserExecutable: previewStillRuntime.browserExecutable,
       chromiumOptions: CHROMIUM_OPTIONS,
       logLevel: "error",
     });
@@ -446,9 +372,8 @@ export async function renderPreviewStill(input: {
   } finally {
     clearTimeout(timer);
     if (!timedOut) {
-      // `work` has settled: close the browser, drop its temp dir, then free the slot.
+      // `work` has settled: close the browser, then free the slot before answering.
       await closeBrowser();
-      removeLauncher();
       release();
     } else {
       // Timed out: answer now, but free the slot only once the render has really stopped (or
@@ -456,7 +381,6 @@ export async function renderPreviewStill(input: {
       const settled = work.then(() => undefined, () => undefined);
       void Promise.race([settled, new Promise((resolve) => setTimeout(resolve, 10_000))])
         .then(closeBrowser)
-        .then(removeLauncher)
         .finally(release);
     }
   }
