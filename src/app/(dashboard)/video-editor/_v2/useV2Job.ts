@@ -42,6 +42,7 @@ import {
   estimatedCutawayPieceCount,
 } from "@/lib/cutaway-plan";
 import { restorePostExportEditorState } from "./export-edit-state";
+import type { BackgroundMusicEdit } from "@/lib/background-music";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -118,6 +119,8 @@ export type SubmitExportInput = {
   /** T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any —
    *  omitted when no draft was loaded. A mismatch on the server comes back as `staleRevision`. */
   expectedPendingRevision?: number;
+  /** EP5 U7: music changed in the Post phase — omitted = the base render's own audio. */
+  backgroundMusic?: BackgroundMusicEdit;
 };
 
 export type SubmitResult = {
@@ -617,6 +620,7 @@ export function useV2Job(p: V2Project) {
       ...(typeof input.expectedPendingRevision === "number"
         ? { expectedPendingRevision: input.expectedPendingRevision }
         : {}),
+      ...(input.backgroundMusic ? { backgroundMusic: input.backgroundMusic } : {}),
     };
     const attempt: OwnedSubmitAttempt = existingAttempt ?? {
       kind: "export",

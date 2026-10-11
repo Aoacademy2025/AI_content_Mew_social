@@ -64,6 +64,11 @@ import {
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
 import type { HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
+import {
+  backgroundMusicTrackFilename,
+  normalizeBackgroundMusicEdit,
+  type BackgroundMusicEdit,
+} from "@/lib/background-music";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -93,6 +98,9 @@ interface V2Draft {
   brandSubtitleDefault?: SubtitleStylePresetConfig;
   layerVisibility?: EditorLayerVisibility;
   headlineHook?: HeadlineHookConfig;
+  /** EP5 U7: music changed in the Post phase (or by the MCP agent's export). Absent = the
+   *  rendered video's own music. Shared key with the MCP Pending Edit Draft seed. */
+  backgroundMusic?: BackgroundMusicEdit;
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -780,6 +788,41 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  const [backgroundMusic, setBackgroundMusicFromUser, setBackgroundMusicRaw] = useUserDraftState<BackgroundMusicEdit | undefined>(
+    normalizeBackgroundMusicEdit(d.backgroundMusic) ?? undefined,
+    "backgroundMusic",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  /** EP5 U7: the Post-phase music. `mirror` (default: `next`) is copied into the Step-2 music
+   *  fields so a later re-render bakes the same track; `next = undefined` = back to the rendered
+   *  video's own music (the caller passes that music as `mirror`). */
+  const setBackgroundMusic = useCallback((
+    next: BackgroundMusicEdit | undefined,
+    mirror: BackgroundMusicEdit | undefined = next,
+  ) => {
+    if (!canAcceptUserMutation()) return;
+    if (mirror) {
+      const parsed = mirror.track === null ? null : backgroundMusicTrackFilename(mirror.track);
+      setMusicTrackRaw(parsed ? parsed.filename : null);
+      if (parsed) setMusicTrackKindRaw(parsed.kind);
+      setBgmVolumeRaw(mirror.volume);
+    }
+    setBackgroundMusicFromUser(next);
+  }, [canAcceptUserMutation, setBackgroundMusicFromUser, setBgmVolumeRaw, setMusicTrackKindRaw, setMusicTrackRaw]);
+  // A Step-2 music change is a new choice for the NEXT render; it replaces the Post-phase edit
+  // (otherwise the export would keep re-mixing the older pick over the newly rendered music).
+  const setMusicTrackStep2 = useCallback<typeof setMusicTrack>((next) => {
+    if (!canAcceptUserMutation()) return;
+    setMusicTrack(next);
+    setBackgroundMusicRaw(undefined);
+  }, [canAcceptUserMutation, setMusicTrack, setBackgroundMusicRaw]);
+  const setBgmVolumeStep2 = useCallback<typeof setBgmVolume>((next) => {
+    if (!canAcceptUserMutation()) return;
+    setBgmVolume(next);
+    setBackgroundMusicRaw(undefined);
+  }, [canAcceptUserMutation, setBgmVolume, setBackgroundMusicRaw]);
   // ── Mix preset (D5.1) — persisted project choices remain authoritative. A brand-new
   // paid project is seeded as "recommended" before its POST (see bootstrap below),
   // independently from the legacy internal managed-KIE gate. ──
@@ -808,6 +851,7 @@ export function useV2Project() {
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
       logoOverlay, brandSubtitleDefault, layerVisibility,
       ...headlineHookDraftFragment(headlineHook),
+      ...(backgroundMusic ? { backgroundMusic } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -884,6 +928,7 @@ export function useV2Project() {
     setBrandSubtitleDefaultRaw(normalizeSubtitleStylePresetConfig(next.brandSubtitleDefault) ?? undefined);
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(next.layerVisibility));
     setHeadlineHookRaw(normalizeHeadlineHook(next.headlineHook) ?? undefined);
+    setBackgroundMusicRaw(normalizeBackgroundMusicEdit(next.backgroundMusic) ?? undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -1469,6 +1514,7 @@ export function useV2Project() {
     setBrandSubtitleDefaultRaw(undefined);
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(nextDraft.layerVisibility));
     setHeadlineHookRaw(undefined);
+    setBackgroundMusicRaw(undefined);
     // Fix round 1 (PR-B whole-branch review, B3): createdVia has no setXRaw of its own
     // (T9 — it is never a user edit), so it is not touched by any of the setXRaw calls
     // above and would otherwise survive this reset from an open Agent-created Project
@@ -2466,7 +2512,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2521,9 +2567,9 @@ export function useV2Project() {
     tts38Beta,
     voiceId, setVoiceId,
     omniVoiceId, setOmniVoiceId,
-    musicTrack, setMusicTrack,
+    musicTrack, setMusicTrack: setMusicTrackStep2,
     musicTrackKind, setMusicTrackKind,
-    bgmVolume, setBgmVolume,
+    bgmVolume, setBgmVolume: setBgmVolumeStep2,
     useAvatar, setUseAvatar,
     avatarId, setAvatarId, avatarEngine, setAvatarEngine,
     targetClipCount, setTargetClipCount,
@@ -2539,6 +2585,7 @@ export function useV2Project() {
     brandSubtitleDefault, setBrandSubtitleDefault,
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
+    backgroundMusic, setBackgroundMusic,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, logoEntitlementStalled: meRetriesExhausted, logoEntitlementRetrying: meRetryPending, retryEntitlement, accountId, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
