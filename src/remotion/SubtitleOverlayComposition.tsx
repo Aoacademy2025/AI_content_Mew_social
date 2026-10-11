@@ -1,11 +1,12 @@
 import React from "react";
 import { AbsoluteFill, Audio, Freeze, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import { logoOverlayFrame } from "../lib/logo-overlay";
-import { headlineHookEndFrame } from "../lib/headline-hook";
+import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
 import { bgmGainAt, normalizeAudioMix } from "../lib/background-music";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
+import { useWebfontGate } from "./webfont-gate";
 
 // Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — burn output must use
 // the same font files (and weights) as the editor preview.
@@ -33,9 +34,15 @@ export function SubtitleOverlayComposition({
   audioMix,
   logoOverlay,
   tailHoldFrames = 0,
+  awaitWebfonts = false,
 }: SubtitleOverlayConfig) {
   const { width, height, fps, durationInFrames } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
+  // Preview stills only; exports never set awaitWebfonts (no delayRender, no extra link props).
+  const webfontGate = useWebfontGate(awaitWebfonts, [
+    resolvedFont,
+    headlineHook?.enabled ? headlineHookFontCssFamily(headlineHook.fontFamily) : null,
+  ]);
   const preset: SubtitleStylePreset = subtitleStylePreset ?? "stroke";
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
@@ -51,7 +58,7 @@ export function SubtitleOverlayComposition({
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
-      <link rel="stylesheet" href={FONTS_CSS} />
+      <link rel="stylesheet" href={FONTS_CSS} {...webfontGate} />
 
       {/* Background video — plays WITH its original audio (TTS / voice), unless the music
           was changed (then its baked mix is replaced by `mix` below; the new music is outside

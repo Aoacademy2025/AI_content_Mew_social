@@ -340,6 +340,8 @@ export async function planStill(
           bgmFile: undefined,
           watermark: false,
           durationInFrames: shortFrames,
+          // a still is the first frame of a fresh browser: hold it for the webfonts (B1)
+          awaitWebfonts: true,
         },
         durationInFrames: shortFrames,
         pendingWindowIndex,
@@ -367,6 +369,8 @@ export async function planStill(
       // set_tail_hold: past the voice the export freezes the last video frame
       ...(burn.tailHoldFrames ? { tailHoldFrames: burn.tailHoldFrames } : {}),
       ...(logo ? { logoOverlay: logo } : {}),
+      // a still is the first frame of a fresh browser: hold it for the webfonts (B1)
+      awaitWebfonts: true,
     },
     durationInFrames: burn.durationInFrames,
     pendingWindowIndex: null,
@@ -377,6 +381,16 @@ export async function planStill(
 // ── the tool ────────────────────────────────────────────────────────────────────────────────
 
 export async function getPreviewFrameTool(user: User, args: PreviewFrameArgs) {
+  // Ops kill switch for this one tool: `MCP_PREVIEW_FRAME_DISABLED=1` in `.env` + `pm2 restart
+  // ai-content --update-env` turns previews off without a deploy; every edit tool and
+  // export_video stay on. Read per call, before any DB, quota or render work.
+  if (process.env.MCP_PREVIEW_FRAME_DISABLED === "1") {
+    return editToolFailure(
+      "preview_disabled",
+      "ฟีเจอร์ดูภาพตัวอย่างปิดชั่วคราว",
+      "แก้ต่อได้ตามปกติ แล้วเรียก export_video(jobId) เมื่อแก้ครบ (การดูภาพตัวอย่างไม่จำเป็นต่อการส่งออก)",
+    );
+  }
   const startedAt = Date.now();
   if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
   const held = await resolveHeldRoot(user.id, args.jobId as string);

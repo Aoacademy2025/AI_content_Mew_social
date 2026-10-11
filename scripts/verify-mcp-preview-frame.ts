@@ -431,6 +431,27 @@ async function main() {
     check("nothing fetched from the media base yet", mediaHits.length === 0, mediaHits.join(","));
   });
 
+  // ── C2 ──
+  await section("C2) kill switch: MCP_PREVIEW_FRAME_DISABLED=1 refuses first, in Thai, with no work done", async () => {
+    process.env.MCP_PREVIEW_FRAME_DISABLED = "1";
+    try {
+      const reply = await callTool(tester.token, TOOL, { jobId: root.id, atMs: 1_000 });
+      check("own held job → preview_disabled (G14)",
+        reply.error === "preview_disabled" && checkFailureEnvelope(reply).length === 0, JSON.stringify(reply));
+      check("Thai message says the preview is switched off for now", String(reply.message).includes("ปิดชั่วคราว"), JSON.stringify(reply));
+      // Checked before the job lookup: an unknown jobId gets the same answer, not invalid_input.
+      const unknown = await callTool(tester.token, TOOL, { jobId: "no-such-job", atMs: 0 });
+      check("checked first: an unknown jobId also → preview_disabled", unknown.error === "preview_disabled", JSON.stringify(unknown));
+      check("no rate-limit slot spent", rateUsed(tester.user.id) === 0);
+      check("nothing fetched from the media base", mediaHits.length === 0, mediaHits.join(","));
+      check("no bundle built", !existsSync(join(previewStill.ownPreviewBundleDir(), "index.html")));
+    } finally {
+      delete process.env.MCP_PREVIEW_FRAME_DISABLED;
+    }
+    const other = await callTool(tester.token, TOOL, { jobId: "no-such-job", atMs: 0 });
+    check("any other value leaves the tool on", other.error === "invalid_input", JSON.stringify(other));
+  });
+
   // Draft edits the frame must show: a headline (0–3 s, the shortest allowed) and new text on card 1.
   const hook = await callTool(tester.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวทดสอบ", durationMs: 3_000 });
   if (hook.error) throw new Error(`fixture: set_headline_hook refused: ${JSON.stringify(hook)}`);
@@ -633,6 +654,7 @@ async function main() {
     const project = await callTool(tester.token, "set_broll_style", { jobId: root.id, transition: "cut" });
     check("fixture: project transition cut", !project.error, JSON.stringify(project));
     check("plan (path B): the draft's project transition is applied", (await planProps(3_300))?.brollTransition === "cut");
+    check("plan (path B): the still waits for the webfonts (awaitWebfonts)", (await planProps(3_300))?.awaitWebfonts === true);
     const notes: string[] = [];
     const held = await editTools.resolveHeldRoot(tester.user.id, root.id);
     if (held.ok) {
@@ -648,6 +670,46 @@ async function main() {
       delete draft.brollTransition;
       return { ok: true, draft };
     });
+  });
+
+  // ── F5 ──
+  // A still is always the FIRST frame of a fresh browser, so it shoots before the Google Fonts
+  // sheet arrives unless the composition holds the frame for it. Only the still asks for that
+  // hold (awaitWebfonts); exports keep exactly the props they had.
+  await section("F5) only the still waits for the webfonts: the plan sets awaitWebfonts, the export's props never do", async () => {
+    check("plan (path A): awaitWebfonts true", (await planProps(1_000))?.awaitWebfonts === true);
+    const held = await editTools.resolveHeldRoot(tester.user.id, root.id);
+    const loaded = held.ok ? await editTools.loadState(tester.user.id, held.root) : null;
+    const burn = loaded?.ok ? (draftLib.toBurnConfig(loaded.state.draft, loaded.state.base) as unknown as Json) : null;
+    check("export burn config (toBurnConfig) has no awaitWebfonts", !!burn && !("awaitWebfonts" in burn), JSON.stringify(burn && Object.keys(burn)));
+    // Source scan: the prop is SET only by the preview tool; the render route, the render worker
+    // and the export path never mention it.
+    const mentions: string[] = [];
+    const setters: string[] = [];
+    const walk = (path: string) => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        const text = readFileSync(full, "utf8");
+        const rel = full.slice(ROOT.length + 1);
+        if (text.includes("awaitWebfonts")) mentions.push(rel);
+        if (/awaitWebfonts:\s*true/.test(text)) setters.push(rel);
+      }
+    };
+    walk(join(ROOT, "src"));
+    check("only the preview tool sets awaitWebfonts: true", setters.join(",") === "src/lib/mcp/preview-frame.ts", setters.join(","));
+    const allowed = new Set([
+      "src/lib/mcp/preview-frame.ts",
+      "src/lib/render/preview-still.ts",
+      "src/remotion/types.ts",
+      "src/remotion/webfont-gate.ts",
+      "src/remotion/SubtitleOverlayComposition.tsx",
+      "src/remotion/ShortVideoComposition.tsx",
+    ]);
+    const stray = mentions.filter((rel) => !allowed.has(rel));
+    check("no export path (render route, worker, burn config) mentions awaitWebfonts", stray.length === 0, stray.join(","));
+    check("both compositions read the prop", mentions.includes("src/remotion/SubtitleOverlayComposition.tsx") && mentions.includes("src/remotion/ShortVideoComposition.tsx"), mentions.join(","));
   });
 
   // ── G ──

@@ -26,12 +26,12 @@ import {
  * worker's when it has published one; otherwise it is built by a separate low-priority process
  * (scripts/build-preview-bundle.mjs), never by webpack on this server's event loop.
  *
- * Known fidelity gap: the compositions load their Thai fonts from a Google Fonts `<link>` with no
- * delayRender, and Remotion's `document.fonts.ready` wait does not cover a stylesheet that has
- * not arrived yet. A single still in a fresh browser therefore usually draws text in the host's
- * fallback face (measured locally: 8/8 stills identical with Google Fonts blocked), and on a host
- * with NO Thai system font the Thai text can be blank. The export only meets this on each render
- * page's first frame. Fixing it means a capped font gate in src/remotion — out of W4's scope.
+ * Fonts: the compositions load their Thai fonts from a Google Fonts `<link>`, and Remotion's
+ * `document.fonts.ready` wait does not cover a stylesheet that has not arrived yet. A still is
+ * always the first frame of a fresh browser, so it would be shot in the host's fallback face (or
+ * blank on a host with no Thai system font). planStill therefore sets the `awaitWebfonts` prop,
+ * which holds the frame for the sheet and the faces (src/remotion/webfont-gate.ts, capped at 5 s,
+ * then it continues). Exports never pass it.
  */
 
 export const PREVIEW_STILL_SCALE = 0.5; // 1080x1920 → 540x960

@@ -19,8 +19,9 @@ import { renderSubtitle } from "./renderSubtitle";
 import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
 import { brollCutAfter, effectiveBrollFit, type BrollFit } from "../lib/broll-window-style";
-import { headlineHookEndFrame } from "../lib/headline-hook";
+import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
+import { useWebfontGate } from "./webfont-gate";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -627,12 +628,18 @@ export function ShortVideoComposition({
   watermark = false,
   backgroundColors,
   brollTransition,
+  awaitWebfonts = false,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
   // EP5 #11: the last window set to "cut" ends the video on a hard cut instead of the fade.
   const endsOnCut = bgVideos.length > 0 && brollCutAfter(bgVideos.slice(-1), brollTransition)[0] === true;
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
+  // Preview stills only; exports never set awaitWebfonts (no delayRender, no extra link props).
+  const webfontGate = useWebfontGate(awaitWebfonts, [
+    resolvedFont,
+    headlineHook?.enabled ? headlineHookFontCssFamily(headlineHook.fontFamily) : null,
+  ]);
   const preset = subtitleStylePreset ?? "stroke";
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
@@ -649,7 +656,7 @@ export function ShortVideoComposition({
       fontFamily: resolvedFont,
       overflow: "hidden",
     }}>
-      <link rel="stylesheet" href={FONTS_CSS} />
+      <link rel="stylesheet" href={FONTS_CSS} {...webfontGate} />
 
       {/* ── Stock video clips ─────────────────────────────────────────────── */}
       {(() => {
