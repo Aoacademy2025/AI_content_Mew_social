@@ -48,6 +48,8 @@ export interface BrollVideo {
   clipDuration?: number; // actual source clip duration in seconds (for Loop)
   /** Continuous uploaded presenter media: source time must equal timeline time. */
   timelineAligned?: boolean;
+  /** Uploaded still converted to a motion clip: repeat this image inside its selected window. */
+  stillImage?: boolean;
   keyword?: string;
   title?: string;
   query?: string;

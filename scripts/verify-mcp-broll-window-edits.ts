@@ -803,6 +803,36 @@ async function main() {
     check("no charge on restore", moneyKey(await money(tester.user.id)) === moneyKey(moneyBefore));
   });
 
+  await section("H-image) existing image imports retain still identity through export rerender", async () => {
+    for (const purpose of ["broll_image", "broll_video"] as const) {
+      const { root } = await heldRootVia(fixer);
+      const ready = await prisma.mediaImport.create({ data: {
+        userId: fixer.user.id, purpose, source: "upload", status: "ready",
+        // Generic historical basename deliberately supplies no image identity.
+        resultSrc: `/api/stocks/broll-upload-old-${purpose}.mp4`, durationMs: 5_000,
+        deadlineAt: new Date(Date.now() + 60_000),
+      } });
+      const selected = await callTool(fixer.token, NEW_TOOL, { jobId: root.id, windowIndex: 1, uploadId: ready.id });
+      check(`${purpose}: replacement accepted`, selected.ok === true);
+      const exported = await callTool(fixer.token, "export_video", { jobId: root.id });
+      check(`${purpose}: export starts rerender`, exported.status === "rerendering", JSON.stringify(exported));
+      const rr = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(exported.rerenderJobId) } });
+      const expected = purpose === "broll_image";
+      const edits = inputOf(rr).windowEdits as Json[];
+      check(`${purpose}: owned import purpose determines image semantics`, (edits[0]?.stillImage === true) === expected,
+        JSON.stringify(edits));
+      renderCalls.length = 0;
+      const completed = await runJob(rr.id, fixer.user.id);
+      check(`${purpose}: rerender done`, completed.status === "done", String(completed.errorMessage));
+      const rendered = (renderCalls.find(call => call.rerenderOf)?.config?.bgVideos ?? []) as Json[];
+      check(`${purpose}: image semantics survive merge to render config`, (rendered[1]?.stillImage === true) === expected
+        && rendered[1]?.clipDuration === 5 && rendered[1]?.src === ready.resultSrc, JSON.stringify(rendered[1]));
+      const burn = await prisma.videoJob.findFirstOrThrow({ where: { userId: fixer.user.id, type: "export",
+        inputJson: { contains: `"sourceJobId":"${completed.id}"` } } });
+      check(`${purpose}: chained export completes`, (await runJob(burn.id, fixer.user.id)).status === "done");
+    }
+  });
+
   // ── I ──
   await section("I) restart: a lost rerender → export hop is recovered by the watchdog sweep and on read", async () => {
     for (const via of ["watchdog", "status"] as const) {

@@ -30,6 +30,8 @@ export type WindowEdit = {
   keyword?: string;
   /** Actual replacement duration from the server-side upload/select/generate response. */
   clipDuration?: number;
+  /** Repeat an uploaded still-derived clip without substituting another scene. */
+  stillImage?: boolean;
   /** Explicit per-window visibility. Tri-state in persisted config: undefined = legacy default. */
   enabled?: boolean;
   /** De-identified rejection class used only by server-owned quality telemetry. */
@@ -86,7 +88,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId } = raw as Record<string, unknown>;
+    const { index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId, stillImage } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
@@ -151,6 +153,9 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     ) {
       return { error: "ความยาวไฟล์ b-roll ไม่ถูกต้อง" };
     }
+    if (stillImage !== undefined && (!hasSrc || typeof stillImage !== "boolean")) {
+      return { error: "ชนิดภาพ b-roll ไม่ถูกต้อง" };
+    }
     const trimmedKeyword = typeof keyword === "string" ? keyword.trim().slice(0, KEYWORD_MAX) : "";
     const edit: WindowEdit = {
       index,
@@ -159,6 +164,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
       ...(typeof src === "string" ? { src } : {}),
       ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
+      ...(typeof stillImage === "boolean" ? { stillImage } : {}),
       ...(typeof enabled === "boolean" ? { enabled } : {}),
       ...(replacementKind === "stock" || replacementKind === "upload" || replacementKind === "ai"
         ? { replacementKind }
@@ -251,9 +257,11 @@ export function mergeWindowEdits(
       // 5 s clip in a window at 6 s to play from its 6th second, so coverage drops it and
       // silently puts the presenter back.
       delete base.timelineAligned;
+      delete base.stillImage;
       base.src = e.src;
       if (e.keyword) base.keyword = e.keyword;
       if (e.clipDuration !== undefined) base.clipDuration = e.clipDuration;
+      if (e.stillImage === true) base.stillImage = true;
       base.clipOffset = 0;
     }
     if (typeof e.enabled === "boolean") {

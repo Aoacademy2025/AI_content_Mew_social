@@ -1042,7 +1042,7 @@ async function rerenderEditsFor(
   const ids = [...new Set(state.draft.windowEdits.flatMap((edit) => (edit.importId ? [edit.importId] : [])))];
   const rows = ids.length === 0 ? [] : await prisma.mediaImport.findMany({
     where: { id: { in: ids }, userId, purpose: { in: [...BROLL_IMPORT_PURPOSES] } },
-    select: { id: true, status: true, errorCode: true, resultSrc: true, durationMs: true },
+    select: { id: true, status: true, errorCode: true, resultSrc: true, durationMs: true, purpose: true },
   });
   const byId = new Map(rows.map((row) => [row.id, row]));
   const ordered = [...state.draft.windowEdits].sort((a, b) => a.index - b.index);
@@ -1068,6 +1068,7 @@ async function rerenderEditsFor(
         src: row.resultSrc ?? "",
         enabled: true,
         replacementKind: "upload",
+        ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
         ...(seconds ? { clipDuration: seconds } : {}),
       });
       continue;
@@ -1084,6 +1085,7 @@ async function rerenderEditsFor(
       index: edit.index,
       src: edit.src ?? "",
       enabled: true,
+      ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
       ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
     });
   }

@@ -17,6 +17,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import sharp from "sharp";
+import assert from "node:assert/strict";
+import { prepareBrollRenderAssets, type BrollCoverageAsset } from "../src/lib/broll-coverage";
+import { mergeWindowEdits, validateWindowEdits } from "../src/lib/broll-rerender";
+import { ffprobeDurationSec } from "../src/lib/upload-media-probe";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
 import {
   MAX_BROLL_IMAGE_BYTES,
@@ -109,12 +113,51 @@ async function pipelineChecks(tmp: string): Promise<void> {
     stocksDir,
   });
   check("runBrollPipeline: real jpg → ok with /api/stocks/ src and Ken Burns duration",
-    jpgResult.ok && jpgResult.value.src.startsWith("/api/stocks/") && jpgResult.value.clipDuration === 5,
+    jpgResult.ok && jpgResult.value.src.startsWith("/api/stocks/") && jpgResult.value.clipDuration === 5 && jpgResult.value.stillImage === true,
     JSON.stringify(jpgResult));
   if (jpgResult.ok) {
     const outPath = path.join(stocksDir, jpgResult.value.src.replace("/api/stocks/", ""));
     check("runBrollPipeline: the Ken Burns output file exists on disk", fs.existsSync(outPath));
   }
+
+  // The original 23-window incident using 22 real imports, not forged durations
+  // or 22 additional pre-expanded videos. Colors make each local image distinct.
+  const imported = [];
+  for (let id = 1; id <= 22; id++) {
+    const png = await sharp({ create: { width: 90, height: 160, channels: 3,
+      background: { r: id * 10, g: 240 - id * 7, b: 20 + id * 9 } } }).png().toBuffer();
+    const result = await runBrollPipeline({ file: makeFile(`card-${id}.png`, png, "image/png"),
+      kind: "image", ext: "png", stocksDir });
+    assert.ok(result.ok, `image import ${id}`);
+    imported.push(result.value);
+  }
+  const ends = [0, 4167, 9700, 15467, 21067, 25767, 30567, 35133, 39933,
+    44700, 48800, 53300, 57867, 62900, 67933, 73200, 77600, 82667, 86733,
+    91500, 95700, 100100, 105133, 107651];
+  const ids = [5, 1, 2, 3, 4, 6, 7, 8, 9, 11, 14, 14, 15, 16, 18, 19, 12, 17, 21, 20, 22, 13, 10];
+  const edits = validateWindowEdits(ids.map((id, index) => ({ index, ...imported[id - 1] })));
+  assert.ok(!("error" in edits));
+  const merged = mergeWindowEdits(ids.map((_, index) => ({
+    src: "/api/stocks/original.mp4", start: ends[index] / 1000, end: ends[index + 1] / 1000,
+  })), edits);
+  assert.ok(!("error" in merged));
+  let probes = 0;
+  const { coverage } = await prepareBrollRenderAssets(merged.bgVideos as BrollCoverageAsset[],
+    Math.ceil(107.651 * 30) / 30, 30, {
+      resolveAsset: src => ({ src, localPath: path.join(stocksDir, path.basename(src)) }),
+      isUsableLocalFile: file => fs.statSync(file).size > 1500,
+      probeDurationSec: async file => { probes++; return ffprobeDurationSec(file, "mov"); },
+    });
+  assert.equal(probes, 22, "adjacent reused card uses the same imported asset/probe");
+  assert.equal(coverage.complete, true);
+  for (let frame = 0; frame < Math.ceil(107.651 * 30); frame++) {
+    const index = ends.findIndex((end, i) => i > 0 && frame < Math.ceil(end * 30 / 1000)) - 1;
+    const time = (frame + 0.5) / 30;
+    const segment = coverage.segments.find(item => time >= item.start && time < item.end);
+    assert.equal(segment?.src, imported[ids[index] - 1].src, `real imported identity at frame ${frame}`);
+    assert.equal(segment?.clipDuration, 4.5, "real 5s MP4 probe retains safety margin");
+  }
+  check("22 real PNG imports → edit merge → 22 real probes → all 3230 incident frames retain selected identity", true);
 
   // 2b. An oversized image (> 4096px) is refused before Ken Burns ever decodes it.
   const bigPngPath = path.join(tmp, "big.png");

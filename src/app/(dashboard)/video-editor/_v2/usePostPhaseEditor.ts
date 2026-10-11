@@ -101,6 +101,7 @@ export type WindowEdit = {
   src?: string;
   keyword?: string;
   clipDuration?: number;
+  stillImage?: boolean;
   kind?: WindowEditKind;
   label?: string;
   enabled?: boolean;
@@ -660,6 +661,7 @@ export function usePostPhaseEditor(
         ...(e.src ? { src: e.src } : {}),
         ...(e.keyword ? { keyword: e.keyword } : {}),
         ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
+        ...(typeof e.stillImage === "boolean" ? { stillImage: e.stillImage } : {}),
         ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
         ...(e.kind ? { replacementKind: e.kind } : {}),
         ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
