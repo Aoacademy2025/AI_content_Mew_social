@@ -708,3 +708,78 @@ export function assignBrollWindows(
 
   return coverBrollTimeline(desired, usable, durationSec, fps);
 }
+
+export type RenderedWindowSpan = { startMs: number; endMs: number };
+
+/**
+ * U1 (MCP `get_edit_state` real-timeline fix): the start/end each `bgVideos[]` entry ("window",
+ * keyed by its own array position / `sourceIndex`) will ACTUALLY get on screen, per the exact
+ * same `coverProbedBrollTimeline` the render route calls — reused, not reimplemented. A window's
+ * *stored* `start`/`end` is only a fill TARGET (see `coverBrollTimeline`'s target-filling loop);
+ * when a window's own clip is too short for its target, the renderer backfills the shortfall
+ * from a neighboring window's own clip, which can start playing early and cascade. This mirrors
+ * that without touching what actually renders, and without re-probing any file: callers must
+ * already know each entry's real `clipDuration` (the value stored at creation, or a
+ * replacement's already-probed `MediaImport.durationMs`) — exactly the inputs `get_edit_state`
+ * already has on hand.
+ *
+ * Only an entry's FIRST (earliest) resulting segment is reported. A clip that gets borrowed
+ * into an earlier window's shortfall and later also reappears for an unrelated gap (a rare tail
+ * edge case, not the common forward cascade) is still reported at its own real primary slot, not
+ * the union of every appearance — the single number an agent placing media actually needs.
+ *
+ * A window whose own clip never gets any turn at all (fully squeezed out) is absent from the
+ * result — callers read that as "never rendered," not a zero-width span.
+ */
+export function renderedWindowSpansMs(
+  bgVideos: unknown[],
+  durationSec: number,
+  fps: number,
+): Map<number, RenderedWindowSpan> {
+  const result = new Map<number, RenderedWindowSpan>();
+  if (!Array.isArray(bgVideos) || bgVideos.length === 0) return result;
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return result;
+  if (!Number.isFinite(fps) || fps <= 0) return result;
+
+  const probed: ProbedBrollAsset[] = [];
+  bgVideos.forEach((raw, index) => {
+    if (!raw || typeof raw !== "object") return;
+    const v = raw as Record<string, unknown>;
+    const start = Number(v.start);
+    const end = Number(v.end);
+    const src = typeof v.src === "string" ? v.src : "";
+    const brollEnabled = typeof v.brollEnabled === "boolean" ? v.brollEnabled : undefined;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    if (brollEnabled !== false && !src) return;
+    const clipDuration = Number(v.clipDuration);
+    const asset: BrollCoverageAsset = {
+      src,
+      start,
+      end,
+      sourceIndex: index,
+      clipOffset: typeof v.clipOffset === "number" ? v.clipOffset : 0,
+      ...(typeof v.stillImage === "boolean" ? { stillImage: v.stillImage } : {}),
+      ...(typeof v.timelineAligned === "boolean" ? { timelineAligned: v.timelineAligned } : {}),
+      ...(brollEnabled !== undefined ? { brollEnabled } : {}),
+    };
+    probed.push({
+      asset,
+      actualDurationSec: brollEnabled === false
+        ? null
+        : (Number.isFinite(clipDuration) && clipDuration > 0 ? clipDuration : null),
+      probeRequired: brollEnabled !== false,
+    });
+  });
+  if (probed.length === 0) return result;
+
+  const coverage = coverProbedBrollTimeline(probed, durationSec, fps);
+  for (const segment of coverage.segments) {
+    const idx = segment.sourceIndex;
+    if (typeof idx !== "number" || result.has(idx)) continue; // first (earliest) appearance only
+    const startMs = Math.round(Math.max(0, segment.start) * 1_000);
+    const endMs = Math.round(Math.min(durationSec, segment.end) * 1_000);
+    if (endMs <= startMs) continue;
+    result.set(idx, { startMs, endMs });
+  }
+  return result;
+}

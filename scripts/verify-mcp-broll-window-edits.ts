@@ -568,6 +568,17 @@ async function main() {
     state = await callTool(tester.token, "get_edit_state", { jobId: root.id });
     windows = state.windows as Json[];
     check("get_edit_state: importStatus ready", windows[1]?.importStatus === "ready", JSON.stringify(windows[1]));
+    // U1: the replacement clip (2s) is shorter than window 1's stored 2-4s span. The renderer's
+    // own coverage pass (coverProbedBrollTimeline -> coverBrollTimeline) only gets ~1.17s of it
+    // (2s minus the 0.5s probe-safety margin minus the 10-frame sequence guard) before handing
+    // the remaining ~0.83s to window 0's own asset — so the REAL cut is 2000-3166.67ms, not the
+    // stored 2000-4000ms. get_edit_state must report the real cut, not the raw boundary.
+    check("get_edit_state: window 1's renderedStartMs/renderedEndMs are the ACTUAL post-coverage cut (clip shorter than its window), not the raw stored 4000ms boundary",
+      windows[1]?.renderedStartMs === 2_000 && windows[1]?.renderedEndMs === 3_167, JSON.stringify(windows[1]));
+    check("get_edit_state: window 0's own rendered span is unaffected (its clip still fully covers its own window first)",
+      windows[0]?.renderedStartMs === 0 && windows[0]?.renderedEndMs === 2_000, JSON.stringify(windows[0]));
+    check("get_edit_state: the raw stored startMs/endMs stay unchanged alongside the new rendered* fields (backward-compatible)",
+      windows[1]?.startMs === 2_000 && windows[1]?.endMs === 4_000, JSON.stringify(windows[1]));
 
     fetchLog.length = 0;
     callerLog.length = 0;
