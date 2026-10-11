@@ -528,10 +528,24 @@ export async function runRender(
     // export_video share this one path) is the FINAL deliverable; preview/avatar renders are
     // left alone. Fails open: a skip or an error here never fails the render.
     if (isSubtitleOverlay) {
-      const loudness = await normalizeFinalAudioLoudness(outputLocation).catch((error) => {
-        console.warn(`[Render] loudness normalization threw for job=${jobId}:`, error);
-        return { applied: false, reason: "threw" } as const;
-      });
+      // Review A1 (PR #593): renderMedia's own onProgress above is the render-worker's ONLY
+      // source of `lastProgressAt` for its stall watchdog (STALL_MS, 120s default). This step
+      // runs AFTER that last tick, so without a heartbeat here a slow loudnorm pass (contention,
+      // a long BUSINESS clip) looks identical to a stuck render: the watchdog cancels the job,
+      // and past SWEEP_STALE_MS the other worker's idle sweeper can requeue it — a double
+      // render. Re-tick the SAME onProgress callback every WATCHDOG_MS-sized interval (10s) so
+      // the watchdog keeps seeing a live job; loudness-normalize.ts's own OVERALL_TIMEOUT_MS
+      // (90s, well under STALL_MS) is the belt to this heartbeat's suspenders.
+      const loudnormHeartbeat = setInterval(() => onProgress(99, "normalizing_audio"), 10_000);
+      let loudness: Awaited<ReturnType<typeof normalizeFinalAudioLoudness>>;
+      try {
+        loudness = await normalizeFinalAudioLoudness(outputLocation).catch((error) => {
+          console.warn(`[Render] loudness normalization threw for job=${jobId}:`, error);
+          return { applied: false, reason: "threw" } as const;
+        });
+      } finally {
+        clearInterval(loudnormHeartbeat);
+      }
       if (loudness.applied) {
         console.log(`[Render] job=${jobId} loudness normalized ${loudness.beforeLufs.toFixed(1)} → ${loudness.targetLufs} LUFS`);
       } else {

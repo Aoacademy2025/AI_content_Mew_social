@@ -25,15 +25,25 @@ const execFileAsync = promisify(execFile);
  * MP4s already carry"), so this pass never reintroduces the ADTS/no-edit-list lag that
  * aac-priming.ts fixes.
  *
- * Fails open: any ffmpeg error, a silent/missing audio stream, or an unparseable measurement
- * leaves `filePath` exactly as the render produced it. Export must never fail because of
- * loudness normalization.
+ * Fails open: any ffmpeg error, a silent/missing audio stream, an unparseable measurement, OR
+ * running past OVERALL_TIMEOUT_MS (see below) leaves `filePath` exactly as the render produced
+ * it. Export must never fail because of loudness normalization.
  */
 export const LOUDNESS_TARGET_I = -14;
 export const LOUDNESS_TARGET_TP = -1.5;
 const LOUDNESS_TARGET_LRA = 11; // ffmpeg loudnorm's own default target LRA
 const MEASURE_TIMEOUT_MS = 2 * 60 * 1000;
 const APPLY_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * Review A1 (PR #593): the per-call timeouts above (2 min + 5 min) are generous upper bounds
+ * on a SINGLE ffmpeg call, but `render-worker.ts`'s stall watchdog cancels a job after
+ * `STALL_MS` (120s by default) with no progress at all, and the OTHER worker's idle sweeper
+ * can then requeue it (double render) once the heartbeat is stale past `SWEEP_STALE_MS`
+ * (150s). Measured cost is ~8-10s for a typical clip, so this is a tail-risk guard, not the
+ * common path. Cap the WHOLE measure+apply round trip at a hard wall clock well under 120s —
+ * aborting here must still fail open (reason "timeout", `filePath` untouched), never throw.
+ */
+const OVERALL_TIMEOUT_MS = 90 * 1000;
 /** ffmpeg's own floor for "no audible signal" is -70 LUFS; treat that (or no stream at all,
  *  which ffmpeg also reports as -inf → NaN here) as silent. */
 const SILENT_INPUT_I_LUFS = -70;
@@ -75,6 +85,28 @@ function errorMessage(error: unknown): string {
 }
 
 export async function normalizeFinalAudioLoudness(filePath: string): Promise<LoudnessNormalizeResult> {
+  // A1 overall hard cap: aborts both ffmpeg children (via `signal`) if the round trip runs past
+  // OVERALL_TIMEOUT_MS, well under the render-worker stall watchdog's STALL_MS (120s default).
+  // `timedOut` lets every catch below report "timeout" specifically instead of whatever generic
+  // AbortError text the child process throws.
+  const controller = new AbortController();
+  let timedOut = false;
+  const overallTimer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, OVERALL_TIMEOUT_MS);
+  try {
+    return await runNormalizePasses(filePath, controller.signal, () => timedOut);
+  } finally {
+    clearTimeout(overallTimer);
+  }
+}
+
+async function runNormalizePasses(
+  filePath: string,
+  signal: AbortSignal,
+  isTimedOut: () => boolean,
+): Promise<LoudnessNormalizeResult> {
   const ffmpeg = getFfmpegPath();
   const measureFilter = `loudnorm=I=${LOUDNESS_TARGET_I}:TP=${LOUDNESS_TARGET_TP}:LRA=${LOUDNESS_TARGET_LRA}:print_format=json`;
   let measured: LoudnormMeasured | null;
@@ -86,11 +118,11 @@ export async function normalizeFinalAudioLoudness(filePath: string): Promise<Lou
       "-af", measureFilter,
       "-f", "null",
       process.platform === "win32" ? "NUL" : "/dev/null",
-    ], { maxBuffer: 16 * 1024 * 1024, timeout: MEASURE_TIMEOUT_MS });
+    ], { maxBuffer: 16 * 1024 * 1024, timeout: MEASURE_TIMEOUT_MS, signal });
     measured = parseLoudnormJson(stderr);
   } catch (error) {
     // Includes "Stream map '0:a:0' matches no streams" — a render with no audio at all.
-    return { applied: false, reason: `measure_failed: ${errorMessage(error)}` };
+    return { applied: false, reason: isTimedOut() ? "timeout" : `measure_failed: ${errorMessage(error)}` };
   }
   if (!measured) return { applied: false, reason: "measure_unparseable" };
   const inputI = Number(measured.input_i);
@@ -118,10 +150,10 @@ export async function normalizeFinalAudioLoudness(filePath: string): Promise<Lou
       "-af", applyFilter,
       "-movflags", "+faststart",
       tmpOut,
-    ], { maxBuffer: 16 * 1024 * 1024, timeout: APPLY_TIMEOUT_MS });
+    ], { maxBuffer: 16 * 1024 * 1024, timeout: APPLY_TIMEOUT_MS, signal });
   } catch (error) {
     try { fs.rmSync(tmpOut, { force: true }); } catch {}
-    return { applied: false, reason: `apply_failed: ${errorMessage(error)}` };
+    return { applied: false, reason: isTimedOut() ? "timeout" : `apply_failed: ${errorMessage(error)}` };
   }
   if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 1024) {
     try { fs.rmSync(tmpOut, { force: true }); } catch {}

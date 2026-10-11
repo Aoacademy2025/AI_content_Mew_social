@@ -1040,6 +1040,12 @@ export function usePostPhaseEditor(
     // remove the headline, and the override must follow the draft back to `undefined` instead
     // of keeping the previous revision's stale value.
     setHeadlineOverrideState(draft.headlineHook);
+    // Review B1 (PR #593): this effect is the ONLY place a draft that arrives after the lazy
+    // useState initializers (the normal case, and the 409 stale_revision reload) gets applied —
+    // tailHoldMs was missing here, so an agent-set hold silently read back as 0 in the web, and
+    // an unreviewed web export would then clear the agent's draft with tailHoldMs: 0. Set
+    // unconditionally, same reasoning as headlineHook above: absent/legacy reads as 0.
+    setTailHoldMsState(clampTailHoldMs(draft.tailHoldMs ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 
