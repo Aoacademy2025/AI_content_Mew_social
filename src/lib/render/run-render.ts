@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
+import { signalRemotionAacPriming } from "@/lib/render/aac-priming";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
 import {
@@ -462,6 +463,9 @@ export async function runRender(
           composition,
           serveUrl: bundleLocation,
           codec: "h264",
+          // Signal the AAC encoder priming in the MP4 edit list so the voice is not 42.7 ms late
+          // per render (85.3 ms after a burn). See aac-priming.ts.
+          ffmpegOverride: signalRemotionAacPriming,
           outputLocation,
           inputProps,
           envVariables: remotionEnvVariables,
