@@ -396,6 +396,17 @@ async function main() {
     assert.equal(body.brollTransition, "cut", "the project default rides the broll-rerender body");
     const journal = await page.evaluate(() => JSON.parse(localStorage.getItem("editor-v2-broll-apply:account-a:project-a") ?? "{}"));
     assert.equal(journal.brollTransition, "cut", "the journal keeps the project default");
+    // While the apply runs the base is about to change, so a revert staged now could be lost:
+    // style and default edits are locked exactly like media edits.
+    await page.evaluate(() => {
+      const ed = (window as unknown as { __ed: StyleEd }).__ed;
+      ed.setBrollWindowStyle(0, { transition: "dissolve" });
+      ed.setBrollTransitionDefault("dissolve");
+    });
+    const locked = await styleEd();
+    assert.equal(locked.count, 2, "style edits are locked while the apply is pending");
+    assert.deepEqual(locked.edit0, { transition: "cut" });
+    assert.equal(locked.def, "cut", "the project default is locked while the apply is pending");
     await page.reload();
     await page.waitForFunction(() => document.querySelector("#phase")?.textContent?.includes("queued"));
     const recovered = await styleEd();
@@ -406,7 +417,7 @@ async function main() {
       { timeout: 5_000 });
     await waitCount(0);
     assert.equal((await styleEd()).staged, false, "adoption clears the staged default");
-    console.log("PASS: staged transition/fit + project default reach the request, survive refresh, clear on adopt");
+    console.log("PASS: staged transition/fit + project default reach the request, lock during apply, survive refresh, clear on adopt");
   } finally {
     await browser.close(); await new Promise<void>((done) => server.close(() => done()));
     rmSync(directory, { recursive: true, force: true });

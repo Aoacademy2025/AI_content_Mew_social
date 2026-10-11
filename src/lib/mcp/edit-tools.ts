@@ -1177,6 +1177,10 @@ export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBr
     select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
   });
   if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
+  // Like replace_broll_window's A1: while a re-render of this root runs, the base the "equal to
+  // the base → drop the pending value" decision reads is about to be replaced, so a revert decided
+  // now would be lost when the re-render lands. Refuse instead of answering ok.
+  if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return STYLE_DURING_RERENDER;
 
   const refused: { failure: EditToolFailure | null } = { failure: null };
   const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
@@ -1282,6 +1286,11 @@ const ORIGINAL_DURING_RERENDER = editToolFailure(
   "rerender_in_progress",
   "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังสั่งให้ช่วงนี้กลับเป็นภาพเดิมไม่ได้ — ยังไม่ได้บันทึกอะไร",
   "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก replace_broll_window ด้วย source \"original\" อีกครั้ง",
+);
+const STYLE_DURING_RERENDER = editToolFailure(
+  "rerender_in_progress",
+  "กำลังเรนเดอร์ช่วง B-roll จากการสั่งส่งออกครั้งก่อนอยู่ จึงยังเปลี่ยนการตัดต่อหรือการจัดภาพของ B-roll ไม่ได้ — ยังไม่ได้บันทึกอะไร",
+  "เรียก get_video_status ทุก ~60–90 วินาที จน status ไม่ใช่ \"rerendering\" แล้วเรียก set_broll_style อีกครั้ง",
 );
 const IMPORT_ERROR_HINT: Record<string, string> = {
   fetch_timeout: "ดาวน์โหลดไม่ทันเวลา หรือคิวนำเข้าไม่ว่างในตอนนั้น — ส่งไฟล์เดิมใหม่ได้",

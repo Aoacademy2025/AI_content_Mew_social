@@ -987,6 +987,50 @@ async function main() {
     check("no provider call during the style rerenders", !callerLog.some((line) => PROVIDER_PATH.test(line)), callerLog.join(","));
   });
 
+  await section("S2) set_broll_style while an export re-render is in flight → rerender_in_progress (a revert is never silently lost)", async () => {
+    const STYLE_TOOL = "set_broll_style";
+    const { root, projectId } = await heldRootVia(styler);
+    const stagedDefault = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, transition: "cut" });
+    const stagedFit = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 0, fit: "contain" });
+    check("fixture: project default cut + window 0 contain staged", stagedDefault.ok === true && stagedFit.ok === true,
+      JSON.stringify({ stagedDefault, stagedFit }));
+    const exported = await callTool(styler.token, "export_video", { jobId: root.id });
+    check("fixture: export_video started the re-render", exported.status === "rerendering", JSON.stringify(exported));
+    const rrId = String(exported.rerenderJobId);
+    const before = await projectRow(projectId);
+    const midRender: Array<[string, Json]> = [
+      ["project default back to dissolve (equal to the old base)", { jobId: root.id, transition: "dissolve" }],
+      ["window 0 back to cover (equal to the old base)", { jobId: root.id, windowIndex: 0, fit: "cover" }],
+      ["window 1 → cut (a new value)", { jobId: root.id, windowIndex: 1, transition: "cut" }],
+    ];
+    for (const [label, args] of midRender) {
+      const reply = await callTool(styler.token, STYLE_TOOL, args);
+      check(`${label} during the in-flight re-render → rerender_in_progress`, reply.error === "rerender_in_progress"
+        && checkFailureEnvelope(reply).length === 0 && /set_broll_style/.test(String(reply.next)), JSON.stringify(reply));
+    }
+    const after = await projectRow(projectId);
+    check("…the refusals wrote nothing (draft + revision unchanged)", after.pendingEditJson === before.pendingEditJson
+      && after.pendingEditRevision === before.pendingEditRevision, `${before.pendingEditRevision} → ${after.pendingEditRevision}`);
+
+    const rrDone = await runJob(rrId, styler.user.id);
+    check("fixture: the re-render finished", rrDone.status === "done", String(rrDone.errorMessage));
+    const ex = await prisma.videoJob.findFirstOrThrow({ where: { userId: styler.user.id, type: "export", inputJson: { contains: `"sourceJobId":"${rrId}"` } } });
+    check("fixture: the chained export finished", (await runJob(ex.id, styler.user.id)).status === "done");
+
+    const back = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, transition: "dissolve" });
+    check("once the re-render is done, the default revert is accepted and pending against the new cut base",
+      back.ok === true && back.pending === true && back.brollTransition === "dissolve", JSON.stringify(back));
+    const fitBack = await callTool(styler.token, STYLE_TOOL, { jobId: root.id, windowIndex: 0, fit: "cover" });
+    check("…and the window 0 revert to cover is pending against the new contain base",
+      fitBack.ok === true && fitBack.fit === "cover" && fitBack.pending === true, JSON.stringify(fitBack));
+    const draft = await storedDraft(projectId);
+    check("the draft records both reverts for the next export",
+      draft?.brollTransition === "dissolve"
+        && JSON.stringify(draft.windowEdits) === JSON.stringify([{ index: 0, src: null, replacementKind: "style", fit: "cover" }]),
+      JSON.stringify({ edits: draft?.windowEdits, def: draft?.brollTransition }));
+    await callTool(styler.token, "discard_edits", { jobId: root.id });
+  });
+
   // ── I ──
   await section("I) restart: a lost rerender → export hop is recovered by the watchdog sweep and on read", async () => {
     for (const via of ["watchdog", "status"] as const) {
