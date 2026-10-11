@@ -215,6 +215,7 @@
     "verify:media-import-upload": "node --conditions=react-server --import tsx scripts/verify-media-import-upload.ts",
     "verify:media-import-fetch": "tsx scripts/verify-media-import-fetch.ts",
     "verify:media-import-lane": "node --conditions=react-server --import tsx scripts/verify-media-import-lane.ts",
+    "verify:media-import-capacity": "node --conditions=react-server --import tsx scripts/verify-media-import-capacity.ts",
     "verify:mcp-broll-window-edits": "node --conditions=react-server --import tsx scripts/verify-mcp-broll-window-edits.ts",
     "verify:mcp-clip-import-job": "node --conditions=react-server --import tsx scripts/verify-mcp-clip-import-job.ts",
     "verify:omnivoice": "tsx scripts/verify-omnivoice.ts",

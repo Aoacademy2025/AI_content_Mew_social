@@ -10,6 +10,7 @@ import { isInBandError } from "../src/lib/mcp/audit";
 import { MEDIA_IMPORT_LANE_ERROR_CODES } from "../src/lib/media-import/lane";
 import { UPLOAD_KIND_MAX_BYTES, MAX_ACTIVE_IMPORTS, MAX_IMPORTS_PER_HOUR, MAX_UPLOAD_LINKS_PER_HOUR, UPLOAD_TOKEN_TTL_MS } from "../src/lib/media-import/imports";
 import { MAX_PRESENTER_DIMENSION_PX } from "../src/lib/media-import/presenter-checks";
+import { MAX_ACTIVE_IMPORT_BYTES_PER_USER, MAX_IMPORT_BYTES_PER_DAY, MAX_IMPORT_BYTES_PER_HOUR, formatImportBytes } from "../src/lib/media-import/limits";
 import { durationCapSecFor } from "../src/lib/plan-limits";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -143,6 +144,11 @@ assert(
 assert(SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_ACTIVE_IMPORTS} ไฟล์`) && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_IMPORTS_PER_HOUR} ไฟล์ต่อชั่วโมง`)
   && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${MAX_UPLOAD_LINKS_PER_HOUR} ครั้งต่อชั่วโมง`),
   "instructions: import caps match the code (active / per hour / upload links per hour)");
+assert(SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${formatImportBytes(MAX_ACTIVE_IMPORT_BYTES_PER_USER)})`)
+  && SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${formatImportBytes(MAX_IMPORT_BYTES_PER_HOUR)} ต่อชั่วโมง`)
+  && SERVER_INSTRUCTIONS.includes(`${formatImportBytes(MAX_IMPORT_BYTES_PER_DAY)} ต่อ 24 ชั่วโมง`)
+  && SERVER_INSTRUCTIONS.includes("Content-Length"),
+  "instructions: per-user byte budgets (staging share / hour / 24 h) match limits.ts, and PUT declares Content-Length");
 assert(SERVER_INSTRUCTIONS.includes("create_video_job({clipUrl})") && SERVER_INSTRUCTIONS.includes("create_video_job({clipUploadId})")
   && SERVER_INSTRUCTIONS.includes("ห้ามส่งทั้งคู่") && SERVER_INSTRUCTIONS.includes("HeyGen")
   && SERVER_INSTRUCTIONS.includes('"fillYourself"') && SERVER_INSTRUCTIONS.includes('currentStep "import"')
@@ -154,6 +160,7 @@ assert(SERVER_INSTRUCTIONS.includes("replace_broll_window(jobId, windowIndex, ur
 for (const code of [
   ...MEDIA_IMPORT_LANE_ERROR_CODES,
   "invalid_input", "feature_not_enabled", "too_many_active_imports", "import_hourly_limit", "upload_link_hourly_limit",
+  "active_import_bytes_limit", "import_bytes_hourly_limit", "import_bytes_daily_limit",
   "storage_busy", "import_failed", "imports_pending", "window_locked_presenter_hook", "import_missing",
   "upload_link_invalid", "server_busy",
 ]) {

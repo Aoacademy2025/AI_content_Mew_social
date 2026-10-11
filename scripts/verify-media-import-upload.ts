@@ -17,7 +17,7 @@
 //      deadline hold no slot (R-A4), DB unavailable before staging → 503 envelope (R-A1);
 //      HERO-69 (2026-10-05): the two hourly caps raised 10/30 → 60/60, and their refusals now
 //      carry retryAfterSeconds matching the oldest row in the rolling 1-hour window.
-//   D. admission caps across TWO real processes on one SQLite file (3 active,
+//   D. admission caps across TWO real processes on one SQLite file (MAX_ACTIVE_IMPORTS active,
 //      MAX_IMPORTS_PER_HOUR/hour, MAX_UPLOAD_LINKS_PER_HOUR links/hour): exactly the cap is
 //      admitted, never more.
 //   E. IDOR (G27): missing, foreign and wrong-purpose ids get one identical `invalid_input`.
@@ -652,11 +652,11 @@ async function main(): Promise<void> {
   await section("C8) the PUT re-checks admission and keeps the link when refused", async () => {
     await reset();
     const issued = await issue(owner.id, "image");
-    const busy = await Promise.all([1, 2, 3].map((i) => prisma.mediaImport.create({
-      data: { userId: owner.id, purpose: "broll_image", source: "url", status: i === 3 ? "processing" : "pending", deadlineAt: new Date(Date.now() + 10 * MINUTE) },
+    const busy = await Promise.all(Array.from({ length: lib.MAX_ACTIVE_IMPORTS }, (_, i) => prisma.mediaImport.create({
+      data: { userId: owner.id, purpose: "broll_image", source: "url", status: i === 0 ? "processing" : "pending", deadlineAt: new Date(Date.now() + 10 * MINUTE) },
     })));
     const res = await put(issued.token, png);
-    check("3 imports active → 429 too_many_active_imports", res.status === 429 && res.body.code === "too_many_active_imports", JSON.stringify(res));
+    check(`${lib.MAX_ACTIVE_IMPORTS} imports active → 429 too_many_active_imports`, res.status === 429 && res.body.code === "too_many_active_imports", JSON.stringify(res));
     check("…link NOT consumed", (await prisma.mcpUploadToken.findUnique({ where: { importId: issued.importId } }))?.usedAt === null);
     await prisma.mediaImport.update({ where: { id: busy[0].id }, data: { status: "ready" } });
     const retry = await put(issued.token, png);
@@ -717,10 +717,10 @@ async function main(): Promise<void> {
     check("links older than an hour do not count", (await lib.issueUploadToken(owner.id, "image")).ok);
     await prisma.mcpUploadToken.deleteMany({});
     await prisma.mediaImport.createMany({
-      data: Array.from({ length: 3 }, () => ({ userId: owner.id, purpose: "broll_video", source: "url", status: "pending", deadlineAt: new Date(Date.now() + MINUTE) })),
+      data: Array.from({ length: lib.MAX_ACTIVE_IMPORTS }, () => ({ userId: owner.id, purpose: "broll_video", source: "url", status: "pending", deadlineAt: new Date(Date.now() + MINUTE) })),
     });
     const busy = await lib.issueUploadToken(owner.id, "image");
-    check("3 imports active → too_many_active_imports", !busy.ok && busy.code === "too_many_active_imports");
+    check(`${lib.MAX_ACTIVE_IMPORTS} imports active → too_many_active_imports`, !busy.ok && busy.code === "too_many_active_imports");
     await prisma.mediaImport.deleteMany({});
     await prisma.mediaImport.createMany({
       data: Array.from({ length: lib.MAX_IMPORTS_PER_HOUR }, () => ({ userId: owner.id, purpose: "broll_video", source: "url", status: "failed", deadlineAt: new Date() })),
@@ -743,11 +743,16 @@ async function main(): Promise<void> {
   await section("C10) storage (fix round 1, S1): global staged-bytes budget + free-disk floor, link kept", async () => {
     await reset();
     const presenterLink = await issue(owner.id, "presenter");
-    // 20 live presenter imports elsewhere reserve 20 × 500 MB = 10,000 MiB of the 10 GiB budget.
+    // As many live presenter imports elsewhere as fit the budget (500 MB each, size unknown):
+    // 30 × 500 MB = 15,000 MiB of the 15 GiB default.
+    const fillerCount = Math.floor(lib.MAX_STAGED_IMPORT_BYTES / lib.UPLOAD_KIND_MAX_BYTES.presenter);
     const fillers = await prisma.mediaImport.createManyAndReturn({
-      data: Array.from({ length: 20 }, (_, i) => ({
+      data: Array.from({ length: fillerCount }, (_, i) => ({
+        // One still streaming in ("processing"), the rest staged ("pending"): both reserve. Only
+        // one is in flight, so the PUT's free-disk floor (which adds in-flight bytes) does not
+        // depend on how much disk this host has free.
         userId: [other.id, outsider.id, downgraded.id][i % 3], purpose: "presenter", source: "upload",
-        status: i % 2 ? "pending" : "processing", deadlineAt: new Date(Date.now() + 10 * MINUTE),
+        status: i === 0 ? "processing" : "pending", deadlineAt: new Date(Date.now() + 10 * MINUTE),
       })),
     });
     const refusedIssue = await lib.issueUploadToken(owner.id, "presenter");
@@ -805,13 +810,13 @@ async function main(): Promise<void> {
   await section("C11) rows past their deadline hold no slot (fix round 1, R-A4)", async () => {
     await reset();
     await prisma.mediaImport.createMany({
-      data: Array.from({ length: 3 }, (_, i) => ({
+      data: Array.from({ length: lib.MAX_ACTIVE_IMPORTS }, (_, i) => ({
         userId: owner.id, purpose: "broll_image", source: "upload", status: i ? "pending" : "processing",
         deadlineAt: new Date(Date.now() - MINUTE),
       })),
     });
     const issued = await lib.issueUploadToken(owner.id, "image");
-    check("3 stale active rows (deadline passed, no watchdog yet) → a new link is still issued", issued.ok, JSON.stringify(issued));
+    check(`${lib.MAX_ACTIVE_IMPORTS} stale active rows (deadline passed, no watchdog yet) → a new link is still issued`, issued.ok, JSON.stringify(issued));
     if (issued.ok) {
       const res = await put(issued.token, png);
       check("…and its PUT is admitted", res.status === 202, JSON.stringify(res));
@@ -875,24 +880,27 @@ async function main(): Promise<void> {
       `admitted per process: ${issued.map((r) => r.filter((x) => x.ok).length).join(" + ")}`);
     console.log(`        admitted per process: ${issued.map((r) => r.filter((x) => x.ok).length).join(" + ")}`);
 
-    // D2: 3 active imports — 8 valid links, two processes consume 4 each at once.
+    // D2: MAX_ACTIVE_IMPORTS active imports — MAX + 5 valid image links (20 MB each, so the
+    // count cap binds before the byte share), two processes consume half each at once.
     const racerB = await makeUser("u-race-b", "qa-race-b@aoacademy.co");
+    const linksB = lib.MAX_ACTIVE_IMPORTS + 5;
     const rawsB: string[] = [];
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < linksB; i += 1) {
       const raw = `heroai_up_${String(i).padStart(43, "b")}`;
       rawsB.push(raw);
-      await prisma.mcpUploadToken.create({ data: { tokenHash: sha256(raw), userId: racerB.id, kind: "video", importId: `race-b-${i}` } });
+      await prisma.mcpUploadToken.create({ data: { tokenHash: sha256(raw), userId: racerB.id, kind: "image", importId: `race-b-${i}` } });
     }
     const go2 = path.join(tmp, "go-2");
+    const half = Math.ceil(linksB / 2);
     const admitted = (await runChildren([
-      { op: "admit", tokens: rawsB.slice(0, 4), goFile: go2 },
-      { op: "admit", tokens: rawsB.slice(4), goFile: go2 },
+      { op: "admit", tokens: rawsB.slice(0, half), goFile: go2 },
+      { op: "admit", tokens: rawsB.slice(half), goFile: go2 },
     ], go2)).flat();
-    check("active: exactly 3 of 8 admitted", admitted.filter((r) => r.ok).length === 3, JSON.stringify(admitted));
+    check(`active: exactly ${lib.MAX_ACTIVE_IMPORTS} of ${linksB} admitted`, admitted.filter((r) => r.ok).length === lib.MAX_ACTIVE_IMPORTS, JSON.stringify(admitted));
     check("active: the other 5 refused too_many_active_imports", admitted.filter((r) => r.code === "too_many_active_imports").length === 5);
-    check("active: DB holds 3 processing imports, 3 consumed links",
-      (await prisma.mediaImport.count({ where: { userId: racerB.id, status: "processing" } })) === 3
-        && (await prisma.mcpUploadToken.count({ where: { userId: racerB.id, usedAt: { not: null } } })) === 3);
+    check(`active: DB holds ${lib.MAX_ACTIVE_IMPORTS} processing imports, ${lib.MAX_ACTIVE_IMPORTS} consumed links`,
+      (await prisma.mediaImport.count({ where: { userId: racerB.id, status: "processing" } })) === lib.MAX_ACTIVE_IMPORTS
+        && (await prisma.mcpUploadToken.count({ where: { userId: racerB.id, usedAt: { not: null } } })) === lib.MAX_ACTIVE_IMPORTS);
 
     // D3: MAX_IMPORTS_PER_HOUR per hour — cap-2 already this hour, two processes admit 3 each
     // at once (6 total), so exactly the remaining 2 slots are admitted.
@@ -950,7 +958,7 @@ async function main(): Promise<void> {
         if (res.status !== 202) throw new Error(`fixture upload refused: ${JSON.stringify(res)}`);
         const row = await prisma.mediaImport.findUniqueOrThrow({ where: { id: issued.importId } });
         // The import lane (Task 12) finishes each row; here the row just leaves "pending" so the
-        // next fixture upload is not refused by the 3-active cap.
+        // next fixture upload is not refused by the active-import cap.
         await prisma.mediaImport.update({ where: { id: row.id }, data: { status: "ready" } });
         return row;
       };

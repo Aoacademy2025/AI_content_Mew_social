@@ -462,6 +462,10 @@ model MediaImport {
   resultSrc  String? // server-generated /api/stocks/… or /api/renders/… once ready
   errorCode  String?
   durationMs Int?
+  // Byte budgets (src/lib/media-import/limits.ts): what this import counts for — the declared
+  // Content-Length while an upload streams in, then the bytes actually staged or fetched. Null =
+  // not known yet (a queued url, a chunked upload): counts as its purpose's byte cap while live.
+  bytes      Int?
   deadlineAt DateTime
   claimedAt  DateTime? // when the import lane claimed it (null = not yet in the lane)
   createdAt  DateTime  @default(now())

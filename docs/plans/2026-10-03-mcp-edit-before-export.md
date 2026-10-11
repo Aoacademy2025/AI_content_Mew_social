@@ -386,13 +386,13 @@ Most MCP verify scripts already run via `verify:subtitle-audio-sync` → `verify
 Sources: the per-task and whole-branch reviews in the execute ledger. None of these block the internal beta.
 
 **Before flipping `MCP_EDITOR_PROJECT_PUBLIC` (after AC11):**
-1. Per-user Media Import byte budget. The free-disk floor stops imports at about 5 GiB free, but one user can still drive the disk down to that floor (about 15 GB/h). This is PR-B security S2, the residual of B1.
-2. The upload PUT floor should count in-flight bytes, not only bytes already staged (T11 F1).
-3. Import lane fairness:
+1. **Done 2026-10-11** (`mew/mcp-import-capacity-guards`): per-user byte budget, 2 GiB per rolling hour and 3 GiB per rolling 24 h (ADR 0065 notes). Was: the free-disk floor stops imports at about 5 GiB free, but one user can still drive the disk down to that floor (about 15 GB/h). This is PR-B security S2, the residual of B1.
+2. **Done 2026-10-11**: the upload PUT floor counts in-flight bytes, not only bytes already staged (T11 F1).
+3. Import lane fairness (**partly done 2026-10-11**: the queue deadline is 30 min and the claim picks per user, so deep queues cannot starve a user; slow-drip URLs and the boot-time fail of claimed rows remain):
    - slow-drip URLs from two principals can starve the lane, and other users' imports then expire in the queue;
    - give the queue a longer deadline;
    - fail claimed `processing` rows at worker boot (T12 A1/A2, security A1).
-4. A few accounts can fill the global staging budget and lock everyone out of imports (security A3).
+4. **Done 2026-10-11**: a per-user staging share (1.5 GiB of the 15 GiB budget) means ten accounts at their full share are needed to fill it. Was: a few accounts can fill the global staging budget and lock everyone out of imports (security A3).
 5. Node's 300 s `requestTimeout` effectively requires about 1.7 MB/s to upload 500 MB. Raise it for `/api/mcp-uploads/`, or document the speed (T11 A8).
 6. HTTP rate limit on PUT token probes. Suspended accounts are not re-checked across MCP (T11).
 7. Remux presenter bytes before Remotion/Chromium/composite (security A4).

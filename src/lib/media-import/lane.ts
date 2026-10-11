@@ -44,13 +44,18 @@ import {
  * Claiming (G25 fair share): the oldest `pending` row of each user is a candidate; users that
  * already have an import in the lane are skipped (one lane slot per user, so one user can never
  * hold both slots); the remaining users are served least-recently-served first, ties broken by
- * the oldest row. The claim itself is one conditional UPDATE (`status = pending AND deadlineAt >
+ * the oldest row. Candidates are read per user (one grouped scan of the pending rows), not as
+ * the N oldest rows: with bursts of up to MAX_ACTIVE_IMPORTS queued per user, the oldest rows
+ * could all belong to a handful of users and starve everyone queued behind them. The claim
+ * itself is one conditional UPDATE (`status = pending AND deadlineAt >
  * now`), so two processes never claim the same row, and a row past its deadline is never
  * claimed (security review F3) — the watchdog owns it. The per-user slot rule is exact inside
  * one process and best-effort across processes (prod runs one mcp-video-worker).
  *
- * Deadlines: the queue wait is bounded by the `deadlineAt` set when the import was queued; the
- * claim resets it to now + IMPORT_DEADLINE_MS (T11 review A4) and the fetch gets what is left.
+ * Deadlines: the queue wait is bounded by the `deadlineAt` set when the import was queued
+ * (IMPORT_QUEUE_DEADLINE_MS); the claim resets it to now + IMPORT_DEADLINE_MS (T11 review A4)
+ * and the fetch gets what is left. A url import records the fetched byte count on its row
+ * (the byte budgets in imports.ts count it from then on instead of the purpose's cap).
  * The watchdog fails every pending/processing row past its deadline — including rows orphaned
  * by a worker restart — and deletes their staged file. A result that lands after the deadline
  * is never marked ready: its output is deleted and the row fails `fetch_timeout`.
@@ -78,6 +83,7 @@ import {
 export const MEDIA_IMPORT_LANE_CONCURRENCY = 2;
 /** At most one of the lane's slots per user — another user's import always gets a turn. */
 export const MAX_LANE_SLOTS_PER_USER = 1;
+/** Users with queued imports considered per claim (oldest queue head first). */
 const CLAIM_SCAN_LIMIT = 200;
 const DEFAULT_POLL_MS = 4_000;
 const DEFAULT_WATCHDOG_MS = 60_000;
@@ -158,16 +164,17 @@ function isPrivateDir(dir: string): boolean {
  * claimed row (now `processing`, `claimedAt` = now, `deadlineAt` = now + 10 min) or null.
  */
 export async function claimNextMediaImport(now: Date = new Date()): Promise<MediaImport | null> {
-  const pending = await prisma.mediaImport.findMany({
-    where: { status: "pending", deadlineAt: { gt: now } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  const live = { status: "pending", deadlineAt: { gt: now } };
+  const heads = await prisma.mediaImport.groupBy({
+    by: ["userId"],
+    where: live,
+    _min: { createdAt: true },
+    orderBy: { _min: { createdAt: "asc" } },
     take: CLAIM_SCAN_LIMIT,
-    select: { id: true, userId: true, createdAt: true },
   });
-  if (pending.length === 0) return null;
+  if (heads.length === 0) return null;
 
-  const oldestByUser = new Map<string, { id: string; createdAt: Date }>();
-  for (const row of pending) if (!oldestByUser.has(row.userId)) oldestByUser.set(row.userId, row);
+  const oldestByUser = new Map(heads.map((h) => [h.userId, h._min.createdAt?.getTime() ?? 0]));
   const userIds = [...oldestByUser.keys()];
 
   const inLane = await prisma.mediaImport.groupBy({
@@ -191,15 +198,20 @@ export async function claimNextMediaImport(now: Date = new Date()): Promise<Medi
     .filter((userId) => (slotsHeld.get(userId) ?? 0) < MAX_LANE_SLOTS_PER_USER)
     .sort((a, b) =>
       (lastServed.get(a) ?? 0) - (lastServed.get(b) ?? 0)
-      || oldestByUser.get(a)!.createdAt.getTime() - oldestByUser.get(b)!.createdAt.getTime());
+      || oldestByUser.get(a)! - oldestByUser.get(b)!);
 
   for (const userId of candidates) {
-    const { id } = oldestByUser.get(userId)!;
+    const head = await prisma.mediaImport.findFirst({
+      where: { userId, ...live },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    });
+    if (!head) continue;
     const claimed = await withTransientSqliteRetry(() => prisma.mediaImport.updateMany({
-      where: { id, status: "pending", deadlineAt: { gt: now } },
+      where: { id: head.id, status: "pending", deadlineAt: { gt: now } },
       data: { status: "processing", claimedAt: now, deadlineAt: new Date(now.getTime() + IMPORT_DEADLINE_MS) },
     }));
-    if (claimed.count === 1) return prisma.mediaImport.findUnique({ where: { id } });
+    if (claimed.count === 1) return prisma.mediaImport.findUnique({ where: { id: head.id } });
   }
   return null;
 }
@@ -268,6 +280,7 @@ function watchLiveness(importId: string, everyMs: number): { signal: AbortSignal
 async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promise<void> {
   let stage: "fetch" | "process" = "process";
   let fetchedPath: string | null = null;
+  let fetchedBytes: number | null = null;
   let code: MediaImportLaneErrorCode | null = null;
   let failure = "";
   try {
@@ -295,6 +308,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
             watch.stop();
           }
           fetchedPath = fetched.path;
+          fetchedBytes = fetched.bytes;
           if (purpose === "broll_video" && fetched.kind === "image") purpose = "broll_image";
           stage = "process";
           stageFetchedFile(row.id, fetched.path);
@@ -302,11 +316,14 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
         }
       }
 
-      // The watchdog may have failed the row while it was downloading: do no more work.
+      // The watchdog may have failed the row while it was downloading: do no more work. A url
+      // import records its real size here (the byte budgets count it from now on).
       if (!code) {
-        const live = await prisma.mediaImport.count({
-          where: { id: row.id, status: "processing", deadlineAt: { gt: new Date() } },
-        });
+        const where = { id: row.id, status: "processing", deadlineAt: { gt: new Date() } };
+        const bytes = fetchedBytes;
+        const live = bytes !== null
+          ? (await withTransientSqliteRetry(() => prisma.mediaImport.updateMany({ where, data: { bytes } }))).count
+          : await prisma.mediaImport.count({ where });
         if (live !== 1) code = "fetch_timeout";
       }
 

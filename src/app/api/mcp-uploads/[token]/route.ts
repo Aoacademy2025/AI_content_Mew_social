@@ -4,6 +4,7 @@ import { mcpEditorProjectEnabledFor } from "@/lib/mcp/chain-export";
 import { admissionRefusal } from "@/lib/mcp/media-import-tools";
 import {
   UPLOAD_KIND_MAX_BYTES,
+  UPLOAD_TOKEN_TTL_MS,
   admitUpload,
   failMediaImport,
   findUsableUploadToken,
@@ -25,12 +26,15 @@ import {
  * abort anything.
  *
  * Flow: token → still usable (unused, < 15 min) → user still PRO/BUSINESS + beta → declared
- * size within the kind's cap → free-disk floor (statfs) → admission (consume link + create
- * MediaImport, atomically, re-checking the G25 caps and the global staging budget) → stream
- * the body to the private staging file with the cap enforced while reading → bytes must be
- * the link's kind (sniffed, never Content-Type) → MediaImport "pending" for the import lane
- * (Task 12). Every refusal before admission keeps the link, including a database that is
- * momentarily unavailable (503 `server_busy`).
+ * size within the kind's cap → admission (consume link + create MediaImport, atomically,
+ * re-checking the G25 caps, the user's byte budgets and staging share, the global staging
+ * budget, and the free-disk floor (statfs) for this upload plus every one still in flight) →
+ * stream the body to the private staging file with the cap (the declared size, else the kind's
+ * cap) enforced while reading → bytes must be the link's kind (sniffed, never Content-Type) →
+ * MediaImport "pending" with the staged byte count for the import lane (Task 12). Every refusal
+ * before admission keeps the link, including a database that is momentarily unavailable (503
+ * `server_busy`). An upload that declares its Content-Length reserves only that many bytes, so
+ * a burst of small files is not counted at the kind's cap.
  *
  * Never logs the token or the URL (A13); nginx logs this location with a redacted format and
  * Sentry scrubs the path segment (src/lib/sentry-config.ts).
@@ -107,23 +111,27 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
   const kind = link.kind as UploadKind;
   const maxBytes = UPLOAD_KIND_MAX_BYTES[kind];
 
-  // Honest clients declare the size: refuse over-cap before reading a byte (link kept).
-  const declared = request.headers.get("content-length");
-  if (declared !== null && /^\d+$/.test(declared.trim()) && Number(declared.trim()) > maxBytes) return declaredTooLarge(kind);
+  // Honest clients declare the size: refuse over-cap before reading a byte (link kept). A valid
+  // declared size is what this upload reserves against the byte budgets, and the most it may send.
+  const declared = request.headers.get("content-length")?.trim() ?? null;
+  const declaredBytes = declared !== null && /^\d+$/.test(declared) ? Number(declared) : undefined;
+  if (declaredBytes !== undefined && declaredBytes > maxBytes) return declaredTooLarge(kind);
   if (!request.body) return failure(400, "empty_file", "ไม่มีไฟล์ใน body ของคำขอ", "ส่งไบต์ของไฟล์เป็น body ของ HTTP PUT (ไม่ใช่ multipart) ด้วยลิงก์เดิม");
 
-  // Free-disk floor before a byte lands (fails closed when statfs cannot answer).
-  let room = false;
-  try {
-    room = stagingHasRoomFor(maxBytes);
-  } catch (error) {
-    console.error("[mcp-uploads] staging space check failed:", error instanceof Error ? error.name : "unknown");
-  }
-  if (!room) return storageBusy();
+  // Free-disk floor, checked inside the admission transaction so it counts every upload still
+  // streaming in (fails closed when statfs cannot answer).
+  const diskRoomFor = (bytes: number): boolean => {
+    try {
+      return stagingHasRoomFor(bytes);
+    } catch (error) {
+      console.error("[mcp-uploads] staging space check failed:", error instanceof Error ? error.name : "unknown");
+      return false;
+    }
+  };
 
   let admitted: Awaited<ReturnType<typeof admitUpload>>;
   try {
-    admitted = await admitUpload(link, now);
+    admitted = await admitUpload(link, now, { declaredBytes: declaredBytes || undefined, diskRoomFor });
   } catch (error) {
     // The admission transaction rolled back: the link is still unused.
     console.error("[mcp-uploads] database unavailable at admission:", error instanceof Error ? error.name : "unknown");
@@ -133,18 +141,17 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
     if (admitted.code === "upload_link_invalid") return linkInvalid();
     if (admitted.code === "storage_busy") return storageBusy();
     const refusal = admissionRefusal(admitted.code, undefined, admitted.retryAfterSeconds);
-    return failure(
-      429,
-      refusal.code,
-      refusal.message,
-      "รอให้ไฟล์ที่กำลังนำเข้าเสร็จหรือรอสักพัก แล้ว PUT ด้วยลิงก์เดิมอีกครั้ง (ลิงก์ยังใช้ได้จนหมดอายุ)",
-      admitted.retryAfterSeconds,
-    );
+    // A wait that outlives this link (15 min from issue) needs a new link afterwards.
+    const linkSecondsLeft = Math.floor((link.issuedAt.getTime() + UPLOAD_TOKEN_TTL_MS - now.getTime()) / 1000);
+    const next = admitted.retryAfterSeconds !== undefined && admitted.retryAfterSeconds >= linkSecondsLeft
+      ? `${refusal.next} — ลิงก์นี้จะหมดอายุก่อน ให้เรียก create_upload_url ขอลิงก์ใหม่เมื่อครบเวลา`
+      : "รอให้ไฟล์ที่กำลังนำเข้าเสร็จหรือรอสักพัก (ดู retryAfterSeconds) แล้ว PUT ด้วยลิงก์เดิมอีกครั้ง (ลิงก์ยังใช้ได้จนหมดอายุ)";
+    return failure(429, refusal.code, refusal.message, next, admitted.retryAfterSeconds);
   }
   const { importId } = admitted;
 
   try {
-    const staged = await stageUploadBody(request.body, importId, maxBytes);
+    const staged = await stageUploadBody(request.body, importId, admitted.maxBytes);
     if (!staged.ok) {
       if (staged.reason === "too_large") {
         await failMediaImport(importId, "file_too_large");
@@ -164,7 +171,7 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
       return failure(415, "unsupported_media", `ชนิดไฟล์ไม่ตรงกับลิงก์นี้ — รับเฉพาะ ${ACCEPTS[kind]}`, `ขอลิงก์ใหม่ด้วย create_upload_url ให้ kind ตรงกับไฟล์ แล้วอัปโหลดอีกครั้ง`);
     }
 
-    if (!(await markUploadStaged(importId))) {
+    if (!(await markUploadStaged(importId, staged.bytes))) {
       removeStagedUpload(importId);
       return failure(409, "upload_incomplete", "อัปโหลดนานเกินกำหนด ไฟล์นี้ถูกยกเลิกแล้ว", NEW_LINK_NEXT);
     }
