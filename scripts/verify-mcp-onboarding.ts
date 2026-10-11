@@ -112,7 +112,7 @@ assert(
   "instructions: edit-before-export flow is hold → get_edit_state → small edits → export_video once",
 );
 assert(
-  ["set_caption_text", "merge_captions", "split_caption", "regroup_captions", "set_subtitle_style", "set_headline_hook", "discard_edits"]
+  ["set_caption_text", "merge_captions", "split_caption", "regroup_captions", "set_subtitle_style", "set_headline_hook", "set_background_music", "discard_edits"]
     .every((name) => SERVER_INSTRUCTIONS.includes(name)),
   "instructions: name all 7 edit tools (6 new + set_caption_text) and discard_edits",
 );

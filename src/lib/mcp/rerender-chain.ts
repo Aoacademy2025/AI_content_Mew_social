@@ -225,6 +225,7 @@ export async function continueMcpRerenderChain(input: {
       // G12: clear the draft on success only when nothing is left pending in it — window
       // edits the agent added while the re-render ran stay for the next export_video.
       ...(!draftHasBrollChanges(state.draft) ? { pendingEditRevision: state.revision } : {}),
+      ...(state.draft.backgroundMusic ? { backgroundMusic: state.draft.backgroundMusic } : {}),
       // The customer already ordered this export (export_video); the server finishes it.
       inflightCap: false,
       projectTransition: "while_in_flight",

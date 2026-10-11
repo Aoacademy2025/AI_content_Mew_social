@@ -1498,6 +1498,43 @@ async function renderRouteChecks(ws: Workspace, det: Detectors, fx: Fixtures): P
         && r.payload?.resolvedSubtitleConfig?.bgmFile === `${base}/api/music/rr-bgm.mp3`,
       JSON.stringify(r.payload?.resolvedSubtitleConfig ?? r.res.body).slice(0, 200));
 
+    // EP5 U7: a changed music re-mixes the base's voice track. The voice is required like the
+    // short-video voice (refused → 422, never a silent video); the new music is best-effort.
+    const ownBase = "/api/renders/rr-base.mp4";
+    for (const [label, voiceFile] of refusedSrcs) {
+      r = await send(overlay({ videoUrl: ownBase, audioMix: { voiceFile, bgmFile: localBgm, bgmVolume: 0.3, ducking: true } }));
+      check(`render (burn): audioMix.voiceFile = ${label} → 422, nothing queued, no access`,
+        r.res.status === 422 && r.res.body.field === "subtitleOverlayConfig.audioMix.voiceFile" && !r.payload
+          && clean(r.seen) && noServerPath(ws, r.res.body),
+        `${r.res.status} ${JSON.stringify(r.res.body).slice(0, 160)} ${JSON.stringify(r.seen)}`);
+    }
+    r = await send(overlay({ videoUrl: ownBase, audioMix: { voiceFile: localVoice, bgmFile: hostile[0][1], bgmVolume: 0.3, ducking: true } }));
+    const droppedMix = r.payload?.resolvedSubtitleConfig?.audioMix as Record<string, unknown> | undefined;
+    check("render (burn): audioMix own voice kept, a hostile new music dropped",
+      r.res.status === 200 && droppedMix?.voiceFile === `${base}${localVoice}` && droppedMix?.bgmFile === undefined && clean(r.seen),
+      JSON.stringify(droppedMix ?? r.res.body).slice(0, 200));
+    r = await send(overlay({
+      videoUrl: ownBase,
+      audioMix: {
+        voiceFile: localVoice, voiceVolume: "loud", bgmFile: localBgm, bgmVolume: 0.3, ducking: true,
+        duckSegments: [{ startMs: 0, endMs: 500 }, { startMs: "x", endMs: 9 }, { startMs: 900, endMs: 100 }, null, { startMs: 1000, endMs: 1500, extra: "x".repeat(64) }],
+      },
+    }));
+    const mix = r.payload?.resolvedSubtitleConfig?.audioMix as Record<string, unknown> | undefined;
+    check("render (burn): audioMix own voice + own music → passed on, segments reduced to numbers",
+      r.res.status === 200 && mix?.voiceFile === `${base}${localVoice}` && mix?.bgmFile === `${base}/api/music/rr-bgm.mp3`
+        && mix?.bgmVolume === 0.3 && mix?.voiceVolume === undefined && mix?.ducking === true
+        && JSON.stringify(mix?.duckSegments) === JSON.stringify([{ startMs: 0, endMs: 500 }, { startMs: 1000, endMs: 1500 }]) && clean(r.seen),
+      JSON.stringify(mix ?? r.res.body).slice(0, 300));
+    r = await send(overlay({ videoUrl: ownBase, audioMix: { bgmFile: localBgm } }));
+    check("render (burn): audioMix without a voice → no mix (the base audio plays as before)",
+      r.res.status === 200 && r.payload?.resolvedSubtitleConfig?.audioMix === undefined,
+      JSON.stringify(r.payload?.resolvedSubtitleConfig?.audioMix ?? r.res.body).slice(0, 200));
+    r = await send(overlay({ videoUrl: ownBase }));
+    check("render (burn): no audioMix → none passed on (old exports unchanged)",
+      r.res.status === 200 && r.payload?.resolvedSubtitleConfig?.audioMix === undefined,
+      JSON.stringify(r.payload?.resolvedSubtitleConfig ?? r.res.body).slice(0, 200));
+
     // Legacy avatar composition (OffthreadVideo of avatarVideoUrl).
     r = await send({ avatarVideoUrl: stub(`http://${PUBLIC_IP}/rr/avatar.mp4`, bytesResponse(hostileVideo(det.port, absCanary)[0][1], "video/mp4")) });
     check("render (avatar): a public HLS avatarVideoUrl → 422, no access",

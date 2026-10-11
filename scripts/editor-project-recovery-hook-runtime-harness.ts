@@ -5,6 +5,7 @@ import * as bootstrapModule from "../src/lib/editor-project-bootstrap";
 import * as journalModule from "../src/lib/editor-project-recovery-journal";
 import * as logoOverlayModule from "../src/lib/logo-overlay";
 import * as headlineHookModule from "../src/lib/headline-hook";
+import * as backgroundMusicModule from "../src/lib/background-music";
 import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
 import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
@@ -533,6 +534,7 @@ function createHarness(options: HarnessOptions = {}) {
     if (specifier === "@/lib/editor-project-autosave-lineage") return lineageModule;
     if (specifier === "@/lib/logo-overlay") return logoOverlayModule;
     if (specifier === "@/lib/headline-hook") return headlineHookModule;
+    if (specifier === "@/lib/background-music") return backgroundMusicModule;
     // Pure module (normalize/derive only, no I/O) — same class as logo-overlay above, so run
     // the real one and let the harness exercise production layer-visibility normalization.
     if (specifier === "@/lib/editor-layer-visibility") return editorLayerVisibilityModule;

@@ -49,6 +49,8 @@ import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { HeadlineHookControls } from "./HeadlineHookControls";
 import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
+import type { BackgroundMusicEdit } from "@/lib/background-music";
+import { BackgroundMusicControls } from "./BackgroundMusicControls";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
@@ -81,6 +83,8 @@ export function PostPhase({
   onLayerVisibilityChange,
   headlineHook,
   onHeadlineHookChange,
+  backgroundMusic,
+  onBackgroundMusicChange,
   logoEligible,
   logoEntitlement,
   logoEntitlementStalled,
@@ -116,6 +120,8 @@ export function PostPhase({
   ) => void;
   headlineHook?: HeadlineHookConfig;
   onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
+  backgroundMusic?: BackgroundMusicEdit;
+  onBackgroundMusicChange?: (next: BackgroundMusicEdit | undefined, mirror?: BackgroundMusicEdit) => void;
   logoEligible: boolean;
   logoEntitlement: LogoEntitlementState;
   /** HERO-17: the automatic retry ladder is spent, so the panel must offer a manual one. */
@@ -135,7 +141,7 @@ export function PostPhase({
   pendingEdit?: WebPendingEdit | null;
   onReloadPendingEdit?: () => Promise<WebPendingEdit | null>;
 }) {
-  const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
+  const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo" | "music">("hook");
   const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
   const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
@@ -154,6 +160,8 @@ export function PostPhase({
     onLayerVisibilityChange,
     headlineHook,
     onHeadlineHookChange,
+    backgroundMusic,
+    onBackgroundMusicChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -163,7 +171,7 @@ export function PostPhase({
     pendingEdit,
     onReloadPendingEdit,
   });
-  const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
+  const handleRightTabChange = (next: "hook" | "subtitle" | "logo" | "music") => {
     setRightTab(next);
     if (next === "logo" && !logoPanelOpenedRef.current) {
       logoPanelOpenedRef.current = true;
@@ -472,7 +480,7 @@ export function PostPhase({
           </div>
         </main>
 
-        {/* ── ขวา: พาดหัว / ซับ / โลโก้ ── */}
+        {/* ── ขวา: พาดหัว / ซับ / โลโก้ / เพลง ── */}
         <aside className="flex shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ width: "var(--editor-right-width)", borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <div
             data-editor-function-tabs="true"
@@ -489,6 +497,7 @@ export function PostPhase({
                 { value: "hook", label: "พาดหัว" },
                 { value: "subtitle", label: "ซับ" },
                 { value: "logo", label: "โลโก้" },
+                { value: "music", label: "เพลง" },
               ]}
               style={{ width: "100%", justifyContent: "center" }}
             />
@@ -836,6 +845,17 @@ export function PostPhase({
               />
             </div>
           )}
+
+          {rightTab === "music" && (
+            <div
+              id={`${rightTabsId}-music-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-music-tab`}
+              className="flex flex-col gap-5"
+            >
+              <BackgroundMusicControls editor={ed} />
+            </div>
+          )}
         </aside>
 
         </EditorPanelLayout>
@@ -914,6 +934,10 @@ export function PostPhase({
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         avatarFadeApplies={avatarFadeApplies(ed.preview?.avatarModel ?? null)}
         voiceUrl={ed.preview?.voiceUrl ?? null}
+        musicChange={ed.backgroundMusic.changed ? {
+          present: ed.backgroundMusic.value.track !== null,
+          label: `♪ เพลงใหม่ · ${Math.round(ed.backgroundMusic.value.volume * 100)}%${ed.backgroundMusic.value.ducking ? " · ลดเสียงตอนพูด" : ""}`,
+        } : null}
         layerVisibility={ed.layerVisibility}
         layerAvailability={ed.layerAvailability}
         onLayerVisibilityChange={ed.setLayerEnabled}

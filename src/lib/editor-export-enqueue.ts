@@ -12,6 +12,7 @@ import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { projectHasAdmittedPersistedPin } from "@/lib/project-look.server";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { buildBackgroundMusicAudioMix } from "@/lib/background-music.server";
 
 /**
  * T5 (ADR 0064): the editor's two follow-up job enqueues — the durable Export and the free
@@ -116,6 +117,12 @@ export async function enqueueEditorExport(input: {
    * guard never changes behaviour for that caller.
    */
   expectedPendingRevision?: number;
+  /**
+   * EP5 U7: the music chosen after creation (`BackgroundMusicEdit`; `undefined`/`null` = keep the
+   * base render's own audio, today's export). Validated here and turned into the burn's
+   * `audioMix` from server-held data; a client-sent `audioMix` is never trusted.
+   */
+  backgroundMusic?: unknown;
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId, brandVisualAccess } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
@@ -126,6 +133,8 @@ export async function enqueueEditorExport(input: {
   const rawLogoOverlay = (rawOverlay as Record<string, unknown>).logoOverlay;
   const subtitleOverlayConfig: Record<string, unknown> = { ...rawOverlay };
   delete subtitleOverlayConfig.logoOverlay;
+  // The burn's audio mix is server-built below (or absent); never the client's.
+  delete subtitleOverlayConfig.audioMix;
 
   const srcJob = await prisma.videoJob.findUnique({
     where: { id: sourceJobId },
@@ -154,6 +163,15 @@ export async function enqueueEditorExport(input: {
       });
   if (input.editorSnapshot !== undefined && !editSnapshot) {
     return refuse(400, "invalid_editor_snapshot", "ข้อมูลสถานะล่าสุดของหน้าตัดต่อไม่ถูกต้อง");
+  }
+
+  if (input.backgroundMusic !== undefined && input.backgroundMusic !== null) {
+    const mix = await buildBackgroundMusicAudioMix(user.id, input.backgroundMusic, parsed.preview);
+    if (!mix.ok) return refuse(400, mix.error, mix.message);
+    subtitleOverlayConfig.audioMix = mix.audioMix;
+    // The mix carries the music; a stray overlay BGM would be ignored by the burn anyway.
+    delete subtitleOverlayConfig.bgmFile;
+    delete subtitleOverlayConfig.bgmVolume;
   }
 
   const rawHeadlineHook = subtitleOverlayConfig.headlineHook;

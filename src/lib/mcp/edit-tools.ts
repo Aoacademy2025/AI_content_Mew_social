@@ -64,6 +64,16 @@ import {
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
 import { clampTailHoldMs, TAIL_HOLD_MS_MAX, TAIL_HOLD_MS_MIN } from "@/lib/tail-hold";
 import {
+  DEFAULT_BGM_VOLUME,
+  normalizeBackgroundMusicEdit,
+  type BackgroundMusicEdit,
+} from "@/lib/background-music";
+import {
+  findBackgroundMusicTrackById,
+  findBackgroundMusicTrackByPath,
+  listBackgroundMusicTracks,
+} from "@/lib/background-music.server";
+import {
   discardPendingEditDraft,
   draftDurationMs,
   draftHasBrollChanges,
@@ -93,6 +103,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "regroup_captions",
   "set_subtitle_style",
   "set_headline_hook",
+  "set_background_music",
   "set_tail_hold",
   "discard_edits",
   "replace_broll_window",
@@ -170,6 +181,13 @@ export const setHeadlineHookInputShape = {
   fontSize: z.number().int().describe("ขนาดฟอนต์พาดหัว 52-120 px").optional(),
   fontWeight: z.enum(["400", "600", "900"]).optional().describe("น้ำหนักฟอนต์พาดหัว"),
   subheadlineFontSize: z.number().int().describe("ขนาดฟอนต์ข้อความรอง 32-88 px").optional(),
+} satisfies z.ZodRawShape;
+
+export const setBackgroundMusicInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\") — ส่ง jobId อย่างเดียวเพื่อดูรายการเพลง (tracks) และเพลงปัจจุบัน"),
+  trackId: z.string().optional().describe("เพลงที่จะใช้: tracks[].trackId จากการเรียกด้วย jobId อย่างเดียว หรือ \"none\" = ไม่ใส่เพลง"),
+  volume: z.number().int().optional().describe("ความดังเพลง 0-100 (%) — ค่าเริ่มต้นของระบบคือ 12"),
+  ducking: z.boolean().optional().describe("ลดเสียงเพลงอัตโนมัติตอนมีเสียงพูด (เลือกเพลงใหม่ = เปิดให้เอง, ส่ง false เพื่อปิด)"),
 } satisfies z.ZodRawShape;
 
 export const setTailHoldInputShape = {
@@ -322,9 +340,40 @@ const ALLOWED = {
     fontSize: { min: 52, max: 120 },
     subheadlineFontSize: { min: 32, max: 88 },
   },
+  // set_background_music (EP5 U7): volume in %, trackId "none" removes the music.
+  backgroundMusic: {
+    volume: { min: 0, max: 100 },
+    noneTrackId: "none",
+  },
   // tail-hold.ts's own bounds (set_tail_hold, EP5 backlog #14).
   tailHoldMs: { min: TAIL_HOLD_MS_MIN, max: TAIL_HOLD_MS_MAX },
 };
+
+/** The music the export will use: the draft's edit, else the base render's own music. */
+function effectiveBackgroundMusic(draft: PendingEditDraft, preview: VideoJobPreviewData): BackgroundMusicEdit {
+  if (draft.backgroundMusic) return draft.backgroundMusic;
+  const bgmFile = preview.config?.bgmFile;
+  const bgmVolume = preview.config?.bgmVolume;
+  return {
+    track: typeof bgmFile === "string" && bgmFile ? bgmFile : null,
+    volume: typeof bgmVolume === "number" && Number.isFinite(bgmVolume) ? Math.min(1, Math.max(0, bgmVolume)) : DEFAULT_BGM_VOLUME,
+    ducking: false,
+  };
+}
+
+/** Agent view: `trackId` ("none" = no music; null = a track no longer in the library), volume in
+ *  %, and `changed` = the draft overrides the preview's own music. */
+async function backgroundMusicView(userId: string, draft: PendingEditDraft, preview: VideoJobPreviewData) {
+  const current = effectiveBackgroundMusic(draft, preview);
+  const option = current.track ? await findBackgroundMusicTrackByPath(userId, current.track) : null;
+  return {
+    trackId: current.track === null ? "none" : option?.trackId ?? null,
+    title: current.track === null ? null : option?.title ?? null,
+    volume: Math.round(current.volume * 100),
+    ducking: current.ducking,
+    changed: draft.backgroundMusic !== undefined,
+  };
+}
 
 // get_edit_state's `allowed.fonts` (and set_subtitle_style's schema) list only the canonical
 // FONTS_LIST values (e.g. "'Kanit', sans-serif"), but a seed built before this task can carry
@@ -604,12 +653,13 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
+    backgroundMusic: await backgroundMusicView(userId, state.draft, state.base.preview),
     tailHoldMs: state.draft.tailHoldMs,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered),
     brollTransition: draftProjectTransition(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -915,6 +965,73 @@ export async function setHeadlineHookTool(userId: string, args: ShapeArgs<typeof
     ok: true,
     jobId: held.root.id,
     headlineHook: updated.state.draft.headlineHook ?? null,
+    draftRevision: updated.state.revision,
+    next: NEXT_MORE_EDITS,
+  };
+}
+
+// ── set_background_music (EP5 U7, HERO-71) ────────────────────────────────────────────────────
+
+const NEXT_LIST_MUSIC = "เรียก set_background_music(jobId) อย่างเดียวเพื่อดูรายการ tracks แล้วใช้ trackId จากรายการนั้น";
+const MAX_TRACK_ID_CHARS = 200;
+
+export async function setBackgroundMusicTool(userId: string, args: ShapeArgs<typeof setBackgroundMusicInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  const held = await resolveHeldRoot(userId, args.jobId);
+  if (!held.ok) return held.failure;
+
+  if (args.trackId === undefined && args.volume === undefined && args.ducking === undefined) {
+    const loaded = await loadState(userId, held.root);
+    if (!loaded.ok) return loaded.failure;
+    const tracks = await listBackgroundMusicTracks(userId);
+    return {
+      ok: true,
+      jobId: held.root.id,
+      backgroundMusic: await backgroundMusicView(userId, loaded.state.draft, loaded.state.base.preview),
+      tracks: tracks.map(({ trackId, title, kind, mood }) => ({ trackId, title, kind, mood })),
+      draftRevision: loaded.state.revision,
+      next: "ถาม user ว่าอยากได้เพลงไหน แล้วเรียก set_background_music(jobId, trackId, volume) — trackId \"none\" = ไม่ใส่เพลง; เลือกเพลงใหม่ระบบจะลดเสียงเพลงตอนมีเสียงพูดให้เอง (ducking:false เพื่อปิด)",
+    };
+  }
+
+  if (args.volume !== undefined && (!Number.isInteger(args.volume) || args.volume < 0 || args.volume > 100)) {
+    return editToolFailure("invalid_input", "ความดังเพลงต้องเป็นจำนวนเต็ม 0-100", "ส่ง volume ระหว่าง 0-100 (ค่าเริ่มต้น 12)");
+  }
+  let pickedTrack: string | null | undefined;
+  if (args.trackId !== undefined) {
+    const trackId = args.trackId.trim();
+    if (trackId.toLowerCase() === "none") {
+      pickedTrack = null;
+    } else {
+      const option = trackId && trackId.length <= MAX_TRACK_ID_CHARS
+        ? await findBackgroundMusicTrackById(userId, trackId)
+        : null;
+      if (!option) return editToolFailure("invalid_input", "ไม่พบเพลงนี้ในคลังเพลงของคุณ", NEXT_LIST_MUSIC);
+      pickedTrack = option.track;
+    }
+  }
+
+  const updated = await updatePendingEditDraft(userId, held.root, (draft, state) => {
+    const current = effectiveBackgroundMusic(draft, state.base.preview);
+    const track = pickedTrack === undefined ? current.track : pickedTrack;
+    // Ducking is on by default only for a NEW music picked here; otherwise it keeps its value.
+    const newPick = typeof pickedTrack === "string" && pickedTrack !== current.track;
+    const next = normalizeBackgroundMusicEdit({
+      track,
+      volume: args.volume === undefined ? current.volume : args.volume / 100,
+      ducking: track === null ? false : args.ducking ?? (newPick ? true : current.ducking),
+    });
+    if (!next) {
+      return { ok: false, code: "invalid_input", message: "เพลงเดิมของคลิปนี้ปรับไม่ได้ — เลือกเพลงจากรายการด้วย trackId" };
+    }
+    draft.backgroundMusic = next;
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, NEXT_LIST_MUSIC);
+  return {
+    ok: true,
+    jobId: held.root.id,
+    backgroundMusic: await backgroundMusicView(userId, updated.state.draft, updated.state.base.preview),
     draftRevision: updated.state.revision,
     next: NEXT_MORE_EDITS,
   };
@@ -1317,6 +1434,7 @@ const ENQUEUE_NEXT: Record<string, string> = {
   too_many_jobs: "รอให้งานที่ค้างอยู่เสร็จก่อน (เช็คด้วย get_video_status) แล้วเรียก export_video อีกครั้ง",
   stale_export_source: NEXT_RELOAD,
   invalid_headline_hook: NEXT_EDITOR,
+  invalid_background_music: NEXT_LIST_MUSIC,
 };
 
 // T13: export with pending B-roll window edits = a free re-render of the current base that
@@ -1659,6 +1777,7 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
       exportSceneCount: state.draft.captions.length,
       rootJobId: root.id,
       pendingEditRevision: state.revision,
+      ...(state.draft.backgroundMusic ? { backgroundMusic: state.draft.backgroundMusic } : {}),
     });
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
@@ -1710,7 +1829,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "get_edit_state",
     {
       title: "Get edit state",
-      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป, windows[].transition/fit = ตอนจบ (dissolve/cut) และการจัดภาพ (cover/contain) ของช่วงนั้น, brollTransition = ค่าหลักของทั้งคลิป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
+      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, เพลงประกอบ, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป, windows[].transition/fit = ตอนจบ (dissolve/cut) และการจัดภาพ (cover/contain) ของช่วงนั้น, brollTransition = ค่าหลักของทั้งคลิป. ไม่แก้อะไร ไม่เสียโควต้า. windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จะใช้จริง (ถ้าคลิปสั้นกว่าช่วงของมัน ระบบจะดึงช่วงถัดไปมาเติมแทน) ใช้ค่านี้ตัดสินใจเรื่องเวลา ส่วน startMs/endMs ดิบคือช่วงที่ตั้งไว้ (เป้าหมาย ไม่ใช่ผลจริงเสมอไป).",
       inputSchema: getEditStateInputShape,
     },
     async (args, extra) =>
@@ -1793,6 +1912,19 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("set_headline_hook", extra, (p) => setHeadlineHookTool(p.userId, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "set_background_music",
+    {
+      title: "Set background music",
+      description: "เปลี่ยนเพลงประกอบ (BGM) และความดังของวิดีโอ exportMode \"hold\" หลังสร้างแล้ว โดยไม่ต้องสร้างใหม่. เรียกด้วย jobId อย่างเดียว = ดูรายการเพลง (tracks) + เพลงปัจจุบัน ไม่แก้อะไร. ส่ง trackId (จาก tracks หรือ \"none\" = ไม่ใส่เพลง) และ/หรือ volume 0-100 เพื่อแก้. เลือกเพลงใหม่ = ระบบลดเสียงเพลงตอนมีเสียงพูดให้อัตโนมัติ (ducking) ปิดได้ด้วย ducking:false. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: setBackgroundMusicInputShape,
+    },
+    async (args, extra) =>
+      runTool("set_background_music", extra, (p) => setBackgroundMusicTool(p.userId, args), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(
