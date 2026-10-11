@@ -234,7 +234,7 @@ const NEXT_HOLD_CREATE = "สร้างวิดีโอใหม่ด้ว
 const NEXT_RELOAD = "เรียก get_edit_state เพื่อโหลดดราฟต์ล่าสุด แล้วลองอีกครั้ง";
 const NEXT_EDITOR = "เปิดลิงก์ editorUrl (จาก get_video_status) เพื่อแก้หรือส่งออกในหน้าเว็บ";
 
-const UNKNOWN_JOB = editToolFailure("invalid_input", "ไม่พบงานนี้ในบัญชีของคุณ", "ใช้ jobId ที่ได้จาก create_video_job ที่ส่ง exportMode \"hold\"");
+export const UNKNOWN_JOB = editToolFailure("invalid_input", "ไม่พบงานนี้ในบัญชีของคุณ", "ใช้ jobId ที่ได้จาก create_video_job ที่ส่ง exportMode \"hold\"");
 const NOT_HELD = editToolFailure(
   "not_editable",
   "งานนี้แก้ผ่านเอเจนต์ไม่ได้ — แก้ได้เฉพาะวิดีโอที่สร้างด้วย exportMode \"hold\"",
@@ -261,7 +261,7 @@ const LOAD_FAILURE: Record<"project_not_found" | "source_not_exportable", EditTo
   source_not_exportable: editToolFailure("source_not_exportable", REFUSAL_COPY.source_not_exportable, NEXT_EDITOR),
 };
 
-function invalidJobId(jobId: unknown): boolean {
+export function invalidJobId(jobId: unknown): boolean {
   return typeof jobId !== "string" || !jobId.trim() || jobId.length > MAX_JOB_ID_CHARS;
 }
 
@@ -272,7 +272,7 @@ function isInFlight(status: string): boolean {
 type HeldRootResult = { ok: true; root: McpChainRow } | { ok: false; failure: EditToolFailure };
 
 /** Owner-scoped: the finished Held Preview root `jobId` is, or belongs to. */
-async function resolveHeldRoot(userId: string, jobId: string): Promise<HeldRootResult> {
+export async function resolveHeldRoot(userId: string, jobId: string): Promise<HeldRootResult> {
   const chain = await resolveMcpChain(userId, jobId);
   if (!chain) {
     const own = await prisma.videoJob.findFirst({ where: { id: jobId, userId }, select: { id: true } });
@@ -283,7 +283,7 @@ async function resolveHeldRoot(userId: string, jobId: string): Promise<HeldRootR
   return { ok: false, failure: isInFlight(chain.root.status) ? NOT_READY : ROOT_ENDED };
 }
 
-async function loadState(userId: string, root: McpChainRow) {
+export async function loadState(userId: string, root: McpChainRow) {
   const loaded = await loadPendingEditState(userId, root);
   return loaded.ok
     ? { ok: true as const, state: loaded.state }
@@ -440,7 +440,7 @@ type ImportView = {
 };
 
 /** T13: the caller's own Media Imports the draft's window edits point at (owner-scoped). */
-async function draftImportViews(userId: string, draft: PendingEditDraft): Promise<Map<string, ImportView>> {
+export async function draftImportViews(userId: string, draft: PendingEditDraft): Promise<Map<string, ImportView>> {
   const ids = [...new Set(draft.windowEdits.flatMap((edit) => (edit.importId ? [edit.importId] : [])))];
   if (ids.length === 0) return new Map();
   const rows = await prisma.mediaImport.findMany({
@@ -488,7 +488,7 @@ function windowReplacedInBase(
  * refusing the whole read. Intentionally a separate, lenient copy rather than a refactor of
  * `rerenderEditsFor`'s export-critical strict control flow (which must keep failing fast there).
  */
-function reportableWindowEdits(
+export function reportableWindowEdits(
   root: McpChainRow,
   windowEdits: PendingEditWindowEdit[],
   imports: Map<string, ImportView>,
@@ -571,7 +571,7 @@ function windowStyleView(
  * needs to report the timeline the renderer will actually produce. Never throws: any edit that
  * can't yet be resolved, or a merge that fails validation, falls back to the unedited base.
  */
-function mergedBgVideosForReport(
+export function mergedBgVideosForReport(
   root: McpChainRow,
   base: PendingEditState["base"],
   windowEdits: PendingEditWindowEdit[],
@@ -1807,7 +1807,9 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
 
 // ── registration ──────────────────────────────────────────────────────────────────────────
 
-type ToolReply = { content: Array<{ type: "text"; text: string }> };
+type ToolReply = {
+  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+};
 
 /** route.ts's `runTool` (plan guard + audit); `opts.next` makes its own refusals G14 envelopes. */
 export type EditToolRunner = (

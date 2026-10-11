@@ -23,6 +23,8 @@ import { getRequestPrincipal, runWithRequestPrincipalSlot, setRequestPrincipal }
 import { featureNotEnabledEnvelope } from "@/lib/mcp/tool-gating";
 import { registerEditTools } from "@/lib/mcp/edit-tools";
 import { registerMediaImportTools } from "@/lib/mcp/media-import-tools";
+import { registerPreviewFrameTool } from "@/lib/mcp/preview-frame";
+import { isMcpImageReply, mcpImageReplyContent } from "@/lib/mcp/tool-reply";
 import { cancelMcpVideoJob } from "@/lib/mcp/video-job-cancel";
 import { withClientDisconnectGuard } from "@/lib/mcp/transport-disconnect";
 import {
@@ -106,7 +108,8 @@ async function runTool(
     const result = await fn({ userId, user });
     const status = auditStatusOf(result);
     await recordToolCall({ userId, toolName, status, durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: status === "ok" ? null : auditErrorSummary(result) });
-    return text(result);
+    // W4: get_preview_frame answers with an image block + one text line.
+    return isMcpImageReply(result) ? mcpImageReplyContent(result) : text(result);
   } catch (err) {
     await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: auditExceptionSummary(err) });
     const message = "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง";
@@ -509,6 +512,8 @@ const handler = createMcpHandler(
     // T11 (ADR 0065): create_upload_url, same gate.
     registerEditTools(server, getRequestPrincipal(), runTool);
     registerMediaImportTools(server, getRequestPrincipal(), runTool);
+    // W4: get_preview_frame (observation only, ADR 0066), same gate.
+    registerPreviewFrameTool(server, getRequestPrincipal(), runTool);
   },
   { serverInfo: { name: "heroai", version: "0.2.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },

@@ -131,6 +131,9 @@ export interface SubtitleOverlayConfig {
    *  never extends past the original (pre-hold) duration. */
   tailHoldFrames?: number;
   headlineHook?: HeadlineHookConfig;
+  /** Preview stills only (get_preview_frame): hold the frame until the webfonts have loaded
+   *  (src/remotion/webfont-gate.ts). Exports never set it, so they render exactly as before. */
+  awaitWebfonts?: boolean;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
@@ -182,6 +185,9 @@ export interface ShortVideoConfig {
   kenBurns?: boolean;
   /** Show HERO watermark overlay (FREE-tier renders only) */
   watermark?: boolean;
+  /** Preview stills only (get_preview_frame): hold the frame until the webfonts have loaded
+   *  (src/remotion/webfont-gate.ts). Exports never set it, so they render exactly as before. */
+  awaitWebfonts?: boolean;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */
