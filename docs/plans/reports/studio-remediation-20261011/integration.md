@@ -72,4 +72,8 @@ Validation: 15 integrated regression suites, full application types and producti
 
 ## Release status
 
-Independent source reviews are reported PASS by the coordinator. Final integrated risk review is pending. Nothing pushed; no PR created, merged or deployed. Wait for the final integrated review before publication.
+Independent source reviews and final integrated correctness/security reviews are **PASS** with no blocking findings for `e18347411307e6b38abb93544c67e760190d97f7`. The two final review reports are stored beside this report. Only documentation changed after that reviewed source/test/package target; full suites were not repeated for report-only edits.
+
+The correctness review records a low-priority harness cleanup advisory: a browser launch rejection occurs before the new test's HTTP server enters its cleanup scope. Track this as test infrastructure follow-up; no source expansion was included for this nonblocking observation.
+
+Publication is authorized after those PASS gates: create a draft PR and leave Node 22/Linux CI as the remote gate. No merge, deployment, restart, or production write is authorized by this publication step.
