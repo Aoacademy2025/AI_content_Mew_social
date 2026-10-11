@@ -16,6 +16,9 @@
 //      a re-export burns it with no replay; discard_edits reseeds to it; other draft keys survive.
 //   A2. a headline switched off survives export as off; the web-export G12 clear (no root link)
 //      never writes the project draft (the web autosaves its own headline).
+//   A3. a project draft that cannot take the headline (not an object / over 2 MB / revision maxed)
+//      never loses it: the clear is refused, the pending draft keeps it, a sanitized warning names
+//      the reason; an unchanged headline still clears without a project-draft write.
 //   B. headline concurrency: an edit that lands while the export runs wins (nothing persisted
 //      under it); an open web session's stale autosave is refused (stale_revision), never clobbering;
 //      a web autosave racing the clear itself makes it retry, and a second race clears nothing.
@@ -427,6 +430,90 @@ async function main() {
     const wire = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
     check("wire: the worker persists the headline only for an MCP export (server-set root link)",
       /persistHeadlineHook: typeof input\.mcpRootJobId === "string"/.test(wire));
+  });
+
+  // ── A3: a headline the project draft cannot take is never dropped ──
+  await section("A3) project draft cannot take the headline (not an object / too large / revision maxed): the pending draft is kept, the export still succeeds", async () => {
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    async function withWarnings<T>(body: () => Promise<T>): Promise<T> {
+      console.warn = (...args: unknown[]) => { warnings.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" ")); };
+      try { return await body(); } finally { console.warn = realWarn; }
+    }
+
+    // (a) end to end: a project draft that is valid JSON but not an object.
+    {
+      const { root, projectId } = await heldRootVia(headlineUser);
+      await prisma.editorProject.update({ where: { id: projectId }, data: { draftJson: "[]" } });
+      await callTool(headlineUser.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวที่ห้ามหาย" });
+      const before = await projectRow(projectId);
+      const exported = await callTool(headlineUser.token, "export_video", { jobId: root.id });
+      warnings.length = 0;
+      const done = await withWarnings(() => runJob(String(exported.exportJobId), headlineUser.user.id));
+      check("(a) the export itself still succeeds", done.status === "done", String(done.errorMessage));
+      const after = await projectRow(projectId);
+      check("(a) the pending draft is NOT cleared (it is the only copy of the headline)",
+        after.pendingEditRevision === before.pendingEditRevision
+          && draftLib.parsePendingEditDraft(after.pendingEditJson)?.headlineHook?.headline === "พาดหัวที่ห้ามหาย",
+        JSON.stringify({ rev: [before.pendingEditRevision, after.pendingEditRevision] }));
+      check("(a) the project draft is left exactly as it was", after.draftJson === "[]" && after.draftRevision === before.draftRevision);
+      const state = await callTool(headlineUser.token, "get_edit_state", { jobId: root.id });
+      check("(a) get_edit_state still shows the headline", (state.headlineHook as Json | null)?.headline === "พาดหัวที่ห้ามหาย", JSON.stringify(state.headlineHook));
+      const logged = warnings.find((line) => line.includes("draft_not_object"));
+      check("(a) a sanitized warning names the project and the reason, never the headline or draft content",
+        !!logged && logged.includes(projectId) && !warnings.some((line) => line.includes("พาดหัวที่ห้ามหาย")), JSON.stringify(warnings));
+    }
+
+    // (b) the merged project draft would exceed the 2 MB cap.
+    {
+      const { root, projectId } = await heldRootVia(headlineUser);
+      const shell = JSON.stringify({ createdVia: "mcp", pad: "" });
+      const big = JSON.stringify({ createdVia: "mcp", pad: "x".repeat(editorProjects.MAX_EDITOR_PROJECT_DRAFT_BYTES - shell.length - 16) });
+      await prisma.editorProject.update({ where: { id: projectId }, data: { draftJson: big } });
+      await callTool(headlineUser.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวไฟล์ใหญ่" });
+      const before = await projectRow(projectId);
+      warnings.length = 0;
+      const cleared = await withWarnings(() => draftLib.clearPendingEditDraftIfRevision(headlineUser.user.id, projectId, before.pendingEditRevision, { persistHeadlineHook: true }));
+      const after = await projectRow(projectId);
+      check("(b) too large: not cleared, pending headline kept, project draft untouched",
+        cleared === false && after.pendingEditRevision === before.pendingEditRevision
+          && draftLib.parsePendingEditDraft(after.pendingEditJson)?.headlineHook?.headline === "พาดหัวไฟล์ใหญ่"
+          && after.draftJson === big && after.draftRevision === before.draftRevision,
+        JSON.stringify({ cleared, rev: [before.pendingEditRevision, after.pendingEditRevision] }));
+      check("(b) the warning names draft_too_large", warnings.some((line) => line.includes("draft_too_large") && line.includes(projectId)), JSON.stringify(warnings));
+    }
+
+    // (c) draftRevision cannot grow any further.
+    {
+      const { root, projectId } = await heldRootVia(headlineUser);
+      await prisma.editorProject.update({ where: { id: projectId }, data: { draftRevision: editorProjects.MAX_EDITOR_PROJECT_DRAFT_REVISION } });
+      await callTool(headlineUser.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวเลขเต็ม" });
+      const before = await projectRow(projectId);
+      warnings.length = 0;
+      const cleared = await withWarnings(() => draftLib.clearPendingEditDraftIfRevision(headlineUser.user.id, projectId, before.pendingEditRevision, { persistHeadlineHook: true }));
+      const after = await projectRow(projectId);
+      check("(c) revision maxed: not cleared, pending headline kept, project draft untouched",
+        cleared === false && after.pendingEditRevision === before.pendingEditRevision
+          && draftLib.parsePendingEditDraft(after.pendingEditJson)?.headlineHook?.headline === "พาดหัวเลขเต็ม"
+          && after.draftJson === before.draftJson && after.draftRevision === before.draftRevision,
+        JSON.stringify({ cleared, rev: [before.pendingEditRevision, after.pendingEditRevision] }));
+      check("(c) the warning names draft_revision_exhausted", warnings.some((line) => line.includes("draft_revision_exhausted") && line.includes(projectId)), JSON.stringify(warnings));
+    }
+
+    // (d) "already there" is not a failure: a stored draft whose headline equals the persisted one clears.
+    {
+      const { root, projectId } = await heldRootVia(headlineUser);
+      await callTool(headlineUser.token, "set_headline_hook", { jobId: root.id, enabled: true, headline: "พาดหัวเดิม" });
+      const first = await callTool(headlineUser.token, "export_video", { jobId: root.id });
+      await runJob(String(first.exportJobId), headlineUser.user.id);
+      await callTool(headlineUser.token, "set_headline_hook", { jobId: root.id, headline: "พาดหัวเดิม" });
+      const before = await projectRow(projectId);
+      check("(d) fixture: a stored draft holds the same headline", draftLib.parsePendingEditDraft(before.pendingEditJson)?.headlineHook?.headline === "พาดหัวเดิม");
+      const cleared = await draftLib.clearPendingEditDraftIfRevision(headlineUser.user.id, projectId, before.pendingEditRevision, { persistHeadlineHook: true });
+      const after = await projectRow(projectId);
+      check("(d) unchanged headline: cleared, no project-draft write",
+        cleared === true && after.pendingEditJson === null && after.draftRevision === before.draftRevision && after.draftJson === before.draftJson);
+    }
   });
 
   // ── B: concurrency ──

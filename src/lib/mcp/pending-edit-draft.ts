@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
 import {
   normalizeEditorExportDraft,
@@ -367,24 +368,33 @@ export async function updatePendingEditDraft(
   return { ok: false, code: "stale_revision" };
 }
 
+type ProjectDraftHeadlineWrite =
+  | { kind: "unchanged" }
+  | { kind: "write"; json: string }
+  | { kind: "blocked"; reason: "draft_not_object" | "draft_too_large" | "draft_revision_exhausted" };
+
 /**
  * #7 (ADR 0066 §4): the project draft (`EditorProject.draftJson`, which the web editor loads and
- * every later seed reads) with `headlineHook` set. `null` = nothing to write: the headline is
- * already there, the stored draft is not a JSON object (never overwritten), the result would be
- * too large, or `draftRevision` cannot grow.
+ * every later seed reads) with `headlineHook` set. `unchanged` = the headline is already there;
+ * `blocked` = the project draft cannot take it (not a JSON object — never overwritten; the result
+ * would exceed the draft cap; `draftRevision` cannot grow), so the caller must keep the pending
+ * draft, the headline's only copy.
  */
 function projectDraftWithHeadline(
   draftJson: string | null,
   draftRevision: number,
   headlineHook: HeadlineHookConfig,
-): string | null {
-  if (!Number.isInteger(draftRevision) || draftRevision < 0 || draftRevision >= MAX_EDITOR_PROJECT_DRAFT_REVISION) return null;
+): ProjectDraftHeadlineWrite {
   const draft = draftJson ? record(parseJson(draftJson)) : {};
-  if (!draft) return null;
+  if (!draft) return { kind: "blocked", reason: "draft_not_object" };
   const current = draft.headlineHook === undefined ? null : normalizeHeadlineHook(draft.headlineHook, 86_400_000);
-  if (current && JSON.stringify(current) === JSON.stringify(headlineHook)) return null;
-  const next = JSON.stringify({ ...draft, headlineHook });
-  return Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES ? null : next;
+  if (current && JSON.stringify(current) === JSON.stringify(headlineHook)) return { kind: "unchanged" };
+  if (!Number.isInteger(draftRevision) || draftRevision < 0 || draftRevision >= MAX_EDITOR_PROJECT_DRAFT_REVISION) {
+    return { kind: "blocked", reason: "draft_revision_exhausted" };
+  }
+  const json = JSON.stringify({ ...draft, headlineHook });
+  if (Buffer.byteLength(json, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return { kind: "blocked", reason: "draft_too_large" };
+  return { kind: "write", json };
 }
 
 const PROJECT_DRAFT_RACE = new Error("pending_edit_project_draft_race");
@@ -406,8 +416,10 @@ const PROJECT_DRAFT_RACE = new Error("pending_edit_project_draft_race");
  * burned) the applied headline is written into `EditorProject.draftJson` in the SAME transaction
  * as the clear, bumping `draftRevision` so an open web session reloads instead of overwriting it.
  * A web export never sets it: the web autosaves its own headline, and the stored draft may hold
- * an agent value the creator already changed there. If the project draft moved under us twice,
- * nothing is cleared — the draft keeps the headline and the next export re-applies it.
+ * an agent value the creator already changed there. The headline is never dropped: if the project
+ * draft cannot take it (not an object, too large, revision exhausted) or moved under us twice,
+ * nothing is cleared — the pending draft keeps the headline (get_edit_state and the web still
+ * show it) and a later export re-applies it.
  */
 export async function clearPendingEditDraftIfRevision(
   userId: string,
@@ -425,9 +437,15 @@ export async function clearPendingEditDraftIfRevision(
     });
     if (!project) return false;
     const stored = parsePendingEditDraft(project.pendingEditJson);
-    const projectDraftJson = options.persistHeadlineHook && stored?.headlineHook
+    const headlineWrite = options.persistHeadlineHook && stored?.headlineHook
       ? projectDraftWithHeadline(project.draftJson, project.draftRevision, stored.headlineHook)
       : null;
+    if (headlineWrite?.kind === "blocked") {
+      // Same rule as the oversized re-seed below: keep the draft rather than drop an edit.
+      console.warn(`[pending-edit] project ${projectId}: exported headline not persisted (${headlineWrite.reason}); pending draft kept`);
+      return false;
+    }
+    const projectDraftJson = headlineWrite?.kind === "write" ? headlineWrite.json : null;
     let next: string | null = null;
     if (stored && stored.windowEdits.length > 0) {
       const root = await prisma.videoJob.findFirst({
@@ -449,15 +467,17 @@ export async function clearPendingEditDraftIfRevision(
       next = JSON.stringify({ ...seed, baseJobId: stored.baseJobId, windowEdits: stored.windowEdits });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
+    // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
+    const clearWhere = { id: projectId, userId, pendingEditRevision: appliedRevision };
+    const clearData = { pendingEditJson: next, pendingEditRevision: appliedRevision + 1 };
+    if (projectDraftJson === null) {
+      const cleared = await withTransientSqliteRetry(() => prisma.editorProject.updateMany({ where: clearWhere, data: clearData }));
+      return cleared.count === 1;
+    }
     try {
-      return await prisma.$transaction(async (tx) => {
-        // CAS on the same revision: an edit that landed since the read wins and nothing is cleared.
-        const cleared = await tx.editorProject.updateMany({
-          where: { id: projectId, userId, pendingEditRevision: appliedRevision },
-          data: { pendingEditJson: next, pendingEditRevision: appliedRevision + 1 },
-        });
+      return await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+        const cleared = await tx.editorProject.updateMany({ where: clearWhere, data: clearData });
         if (cleared.count !== 1) return false;
-        if (projectDraftJson === null) return true;
         // CAS on the project draft: a web autosave that landed since the read rolls the clear back.
         const persisted = await tx.editorProject.updateMany({
           where: { id: projectId, userId, draftRevision: project.draftRevision },
@@ -465,7 +485,7 @@ export async function clearPendingEditDraftIfRevision(
         });
         if (persisted.count !== 1) throw PROJECT_DRAFT_RACE;
         return true;
-      });
+      }));
     } catch (error) {
       if (error !== PROJECT_DRAFT_RACE) throw error;
     }
