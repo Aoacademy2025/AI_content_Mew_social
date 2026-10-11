@@ -50,6 +50,7 @@ import {
   type HeadlineHookSuggestion,
 } from "@/lib/headline-hook";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
+import { clampTailHoldMs } from "@/lib/tail-hold";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
   buildLogoTelemetryProperties,
@@ -268,6 +269,15 @@ export function usePostPhaseEditor(
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => (
     pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {}
   ));
+  // EP5 backlog #14: hold the last frame N ms after the voice ends (0-3000, default 0 = today's
+  // behaviour exactly). Same "pendingDraft, else editSnapshot, else default" precedence as cfg/
+  // cardLen above — a legacy snapshot without this field reads as 0.
+  const [tailHoldMs, setTailHoldMsState] = useState<number>(() => (
+    pendingDraft?.tailHoldMs ?? (editSnapshot?.tailHoldMs as number | undefined) ?? 0
+  ));
+  function setTailHoldMs(next: number) {
+    setTailHoldMsState(clampTailHoldMs(next));
+  }
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
@@ -1393,6 +1403,7 @@ export function usePostPhaseEditor(
         logoOverlay,
         effectiveLayerVisibility,
         resolvedHeadlineHook,
+        tailHoldMs,
       );
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
@@ -1404,6 +1415,7 @@ export function usePostPhaseEditor(
           subtitleConfig: { ...cfg },
           cardLen,
           captionOverrides: cloneOverrides(overrides),
+          tailHoldMs,
         },
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
@@ -1571,6 +1583,7 @@ export function usePostPhaseEditor(
     cardLen,
     scope, setScope,
     overrides, setOverrides,
+    tailHoldMs, setTailHoldMs,
     videoRef,
     timeMs, setTimeMs,
     playing, setPlaying,

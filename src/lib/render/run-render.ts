@@ -4,6 +4,7 @@ import os from "os";
 import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { signalRemotionAacPriming } from "@/lib/render/aac-priming";
+import { normalizeFinalAudioLoudness } from "@/lib/render/loudness-normalize";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
 import {
@@ -520,6 +521,22 @@ export async function runRender(
     // The caller does that bookkeeping inside this hook; true => superseded.
     if (hooks.onRenderSucceeded && (await hooks.onRenderSucceeded())) {
       throw new SupersededError("render_complete");
+    }
+
+    // EP5 backlog #8: final export audio loudness, always on, no knob (ADR 0066 §3). Only the
+    // burn/export composition (isSubtitleOverlay — both web "Burn & Download" and MCP
+    // export_video share this one path) is the FINAL deliverable; preview/avatar renders are
+    // left alone. Fails open: a skip or an error here never fails the render.
+    if (isSubtitleOverlay) {
+      const loudness = await normalizeFinalAudioLoudness(outputLocation).catch((error) => {
+        console.warn(`[Render] loudness normalization threw for job=${jobId}:`, error);
+        return { applied: false, reason: "threw" } as const;
+      });
+      if (loudness.applied) {
+        console.log(`[Render] job=${jobId} loudness normalized ${loudness.beforeLufs.toFixed(1)} → ${loudness.targetLufs} LUFS`);
+      } else {
+        console.log(`[Render] job=${jobId} loudness normalization skipped: ${loudness.reason}`);
+      }
     }
 
     onProgress(100, "done");
