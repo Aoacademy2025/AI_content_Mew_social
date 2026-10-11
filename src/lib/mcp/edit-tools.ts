@@ -344,7 +344,29 @@ function importViewOf(edit: PendingEditWindowEdit | undefined, imports: Map<stri
   return imports.get(edit.importId) ?? { status: "failed", errorCode: "import_missing" };
 }
 
-function editWindows(draft: PendingEditDraft, preview: VideoJobPreviewData, imports: Map<string, ImportView>) {
+/**
+ * #15: a window whose replacement an earlier Export already rendered — the current base (the
+ * project's activeJobId) shows different media there than the Held Preview did. Such a
+ * replacement lives in the base itself, so it carries into every later export with no replay.
+ */
+function windowReplacedInBase(
+  root: McpChainRow,
+  rootPreview: VideoJobPreviewData | null,
+  base: PendingEditState["base"],
+  index: number,
+): boolean {
+  if (base.id === root.id || !rootPreview) return false;
+  const baseWindow = bgVideoAt(base.preview.config, index);
+  const rootWindow = bgVideoAt(rootPreview.config, index);
+  if (!baseWindow || !rootWindow) return false;
+  return baseWindow.src !== rootWindow.src || windowOwner(base.preview, index) !== windowOwner(rootPreview, index);
+}
+
+/** `replaced` = this window differs from the Held Preview (pending edit, or already rendered);
+ *  `pending` = the draft holds an edit for it that the next export_video will re-render. */
+function editWindows(root: McpChainRow, draft: PendingEditDraft, base: PendingEditState["base"], imports: Map<string, ImportView>) {
+  const preview = base.preview;
+  const rootPreview = base.id === root.id ? preview : rootPreviewOf(root);
   return previewWindowSpans(preview).map((span) => {
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
     const view = importViewOf(edit, imports);
@@ -353,7 +375,8 @@ function editWindows(draft: PendingEditDraft, preview: VideoJobPreviewData, impo
       startMs: span.startMs,
       endMs: span.endMs,
       owner: windowOwner(preview, span.index),
-      replaced: edit !== undefined,
+      replaced: edit !== undefined || windowReplacedInBase(root, rootPreview, base, span.index),
+      pending: edit !== undefined,
       importStatus: view?.status ?? null,
       importError: view?.status === "failed" ? view.errorCode ?? "import_failed" : null,
     };
@@ -387,7 +410,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     cardLen: state.draft.cardLen,
     subtitleStyle: subtitleStyleView(state.draft.subtitleConfig),
     headlineHook: state.draft.headlineHook ?? null,
-    windows: editWindows(state.draft, state.base.preview, await draftImportViews(userId, state.draft)),
+    windows: editWindows(held.root, state.draft, state.base, await draftImportViews(userId, state.draft)),
     draftRevision: state.revision,
     allowed: ALLOWED,
     next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / replace_broll_window (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม)",
@@ -1345,7 +1368,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     "get_edit_state",
     {
       title: "Get edit state",
-      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. ไม่แก้อะไร ไม่เสียโควต้า.",
+      description: "อ่านดราฟต์การแก้ของวิดีโอที่สร้างด้วย exportMode \"hold\": การ์ดซับ (index/ข้อความ/เวลา), สไตล์ซับ, พาดหัว, ช่วง B-roll, draftRevision และค่าที่อนุญาต. หลัง export_video ดราฟต์ยังเก็บพาดหัวและภาพ B-roll ที่เปลี่ยนไว้ — windows[].replaced = ช่วงที่เปลี่ยนภาพแล้ว (ไม่ต้องสั่งซ้ำ), windows[].pending = ช่วงที่จะเรนเดอร์ตอน export_video ครั้งถัดไป. ไม่แก้อะไร ไม่เสียโควต้า.",
       inputSchema: getEditStateInputShape,
     },
     async (args, extra) =>
