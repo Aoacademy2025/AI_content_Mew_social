@@ -418,6 +418,7 @@ jobs:
           npm run verify:media-import-lane
           npm run verify:mcp-broll-window-edits
           npm run verify:mcp-clip-import-job
+          npm run verify:export-audio-sync
 
       - name: Build
         run: npm run build

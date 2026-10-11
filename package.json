@@ -208,6 +208,7 @@
     "verify:ken-burns-aspect": "tsx scripts/verify-ken-burns-aspect.ts",
     "verify:upload-probe-whitelist": "node --experimental-test-module-mocks --import tsx scripts/verify-upload-probe-whitelist.ts",
     "verify:ffmpeg-input-hardening": "node --experimental-test-module-mocks --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-ffmpeg-input-hardening.ts",
+    "verify:export-audio-sync": "tsx scripts/verify-export-audio-sync.ts",
     "verify:media-import-broll-pipeline": "tsx scripts/verify-media-import-broll-pipeline.ts",
     "verify:media-import-presenter-checks": "tsx scripts/verify-media-import-presenter-checks.ts",
     "verify:media-import-upload": "node --conditions=react-server --import tsx scripts/verify-media-import-upload.ts",
