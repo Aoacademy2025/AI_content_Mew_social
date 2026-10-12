@@ -69,7 +69,7 @@ export function ApiKeyField({
           className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all hover:opacity-80 disabled:opacity-30"
           style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)", color: "var(--ui-text-secondary)" }}>
           {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-          ทดสอบ
+          บันทึกและทดสอบ
         </button>
       </div>
     </div>

@@ -10,6 +10,17 @@ import {
   MAX_IMPORT_BYTES_PER_HOUR,
   formatImportBytes,
 } from "@/lib/media-import/limits";
+import { isManagedStockFlagOn, managedStockKeys } from "@/lib/managed-stock.server";
+
+// Managed stock (#297, ADR 0025): true only when the flag is on AND a team key is
+// actually configured — mirrors /api/user/api-keys/status's `managedStock` field,
+// so this briefing never promises a managed library that isn't really there.
+function managedStockConfigured(): boolean {
+  if (!isManagedStockFlagOn()) return false;
+  const keys = managedStockKeys();
+  return !!(keys.pexelsKey || keys.pixabayKey);
+}
+const MANAGED_GEMINI_ON = process.env.MANAGED_GEMINI === "1";
 
 // Media Import limits quoted below come from limits.ts, so an env override is what the agent reads.
 const IMPORT_SHARE = formatImportBytes(MAX_ACTIVE_IMPORT_BYTES_PER_USER);
@@ -52,7 +63,7 @@ function howTo(p: ProviderHelp): string {
 /** Actionable missing-key error returned by create_video_job (key=value tells runTool it's an error). */
 export function missingKeyError(which: "gemini" | "broll" | "elevenlabs" | "heygen") {
   if (which === "gemini") {
-    if (process.env.MANAGED_GEMINI === "1") return { error: "missing_key", message: "Gemini จัดการโดยระบบ (managed) — ไม่ต้องตั้งค่า key เอง" };
+    if (MANAGED_GEMINI_ON) return { error: "missing_key", message: "Gemini จัดการโดยระบบ (managed) — ไม่ต้องตั้งค่า key เอง" };
     return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
   }
   if (which === "elevenlabs")
@@ -85,13 +96,25 @@ export function missingAvatarError() {
 
 /** Per-user setup checklist embedded in get_current_user so the assistant can onboard step-by-step. */
 export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixabay: boolean; elevenlabs: boolean }) {
+  // Managed stock (#297, ADR 0025): once this is true, Pexels/Pixabay are no longer
+  // a precondition for "can I create a video" — mirrors the computeKeyStatus fix
+  // on the web settings page so the chat assistant stops asking for a key the
+  // account will never need.
+  const managedStock = managedStockConfigured();
+  const stockConfigured = managedStock || keys.pexels || keys.pixabay;
   return {
     pasteKeysAt: SETTINGS_URL,
-    canCreateVideo: (process.env.MANAGED_GEMINI === "1" ? true : keys.gemini) && (keys.pexels || keys.pixabay),
+    canCreateVideo: (MANAGED_GEMINI_ON ? true : keys.gemini) && stockConfigured,
     avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
-      { key: "gemini", required: process.env.MANAGED_GEMINI !== "1", configured: process.env.MANAGED_GEMINI === "1" ? true : keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
-      { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: "คลิป b-roll ฟรี และส่วนสต็อกของ AutoMix — Hero AI Image ไม่ใช้คีย์นี้", getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
+      { key: "gemini", required: !MANAGED_GEMINI_ON, configured: MANAGED_GEMINI_ON ? true : keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
+      {
+        key: "broll", required: !managedStock, configured: stockConfigured, label: "Pexels หรือ Pixabay",
+        whatFor: managedStock
+          ? "ระบบมีคลังวิดีโอ B-roll กลางให้แล้ว — ใส่คีย์เองถ้าอยากได้โควต้าค้นหาแยกของตัวเอง (ไม่บังคับ)"
+          : "คลิป b-roll ฟรี และส่วนสต็อกของ AutoMix — Hero AI Image ไม่ใช้คีย์นี้",
+        getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}`,
+      },
       { key: "elevenlabs", required: false, configured: keys.elevenlabs, label: PROVIDERS.elevenlabs.label, whatFor: PROVIDERS.elevenlabs.whatFor, getKeyUrl: PROVIDERS.elevenlabs.getKeyUrl, note: ELEVENLABS_VOICEID_HELP },
     ],
   };
@@ -103,13 +126,23 @@ export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปล�
 ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ยกเลิกงาน, ดาวน์โหลด และส่งลิงก์ให้ผู้ใช้เปิดแก้ต่อในเว็บ (editorUrl).
 avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด); full รองรับคลิปไม่เกิน 5 นาทีและแพงกว่า. คลิปยาวกว่า 5 นาทีให้ใช้ bookend/bookend-both. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
-${process.env.MANAGED_GEMINI === "1"
-  ? `ระบบจัดการ Gemini ให้ — ใส่เฉพาะ Pexels/Pixabay (อย่างน้อย 1 สำหรับ B-roll); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.
-- ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.`
-  : `BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
+${(() => {
+  const managedStock = managedStockConfigured();
+  const noKeyNote = `- ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.`;
+  if (MANAGED_GEMINI_ON && managedStock) {
+    return `ระบบจัดการ Gemini และคลังวิดีโอ B-roll (Pexels/Pixabay) ให้ทั้งหมด — ไม่ต้องตั้ง key ใดก็สั่งสร้างวิดีโอได้เลย. ใส่เฉพาะ ElevenLabs ถ้าจะใช้เสียงโคลน หรือ HeyGen ถ้าจะใช้ avatar พิธีกร AI ที่ ${SETTINGS_URL} แท็บ API Keys.\n${noKeyNote}`;
+  }
+  if (MANAGED_GEMINI_ON) {
+    return `ระบบจัดการ Gemini ให้ — ใส่เฉพาะ Pexels/Pixabay (อย่างน้อย 1 สำหรับ B-roll); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.\n${noKeyNote}`;
+  }
+  if (managedStock) {
+    return `ระบบจัดการคลังวิดีโอ B-roll ให้แล้ว (Pexels/Pixabay) — ไม่ต้องตั้ง key สำหรับ B-roll. ใส่ Gemini key (จำเป็นเสมอ); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.\n${noKeyNote}`;
+  }
+  return `BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
-- ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.
-- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.`}
+${noKeyNote}
+- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.`;
+})()}
 
 ทำตัวเป็นผู้ช่วยตั้งค่า:
 1) ก่อนสั่งงานครั้งแรก เรียก get_current_user ดู field "setup" ว่าขาด key ตัวไหน.

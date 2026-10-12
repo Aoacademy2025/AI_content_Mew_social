@@ -1,4 +1,4 @@
-import { KEY_TIERS, computeKeyStatus, isTier1Complete, type KeyId } from "../src/lib/key-tiers";
+import { KEY_TIERS, computeKeyStatus, isTier1Complete, planKeySetupChecklist, type KeyId } from "../src/lib/key-tiers";
 
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -52,6 +52,32 @@ check("managed-no-stock: tier1Complete=false (no stock)", m4.tier1Complete === f
 const m5 = computeKeyStatus({ gemini: true });
 check("no-second-arg: gemini=true (own key, default)", m5.gemini === true);
 check("no-second-arg: tier1Complete=false (no stock, default)", m5.tier1Complete === false);
+
+// ── planKeySetupChecklist: the decision behind the API Keys tab's status card
+// (2026-10-12 settings UX fix, defect #1) — a managed+managedStock account must
+// read as READY with no false "ยังขาด..." blocker, even though the legacy
+// tier1Complete (gemini AND (pexels OR pixabay) on raw key presence) stays false.
+const noKeysStatus = { gemini: false, pexels: false, pixabay: false, tier1Complete: false };
+
+const bothManaged = planKeySetupChecklist({ status: noKeysStatus, managedGemini: true, managedStock: true });
+check("managed+managedStock, no keys at all: render=false (ready, no false blocker)", bothManaged.render === false);
+check("managed+managedStock: nothing required", bothManaged.totalRequired === 0);
+
+const geminiManagedOnly = planKeySetupChecklist({ status: noKeysStatus, managedGemini: true, managedStock: false });
+check("managed gemini only, no stock key: render=true (stock still required)", geminiManagedOnly.render === true);
+check("managed gemini only: stockRequired=true, geminiRequired=false", geminiManagedOnly.stockRequired === true && geminiManagedOnly.geminiRequired === false);
+
+const stockManagedOnly = planKeySetupChecklist({ status: noKeysStatus, managedGemini: false, managedStock: true });
+check("managed stock only, no gemini key: render=true (gemini still required)", stockManagedOnly.render === true);
+
+const neitherManaged = planKeySetupChecklist({ status: noKeysStatus, managedGemini: false, managedStock: false });
+check("flag-off (BYOK), no keys: render=true, both required", neitherManaged.render === true && neitherManaged.totalRequired === 2);
+
+const byokComplete = planKeySetupChecklist({
+  status: { gemini: true, pexels: true, pixabay: false, tier1Complete: true },
+  managedGemini: false, managedStock: false,
+});
+check("flag-off, own gemini+pexels present: render=false (ready via own keys)", byokComplete.render === false);
 
 console.log(failures === 0 ? "\n✅ ALL KEY-TIERS CHECKS PASSED" : `\n❌ ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
