@@ -267,15 +267,34 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
 //    resolved in a few ms while the actual caller's await took 650ms+. Lock-wait on SQLite
 //    happens below whatever either instrumentation point measures.
 // The only span that reliably includes it is the real call as application code makes it, so
-// this wraps the model delegates (prisma.user, ...) and the raw-query methods directly — but
-// returns the EXACT PrismaPromise reference each one already produced, only subscribing a
-// side-effect `.then()` for logging. Returning anything else (e.g. `Promise.resolve(x).then
-// (...)`, tried first) strips the marker `$transaction([a, b])` needs on each array element
-// ("All elements of the array need to be Prisma Client promises").
-// A transaction's `tx` parameter is a SEPARATE client Prisma builds per call — `tx.user` is
-// never this `prisma.user` — so a statement run inside `$transaction(async (tx) => ...)` is
-// never wrapped here; only a plain top-level call is, which is this timer's "non-transaction"
-// scope. See verify-prisma-slow-query.ts.
+// this wraps the model delegates (prisma.user, ...) and the raw-query methods directly.
+//
+// CORRECTION (same day): the first version of this wrapper called `.then()` on the real
+// PrismaPromise ITSELF, eagerly, right after creating it — "only subscribing a side-effect,
+// returning the exact reference". That was wrong: Prisma's PrismaPromise (see
+// node_modules/@prisma/client/runtime/library.js, the `Ro()` factory) is lazy — `then`,
+// `catch` and `finally` all call a shared `o()` that runs the query and caches the result in a
+// closure variable, but ONLY when called with no transaction-batch marker. `$transaction([a,
+// b])` never calls `.then()` on its elements — it calls `a.requestTransaction({kind:"batch",
+// ...})` instead, which is a SEPARATE, UNCACHED branch of that same `o()`: `s.kind !== "itx"`
+// skips the cache entirely and runs the query again. So eagerly calling `.then()` at wrap time
+// (a) ran every query standalone the instant it was constructed, outside any transaction it
+// was about to be placed in — then `requestTransaction` ran it a SECOND time, for real, inside
+// the batch, and (b) made an unawaited/never-touched call execute anyway, which Prisma's own
+// laziness promises it never will. Real call sites that build a batch array (and would have
+// silently double-run): src/lib/grant-coupon-entitlement.ts, src/lib/project-look.server.ts,
+// src/lib/hero-script-library.server.ts.
+//
+// The fix: never touch the real promise ourselves. Return a Proxy that forwards every property
+// — `requestTransaction`, `Symbol.toStringTag` ("PrismaPromise", which `$transaction([...])`'s
+// own validation checks before accepting an element), `spec` — completely untouched, so the
+// batch path is exactly Prisma's own code, unobserved (its timing is `[prisma-slow-tx]`'s job,
+// not this one's). Only `then`/`catch`/`finally` are intercepted, and only to do two things
+// at the moment the CALLER actually invokes one of them (never before): record `startedAt`,
+// and forward to the real method. The caller invoking any of those three is itself the one and
+// only signal that this is a plain top-level await, not a batch element — `requestTransaction`
+// is how a batch element runs instead, and this proxy never calls it. See
+// verify-prisma-slow-query.ts for the batch-exactly-once and never-touched-never-runs cases.
 const slowQueryMs = slowQueryThresholdMsFromEnv();
 
 function logSlowQueryIfNeeded(label: string, startedAt: number) {
@@ -288,6 +307,43 @@ function logSlowQueryIfNeeded(label: string, startedAt: number) {
   } catch {
     // Diagnostics must never throw past the call they are observing.
   }
+}
+
+const PRISMA_PROMISE_SETTLE_METHODS = new Set(["then", "catch", "finally"]);
+
+/** Wraps the PrismaPromise `target` already produced by a real call, for logging only.
+ *  Forwards EVERY property untouched (requestTransaction, Symbol.toStringTag, spec, ...) so
+ *  `$transaction([a, b])` sees exactly the object Prisma itself made — this proxy never calls
+ *  `.then()`/`.catch()`/`.finally()` on it itself, only the caller's own eventual call does,
+ *  which is the only moment real execution should start. */
+function wrapPrismaPromiseForLogging<T>(target: T, label: string): T {
+  let startedAt: number | undefined;
+  let subscribed = false;
+  return new Proxy(target as unknown as object, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof prop !== "string" || !PRISMA_PROMISE_SETTLE_METHODS.has(prop) || typeof value !== "function") {
+        return value;
+      }
+      const original = value as (...a: unknown[]) => unknown;
+      return function (this: unknown, ...args: unknown[]) {
+        if (startedAt === undefined) startedAt = Date.now();
+        if (!subscribed) {
+          subscribed = true;
+          // A second `.then()` subscribed purely for logging. Safe to add here — unlike
+          // adding it eagerly at wrap time — because the caller has already proven, by
+          // calling then/catch/finally themselves, that this is the plain (non-batch) path;
+          // a second subscription on that same path reuses Prisma's own cached result rather
+          // than re-running the query (see the correction note above `slowQueryMs`).
+          (obj as unknown as Promise<unknown>).then(
+            () => logSlowQueryIfNeeded(label, startedAt!),
+            () => logSlowQueryIfNeeded(label, startedAt!),
+          );
+        }
+        return original.apply(obj, args);
+      };
+    },
+  }) as T;
 }
 
 /** True for a model delegate (prisma.user, prisma.renderJob, ...): an object whose own
@@ -307,13 +363,8 @@ function wrapDelegate(delegate: Record<string, (...args: unknown[]) => unknown>,
       const value = Reflect.get(target, prop, receiver);
       if (typeof prop !== "string" || typeof value !== "function") return value;
       return function (this: unknown, ...args: unknown[]) {
-        const startedAt = Date.now();
         const prismaPromise = value.apply(target, args);
-        Promise.resolve(prismaPromise).then(
-          () => logSlowQueryIfNeeded(`${modelName}.${prop}`, startedAt),
-          () => logSlowQueryIfNeeded(`${modelName}.${prop}`, startedAt),
-        );
-        return prismaPromise;
+        return wrapPrismaPromiseForLogging(prismaPromise, `${modelName}.${prop}`);
       };
     },
   });
@@ -332,13 +383,8 @@ if (isNewClient && slowQueryMs > 0) {
     const original = client[method] as ((...a: unknown[]) => unknown) | undefined;
     if (typeof original !== "function") continue;
     client[method] = function (this: unknown, ...args: unknown[]) {
-      const startedAt = Date.now();
       const prismaPromise = original.apply(prisma, args);
-      Promise.resolve(prismaPromise).then(
-        () => logSlowQueryIfNeeded(`raw.${method}`, startedAt),
-        () => logSlowQueryIfNeeded(`raw.${method}`, startedAt),
-      );
-      return prismaPromise;
+      return wrapPrismaPromiseForLogging(prismaPromise, `raw.${method}`);
     };
   }
 }

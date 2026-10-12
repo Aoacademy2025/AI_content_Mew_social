@@ -82,9 +82,19 @@ async function main() {
       where: { id: "slow-query-user" },
       data: { name: "secret-row-value" },
     });
+    // The PrismaPromise this wrapper returns is genuinely lazy (see the fix note in
+    // src/lib/prisma.ts) — it does not start the query until then/catch/finally is called, so
+    // that call must happen NOW, while the lock is still held, not after releasing it. This is
+    // also the real-world shape (`await prisma.X(...)` chains the await immediately); it is not
+    // a test-only accommodation.
+    const slowWriteSettled = slowWrite.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
     await new Promise((resolve) => setTimeout(resolve, heldMs));
     lock.stdin.end("ROLLBACK;\n.quit\n");
-    await slowWrite;
+    const slowWriteOutcome = await slowWriteSettled;
+    if (!slowWriteOutcome.ok) throw slowWriteOutcome.error;
     const finishedAfter = new Date();
 
     assert.equal(warnings.length, 1, `expected exactly one [prisma-slow-query] line, got ${warnings.length}: ${JSON.stringify(warnings)}`);
@@ -118,12 +128,48 @@ async function main() {
     lock2.stdin.write("PRAGMA journal_mode=WAL;\nPRAGMA busy_timeout=5000;\nBEGIN IMMEDIATE;\n.print LOCKED\n");
     await waitForLock(lock2);
     const rawWrite = prisma.$executeRawUnsafe("UPDATE User SET name = 'raw-secret' WHERE id = 'slow-query-user'");
+    const rawWriteSettled = rawWrite.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
     await new Promise((resolve) => setTimeout(resolve, heldMs));
     lock2.stdin.end("ROLLBACK;\n.quit\n");
-    await rawWrite;
+    const rawWriteOutcome = await rawWriteSettled;
+    if (!rawWriteOutcome.ok) throw rawWriteOutcome.error;
     assert.equal(warnings.length, 1, `expected exactly one line for the raw write, got ${warnings.length}`);
     assert.equal(parseDiagnostic(warnings[0]).op, "raw.$executeRawUnsafe");
     assert(!warnings[0].includes("raw-secret") && !warnings[0].includes("UPDATE"));
+
+    // A batch $transaction([a, b]) must execute each element EXACTLY ONCE, inside the
+    // transaction — not once standalone (triggered by the wrapper eagerly subscribing its
+    // logger) and once more inside the batch. Reset the counter, then run a create + an
+    // increment as a batch array.
+    await prisma.user.update({ where: { id: "slow-query-user" }, data: { usageCount: 0 } });
+    const createElement = prisma.user.create({
+      data: { id: "slow-query-batch-created", name: "Batch Created User", email: "slow-query-batch-created@example.invalid" },
+    });
+    const incrementElement = prisma.user.update({
+      where: { id: "slow-query-user" },
+      data: { usageCount: { increment: 1 } },
+    });
+    await prisma.$transaction([createElement, incrementElement]);
+    const createdCount = await prisma.user.count({ where: { id: "slow-query-batch-created" } });
+    assert.equal(createdCount, 1, "the create() batch element must run exactly once (found a duplicate, or zero rows)");
+    const afterBatch = await prisma.user.findUniqueOrThrow({ where: { id: "slow-query-user" } });
+    assert.equal(afterBatch.usageCount, 1, "the increment() batch element must apply exactly once");
+    await prisma.user.delete({ where: { id: "slow-query-batch-created" } }).catch(() => {});
+
+    // Building a model call and never awaiting/then-ing/catching/finally-ing it, and never
+    // passing it to $transaction, must not execute it at all — a wrapper that eagerly
+    // subscribes `.then()` at wrap time forces execution the caller never asked for.
+    const neverTouched = prisma.user.update({
+      where: { id: "slow-query-user" },
+      data: { usageCount: { increment: 1000 } },
+    });
+    void neverTouched;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const stillUntouched = await prisma.user.findUniqueOrThrow({ where: { id: "slow-query-user" } });
+    assert.equal(stillUntouched.usageCount, 1, "a model call that is never awaited/then'd must not execute eagerly");
 
     await prisma.user.delete({ where: { id: "slow-query-user" } }).catch(() => {});
     await prisma.$disconnect();
