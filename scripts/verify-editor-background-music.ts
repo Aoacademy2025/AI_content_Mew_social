@@ -12,7 +12,9 @@ import {
   DEFAULT_BGM_VOLUME,
   DUCK_RATIO,
   loopedPositionSec,
+  nextPreviewListenerIntent,
   normalizeBackgroundMusicEdit,
+  previewListenerLevel,
   speechSegments,
 } from "../src/lib/background-music";
 import { normalizeWebPendingEdit } from "../src/app/(dashboard)/video-editor/_v2/pending-edit-view";
@@ -129,11 +131,34 @@ console.log("W6) Post phase editor -> Burn & Download");
 console.log("W7) preview hook");
 {
   const src = read(`${V2}/useBackgroundMusicPreview.ts`);
-  check("mutes the baked base audio only while a change is active", /\bv\.muted = true/.test(src) && /restoreMuted/.test(src));
+  check("mutes the baked base audio only while a change is active", /\bv\.muted = true/.test(src) && /v\.muted = intent\.muted/.test(src));
   check("music gain goes through a GainNode (iOS ignores element.volume)", /createGain\(\)/.test(src) && /createMediaElementSource/.test(src));
   check("gain follows the burn's envelope", /bgmGainAt\(/.test(src));
   check("music position loops like the burn", /loopedPositionSec\(/.test(src));
   check("audio elements are released on cleanup", /removeAttribute\("src"\)/.test(src));
+}
+
+console.log("W7b) preview never goes silent; the video's own controls still work (ticket cmv4r0v6u)");
+{
+  const on = { muted: false, volume: 0.8 };
+  check("the hook's own re-mute at the same level changes nothing",
+    JSON.stringify(nextPreviewListenerIntent(on, { muted: true, volume: 0.8 })) === JSON.stringify(on));
+  check("an unmute is the creator's", nextPreviewListenerIntent({ muted: true, volume: 0.8 }, { muted: false, volume: 0.8 }).muted === false);
+  check("a new level is the creator's (and means: I want to hear it)",
+    JSON.stringify(nextPreviewListenerIntent({ muted: true, volume: 0.8 }, { muted: true, volume: 0.3 })) === JSON.stringify({ muted: false, volume: 0.3 }));
+  check("a creator who had muted stays muted across the hook's re-mutes",
+    nextPreviewListenerIntent({ muted: true, volume: 0.8 }, { muted: true, volume: 0.8 }).muted === true);
+  check("level: muted → 0, else the clamped volume",
+    previewListenerLevel({ muted: true, volume: 0.8 }) === 0 && previewListenerLevel({ muted: false, volume: 0.5 }) === 0.5
+    && previewListenerLevel({ muted: false, volume: 7 }) === 1 && previewListenerLevel({ muted: false, volume: Number.NaN }) === 1);
+
+  const src = read(`${V2}/useBackgroundMusicPreview.ts`);
+  check("a voice track that fails to load falls back to the video's own audio",
+    /addEventListener\("error"/.test(src) && /voiceFailed/.test(src) && /if \(blocked \|\| voiceFailed\)/.test(src));
+  check("a voice track that never buffers while the video plays also falls back", /VOICE_STALL_MS/.test(src) && /readyState/.test(src));
+  check("the video's volumechange is read as the creator's intent", /addEventListener\("volumechange"/.test(src) && /nextPreviewListenerIntent\(/.test(src));
+  check("voice and music follow that level", /voice\.volume = level/.test(src) && /\* level/.test(src));
+  check("a mute reaches the voice on iOS too (element.volume is read-only there)", /voice\.muted = level === 0/.test(src));
 }
 
 console.log("W8) desktop + mobile panels");

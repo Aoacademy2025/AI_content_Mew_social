@@ -5,8 +5,11 @@ import { startPlayback } from "@/lib/media-playback";
 import {
   bgmGainAt,
   loopedPositionSec,
+  nextPreviewListenerIntent,
+  previewListenerLevel,
   previewSrcForTrack,
   type BackgroundMusicEdit,
+  type PreviewListenerIntent,
   type SpeechSegment,
 } from "@/lib/background-music";
 
@@ -21,13 +24,23 @@ import {
  *
  * The music goes through a Web Audio GainNode because iOS ignores `HTMLMediaElement.volume`
  * (`/api/music/*` is same-origin, so the graph is not silenced by CORS). The voice is a plain
- * element at full volume — it may live on another origin, which a media-element source would
- * silence. If the browser refuses to start audio (autoplay policy), the video is unmuted so the
- * creator still hears the voice, and the next tap / key press tries again.
+ * element — it may live on another origin, which a media-element source would silence. If the
+ * browser refuses to start audio (autoplay policy), the video is unmuted so the creator still
+ * hears the voice, and the next tap / key press tries again. If the voice track itself cannot be
+ * played (load error, or it never buffers while the video plays), the video's own audio comes
+ * back for good: an old-music preview beats a silent one (ticket cmv4r0v6u — an imported
+ * presenter served 403 and the whole preview went quiet).
+ *
+ * The video stays muted while a change is active, so its native mute / volume controls are read
+ * as the creator's intent (`nextPreviewListenerIntent`) and applied to the voice and the music.
  */
 
 const DRIFT_SEC = 0.25;
 const RETRY_AFTER_ERROR_MS = 1_000;
+/** How long the voice may sit unbuffered while the video plays before the preview gives up on it. */
+const VOICE_STALL_MS = 5_000;
+/** HTMLMediaElement.HAVE_FUTURE_DATA: enough buffered to keep playing. */
+const HAVE_FUTURE_DATA = 3;
 
 type AudioContextCtor = typeof AudioContext;
 
@@ -82,17 +95,33 @@ export function useBackgroundMusicPreview({
     }
 
     let video: HTMLVideoElement | null = null;
-    let restoreMuted = false;
+    let intent: PreviewListenerIntent = { muted: false, volume: 1 };
     let blocked = false;
+    let voiceFailed = false;
+    let stalledSince = 0;
     let errorAt = 0;
+    const onVoiceError = () => {
+      voiceFailed = true;
+    };
+    voice.addEventListener("error", onVoiceError);
+    const onVolumeChange = () => {
+      if (video) intent = nextPreviewListenerIntent(intent, { muted: video.muted, volume: video.volume });
+    };
     const elements = bgm ? [voice, bgm] : [voice];
     const primed = new WeakSet<HTMLAudioElement>();
+    const priming = new Set<HTMLAudioElement>();
 
     const attach = (next: HTMLVideoElement | null) => {
       if (video === next) return;
-      if (video) video.muted = restoreMuted;
+      if (video) {
+        video.removeEventListener("volumechange", onVolumeChange);
+        video.muted = intent.muted;
+      }
       video = next;
-      if (video) restoreMuted = video.muted;
+      if (video) {
+        intent = { muted: video.muted, volume: video.volume };
+        video.addEventListener("volumechange", onVolumeChange);
+      }
     };
     const pauseAll = () => {
       for (const el of elements) if (!el.paused) el.pause();
@@ -131,10 +160,12 @@ export function useBackgroundMusicPreview({
       for (const el of elements) {
         if (primed.has(el) || !el.paused) continue;
         primed.add(el);
+        priming.add(el);
         el.muted = true;
         void startPlayback(el).then((started) => {
           if (started) el.pause();
           el.muted = false;
+          priming.delete(el);
         });
       }
     };
@@ -148,28 +179,39 @@ export function useBackgroundMusicPreview({
       const v = video;
       const live = liveRef.current;
       if (!v || !live.music) return;
-      if (blocked) {
+      if (blocked || voiceFailed) {
         // Never leave the creator with a silent preview: fall back to the video's own audio.
-        v.muted = restoreMuted;
+        v.muted = intent.muted;
         pauseAll();
         return;
       }
       v.muted = true;
       const t = v.currentTime;
       const rate = v.playbackRate || 1;
+      const level = previewListenerLevel(intent);
+      // iOS ignores element.volume but honours muted, so a mute there still silences the voice.
+      if (!priming.has(voice) && voice.muted !== (level === 0)) voice.muted = level === 0;
+      if (voice.volume !== level) voice.volume = level;
       setGain(bgmGainAt(t * 1000, {
         volume: live.music.volume,
         ducking: live.music.ducking,
         segments: live.segments,
-      }));
+      }) * level);
       for (const el of elements) if (el.playbackRate !== rate) el.playbackRate = rate;
       const voiceDone = Number.isFinite(voice.duration) && t >= voice.duration - 0.05;
       if (!voiceDone) align(voice, t);
       if (bgm && Number.isFinite(bgm.duration)) align(bgm, loopedPositionSec(t, bgm.duration));
       const playingNow = !v.paused && !v.ended;
       if (!playingNow) {
+        stalledSince = 0;
         pauseAll();
         return;
+      }
+      if (!voiceDone && voice.readyState < HAVE_FUTURE_DATA) {
+        if (!stalledSince) stalledSince = Date.now();
+        else if (Date.now() - stalledSince > VOICE_STALL_MS) voiceFailed = true;
+      } else {
+        stalledSince = 0;
       }
       if (voice.paused && !voiceDone) start(voice);
       if (voiceDone && !voice.paused) voice.pause();
@@ -181,6 +223,7 @@ export function useBackgroundMusicPreview({
       cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", onGesture, true);
       document.removeEventListener("keydown", onGesture, true);
+      voice.removeEventListener("error", onVoiceError);
       attach(null);
       for (const el of elements) {
         el.pause();

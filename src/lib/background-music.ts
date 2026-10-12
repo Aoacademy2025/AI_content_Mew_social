@@ -108,6 +108,33 @@ export function previewSrcForTrack(track: string | null | undefined): string | n
   return parsed ? `/api/music/${encodeURIComponent(parsed.filename)}` : null;
 }
 
+/** What the creator asked of the preview <video>'s own mute / volume controls. */
+export type PreviewListenerIntent = { muted: boolean; volume: number };
+
+function unitLevel(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+}
+
+/**
+ * While a music change plays beside the preview, the <video> is held muted (its baked mix still
+ * has the old music), so its native mute / volume controls would do nothing. Read each
+ * `volumechange` as the creator's intent instead: the hook only ever MUTES, so an unmute or a new
+ * level is theirs; a re-mute at an unchanged level is the hook's own and changes nothing.
+ */
+export function nextPreviewListenerIntent(
+  prev: PreviewListenerIntent,
+  observed: PreviewListenerIntent,
+): PreviewListenerIntent {
+  const volume = unitLevel(observed.volume);
+  if (!observed.muted || volume !== prev.volume) return { muted: false, volume };
+  return { muted: prev.muted, volume };
+}
+
+/** The level (0–1) the voice and music play at for `intent`. */
+export function previewListenerLevel(intent: PreviewListenerIntent): number {
+  return intent.muted ? 0 : unitLevel(intent.volume);
+}
+
 type TimedSpan = { startMs?: unknown; endMs?: unknown };
 
 function validSpans(spans: readonly TimedSpan[] | null | undefined): SpeechSegment[] {

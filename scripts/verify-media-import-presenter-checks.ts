@@ -166,6 +166,8 @@ async function importChecks(tmp: string): Promise<void> {
 
   const portraitPath = path.join(tmp, "import-ok.mp4");
   await ff(["-f", "lavfi", "-i", "testsrc=size=360x640:rate=10:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", portraitPath]);
+  // The real staging/fetch temp files are 0600 (upload-staging.ts, fetch.ts); a rename keeps that.
+  fs.chmodSync(portraitPath, 0o600);
 
   const result = await processPresenterImport({ tempFilePath: portraitPath, ext: "mp4", plan: "FREE" });
   let movedAbsPath: string | null = null;
@@ -176,6 +178,10 @@ async function importChecks(tmp: string): Promise<void> {
       movedAbsPath = path.join(presenterUploadDir(), result.src.replace("/api/renders/", ""));
       check("the moved file exists at the returned location", fs.existsSync(movedAbsPath));
       check("the original temp path no longer exists (moved, not copied)", !fs.existsSync(portraitPath));
+      // 2026-10-12 (ticket cmv4r0v6u): nginx (www-data) serves /api/renders/ straight from disk, so a
+      // 0600 root-owned import answered 403 in the browser — the editor's voice track went silent.
+      const mode = fs.statSync(movedAbsPath).mode & 0o777;
+      check("the published clip is world-readable (0644) so nginx can serve it", mode === 0o644, mode.toString(8));
     }
   } finally {
     if (movedAbsPath && fs.existsSync(movedAbsPath)) fs.unlinkSync(movedAbsPath);
