@@ -247,6 +247,35 @@ function main() {
     "our own failed fetch must still be reported",
   );
 
+  // Ops batch 2026-10-12 (HERO-STUDIO-WEB-14, 1,563 events since 09-25): only `app:///scripts/`
+  // was treated as injected, so a stack with ONLY `app:///executors/200.js` frames (functions
+  // E/Y; `executors/` and the error's `M_ID` field appear nowhere in src/public) was kept.
+  assert.strictEqual(
+    injected("TypeError: Cannot read properties of undefined (reading 'M_ID')", [
+      "app:///executors/200.js:1:1",
+    ]),
+    null,
+    "WEB-14: a pure app:///executors/ stack must be dropped",
+  );
+  assert(
+    injected("TypeError: Cannot read properties of undefined (reading 'M_ID')", [
+      "app:///executors/200.js:1:1",
+      "app:///_next/static/chunks/main-abc.js:1:1",
+    ]),
+    "a mixed app:///executors/ + app:///_next/ stack must be kept",
+  );
+  assert(
+    injected("render failed", ["app:///_next/static/chunks/main-abc.js:1:1"]),
+    "a pure app:///_next/ stack must be kept",
+  );
+  // WEB-13 shape: a React warning with our own ./src/ frames — no app:/// frame at all.
+  assert(
+    injected("Maximum update depth exceeded", [
+      "./src/app/(dashboard)/video-editor/_v2/Step1Script.tsx:42:11",
+    ]),
+    "WEB-13: our own Step1Script.tsx frames must be kept",
+  );
+
 
   // HERO-59: the upload-token pass must never throw on objects it cannot write to. Sentry SDK
   // internals carry getter-only properties (e.g. `$`); one TypeError there dropped every

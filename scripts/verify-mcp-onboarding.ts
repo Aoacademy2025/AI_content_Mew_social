@@ -101,6 +101,12 @@ assert(SERVER_INSTRUCTIONS.includes("HeyGen") && SERVER_INSTRUCTIONS.includes("�
   "instructions: HeyGen avatar spend is never refundable");
 assert(SERVER_INSTRUCTIONS.includes("brandProfileId") && SERVER_INSTRUCTIONS.includes('มีผลกับ "สไตล์ซับ" เท่านั้น'),
   "instructions: a brand affects only subtitle style this round, not voice/B-roll/logo");
+assert(
+  SERVER_INSTRUCTIONS.includes('error "database_busy"')
+    && SERVER_INSTRUCTIONS.includes("retryAfterSeconds")
+    && SERVER_INSTRUCTIONS.includes("ไม่เกิน 2 ครั้ง"),
+  "instructions: database_busy → wait retryAfterSeconds and retry the same tool at most twice, then tell the user",
+);
 
 // --- T7: edit-before-export flow (hold → get_edit_state → small-tool edits → export_video
 // once; re-export always free; export_not_free / stale_revision explained) — agent-neutral,

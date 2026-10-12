@@ -1,6 +1,7 @@
 import { availableParallelism } from "node:os";
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
+  slowQueryThresholdMsFromEnv,
   slowTransactionThresholdMsFromEnv,
   sqliteBusyTimeoutSecondsFromEnv,
   sqliteCacheSizeKibFromEnv,
@@ -10,6 +11,15 @@ import {
   withSqliteConnectionParams,
 } from "@/lib/prisma-options";
 import { TransactionQueue, type TransactionSlot } from "@/lib/prisma-transaction-queue";
+
+// Cross-process correlation (ops batch 2026-10-12): every `[prisma-slow-tx]` /
+// `[prisma-slow-query]` line names the process that logged it, so a stall that spans
+// ai-content, mcp-video-worker, render-worker and the story-film worker can be lined up by
+// timestamp. PM2 sets `process.env.name` to the app name (ecosystem.config.js `name:`); a
+// script run directly with tsx (no PM2) falls back to `process.title`.
+function processLabel(): string {
+  return process.env.name ?? process.title;
+}
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -230,7 +240,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
           ? `kind=interactive ${queued} beforeCallbackMs=${(callbackStartedAt ?? endedAt) - engineStartedAt} callbackMs=${callbackMs} callbackEntered=${callbackStartedAt === undefined ? 0 : 1}`
           : `kind=batch ${queued}`;
         try {
-          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms source=${source} ${phases}`);
+          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms proc=${processLabel()} pid=${process.pid} source=${source} ${phases}`);
         } catch {
           // Diagnostics must never change transaction results or exceptions.
         }
@@ -238,6 +248,99 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
     }
   };
   (prisma as unknown as { $transaction: TransactionFn }).$transaction = wrappedTransaction;
+}
+
+// Ops batch 2026-10-12: a single Prisma call (a plain model method, or $queryRaw /
+// $executeRaw) that took at least this long — complements `[prisma-slow-tx]` above, which
+// only measures a whole $transaction(...) call. Log-only, labeled `model.method` (or
+// `raw.$method`), never the SQL text, bound parameters, or row values. Set
+// PRISMA_SLOW_QUERY_MS=0 to remove it entirely.
+//
+// Measured with Date.now() around the ACTUAL call — but NOT by replacing its returned value,
+// unlike an earlier version of this change. Two mechanisms were tried and rejected first:
+// 1. Prisma's own `log: [{emit:"event", level:"query"}]` + `$on("query", ...)`: the event's
+//    `duration` never includes SQLite busy-wait time. Reproduced with an external `sqlite3
+//    BEGIN IMMEDIATE` holding the file lock for 650ms: the awaited call took the full 650ms+,
+//    the event fired with `duration: 0`.
+// 2. A client extension (`$extends({ query: { $allOperations } })`), Prisma's own officially
+//    supported "wrap every call" hook: same result — `await query(args)` inside the hook
+//    resolved in a few ms while the actual caller's await took 650ms+. Lock-wait on SQLite
+//    happens below whatever either instrumentation point measures.
+// The only span that reliably includes it is the real call as application code makes it, so
+// this wraps the model delegates (prisma.user, ...) and the raw-query methods directly — but
+// returns the EXACT PrismaPromise reference each one already produced, only subscribing a
+// side-effect `.then()` for logging. Returning anything else (e.g. `Promise.resolve(x).then
+// (...)`, tried first) strips the marker `$transaction([a, b])` needs on each array element
+// ("All elements of the array need to be Prisma Client promises").
+// A transaction's `tx` parameter is a SEPARATE client Prisma builds per call — `tx.user` is
+// never this `prisma.user` — so a statement run inside `$transaction(async (tx) => ...)` is
+// never wrapped here; only a plain top-level call is, which is this timer's "non-transaction"
+// scope. See verify-prisma-slow-query.ts.
+const slowQueryMs = slowQueryThresholdMsFromEnv();
+
+function logSlowQueryIfNeeded(label: string, startedAt: number) {
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs < slowQueryMs) return;
+  try {
+    console.warn(
+      `[prisma-slow-query] ms=${elapsedMs} proc=${processLabel()} pid=${process.pid} startedAt=${new Date(startedAt).toISOString()} op=${label}`,
+    );
+  } catch {
+    // Diagnostics must never throw past the call they are observing.
+  }
+}
+
+/** True for a model delegate (prisma.user, prisma.renderJob, ...): an object whose own
+ *  methods are plain model-CRUD calls. Every model delegate has a `findFirst` function, which
+ *  tells one apart from any other client property without hard-coding the model list from
+ *  prisma/schema.prisma. */
+function isModelDelegate(value: unknown): value is Record<string, (...args: unknown[]) => unknown> {
+  return (
+    !!value && typeof value === "object" &&
+    typeof (value as Record<string, unknown>).findFirst === "function"
+  );
+}
+
+function wrapDelegate(delegate: Record<string, (...args: unknown[]) => unknown>, modelName: string) {
+  return new Proxy(delegate, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof prop !== "string" || typeof value !== "function") return value;
+      return function (this: unknown, ...args: unknown[]) {
+        const startedAt = Date.now();
+        const prismaPromise = value.apply(target, args);
+        Promise.resolve(prismaPromise).then(
+          () => logSlowQueryIfNeeded(`${modelName}.${prop}`, startedAt),
+          () => logSlowQueryIfNeeded(`${modelName}.${prop}`, startedAt),
+        );
+        return prismaPromise;
+      };
+    },
+  });
+}
+
+const RAW_QUERY_METHODS = ["$queryRaw", "$queryRawUnsafe", "$executeRaw", "$executeRawUnsafe"] as const;
+
+if (isNewClient && slowQueryMs > 0) {
+  const client = prisma as unknown as Record<string, unknown>;
+  for (const prop of Object.keys(client)) {
+    if (prop.startsWith("$") || prop.startsWith("_") || prop === "constructor") continue;
+    const value = client[prop];
+    if (isModelDelegate(value)) client[prop] = wrapDelegate(value, prop);
+  }
+  for (const method of RAW_QUERY_METHODS) {
+    const original = client[method] as ((...a: unknown[]) => unknown) | undefined;
+    if (typeof original !== "function") continue;
+    client[method] = function (this: unknown, ...args: unknown[]) {
+      const startedAt = Date.now();
+      const prismaPromise = original.apply(prisma, args);
+      Promise.resolve(prismaPromise).then(
+        () => logSlowQueryIfNeeded(`raw.${method}`, startedAt),
+        () => logSlowQueryIfNeeded(`raw.${method}`, startedAt),
+      );
+      return prismaPromise;
+    };
+  }
 }
 
 // Cached in production too: the connection_limit cap above assumes one client per process,

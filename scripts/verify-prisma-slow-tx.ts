@@ -32,6 +32,9 @@ type SlowTransactionDiagnostic = {
   callbackEntered?: 0 | 1;
   totalMs: number;
   source: string;
+  /** Ops batch 2026-10-12: which process logged this (PM2 app name / process.title) and its pid. */
+  proc: string;
+  pid: number;
 };
 
 type BundledPhaseFindings = {
@@ -41,31 +44,35 @@ type BundledPhaseFindings = {
 
 function parseDiagnostic(line: string): SlowTransactionDiagnostic {
   const interactive = line.match(
-    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=interactive queueMs=(\d+) ahead=(\d+) beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01])$/,
+    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=(\S+) pid=(\d+) source=(\S+) kind=interactive queueMs=(\d+) ahead=(\d+) beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01])$/,
   );
   if (interactive) {
     return {
       kind: "interactive",
       totalMs: Number(interactive[1]),
-      source: interactive[2],
-      queueMs: Number(interactive[3]),
-      ahead: Number(interactive[4]),
-      beforeCallbackMs: Number(interactive[5]),
-      callbackMs: Number(interactive[6]),
-      callbackEntered: Number(interactive[7]) as 0 | 1,
+      proc: interactive[2],
+      pid: Number(interactive[3]),
+      source: interactive[4],
+      queueMs: Number(interactive[5]),
+      ahead: Number(interactive[6]),
+      beforeCallbackMs: Number(interactive[7]),
+      callbackMs: Number(interactive[8]),
+      callbackEntered: Number(interactive[9]) as 0 | 1,
     };
   }
 
   const batch = line.match(
-    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=(\S+) kind=batch queueMs=(\d+) ahead=(\d+)$/,
+    /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=(\S+) pid=(\d+) source=(\S+) kind=batch queueMs=(\d+) ahead=(\d+)$/,
   );
   assert(batch, `unexpected diagnostic shape: ${line}`);
   return {
     kind: "batch",
     totalMs: Number(batch[1]),
-    source: batch[2],
-    queueMs: Number(batch[3]),
-    ahead: Number(batch[4]),
+    proc: batch[2],
+    pid: Number(batch[3]),
+    source: batch[4],
+    queueMs: Number(batch[5]),
+    ahead: Number(batch[6]),
   };
 }
 
@@ -267,6 +274,9 @@ async function main() {
       "an immediately entered callback must not be reported as pre-entry delay",
     );
     assert.match(slowCallback.source, /^(?:scripts\/verify-prisma-slow-tx\.ts:\d+:\d+|unknown)$/);
+    // Ops batch 2026-10-12: proc/pid name THIS process, for cross-process correlation.
+    assert.equal(slowCallback.proc, process.env.name ?? process.title);
+    assert.equal(slowCallback.pid, process.pid);
     const reported = slowCallback.totalMs;
     assert(
       reported >= heldMs,
