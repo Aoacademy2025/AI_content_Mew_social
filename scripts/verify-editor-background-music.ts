@@ -158,6 +158,7 @@ console.log("W7b) preview never goes silent; the video's own controls still work
   check("a voice track that never buffers while the video plays also falls back", /VOICE_STALL_MS/.test(src) && /readyState/.test(src));
   check("the video's volumechange is read as the creator's intent", /addEventListener\("volumechange"/.test(src) && /nextPreviewListenerIntent\(/.test(src));
   check("voice and music follow that level", /voice\.volume = level/.test(src) && /\* level/.test(src));
+  check("a mute reaches the voice on iOS too (element.volume is read-only there)", /voice\.muted = level === 0/.test(src));
 }
 
 console.log("W8) desktop + mobile panels");

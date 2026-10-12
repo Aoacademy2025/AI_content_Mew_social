@@ -109,6 +109,7 @@ export function useBackgroundMusicPreview({
     };
     const elements = bgm ? [voice, bgm] : [voice];
     const primed = new WeakSet<HTMLAudioElement>();
+    const priming = new Set<HTMLAudioElement>();
 
     const attach = (next: HTMLVideoElement | null) => {
       if (video === next) return;
@@ -159,10 +160,12 @@ export function useBackgroundMusicPreview({
       for (const el of elements) {
         if (primed.has(el) || !el.paused) continue;
         primed.add(el);
+        priming.add(el);
         el.muted = true;
         void startPlayback(el).then((started) => {
           if (started) el.pause();
           el.muted = false;
+          priming.delete(el);
         });
       }
     };
@@ -186,6 +189,8 @@ export function useBackgroundMusicPreview({
       const t = v.currentTime;
       const rate = v.playbackRate || 1;
       const level = previewListenerLevel(intent);
+      // iOS ignores element.volume but honours muted, so a mute there still silences the voice.
+      if (!priming.has(voice) && voice.muted !== (level === 0)) voice.muted = level === 0;
       if (voice.volume !== level) voice.volume = level;
       setGain(bgmGainAt(t * 1000, {
         volume: live.music.volume,
