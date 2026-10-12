@@ -250,11 +250,14 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
   (prisma as unknown as { $transaction: TransactionFn }).$transaction = wrappedTransaction;
 }
 
-// Ops batch 2026-10-12: a single Prisma call (a plain model method, or $queryRaw /
-// $executeRaw) that took at least this long — complements `[prisma-slow-tx]` above, which
-// only measures a whole $transaction(...) call. Log-only, labeled `model.method` (or
-// `raw.$method`), never the SQL text, bound parameters, or row values. Set
-// PRISMA_SLOW_QUERY_MS=0 to remove it entirely.
+// Ops batch 2026-10-12: a single Prisma call (a plain model method — prisma.user.findFirst(),
+// etc.) that took at least this long — complements `[prisma-slow-tx]` above, which only
+// measures a whole $transaction(...) call. Log-only, labeled `model.method`, never the SQL
+// text, bound parameters, or row values. Set PRISMA_SLOW_QUERY_MS=0 to remove it entirely.
+//
+// Deliberately does NOT cover $queryRaw/$queryRawUnsafe/$executeRaw/$executeRawUnsafe (see the
+// coordinator-review correction below `RAW_QUERY_METHODS` used to be defined here) — only the
+// model delegates (prisma.user, prisma.renderJob, ...) are wrapped.
 //
 // Measured with Date.now() around the ACTUAL call — but NOT by replacing its returned value,
 // unlike an earlier version of this change. Two mechanisms were tried and rejected first:
@@ -267,7 +270,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
 //    resolved in a few ms while the actual caller's await took 650ms+. Lock-wait on SQLite
 //    happens below whatever either instrumentation point measures.
 // The only span that reliably includes it is the real call as application code makes it, so
-// this wraps the model delegates (prisma.user, ...) and the raw-query methods directly.
+// this wraps the model delegates (prisma.user, ...) directly.
 //
 // CORRECTION (same day): the first version of this wrapper called `.then()` on the real
 // PrismaPromise ITSELF, eagerly, right after creating it — "only subscribing a side-effect,
@@ -370,22 +373,30 @@ function wrapDelegate(delegate: Record<string, (...args: unknown[]) => unknown>,
   });
 }
 
-const RAW_QUERY_METHODS = ["$queryRaw", "$queryRawUnsafe", "$executeRaw", "$executeRawUnsafe"] as const;
-
+// CORRECTION (coordinator review #2, same day): this used to also wrap $queryRaw/
+// $queryRawUnsafe/$executeRaw/$executeRawUnsafe the same way, as own-instance overrides on
+// `prisma` ("client[method] = function (...) { ... original.apply(prisma, args) ... }"). That
+// broke `tx.$executeRaw` inside an interactive transaction: Prisma's `tx` does not get its own
+// `$executeRaw`/`$queryRaw` the way it gets its own model delegates (`tx.user`, ...) — property
+// lookup for those four methods fell through to this own-instance override on the GLOBAL
+// `prisma`, which ran `original.apply(prisma, args)` on the base client, OUTSIDE the
+// transaction, on a different connection. That connection then waited on the write lock the
+// surrounding transaction itself held — a real production call, a minutes-refund write at
+// src/lib/render/reservation-settlement.ts:88, stalled ~20s (SQLITE_BUSY_TIMEOUT_SEC) per call
+// in CI before erroring "database is locked", breaking refund settlement. There is no safe way
+// to rebind `this` here without reaching into exactly the kind of Prisma-internal state this
+// whole feature was built to avoid depending on (see the correction above `slowQueryMs`), so
+// $queryRaw/$queryRawUnsafe/$executeRaw/$executeRawUnsafe are simply left unwrapped — only the
+// model delegates below are. A raw query, if one is ever slow, is covered indirectly: run it
+// inside a transaction (then `[prisma-slow-tx]` reports the whole call), or watch
+// `[prisma-slow-tx]`'s own `callbackMs` for the surrounding transaction. See
+// verify-prisma-slow-query.ts's `tx.$executeRaw` isolation test.
 if (isNewClient && slowQueryMs > 0) {
   const client = prisma as unknown as Record<string, unknown>;
   for (const prop of Object.keys(client)) {
     if (prop.startsWith("$") || prop.startsWith("_") || prop === "constructor") continue;
     const value = client[prop];
     if (isModelDelegate(value)) client[prop] = wrapDelegate(value, prop);
-  }
-  for (const method of RAW_QUERY_METHODS) {
-    const original = client[method] as ((...a: unknown[]) => unknown) | undefined;
-    if (typeof original !== "function") continue;
-    client[method] = function (this: unknown, ...args: unknown[]) {
-      const prismaPromise = original.apply(prisma, args);
-      return wrapPrismaPromiseForLogging(prismaPromise, `raw.${method}`);
-    };
   }
 }
 

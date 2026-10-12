@@ -122,7 +122,15 @@ async function main() {
     });
     assert.deepEqual(warnings, [], "a slow statement run through `tx` must not produce a [prisma-slow-query] line");
 
-    // $executeRawUnsafe is covered too, labeled raw.$executeRawUnsafe (never the SQL text).
+    // $queryRaw/$executeRaw are deliberately NOT wrapped (coordinator review #2, CI break on
+    // verify-mcp-chain-export.ts): `tx.$executeRaw` for an interactive transaction does not
+    // resolve through this client's own per-instance override the way `tx.user.<method>` does —
+    // it fell back to this global `prisma`'s own `$executeRaw`, which ran OUTSIDE the
+    // transaction, on a different connection, waiting on the write lock that transaction itself
+    // held (src/lib/render/reservation-settlement.ts:88, a minutes-refund write — this escaped
+    // and stalled ~20s per call in CI, SQLITE_BUSY_TIMEOUT_SEC). A raw call under lock
+    // contention must therefore produce NO [prisma-slow-query] line at all; see the
+    // `tx.$executeRaw` isolation test right after this one for the actual bug this caused.
     warnings.length = 0;
     const lock2 = spawn("sqlite3", [databasePath], { stdio: ["pipe", "pipe", "pipe"] });
     lock2.stdin.write("PRAGMA journal_mode=WAL;\nPRAGMA busy_timeout=5000;\nBEGIN IMMEDIATE;\n.print LOCKED\n");
@@ -136,9 +144,36 @@ async function main() {
     lock2.stdin.end("ROLLBACK;\n.quit\n");
     const rawWriteOutcome = await rawWriteSettled;
     if (!rawWriteOutcome.ok) throw rawWriteOutcome.error;
-    assert.equal(warnings.length, 1, `expected exactly one line for the raw write, got ${warnings.length}`);
-    assert.equal(parseDiagnostic(warnings[0]).op, "raw.$executeRawUnsafe");
-    assert(!warnings[0].includes("raw-secret") && !warnings[0].includes("UPDATE"));
+    assert.deepEqual(warnings, [], "$executeRawUnsafe is not wrapped, so it must never produce a [prisma-slow-query] line, even under lock contention");
+
+    // Regression (coordinator review #2): `tx.$executeRaw` inside an interactive transaction
+    // must stay scoped to that transaction's own connection. If it instead resolves to this
+    // client's own `$executeRaw` override, it tries to open a SEPARATE request against the
+    // global pool, which blocks on the write lock the surrounding transaction itself holds —
+    // the transaction can never finish, and the call eventually fails with "database is
+    // locked" once SQLITE_BUSY_TIMEOUT_SEC elapses. Prove both properties: the write rolls
+    // back with the rest of the transaction when it throws afterward, and the whole thing
+    // completes fast (nowhere near SQLITE_BUSY_TIMEOUT_SEC) — it never blocks on its own lock.
+    await prisma.user.update({ where: { id: "slow-query-user" }, data: { usageCount: 0 } });
+    const txRollbackError = new Error("deliberate rollback after tx.$executeRaw");
+    const txStartedAt = Date.now();
+    let caught: unknown;
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`UPDATE User SET usageCount = usageCount + 1 WHERE id = ${"slow-query-user"}`;
+        throw txRollbackError;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    const txElapsedMs = Date.now() - txStartedAt;
+    assert.equal(caught, txRollbackError, `tx.$executeRaw must run inside the transaction and let the deliberate throw propagate unchanged, got: ${caught}`);
+    assert(
+      txElapsedMs < 2_000,
+      `a transaction using tx.$executeRaw must complete in well under 2s (it must never wait on the lock it itself holds); took ${txElapsedMs}ms`,
+    );
+    const afterRollback = await prisma.user.findUniqueOrThrow({ where: { id: "slow-query-user" } });
+    assert.equal(afterRollback.usageCount, 0, "the UPDATE via tx.$executeRaw must have rolled back along with the rest of the transaction");
 
     // A batch $transaction([a, b]) must execute each element EXACTLY ONCE, inside the
     // transaction — not once standalone (triggered by the wrapper eagerly subscribing its
