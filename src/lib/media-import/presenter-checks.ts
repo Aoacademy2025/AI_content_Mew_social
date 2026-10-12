@@ -139,6 +139,10 @@ export async function processPresenterImport(params: {
   const filename = presenterOutputFilename(ext);
   const outPath = path.join(dir, filename);
   moveFile(tempFilePath, outPath);
+  // The staged temp file is 0600 and a rename keeps that, but nginx (www-data) serves
+  // /api/renders/ straight from disk: a 0600 root-owned clip answers 403 in the browser, which
+  // silenced the editor's voice track for imported presenters (ticket cmv4r0v6u, 2026-10-12).
+  fs.chmodSync(outPath, 0o644);
 
   return { ok: true, src: `/api/renders/${filename}`, durationMs: checked.durationMs, width: checked.width, height: checked.height };
 }
