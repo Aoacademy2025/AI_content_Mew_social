@@ -235,6 +235,13 @@ const NEXT_RELOAD = "เรียก get_edit_state เพื่อโหลด�
 const NEXT_EDITOR = "เปิดลิงก์ editorUrl (จาก get_video_status) เพื่อแก้หรือส่งออกในหน้าเว็บ";
 
 export const UNKNOWN_JOB = editToolFailure("invalid_input", "ไม่พบงานนี้ในบัญชีของคุณ", "ใช้ jobId ที่ได้จาก create_video_job ที่ส่ง exportMode \"hold\"");
+/** The id given is a Video id (list_my_videos/get_video), not a jobId — same error code as
+ *  UNKNOWN_JOB, a more useful `next`. */
+const UNKNOWN_JOB_IS_VIDEO_ID = editToolFailure(
+  "invalid_input",
+  "ไม่พบงานนี้ในบัญชีของคุณ",
+  "ค่านี้เป็น videoId ไม่ใช่ jobId — เรียก list_my_videos หรือ get_video เพื่อดู jobId ของคลิปนี้ แล้วใช้ jobId นั้นแทน (แก้ต่อได้เฉพาะตอน editable เป็น true)",
+);
 const NOT_HELD = editToolFailure(
   "not_editable",
   "งานนี้แก้ผ่านเอเจนต์ไม่ได้ — แก้ได้เฉพาะวิดีโอที่สร้างด้วย exportMode \"hold\"",
@@ -276,7 +283,9 @@ export async function resolveHeldRoot(userId: string, jobId: string): Promise<He
   const chain = await resolveMcpChain(userId, jobId);
   if (!chain) {
     const own = await prisma.videoJob.findFirst({ where: { id: jobId, userId }, select: { id: true } });
-    return { ok: false, failure: own ? NOT_HELD : UNKNOWN_JOB };
+    if (own) return { ok: false, failure: NOT_HELD };
+    const asVideo = await prisma.video.findFirst({ where: { id: jobId, userId }, select: { id: true } });
+    return { ok: false, failure: asVideo ? UNKNOWN_JOB_IS_VIDEO_ID : UNKNOWN_JOB };
   }
   if (chain.kind !== "held") return { ok: false, failure: NOT_HELD };
   if (chain.root.status === "done") return { ok: true, root: chain.root };

@@ -134,7 +134,7 @@ const handler = createMcpHandler(
       "list_my_videos",
       {
         title: "List my videos",
-        description: "รายการวิดีโอของผู้ใช้ (ใหม่สุดก่อน)",
+        description: "รายการวิดีโอของผู้ใช้ (ใหม่สุดก่อน) — แต่ละรายการมี jobId (หรือ null) และ editable: ถ้าอยากแก้คลิปเก่าต่อในแชทใหม่ ให้ใช้ jobId นี้กับ get_edit_state ได้เฉพาะตอน editable เป็น true เท่านั้น",
         inputSchema: {
           limit: z.number().int().min(1).max(100).default(20),
           status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "FAILED"]).optional(),
@@ -159,7 +159,7 @@ const handler = createMcpHandler(
 
     server.registerTool(
       "get_video",
-      { title: "Get video", description: "รายละเอียดวิดีโอ 1 รายการ", inputSchema: { videoId: z.string().min(1) } },
+      { title: "Get video", description: "รายละเอียดวิดีโอ 1 รายการ — มี jobId (หรือ null) และ editable: ถ้าอยากแก้คลิปนี้ต่อในแชทใหม่ ให้ใช้ jobId นี้กับ get_edit_state ได้เฉพาะตอน editable เป็น true เท่านั้น", inputSchema: { videoId: z.string().min(1) } },
       async (args, extra) => runTool("get_video", extra, async (p) => getVideoTool(p.userId, args.videoId), args),
     );
 

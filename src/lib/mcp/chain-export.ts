@@ -305,6 +305,87 @@ export async function resolveMcpChain(userId: string, jobId: string): Promise<Mc
   return { kind: "auto", preview, exportJob: keyed, conflict: false };
 }
 
+export type McpVideoEditLink = { jobId: string | null; editable: boolean };
+
+/**
+ * T-jobid (list_my_videos / get_video): owner-scoped, batched mapping from a Video row to the
+ * jobId `get_edit_state` (via `resolveHeldRoot`) accepts, and whether it currently passes that
+ * same check. `VideoJob.videoId` is set only at job finish (video-job.ts
+ * `finishJobWithTransition`), so exactly one query finds the job(s) that produced every video
+ * in the page; a second query (only run when needed, batched across every video) resolves any
+ * Held Preview roots those jobs point to. Never per-video — no N+1.
+ *  - a Held Preview export or B-roll re-render (`inputJson.mcpRootJobId`, same project as the
+ *    root — mirrors `heldRootOf`) → `jobId` = that root's id, `editable` = `root.status ===
+ *    "done"` (the exact condition `resolveHeldRoot` itself checks);
+ *  - an ADR-0063 auto-chain export (keyed `mcp-chain:<preview>`, mirrors `isExportOf`) →
+ *    `jobId` = the preview's id, `editable` = false (an auto chain never supports held
+ *    editing — `resolveHeldRoot` would answer `not_editable` for it);
+ *  - anything else (a plain web-editor export, or no owning job at all) → `jobId` = null,
+ *    `editable` = false.
+ */
+export async function resolveMcpVideoEditLinks(
+  userId: string,
+  videoIds: string[],
+): Promise<Map<string, McpVideoEditLink>> {
+  const links = new Map<string, McpVideoEditLink>();
+  const uniqueIds = Array.from(new Set(videoIds));
+  if (uniqueIds.length === 0) return links;
+
+  const jobs = await prisma.videoJob.findMany({
+    where: { userId, videoId: { in: uniqueIds } },
+    select: { id: true, videoId: true, type: true, status: true, inputJson: true, idempotencyKey: true, projectId: true },
+  });
+
+  const rootIdsNeeded = new Set<string>();
+  const pendingRootLookup: { videoId: string; rootJobId: string; projectId: string | null }[] = [];
+
+  for (const job of jobs) {
+    if (!job.videoId) continue;
+    const input = jobInput(job.inputJson);
+    const rootJobId = input?.mcpRootJobId;
+    if (typeof rootJobId === "string" && rootJobId && job.projectId) {
+      rootIdsNeeded.add(rootJobId);
+      pendingRootLookup.push({ videoId: job.videoId, rootJobId, projectId: job.projectId });
+      continue;
+    }
+    const sourceJobId = input?.sourceJobId;
+    if (
+      typeof sourceJobId === "string"
+      && job.idempotencyKey === mcpChainExportKey(sourceJobId)
+      && isExportOf(job, sourceJobId)
+    ) {
+      links.set(job.videoId, { jobId: sourceJobId, editable: false });
+      continue;
+    }
+    // A held root itself never carries its own videoId — its finish never writes one (see
+    // orchestrator.ts's previewMode branch) — but this stays correct even if that changes.
+    if (isMcpHeldRoot(job)) {
+      links.set(job.videoId, { jobId: job.id, editable: job.status === "done" });
+      continue;
+    }
+    links.set(job.videoId, { jobId: null, editable: false });
+  }
+
+  if (rootIdsNeeded.size > 0) {
+    const roots = await prisma.videoJob.findMany({
+      where: { userId, id: { in: Array.from(rootIdsNeeded) } },
+      select: { id: true, status: true, type: true, inputJson: true, projectId: true },
+    });
+    const rootById = new Map(roots.filter((root) => isMcpHeldRoot(root)).map((root) => [root.id, root]));
+    for (const { videoId, rootJobId, projectId } of pendingRootLookup) {
+      const root = rootById.get(rootJobId);
+      links.set(
+        videoId,
+        root && root.projectId === projectId
+          ? { jobId: root.id, editable: root.status === "done" }
+          : { jobId: null, editable: false },
+      );
+    }
+  }
+
+  return links;
+}
+
 // ── terminal markers ──────────────────────────────────────────────────────────────────────
 
 async function writeMarkerRow(input: {

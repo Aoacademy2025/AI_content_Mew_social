@@ -7,6 +7,7 @@ import {
   currentHeldPreviewRow,
   enqueueMcpChainExportSafely,
   resolveMcpChain,
+  resolveMcpVideoEditLinks,
   type McpAutoChain,
   type McpChainRow,
   type McpHeldChain,
@@ -102,15 +103,21 @@ export async function listMyVideosTool(userId: string, opts: { limit?: number; s
       content: { select: { headline: true, videoDuration: true } },
     },
   });
-  return videos.map((v) => ({
-    id: v.id,
-    title: deriveTitle(v),
-    status: v.status,
-    durationSec: durationSec(v),
-    hasDownload: !!v.videoUrl,
-    downloadUrl: v.status === "COMPLETED" ? publicVideoUrl(v.videoUrl) : null,
-    createdAt: v.createdAt.toISOString(),
-  }));
+  const editLinks = await resolveMcpVideoEditLinks(userId, videos.map((v) => v.id));
+  return videos.map((v) => {
+    const link = editLinks.get(v.id) ?? { jobId: null, editable: false };
+    return {
+      id: v.id,
+      title: deriveTitle(v),
+      status: v.status,
+      durationSec: durationSec(v),
+      hasDownload: !!v.videoUrl,
+      downloadUrl: v.status === "COMPLETED" ? publicVideoUrl(v.videoUrl) : null,
+      createdAt: v.createdAt.toISOString(),
+      jobId: link.jobId,
+      editable: link.editable,
+    };
+  });
 }
 
 async function ownedVideo(userId: string, videoId: string) {
@@ -397,6 +404,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
 export async function getVideoTool(userId: string, videoId: string) {
   const v = await ownedVideo(userId, videoId);
   if (!v) return { found: false as const };
+  const link = (await resolveMcpVideoEditLinks(userId, [v.id])).get(v.id) ?? { jobId: null, editable: false };
   return {
     found: true as const,
     videoId: v.id,
@@ -410,6 +418,8 @@ export async function getVideoTool(userId: string, videoId: string) {
     downloadUrl: v.status === "COMPLETED" ? publicVideoUrl(v.videoUrl) : null,
     createdAt: v.createdAt.toISOString(),
     updatedAt: v.updatedAt.toISOString(),
+    jobId: link.jobId,
+    editable: link.editable,
   };
 }
 
