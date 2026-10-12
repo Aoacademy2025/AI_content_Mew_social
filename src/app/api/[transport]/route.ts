@@ -5,6 +5,7 @@ import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, ty
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError, auditErrorSummary, auditExceptionSummary } from "@/lib/mcp/audit";
+import { isDatabaseBusyError } from "@/lib/prisma-errors";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
@@ -113,6 +114,20 @@ async function runTool(
     return isMcpImageReply(result) ? mcpImageReplyContent(result) : text(result);
   } catch (err) {
     await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: auditExceptionSummary(err) });
+    // Prod evidence 2026-10-12: SQLite writer-lock stalls (busy_timeout steps, this
+    // process's own transaction-queue timeout, a pooled-connection socket timeout)
+    // surfaced as a generic internal_error 30-60s after the agent's call. Reply
+    // in-band as database_busy instead, so the agent can wait and retry the SAME
+    // tool rather than assuming the whole account is broken. Honest: a tool may
+    // have partly written before this exception, so the copy never claims nothing
+    // happened — it points at get_edit_state to check.
+    if (isDatabaseBusyError(err)) {
+      const message = "ระบบมีงานเข้าพร้อมกันเยอะ คำสั่งนี้ยังไม่สำเร็จ";
+      const next = "รอประมาณ 10 วินาทีแล้วเรียกเครื่องมือเดิมอีกครั้ง — ถ้าเป็นคำสั่งแก้ไข ให้เรียก get_edit_state ก่อนเพื่อดูว่าการแก้ถูกบันทึกไปแล้วหรือยัง";
+      return text(opts
+        ? { error: "database_busy", code: "database_busy", message, retryAfterSeconds: 10, next }
+        : { error: "database_busy", message, retryAfterSeconds: 10 });
+    }
     const message = "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง";
     return text(opts
       ? { error: "internal_error", code: "internal_error", message, next: opts.next }

@@ -138,7 +138,10 @@ export default function DashboardPage() {
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/user/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
+    // Ops batch 2026-10-12 (HERO-STUDIO-WEB-1J): offline/flaky-network "Load failed" on iOS
+    // left this chain uncaught — an unhandled promise rejection. `stats` just stays null (its
+    // initial state); `finally` still clears loading either way.
+    fetch("/api/user/stats").then(r => r.json()).then(setStats).catch(() => {}).finally(() => setLoading(false));
     fetchMe().then(d => {
       if (d?.name) setUserName(d.name);
       if (d?.role === "ADMIN" || d?.role === "USER") setRole(d.role);

@@ -10,10 +10,21 @@
 export const FOREIGN_BROWSER_API =
   /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers)/i;
 
+// Ops batch 2026-10-12 (HERO-STUDIO-WEB-14, 1,563 events since 09-25): `app:///scripts/` was
+// the only triple-slash path treated as injected, so a stack with ONLY `app:///executors/
+// 200.js` frames (functions `E`/`Y`; `executors/` and the error's `M_ID` field appear nowhere
+// in src/public — it is not ours) was kept, not dropped. Any `app:///` path that is NOT ours
+// is injected: broadened to every `app:///` path except `app:///_next/` (our own build
+// output — matched by APP_FRAME below too, so a mixed stack still keeps an event).
 export const INJECTED_FRAME_ORIGIN =
-  /^(?:(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\/|webkit-masked-url:|app:\/\/[^/]|app:\/\/\/scripts\/)/i;
+  /^(?:(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\/|webkit-masked-url:|app:\/\/[^/]|app:\/\/\/(?!_next\/))/i;
 
-export const APP_FRAME = /(?:\/?_next\/|\.next\/|^node:|\.tsx?(?::\d+)*$)/i;
+// `/npm/` (e.g. `app:///npm/@clerk/clerk-js@6.31.0/dist/clerk.browser.js`) is the source-map
+// path convention for a dependency bundled INTO our own build — ours, not an injected script,
+// even though it is not under `_next/`. Needed so the broadened INJECTED_FRAME_ORIGIN above
+// does not start treating Clerk's own SDK frames as injected (a non-network-error Clerk
+// failure using those exact frames must stay reported — see verify-sentry-config.ts).
+export const APP_FRAME = /(?:\/?_next\/|\.next\/|^node:|\/npm\/|\.tsx?(?::\d+)*$)/i;
 
 const PROTECTED_AUTH_FAILURE =
   /failed_to_load_clerk_js|Failed to load Clerk JS|\/v1\/client\/sign_ins|\/v1\/client\/sign_ups/i;

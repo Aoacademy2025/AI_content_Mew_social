@@ -107,6 +107,24 @@ export function slowTransactionThresholdMsFromEnv(env: EnvLike = process.env): n
 }
 
 /**
+ * Log any single (non-transaction-wrapped) Prisma query that takes at least this long, in ms.
+ * Complements PRISMA_SLOW_TX_MS: that one measures a whole `$transaction(...)` call, this one
+ * measures one SQL statement sent straight to the engine — a plain `update`/`findMany`, or a
+ * `$queryRaw`/`$executeRaw`. 5s is well above any healthy query; a real stall (SQLite writer-lock
+ * busy_timeout) is in the range of seconds to tens of seconds.
+ *
+ * Env: `PRISMA_SLOW_QUERY_MS`; 0 disables it entirely (no lines, see src/lib/prisma.ts).
+ */
+export const PRISMA_SLOW_QUERY_MS = 5_000;
+const SLOW_QUERY_MAX_MS = 600_000;
+
+/** ms before a single query is logged as slow. 0 = off.
+ *  Env: `PRISMA_SLOW_QUERY_MS` (clamped 0-600000). */
+export function slowQueryThresholdMsFromEnv(env: EnvLike = process.env): number {
+  return clampedInt(env.PRISMA_SLOW_QUERY_MS, PRISMA_SLOW_QUERY_MS, 0, SLOW_QUERY_MAX_MS);
+}
+
+/**
  * HERO-70: whether this process queues its own Prisma transactions in one FIFO line
  * (src/lib/prisma-transaction-queue.ts) instead of letting them race for SQLite's writer lock
  * inside the query engine. On by default. Env: `PRISMA_TX_SERIALIZE=0` turns it off — the

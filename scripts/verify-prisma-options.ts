@@ -17,6 +17,7 @@ import { join } from "node:path";
 async function main() {
   const {
     SQLITE_CACHE_SIZE_KIB,
+    slowQueryThresholdMsFromEnv,
     slowTransactionThresholdMsFromEnv,
     sqliteBusyTimeoutSecondsFromEnv,
     sqliteCacheSizeKibFromEnv,
@@ -197,6 +198,38 @@ async function main() {
   );
   assert.equal(
     slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "999999999" }),
+    600_000,
+    "an absurd value clamps to the ceiling",
+  );
+
+  // ---- slow-query threshold (ops batch 2026-10-12, cross-process lock visibility) ----
+  assert.equal(
+    slowQueryThresholdMsFromEnv({}),
+    5_000,
+    "the default must be well above any healthy single query",
+  );
+  assert.equal(
+    slowQueryThresholdMsFromEnv({ PRISMA_SLOW_QUERY_MS: "0" }),
+    0,
+    "0 is the off switch — no lines, regardless of what else queues on the lock",
+  );
+  assert.equal(
+    slowQueryThresholdMsFromEnv({ PRISMA_SLOW_QUERY_MS: "1500" }),
+    1_500,
+    "an operator value is used as given",
+  );
+  assert.equal(
+    slowQueryThresholdMsFromEnv({ PRISMA_SLOW_QUERY_MS: "-1" }),
+    0,
+    "negative clamps to off, never to a threshold that logs every query",
+  );
+  assert.equal(
+    slowQueryThresholdMsFromEnv({ PRISMA_SLOW_QUERY_MS: "2s" }),
+    5_000,
+    "a typo falls back to the default rather than coercing",
+  );
+  assert.equal(
+    slowQueryThresholdMsFromEnv({ PRISMA_SLOW_QUERY_MS: "999999999" }),
     600_000,
     "an absurd value clamps to the ceiling",
   );

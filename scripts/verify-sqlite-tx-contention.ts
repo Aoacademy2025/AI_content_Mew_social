@@ -280,7 +280,9 @@ function assertNoStall(label: string, bursts: Burst[] | undefined): void {
   }
 }
 
-const SLOW_LINE = /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms source=\S+ kind=(interactive|batch) queueMs=(\d+) ahead=(\d+)(?: beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01]))?$/;
+// ops batch 2026-10-12: [prisma-slow-tx] now carries `proc=... pid=...` right after
+// `elapsed Xms` (cross-process correlation, src/lib/prisma.ts) — not captured, just skipped.
+const SLOW_LINE = /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=\S+ pid=\d+ source=\S+ kind=(interactive|batch) queueMs=(\d+) ahead=(\d+)(?: beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01]))?$/;
 
 async function main(): Promise<void> {
   if (process.argv[2] === CHILD_FLAG) return runChild();

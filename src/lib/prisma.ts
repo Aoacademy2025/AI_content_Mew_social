@@ -1,6 +1,7 @@
 import { availableParallelism } from "node:os";
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
+  slowQueryThresholdMsFromEnv,
   slowTransactionThresholdMsFromEnv,
   sqliteBusyTimeoutSecondsFromEnv,
   sqliteCacheSizeKibFromEnv,
@@ -10,6 +11,15 @@ import {
   withSqliteConnectionParams,
 } from "@/lib/prisma-options";
 import { TransactionQueue, type TransactionSlot } from "@/lib/prisma-transaction-queue";
+
+// Cross-process correlation (ops batch 2026-10-12): every `[prisma-slow-tx]` /
+// `[prisma-slow-query]` line names the process that logged it, so a stall that spans
+// ai-content, mcp-video-worker, render-worker and the story-film worker can be lined up by
+// timestamp. PM2 sets `process.env.name` to the app name (ecosystem.config.js `name:`); a
+// script run directly with tsx (no PM2) falls back to `process.title`.
+function processLabel(): string {
+  return process.env.name ?? process.title;
+}
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -230,7 +240,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
           ? `kind=interactive ${queued} beforeCallbackMs=${(callbackStartedAt ?? endedAt) - engineStartedAt} callbackMs=${callbackMs} callbackEntered=${callbackStartedAt === undefined ? 0 : 1}`
           : `kind=batch ${queued}`;
         try {
-          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms source=${source} ${phases}`);
+          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms proc=${processLabel()} pid=${process.pid} source=${source} ${phases}`);
         } catch {
           // Diagnostics must never change transaction results or exceptions.
         }
@@ -238,6 +248,156 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
     }
   };
   (prisma as unknown as { $transaction: TransactionFn }).$transaction = wrappedTransaction;
+}
+
+// Ops batch 2026-10-12: a single Prisma call (a plain model method — prisma.user.findFirst(),
+// etc.) that took at least this long — complements `[prisma-slow-tx]` above, which only
+// measures a whole $transaction(...) call. Log-only, labeled `model.method`, never the SQL
+// text, bound parameters, or row values. Set PRISMA_SLOW_QUERY_MS=0 to remove it entirely.
+//
+// Deliberately does NOT cover $queryRaw/$queryRawUnsafe/$executeRaw/$executeRawUnsafe (see the
+// coordinator-review correction below `RAW_QUERY_METHODS` used to be defined here) — only the
+// model delegates (prisma.user, prisma.renderJob, ...) are wrapped.
+//
+// Measured with Date.now() around the ACTUAL call — but NOT by replacing its returned value,
+// unlike an earlier version of this change. Two mechanisms were tried and rejected first:
+// 1. Prisma's own `log: [{emit:"event", level:"query"}]` + `$on("query", ...)`: the event's
+//    `duration` never includes SQLite busy-wait time. Reproduced with an external `sqlite3
+//    BEGIN IMMEDIATE` holding the file lock for 650ms: the awaited call took the full 650ms+,
+//    the event fired with `duration: 0`.
+// 2. A client extension (`$extends({ query: { $allOperations } })`), Prisma's own officially
+//    supported "wrap every call" hook: same result — `await query(args)` inside the hook
+//    resolved in a few ms while the actual caller's await took 650ms+. Lock-wait on SQLite
+//    happens below whatever either instrumentation point measures.
+// The only span that reliably includes it is the real call as application code makes it, so
+// this wraps the model delegates (prisma.user, ...) directly.
+//
+// CORRECTION (same day): the first version of this wrapper called `.then()` on the real
+// PrismaPromise ITSELF, eagerly, right after creating it — "only subscribing a side-effect,
+// returning the exact reference". That was wrong: Prisma's PrismaPromise (see
+// node_modules/@prisma/client/runtime/library.js, the `Ro()` factory) is lazy — `then`,
+// `catch` and `finally` all call a shared `o()` that runs the query and caches the result in a
+// closure variable, but ONLY when called with no transaction-batch marker. `$transaction([a,
+// b])` never calls `.then()` on its elements — it calls `a.requestTransaction({kind:"batch",
+// ...})` instead, which is a SEPARATE, UNCACHED branch of that same `o()`: `s.kind !== "itx"`
+// skips the cache entirely and runs the query again. So eagerly calling `.then()` at wrap time
+// (a) ran every query standalone the instant it was constructed, outside any transaction it
+// was about to be placed in — then `requestTransaction` ran it a SECOND time, for real, inside
+// the batch, and (b) made an unawaited/never-touched call execute anyway, which Prisma's own
+// laziness promises it never will. Real call sites that build a batch array (and would have
+// silently double-run): src/lib/grant-coupon-entitlement.ts, src/lib/project-look.server.ts,
+// src/lib/hero-script-library.server.ts.
+//
+// The fix: never touch the real promise ourselves. Return a Proxy that forwards every property
+// — `requestTransaction`, `Symbol.toStringTag` ("PrismaPromise", which `$transaction([...])`'s
+// own validation checks before accepting an element), `spec` — completely untouched, so the
+// batch path is exactly Prisma's own code, unobserved (its timing is `[prisma-slow-tx]`'s job,
+// not this one's). Only `then`/`catch`/`finally` are intercepted, and only to do two things
+// at the moment the CALLER actually invokes one of them (never before): record `startedAt`,
+// and forward to the real method. The caller invoking any of those three is itself the one and
+// only signal that this is a plain top-level await, not a batch element — `requestTransaction`
+// is how a batch element runs instead, and this proxy never calls it. See
+// verify-prisma-slow-query.ts for the batch-exactly-once and never-touched-never-runs cases.
+const slowQueryMs = slowQueryThresholdMsFromEnv();
+
+function logSlowQueryIfNeeded(label: string, startedAt: number) {
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs < slowQueryMs) return;
+  try {
+    console.warn(
+      `[prisma-slow-query] ms=${elapsedMs} proc=${processLabel()} pid=${process.pid} startedAt=${new Date(startedAt).toISOString()} op=${label}`,
+    );
+  } catch {
+    // Diagnostics must never throw past the call they are observing.
+  }
+}
+
+const PRISMA_PROMISE_SETTLE_METHODS = new Set(["then", "catch", "finally"]);
+
+/** Wraps the PrismaPromise `target` already produced by a real call, for logging only.
+ *  Forwards EVERY property untouched (requestTransaction, Symbol.toStringTag, spec, ...) so
+ *  `$transaction([a, b])` sees exactly the object Prisma itself made — this proxy never calls
+ *  `.then()`/`.catch()`/`.finally()` on it itself, only the caller's own eventual call does,
+ *  which is the only moment real execution should start. */
+function wrapPrismaPromiseForLogging<T>(target: T, label: string): T {
+  let startedAt: number | undefined;
+  let subscribed = false;
+  return new Proxy(target as unknown as object, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof prop !== "string" || !PRISMA_PROMISE_SETTLE_METHODS.has(prop) || typeof value !== "function") {
+        return value;
+      }
+      const original = value as (...a: unknown[]) => unknown;
+      return function (this: unknown, ...args: unknown[]) {
+        if (startedAt === undefined) startedAt = Date.now();
+        if (!subscribed) {
+          subscribed = true;
+          // A second `.then()` subscribed purely for logging. Safe to add here — unlike
+          // adding it eagerly at wrap time — because the caller has already proven, by
+          // calling then/catch/finally themselves, that this is the plain (non-batch) path;
+          // a second subscription on that same path reuses Prisma's own cached result rather
+          // than re-running the query (see the correction note above `slowQueryMs`).
+          (obj as unknown as Promise<unknown>).then(
+            () => logSlowQueryIfNeeded(label, startedAt!),
+            () => logSlowQueryIfNeeded(label, startedAt!),
+          );
+        }
+        return original.apply(obj, args);
+      };
+    },
+  }) as T;
+}
+
+/** True for a model delegate (prisma.user, prisma.renderJob, ...): an object whose own
+ *  methods are plain model-CRUD calls. Every model delegate has a `findFirst` function, which
+ *  tells one apart from any other client property without hard-coding the model list from
+ *  prisma/schema.prisma. */
+function isModelDelegate(value: unknown): value is Record<string, (...args: unknown[]) => unknown> {
+  return (
+    !!value && typeof value === "object" &&
+    typeof (value as Record<string, unknown>).findFirst === "function"
+  );
+}
+
+function wrapDelegate(delegate: Record<string, (...args: unknown[]) => unknown>, modelName: string) {
+  return new Proxy(delegate, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof prop !== "string" || typeof value !== "function") return value;
+      return function (this: unknown, ...args: unknown[]) {
+        const prismaPromise = value.apply(target, args);
+        return wrapPrismaPromiseForLogging(prismaPromise, `${modelName}.${prop}`);
+      };
+    },
+  });
+}
+
+// CORRECTION (coordinator review #2, same day): this used to also wrap $queryRaw/
+// $queryRawUnsafe/$executeRaw/$executeRawUnsafe the same way, as own-instance overrides on
+// `prisma` ("client[method] = function (...) { ... original.apply(prisma, args) ... }"). That
+// broke `tx.$executeRaw` inside an interactive transaction: Prisma's `tx` does not get its own
+// `$executeRaw`/`$queryRaw` the way it gets its own model delegates (`tx.user`, ...) — property
+// lookup for those four methods fell through to this own-instance override on the GLOBAL
+// `prisma`, which ran `original.apply(prisma, args)` on the base client, OUTSIDE the
+// transaction, on a different connection. That connection then waited on the write lock the
+// surrounding transaction itself held — a real production call, a minutes-refund write at
+// src/lib/render/reservation-settlement.ts:88, stalled ~20s (SQLITE_BUSY_TIMEOUT_SEC) per call
+// in CI before erroring "database is locked", breaking refund settlement. There is no safe way
+// to rebind `this` here without reaching into exactly the kind of Prisma-internal state this
+// whole feature was built to avoid depending on (see the correction above `slowQueryMs`), so
+// $queryRaw/$queryRawUnsafe/$executeRaw/$executeRawUnsafe are simply left unwrapped — only the
+// model delegates below are. A raw query, if one is ever slow, is covered indirectly: run it
+// inside a transaction (then `[prisma-slow-tx]` reports the whole call), or watch
+// `[prisma-slow-tx]`'s own `callbackMs` for the surrounding transaction. See
+// verify-prisma-slow-query.ts's `tx.$executeRaw` isolation test.
+if (isNewClient && slowQueryMs > 0) {
+  const client = prisma as unknown as Record<string, unknown>;
+  for (const prop of Object.keys(client)) {
+    if (prop.startsWith("$") || prop.startsWith("_") || prop === "constructor") continue;
+    const value = client[prop];
+    if (isModelDelegate(value)) client[prop] = wrapDelegate(value, prop);
+  }
 }
 
 // Cached in production too: the connection_limit cap above assumes one client per process,
