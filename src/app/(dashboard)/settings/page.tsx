@@ -332,8 +332,8 @@ function SettingsContent() {
 
   const tabs = [
     { id: "profile",  label: "Profile",  icon: User },
-    { id: "api-keys", label: "API Keys", icon: Key },
-    { id: "mcp",      label: "Agent / MCP", icon: Terminal },
+    { id: "api-keys", label: "คีย์เชื่อมต่อ", icon: Key },
+    { id: "mcp",      label: "AI Agent (MCP)", icon: Terminal },
     { id: "billing",  label: "Billing",  icon: CreditCard },
   ];
   const paymentConfirmed = paymentPopup === "confirmed";
@@ -589,7 +589,7 @@ function SettingsContent() {
                 </div>
                 <div>
                   <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
-                    API Credentials
+                    คีย์เชื่อมต่อ
                   </h2>
                   <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
                     เก็บ API keys ของ AI providers
@@ -660,8 +660,8 @@ function SettingsContent() {
                 <Terminal className="h-4 w-4" style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2.25} />
               </div>
               <div>
-                <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>Agent / MCP Access</h2>
-                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>ต่อ Claude Code / agent ของคุณเข้ากับ HERO AI</p>
+                <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>ต่อ AI Agent</h2>
+                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>สั่ง AI Agent ที่รองรับ MCP ให้สร้างและตัดต่อคลิปแทนคุณ</p>
               </div>
             </div>
             <McpAccessSettings allowed={(meUser?.effectivePlan ?? meUser?.plan) === "PRO" || (meUser?.effectivePlan ?? meUser?.plan) === "BUSINESS"} />

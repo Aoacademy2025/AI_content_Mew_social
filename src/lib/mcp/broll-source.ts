@@ -38,6 +38,21 @@ export function mcpBrollJobFields(source: McpBrollSource): {
   return {};
 }
 
+/**
+ * Pure decision behind the create_video_job stock-key gate (#defect 3, 2026-10-12
+ * settings UX fix). Extracted so it is unit-testable without the MCP route's auth,
+ * DB and preflight plumbing: a request only gets refused when it actually needs a
+ * stock provider, has no key of its own, AND managed stock would not serve it
+ * either (flag off, no managed key, suspended, or already BYOK-served elsewhere).
+ */
+export function mcpStockKeyRefusal(input: {
+  needsStockKey: boolean;
+  hasOwnStockKey: boolean;
+  managedStockEligible: boolean;
+}): boolean {
+  return input.needsStockKey && !input.hasOwnStockKey && !input.managedStockEligible;
+}
+
 export function mcpHeroVisualRefusal(
   access: Pick<HeroAiImageAccessDecision, "canUse" | "reason">,
   source: McpBrollSource,

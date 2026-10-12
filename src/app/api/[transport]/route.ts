@@ -59,8 +59,9 @@ import {
   startClipImport,
   type StartedClipImport,
 } from "@/lib/mcp/clip-video-job";
-import { mcpBrollJobFields, mcpBrollSource } from "@/lib/mcp/broll-source";
+import { mcpBrollJobFields, mcpBrollSource, mcpStockKeyRefusal } from "@/lib/mcp/broll-source";
 import { mcpBrollCreateRefusal } from "@/lib/mcp/broll-source.server";
+import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 
@@ -270,7 +271,19 @@ const handler = createMcpHandler(
             stockSource: brollFields.stockSource ?? "stock",
             autoMixProviders: brollFields.autoMixProviders,
           });
-          if (needsStockKey && !u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          const hasOwnStockKey = !!u.pexelsKey || !!u.pixabayKey;
+          // Managed stock (#297, ADR 0025) — mirrors the web create gate (jobs/route.ts):
+          // an account with no stock key of its own is still served by the team key when
+          // eligible. /api/videos/fetch-stock resolves the SAME way for this job at render
+          // time regardless of which path created it (service-actor auth resolves the
+          // job's actual owner, not the creating channel), so this is purely a pre-create
+          // refusal fix — nothing downstream needs to change.
+          const managedStockForCreate = needsStockKey && !hasOwnStockKey
+            ? await resolveManagedStockAccess(u, { hasOwnPexelsKey: false, hasOwnPixabayKey: false })
+            : null;
+          if (mcpStockKeyRefusal({ needsStockKey, hasOwnStockKey, managedStockEligible: !!managedStockForCreate?.eligible })) {
+            return missingKeyError("broll");
+          }
           const brollRefusal = fillYourself ? null : await mcpBrollCreateRefusal(u, brollSource);
           if (brollRefusal) return brollRefusal;
           // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the

@@ -194,7 +194,11 @@ function main() {
 
   function instructionsFor(managedGemini: "1" | undefined): string {
     const env = { ...process.env } as Record<string, string>;
-    if (managedGemini === undefined) delete env.MANAGED_GEMINI; else env.MANAGED_GEMINI = managedGemini;
+    // "0", not delete: tsx/dotenv refills a DELETED var from a local .env (which may have
+    // MANAGED_GEMINI=1 / MANAGED_STOCK=1), silently picking another branch. Stock stays off so
+    // these two cases pin the Gemini branches only.
+    env.MANAGED_GEMINI = managedGemini ?? "0";
+    env.MANAGED_STOCK = "0";
     const code = `import(${JSON.stringify(onboardingPath)}).then((m) => process.stdout.write(m.SERVER_INSTRUCTIONS));`;
     return execFileSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "-e", code], { env, encoding: "utf8" });
   }

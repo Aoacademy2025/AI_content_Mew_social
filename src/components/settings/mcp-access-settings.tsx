@@ -3,8 +3,12 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Loader2, Plus, Copy, Trash2, Terminal, Check, ArrowRight, Sparkles, Code2, Bot, Zap, KeyRound } from "lucide-react";
+import {
+  Loader2, Plus, Copy, Trash2, Terminal, Check, ArrowRight, Sparkles, Code2, Bot, Zap, KeyRound,
+  ListChecks, RefreshCw, Puzzle, PlayCircle,
+} from "lucide-react";
 import { toast } from "sonner";
+import { computeKeyStatus, planKeySetupChecklist } from "@/lib/key-tiers";
 
 type TokenRow = { id: string; name: string | null; lastUsedAt: string | null; createdAt: string; expiresAt: string | null };
 
@@ -18,9 +22,10 @@ function copyText(value: string, label: string) {
 // ── Client connect definitions ───────────────────────────────────────────
 // One source of truth: each client's snippet is a (token) => string so the
 // same guide renders with a placeholder in the static box and the REAL token
-// inside the show-once dialog.
-type ClientId = "claude-cowork" | "claude-code" | "codex" | "openclaw" | "hermes";
-type ClientGroup = "assistant" | "agent";
+// inside the show-once dialog. Grouped by connection PATH (login vs token),
+// not by "assistant vs agent" — that's what actually changes the steps.
+type ClientId = "claude-cowork" | "claude-code" | "codex" | "openclaw" | "hermes" | "other-mcp";
+type ClientGroup = "login" | "token";
 
 type ClientDef = {
   id: ClientId;
@@ -37,7 +42,7 @@ const CLIENTS: ClientDef[] = [
   {
     id: "claude-cowork",
     label: "Claude (cowork / Desktop / Web)",
-    group: "assistant",
+    group: "login",
     icon: Sparkles,
     blurb: "ง่ายสุด — เชื่อมผ่าน Login ไม่ต้องสร้าง/ก๊อป token",
     needsToken: false,
@@ -50,7 +55,7 @@ const CLIENTS: ClientDef[] = [
   {
     id: "claude-code",
     label: "Claude Code (CLI)",
-    group: "assistant",
+    group: "token",
     icon: Terminal,
     blurb: "สั่งจาก terminal — คำสั่งเดียวจบ",
     needsToken: true,
@@ -60,7 +65,7 @@ const CLIENTS: ClientDef[] = [
   {
     id: "codex",
     label: "Codex (CLI)",
-    group: "assistant",
+    group: "token",
     icon: Code2,
     blurb: "OpenAI Codex — token อ่านจาก environment variable",
     needsToken: true,
@@ -70,7 +75,7 @@ const CLIENTS: ClientDef[] = [
   {
     id: "openclaw",
     label: "OpenClaw",
-    group: "agent",
+    group: "token",
     icon: Bot,
     blurb: "Agent อัตโนมัติ — เพิ่มผ่าน CLI คำสั่งเดียว",
     needsToken: true,
@@ -80,19 +85,38 @@ const CLIENTS: ClientDef[] = [
   {
     id: "hermes",
     label: "Hermes Agent",
-    group: "agent",
+    group: "token",
     icon: Zap,
     blurb: "Nous Research — เพิ่มในไฟล์ config",
     needsToken: true,
     steps: ["แก้ไฟล์ ~/.hermes/config.yaml เพิ่มบล็อกนี้ แล้วรีสตาร์ท Hermes"],
     code: (t) => `# ~/.hermes/config.yaml\nmcp_servers:\n  heroai:\n    url: "${MCP_URL}"\n    headers:\n      Authorization: "Bearer ${t}"`,
   },
+  {
+    id: "other-mcp",
+    label: "AI อื่นที่รองรับ MCP",
+    group: "token",
+    icon: Puzzle,
+    blurb: "Grok, Dot, Muse AI หรือ agent ไหนก็ได้ที่คุยผ่าน MCP (streamable HTTP)",
+    needsToken: true,
+    steps: [
+      "เพิ่ม MCP server แบบ streamable HTTP โดยใช้ Endpoint ด้านบน",
+      "ใส่ header Authorization: Bearer <token> ของคุณ (ดูวิธีตั้งค่าเฉพาะใน docs ของ AI ตัวนั้น)",
+    ],
+    code: (t) => `Endpoint: ${MCP_URL}\nTransport: streamable HTTP\nHeader: Authorization: Bearer ${t}`,
+  },
 ];
 
 const GROUP_LABEL: Record<ClientGroup, string> = {
-  assistant: "ผู้ช่วย AI",
-  agent: "Agent อัตโนมัติ",
+  login: "เชื่อมด้วยการ Login (ไม่ต้องใช้ Token)",
+  token: "เชื่อมด้วย Token",
 };
+
+const EXAMPLE_PROMPTS = [
+  `สร้างคลิปจากสคริปต์นี้แบบแก้ก่อนส่งออก ยังไม่ต้องส่งออกจริง: "<วางสคริปต์ของคุณที่นี่>"`,
+  `แก้ซับการ์ดแรกเป็น "<ข้อความใหม่>" ขอดูรายการเพลงแล้วเปลี่ยนเป็นเพลงที่สดใสกว่านี้ แล้วขอดูภาพตัวอย่างวินาทีที่ 5`,
+  `โอเค ส่งออกคลิปนี้เป็นไฟล์สุดท้ายได้เลย`,
+];
 
 function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
   const usingPlaceholder = token === TOKEN_PLACEHOLDER;
@@ -125,7 +149,7 @@ function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
 
       {client.needsToken && usingPlaceholder && (
         <p className="text-[11px] flex items-center gap-1.5" style={{ color: "var(--ui-text-muted)" }}>
-          <KeyRound className="h-3 w-3 text-amber-300" /> แทน <code className="text-amber-300">{TOKEN_PLACEHOLDER}</code> ด้วยคีย์จากปุ่ม “สร้าง Token” ด้านล่าง
+          <KeyRound className="h-3 w-3 text-amber-300" /> แทน <code className="text-amber-300">{TOKEN_PLACEHOLDER}</code> ด้วยคีย์จากขั้นตอนที่ 2 ด้านล่าง
         </p>
       )}
       {!client.needsToken && (
@@ -140,7 +164,7 @@ function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
 function ConnectGuide({ token }: { token: string }) {
   const [active, setActive] = useState<ClientId>("claude-cowork");
   const client = CLIENTS.find((c) => c.id === active)!;
-  const groups: ClientGroup[] = ["assistant", "agent"];
+  const groups: ClientGroup[] = ["login", "token"];
 
   return (
     <div className="space-y-3">
@@ -157,7 +181,7 @@ function ConnectGuide({ token }: { token: string }) {
       <div className="space-y-2">
         {groups.map((g) => (
           <div key={g} className="flex flex-wrap items-center gap-2">
-            <span className="w-20 shrink-0 text-[11px] font-semibold" style={{ color: "var(--ui-text-muted)" }}>{GROUP_LABEL[g]}</span>
+            <span className="w-full text-[11px] font-semibold sm:w-auto sm:shrink-0" style={{ color: "var(--ui-text-muted)" }}>{GROUP_LABEL[g]}</span>
             {CLIENTS.filter((c) => c.group === g).map((c) => {
               const Icon = c.icon;
               const on = active === c.id;
@@ -195,6 +219,9 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
   const [creating, setCreating] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [managed, setManaged] = useState(false);
+  const [managedStock, setManagedStock] = useState(false);
+  const [keyStatus, setKeyStatus] = useState<{ gemini: boolean; pexels: boolean; pixabay: boolean } | null>(null);
 
   function load() {
     setLoading(true);
@@ -205,6 +232,23 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
       .finally(() => setLoading(false));
   }
   useEffect(() => { if (allowed) load(); else setLoading(false); }, [allowed]);
+
+  // Accurate "do I need a key before I can create_video_job" note (defect #2):
+  // same managed-aware decision as the API Keys tab's status card, so the two
+  // tabs never disagree about whether keys are required.
+  useEffect(() => {
+    if (!allowed) return;
+    fetch("/api/user/api-keys/status", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.managed) setManaged(true); if (d?.managedStock) setManagedStock(true); })
+      .catch(() => {});
+    fetch("/api/user/api-keys", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setKeyStatus({ gemini: !!d.geminiKey?.set, pexels: !!d.pexelsKey?.set, pixabay: !!d.pixabayKey?.set });
+      })
+      .catch(() => {});
+  }, [allowed]);
 
   async function createToken() {
     setCreating(true);
@@ -245,72 +289,145 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
       <a href="/pricing" className="group block rounded-xl p-5 transition-all hover:-translate-y-0.5"
         style={{ background: "linear-gradient(135deg, hsl(var(--accent-primary) / 0.12), hsl(var(--accent-secondary) / 0.08))", border: "1px solid hsl(var(--accent-primary) / 0.25)" }}>
         <p className="text-base font-bold" style={{ color: "var(--ui-text-primary)" }}>Agent / MCP เป็นฟีเจอร์ของแผน PRO/BUSINESS</p>
-        <p className="text-sm mt-1 flex items-center gap-1" style={{ color: "var(--ui-text-muted)" }}>
-          อัปเกรดเพื่อต่อ Claude / Codex / OpenClaw / Hermes เข้ากับ HERO AI <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+        <ul className="mt-2 space-y-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>
+          <li>• สั่งสร้างคลิป (เสียง + B-roll + ซับไทย + พิธีกร AI) จากแชทได้เลย</li>
+          <li>• แก้ซับ เพลง พาดหัว ก่อนส่งออก โดยไม่ตัดโควต้าเพิ่ม</li>
+          <li>• กลับมาแก้คลิปเก่าในแชทใหม่ได้</li>
+        </ul>
+        <p className="text-sm mt-2 flex items-center gap-1" style={{ color: "var(--ui-text-muted)" }}>
+          อัปเกรดเพื่อต่อ Claude, Codex, OpenClaw, Hermes และ AI Agent อื่นที่รองรับ MCP เข้ากับ HERO AI <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
         </p>
       </a>
     );
   }
 
+  const setupNote = (() => {
+    if (!keyStatus) return null; // ยังโหลดอยู่ — ไม่รีบขึ้นข้อความผิด
+    const status = computeKeyStatus({ gemini: keyStatus.gemini, pexels: keyStatus.pexels, pixabay: keyStatus.pixabay }, managed);
+    const checklist = planKeySetupChecklist({ status, managedGemini: managed, managedStock });
+    if (!checklist.render) {
+      return { ok: true, text: "ไม่ต้องตั้งคีย์ก็สั่งได้ ใส่ ElevenLabs / HeyGen ที่แท็บคีย์เชื่อมต่อเฉพาะถ้าจะใช้เสียงโคลนหรือพิธีกร AI" };
+    }
+    const missing: string[] = [];
+    if (checklist.geminiRequired && !status.gemini) missing.push("Gemini key");
+    if (checklist.stockRequired && !checklist.stockDone) missing.push("Pexels หรือ Pixabay key");
+    return { ok: false, text: `ยังขาด ${missing.join(" และ ")} — ตั้งที่แท็บคีย์เชื่อมต่อก่อนถึงจะสั่งสร้างวิดีโอได้` };
+  })();
+
   return (
     <div className="space-y-5">
-      {/* Prerequisite note */}
-      <a href="/settings?tab=api-keys" className="group flex items-start gap-2.5 rounded-xl p-3 transition-colors hover:bg-amber-500/5"
-        style={{ background: "hsl(38 92% 50% / 0.06)", border: "1px solid hsl(38 92% 50% / 0.22)" }}>
-        <KeyRound className="h-4 w-4 shrink-0 mt-0.5 text-amber-300" strokeWidth={2.25} />
-        <p className="text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
-          <span className="font-semibold text-amber-200">ก่อนสั่งสร้างวิดีโอ:</span> ต้องตั้ง API Keys (Gemini + Pexels/Pixabay) ที่แท็บ API Keys ก่อน
-          ไม่งั้น agent ต่อติดแต่สั่งงานจะ error <span className="text-amber-300 group-hover:underline">ไปตั้งค่า →</span>
-        </p>
-      </a>
+      {/* สั่งอะไรได้บ้าง */}
+      <div className="rounded-xl border border-white/10 bg-white/3 p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <ListChecks className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
+          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>สั่งอะไรได้บ้าง</p>
+        </div>
+        <ul className="space-y-1 text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
+          <li>• สร้างคลิปจากสคริปต์ — เสียงพากย์ + B-roll เปลี่ยนทุก 3–5 วิ + ซับไทย + พิธีกร AI (ถ้าต้องการ)</li>
+          <li>• แก้ก่อนส่งออก ไม่ตัดโควต้าเพิ่ม — แก้ซับ เพลง พาดหัว B-roll ได้ก่อนส่งออกจริง</li>
+          <li>• ขอดูพรีวิวเฟรมก่อนส่งออกจริง</li>
+          <li>• นำวิดีโอ/รูปของคุณเองมาใช้เป็น B-roll หรือคลิปพิธีกรได้ (วาง URL หรือลิงก์อัปโหลด)</li>
+          <li>• กลับมาแก้คลิปเก่าในแชทใหม่ได้ ไม่ต้องจำ job เดิม</li>
+          <li>• ยกเลิกงานที่สั่งผิดได้ทันที</li>
+        </ul>
+      </div>
 
-      {/* How to connect — client picker */}
+      {/* Accurate setup note (replaces the old false prerequisite banner) */}
+      {setupNote && (
+        <div className="flex items-start gap-2.5 rounded-xl p-3"
+          style={setupNote.ok
+            ? { background: "hsl(142 72% 29% / 0.08)", border: "1px solid hsl(142 72% 29% / 0.25)" }
+            : { background: "hsl(38 92% 50% / 0.06)", border: "1px solid hsl(38 92% 50% / 0.22)" }}>
+          <KeyRound className={`h-4 w-4 shrink-0 mt-0.5 ${setupNote.ok ? "text-emerald-300" : "text-amber-300"}`} strokeWidth={2.25} />
+          <p className="text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
+            {setupNote.text}
+            {!setupNote.ok && (
+              <>
+                {" "}
+                <a href="/settings?tab=api-keys" className="text-amber-300 hover:underline">ไปตั้งค่า →</a>
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
+      {/* Step 1 — เลือก AI ของคุณ */}
       <div className="rounded-2xl border border-white/10 bg-white/3 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Terminal className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
-          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>เลือก agent ของคุณ แล้วทำตามขั้นตอน</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 1 — เลือก AI ของคุณ</p>
         </div>
         <ConnectGuide token={TOKEN_PLACEHOLDER} />
       </div>
 
-      {/* Tokens */}
-      <div className="flex items-center justify-between">
-        <p className="eyebrow">Access Tokens</p>
-        <button onClick={() => { setNewToken(null); setName(""); setOpen(true); }}
-          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:brightness-110"
-          style={{ background: "linear-gradient(135deg, hsl(var(--accent-primary)), hsl(var(--accent-secondary)))" }}>
-          <Plus className="h-3.5 w-3.5" strokeWidth={2.5} /> สร้าง Token
-        </button>
+      {/* Step 2 — Tokens (เฉพาะทาง Token) */}
+      <div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
+            <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 2 — Token (เฉพาะทาง &quot;เชื่อมด้วย Token&quot;)</p>
+          </div>
+          <button onClick={() => { setNewToken(null); setName(""); setOpen(true); }}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:brightness-110"
+            style={{ background: "linear-gradient(135deg, hsl(var(--accent-primary)), hsl(var(--accent-secondary)))" }}>
+            <Plus className="h-3.5 w-3.5" strokeWidth={2.5} /> สร้าง Token
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-white/40" /></div>
+        ) : tokens.length === 0 ? (
+          <div className="mt-2 rounded-2xl border border-white/10 bg-white/3 p-8 text-center text-sm" style={{ color: "var(--ui-text-muted)" }}>
+            ยังไม่มี token — กด “สร้าง Token” ถ้าเชื่อมแบบ Token (Claude cowork/Desktop/Web ไม่ต้องใช้ token)
+          </div>
+        ) : (
+          <div className="mt-2 space-y-2">
+            {tokens.map((t) => (
+              <div key={t.id} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/3 p-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate" style={{ color: "var(--ui-text-primary)" }}>{t.name || "Token"}</p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+                    สร้าง {new Date(t.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}
+                    {t.lastUsedAt ? ` · ใช้ล่าสุด ${new Date(t.lastUsedAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" })}` : " · ยังไม่เคยใช้"}
+                    {t.expiresAt ? ` · หมดอายุ ${new Date(t.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}` : ""}
+                  </p>
+                </div>
+                <button onClick={() => revoke(t.id)} disabled={revoking === t.id}
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"
+                  style={{ border: "1px solid hsl(0 0% 100% / 0.08)", color: "var(--ui-text-muted)" }}>
+                  {revoking === t.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />}
+                  เพิกถอน
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-white/40" /></div>
-      ) : tokens.length === 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-white/3 p-8 text-center text-sm" style={{ color: "var(--ui-text-muted)" }}>
-          ยังไม่มี token — กด “สร้าง Token” เพื่อเริ่ม (Claude cowork ไม่ต้องใช้ token)
+      {/* Step 3 — ลองสั่งแบบนี้ */}
+      <div className="rounded-2xl border border-white/10 bg-white/3 p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <PlayCircle className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
+          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 3 — ลองสั่งแบบนี้</p>
         </div>
-      ) : (
         <div className="space-y-2">
-          {tokens.map((t) => (
-            <div key={t.id} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/3 p-4">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold truncate" style={{ color: "var(--ui-text-primary)" }}>{t.name || "Token"}</p>
-                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
-                  สร้าง {new Date(t.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}
-                  {t.lastUsedAt ? ` · ใช้ล่าสุด ${new Date(t.lastUsedAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" })}` : " · ยังไม่เคยใช้"}
-                  {t.expiresAt ? ` · หมดอายุ ${new Date(t.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}` : ""}
-                </p>
-              </div>
-              <button onClick={() => revoke(t.id)} disabled={revoking === t.id}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"
-                style={{ border: "1px solid hsl(0 0% 100% / 0.08)", color: "var(--ui-text-muted)" }}>
-                {revoking === t.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />}
-                เพิกถอน
+          {EXAMPLE_PROMPTS.map((p, i) => (
+            <div key={i} className="relative rounded-lg bg-black/30 p-3 pr-10 text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
+              {p}
+              <button onClick={() => copyText(p, "ข้อความ")} title="คัดลอก"
+                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md text-white/50 transition-colors hover:bg-white/10 hover:text-white">
+                <Copy className="h-3 w-3" />
               </button>
             </div>
           ))}
         </div>
-      )}
+      </div>
+
+      {/* Reconnect note */}
+      <p className="flex items-start gap-2 text-[11px] leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>
+        <RefreshCw className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+        เชื่อมไว้ก่อนแล้วแต่ไม่เห็นเครื่องมือใหม่? ตัดการเชื่อมต่อแล้วเชื่อมใหม่ในแอป AI
+      </p>
 
       {/* Generate / show-once dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
