@@ -1,0 +1,7 @@
+PASS refund receipt: included-minute completion and retry
+PASS refund receipt: mixed minute/credit completion
+PASS refund receipt: pending descendant refund then confirmed completion
+PASS refund receipt: failed refund rolls back flags and preserves exposure
+PASS refund receipt: partial reservation cannot certify full mirror refund
+PASS refund receipt: historical cleared flags stay unconfirmed
+PASS spending summary: durable images/refund helpers, transferred render, trial, approvals, descendant, pending, ownership

@@ -1,0 +1,161 @@
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=startup 0.0s
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=tts 0.0s
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=captions 0.0s
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=keywords 0.0s
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=stock 0.0s
+[config] start: 0 clips, 9 captions, 16000ms
+[config] final bgVideos (4):
+  [0] 0.00s–4.91s dur=4.91s src=
+  [1] 4.91s–8.91s dur=4.00s src=
+  [2] 8.91s–12.91s dur=4.00s src=
+  [3] 12.91s–16.00s dur=3.09s src=
+[config] done: 4 bgVideos, 9 popups, kenBurns=false
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz step=config 0.0s
+[mcp-worker] job cmv6zbagp000aq616cwnlsapz PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=9 subMode=sentence
+PASS script: held usable windows
+PASS script: durable external policy
+PASS script: web source survives hostile draft reset
+PASS script: required slots reported
+PASS faceless first window is B-roll
+PASS script: empty required export refused
+SECURITY_PROBE {"mode":"script","identity":{"projectId":"cmv6zbagn0008q616p0nsyr3y"},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 0, 1, 2, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[0,1,2,3],"windows":[{"index":0,"owner":"broll","required":true,"state":"unfilled"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"broll","required":true,"state":"unfilled"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+SECURITY_PROBE {"mode":"script","identity":{},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 0, 1, 2, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[0,1,2,3],"windows":[{"index":0,"owner":"broll","required":true,"state":"unfilled"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"broll","required":true,"state":"unfilled"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+SECURITY_PROBE {"mode":"script","identity":{"videoUrl":"https://studio.example.test/renders/external-render-1.mp4?v=1"},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 0, 1, 2, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[0,1,2,3],"windows":[{"index":0,"owner":"broll","required":true,"state":"unfilled"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"broll","required":true,"state":"unfilled"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+PASS script: direct worker burn bypass refused
+PASS script: web hostile overlay cannot bypass
+PASS web projects owned ready pending replacements
+PASS url-image: pending refuses export
+PASS url-image: web sees pending
+PASS url-image: real import normalized
+PASS url-video: pending refuses export
+PASS url-video: web sees pending
+PASS url-video: real import normalized
+PASS image: upload token one-use
+PASS upload-image: pending refuses export
+PASS upload-image: web sees pending
+PASS upload-image: real import normalized
+PASS video: upload token one-use
+PASS upload-video: pending refuses export
+PASS upload-video: web sees pending
+PASS upload-video: real import normalized
+PASS script: shared web projection parity
+PASS script: direct export cannot skip ready pending edits
+PASS script: pending import refuses
+PASS script: web reports pending
+PASS script: failed import refuses
+PASS script: web reports failed
+PASS script: missing/foreign import refuses
+PASS script: unavailable foreign path not exposed
+PASS script: missing/foreign import refuses
+PASS script: unavailable foreign path not exposed
+PASS script: web cannot borrow foreign ready source
+[mcp-worker] job cmv6zbbvs001iq616ywmmkjpo step=startup 0.0s
+[mcp-worker] job cmv6zbbvs001iq616ywmmkjpo BROLL-RERENDER total=0s edits=4 avatar=false
+PASS script: rerender preserves policy and imported assets
+PASS script: reopen after apply keeps rendered requirements
+[mcp-worker] job cmv6zbbws001pq616u2vifleo step=startup 0.0s
+[mcp-worker] job cmv6zbbws001pq616u2vifleo step=burn 0.0s
+[mcp-worker] job cmv6zbbws001pq616u2vifleo EXPORT total=0s source=cmv6zbbvs001iq616ywmmkjpo
+PASS script: export succeeds
+[render] subtitle-overlay bgmFile: (none)
+PASS script: public burn accepts applied external media without new charge
+PASS script: budget context follows descendants
+PASS script: free edit/export ledger
+PASS script: re-export accepted with required policy
+[mcp-worker] job cmv6zbbzu001xq616f2i57x1u step=startup 0.0s
+[mcp-worker] job cmv6zbbzu001xq616f2i57x1u step=burn 0.1s
+[mcp-worker] job cmv6zbbzu001xq616f2i57x1u EXPORT total=0s source=cmv6zbbvs001iq616ywmmkjpo
+PASS script: re-export done/free
+PASS script: original reset accepted
+PASS script: original does not waive requirement
+PASS script: discard preserves required policy
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=startup 0.0s
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=captions 0.0s
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=keywords 0.0s
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=stock 0.0s
+[config] start: 4 clips, 4 captions, 16000ms
+[config] window-mode: 4 segments over 4 windows, gaps=0, tail=0.000s
+[config] final bgVideos (4):
+  [0] 0.00s–4.00s dur=4.00s src=presenter.mp4
+  [1] 4.00s–8.00s dur=4.00s src=presenter.mp4
+  [2] 8.00s–12.00s dur=4.00s src=presenter.mp4
+  [3] 12.00s–16.00s dur=4.00s src=presenter.mp4
+[config] done: 4 bgVideos, 4 popups, kenBurns=false
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=config 0.0s
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee step=render 0.0s
+[mcp-worker] job cmv6zbc4q0028q616dfkxyaee UPLOAD-CUTAWAY total=0s scenes=4 windows=4 visibleBroll=0
+PASS presenter: held usable windows
+PASS presenter: durable external policy
+PASS presenter: web source survives hostile draft reset
+PASS presenter: required slots reported
+PASS presenter: empty required export refused
+SECURITY_PROBE {"mode":"presenter","identity":{"projectId":"cmv6zbc4o0026q616jsl6qkcw"},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 1, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[1,3],"windows":[{"index":0,"owner":"presenter","required":false,"state":"presenter"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"presenter","required":false,"state":"presenter"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+SECURITY_PROBE {"mode":"presenter","identity":{},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 1, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[1,3],"windows":[{"index":0,"owner":"presenter","required":false,"state":"presenter"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"presenter","required":false,"state":"presenter"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+SECURITY_PROBE {"mode":"presenter","identity":{"videoUrl":"https://studio.example.test/renders/composite-8.mp4?v=1"},"status":409,"body":{"error":"external_media_required","code":"external_media_required","message":"ต้องนำเข้าสื่อให้ครบก่อนส่งออก (ช่วง 1, 3)","next":"เรียก get_edit_state แล้วใช้ replace_broll_window กับไฟล์/ลิงก์ของคุณในช่วงที่ระบุ รอ import พร้อม จากนั้น export_video อีกครั้ง หรืออัปเดต B-roll ในหน้า Editor ก่อนส่งออก","windowIndices":[1,3],"windows":[{"index":0,"owner":"presenter","required":false,"state":"presenter"},{"index":1,"owner":"broll","required":true,"state":"unfilled"},{"index":2,"owner":"presenter","required":false,"state":"presenter"},{"index":3,"owner":"broll","required":true,"state":"unfilled"}]}}
+PASS presenter: direct worker burn bypass refused
+PASS presenter: web hostile overlay cannot bypass
+PASS presenter: shared web projection parity
+PASS presenter: direct export cannot skip ready pending edits
+PASS presenter: pending import refuses
+PASS presenter: web reports pending
+PASS presenter: failed import refuses
+PASS presenter: web reports failed
+PASS presenter: missing/foreign import refuses
+PASS presenter: unavailable foreign path not exposed
+PASS presenter: missing/foreign import refuses
+PASS presenter: unavailable foreign path not exposed
+PASS presenter: web cannot borrow foreign ready source
+PASS actual presenter hook protected
+PASS web Apply CAS refuses stale revision
+[mcp-worker] job cmv6zbcei0035q616r1barhgd step=startup 0.0s
+[mcp-worker] job cmv6zbcei0035q616r1barhgd step=render 0.0s
+[mcp-worker] job cmv6zbcei0035q616r1barhgd BROLL-RERENDER total=0s edits=2 avatar=true
+PASS web Apply completion preserves newer caption via atomic stale refusal
+[mcp-worker] job cmv6zbcir003dq616xcjyxwoq step=startup 0.0s
+[mcp-worker] job cmv6zbcir003dq616xcjyxwoq step=render 0.0s
+[mcp-worker] job cmv6zbcir003dq616xcjyxwoq BROLL-RERENDER total=0s edits=2 avatar=true
+PASS web Apply completion preserves newer replacement via atomic stale refusal
+[mcp-worker] job cmv6zbclz003lq616ct1a0i1v step=startup 0.0s
+[mcp-worker] job cmv6zbclz003lq616ct1a0i1v step=render 0.0s
+[mcp-worker] job cmv6zbclz003lq616ct1a0i1v BROLL-RERENDER total=0s edits=2 avatar=true
+PASS web Apply completion preserves newer clear via atomic stale refusal
+[mcp-worker] job cmv6zbcrf003tq616nagslmou step=startup 0.0s
+[mcp-worker] job cmv6zbcrf003tq616nagslmou step=render 0.0s
+[mcp-worker] job cmv6zbcrf003tq616nagslmou BROLL-RERENDER total=0s edits=2 avatar=true
+PASS presenter: rerender preserves policy and imported assets
+PASS presenter: reopen after apply keeps rendered requirements
+[mcp-worker] job cmv6zbcvf0041q6165qdumkk8 step=startup 0.0s
+[mcp-worker] job cmv6zbcvf0041q6165qdumkk8 step=burn 0.0s
+[mcp-worker] job cmv6zbcvf0041q6165qdumkk8 EXPORT total=0s source=cmv6zbcrf003tq616nagslmou
+PASS presenter: export succeeds
+[render] subtitle-overlay bgmFile: (none)
+PASS presenter: public burn accepts applied external media without new charge
+PASS presenter: budget context follows descendants
+PASS presenter: free edit/export ledger
+PASS presenter: re-export accepted with required policy
+[mcp-worker] job cmv6zbcz60049q61674qmbc5k step=startup 0.0s
+[mcp-worker] job cmv6zbcz60049q61674qmbc5k step=burn 0.1s
+[mcp-worker] job cmv6zbcz60049q61674qmbc5k EXPORT total=0s source=cmv6zbcrf003tq616nagslmou
+PASS presenter: re-export done/free
+PASS presenter: original reset accepted
+PASS presenter: original does not waive requirement
+PASS presenter: discard preserves required policy
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=startup 0.0s
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=captions 0.1s
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=keywords 0.0s
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=stock 0.0s
+[config] start: 4 clips, 4 captions, 16000ms
+[config] window-mode: 4 segments over 4 windows, gaps=0, tail=0.000s
+[config] final bgVideos (4):
+  [0] 0.00s–4.00s dur=4.00s src=presenter.mp4
+  [1] 4.00s–8.00s dur=4.00s src=presenter.mp4
+  [2] 8.00s–12.00s dur=4.00s src=presenter.mp4
+  [3] 12.00s–16.00s dur=4.00s src=presenter.mp4
+[config] done: 4 bgVideos, 4 popups, kenBurns=false
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=config 0.1s
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs step=render 0.1s
+[mcp-worker] job cmv6zbd7a004kq6160n4ktnhs UPLOAD-CUTAWAY total=0s scenes=4 windows=4 visibleBroll=0
+PASS explicit fillYourself presenter spans stay valid
+PASS explicit presenter-owned spans export without mandatory imports
+PASS zero stock/image calls
+PASS zero image-generation ledger

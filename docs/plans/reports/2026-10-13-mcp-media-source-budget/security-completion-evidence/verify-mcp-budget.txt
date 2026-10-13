@@ -1,0 +1,8 @@
+REPRO ordinary USER AutoMix missing cap => render_receipt_required; ADMIN bypass masks failure
+PASS waiting-provider jobs count toward actual quote-consumption overlap cap
+PASS durable narration checkpoint and incremental resume
+PASS authoritative image exact/over ceiling, idempotent replay and ambiguous cancellation exposure
+PASS concurrent quote consume, final-wallet race, descendant attribution, reroll refusal, trial and unknown TTS restart
+PASS image versus duration top-up race shares total cap; stale quote consumption refuses
+PASS known image completion resumes with original image identity and reservation
+PASS atomic approved consume, immutable work, entitlement revocation and different-key replay
