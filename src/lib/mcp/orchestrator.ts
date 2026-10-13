@@ -1,4 +1,4 @@
-import { rebaseWebPendingMedia } from "@/lib/mcp/pending-edit-draft";
+import { rebaseWebPendingMedia, StaleWebApplyError } from "@/lib/mcp/pending-edit-draft";
 import { validateExternalMediaExport, validateExternalWindowEdits } from "@/lib/external-media.server";
 import { authorExternalMediaPlan } from "@/lib/external-media";
 import { checkpointedBudgetCaller, holdVideoBudget } from "./video-budget-checkpoint";
@@ -3198,6 +3198,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ...(billingReceipt ? { billingReceipt } : {}),
     });
   } catch (e) {
+    if (e instanceof StaleWebApplyError) {
+      await failJob(jobId, { code: "stale_revision", message: e.message });
+      return;
+    }
     const budgetFailure = pipelineFailureDetails(e);
     if (e instanceof VideoBudgetHoldError || budgetFailure?.code === "confirmation_required") {
       await holdVideoBudget(userId, jobId, e instanceof VideoBudgetHoldError ? e : new VideoBudgetHoldError(budgetFailure?.reason ?? "downstream_budget", budgetFailure?.additional ?? {}));

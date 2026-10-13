@@ -215,6 +215,38 @@ async function main() {
   } else {
    const stale = await enqueueBrollRerender({ user, sourceJobId: root.id, windowEdits: web!.draft.windowEdits, expectedPendingRevision: project.pendingEditRevision - 1, idempotencyKey: "stale-web-apply" });
    check("web Apply CAS refuses stale revision", !stale.ok && stale.error === "stale_revision");
+   for (const mutation of ["caption", "replacement", "clear"] as const) {
+    const before = await prisma.editorProject.findUniqueOrThrow({ where: { id: root.projectId! } });
+    const accepted = await enqueueBrollRerender({ user, sourceJobId: root.id, windowEdits: web!.draft.windowEdits, expectedPendingRevision: before.pendingEditRevision, idempotencyKey: `race-${mutation}` });
+    assert.ok(accepted.ok, JSON.stringify(accepted));
+    const newer = draft.parsePendingEditDraft(before.pendingEditJson)!;
+    newer.captions[0].text = `NEWER ${mutation} CAPTION`;
+    if (mutation === "replacement") newer.windowEdits[0] = { ...newer.windowEdits[0], importId: importedAssets[3].id };
+    if (mutation === "clear") newer.windowEdits = newer.windowEdits.filter(w => w.index !== targetIndex);
+    assert.ok(await draft.savePendingEditDraft(user.id, root.projectId!, before.pendingEditRevision, newer));
+    await prisma.videoJob.update({ where: { id: accepted.job.id }, data: { status: "processing" } });
+    await runOrchestrator(accepted.job.id, user.id, { caller, sleep: async () => {}, refundOneClip: async () => {}, rendersRoot });
+    const after = await prisma.editorProject.findUniqueOrThrow({ where: { id: root.projectId! } });
+    const completedRace = await prisma.videoJob.findUniqueOrThrow({ where: { id: accepted.job.id } });
+    assert.equal(after.activeJobId, before.activeJobId, "stale Apply must not activate over a newer draft");
+    assert.equal(completedRace.status, "failed"); assert.equal(completedRace.errorCode, "stale_revision");
+    assert.equal(after.pendingEditRevision, before.pendingEditRevision + 1);
+    assert.deepEqual(draft.parsePendingEditDraft(after.pendingEditJson), newer);
+    const reopenedRace = await readWebProject(root.projectId!);
+    const webRace = reopenedRace.pendingEdit;
+    assert.equal(reopenedRace.draft.brollSource, "external");
+    assert.ok(completedRace.errorMessage?.includes("Apply"));
+    const mcpRace = await edit.getEditStateTool(user.id, root.id) as any;
+    assert.equal(webRace?.draft.captions[0].text, newer.captions[0].text);
+    assert.equal(mcpRace.captions[0].text, newer.captions[0].text);
+    if (mutation === "replacement") assert.equal(webRace?.draft.windowEdits?.find(w => w.index === targetIndex)?.src, importedAssets[3].resultSrc);
+    if (mutation === "clear") { assert.ok(!webRace?.draft.windowEdits?.some(w => w.index === targetIndex)); assert.equal(mcpRace.windows.find((w: any) => w.index === targetIndex)?.state, "unfilled"); }
+    assert.equal(completedRace.budgetQuoteId, root.budgetQuoteId);
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).minutesUsed, beforeMinutes);
+    check(`web Apply completion preserves newer ${mutation} via atomic stale refusal`, true);
+    assert.ok(await draft.savePendingEditDraft(user.id, root.projectId!, after.pendingEditRevision, storedBefore));
+   }
+   project.pendingEditRevision = (await prisma.editorProject.findUniqueOrThrow({ where: { id: root.projectId! } })).pendingEditRevision;
    const apply = await enqueueBrollRerender({ user, sourceJobId: root.id, windowEdits: web!.draft.windowEdits, expectedPendingRevision: project.pendingEditRevision, idempotencyKey: "web-apply" }); assert.ok(apply.ok, JSON.stringify(apply)); rrId = apply.job.id;
   }
   await prisma.videoJob.update({ where: { id: rrId }, data: { status: "processing" } });

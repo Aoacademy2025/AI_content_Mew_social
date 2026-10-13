@@ -49,3 +49,13 @@ Exact command: `node --conditions=react-server --import tsx scripts/verify-mcp-e
 ## Review focus
 
 Root-lineage authority and pending edit CAS, presenter plan ownership, native normalized-upload registration, and web same-revision/local-edit merging deserve independent review. The public import lane and existing budget authority remain the shared implementations. All four sources remain stock, hero-ai-image, automix, external; this task adds no fallback generation.
+
+## Review fix round 1 — Apply completion versus newer pending edits
+
+Reviewer reproduced a completion race: Apply admitted at revision N, a caption saved at N+1, then rerender completed. `rebaseWebPendingMedia` silently returned on the CAS miss, while the surrounding completion transaction marked the job done and changed activeJobId. The newer draft kept its old base, so web projection returned null. The new actual-worker regression reproduced this before the fix (`node --conditions=react-server --import tsx scripts/verify-mcp-external-media.ts`, exit1; assertion `stale Apply must not activate over a newer draft`, `/tmp/task3-race-red.log`).
+
+Correction: missing/stale draft or source at completion throws `StaleWebApplyError` inside the existing completion transaction; a failed conditional update also throws. This rolls back done status, scene promotion and activation together. The worker then marks the Apply job failed with `stale_revision` and Thai instructions to reload, review the latest edits and Apply again. Newer drafts are never rebased speculatively or overwritten. The prior active source stays valid, making newest pending captions/media/clears visible on reopening. This deliberately requires a retry after a concurrent edit; the computed stale render is not claimed as applied. Eligible retry remains free, with no new billing/provider path.
+
+The fixture now performs three accepted Apply → newer revision → real worker completion races: caption edit, different imported replacement, and cleared pending replacement. It asserts exact newer stored JSON/revision, unchanged active source, actionable failed result, actual authenticated project GET and MCP get_edit_state parity, retained external source/required-state checks, budgetQuote lineage and unchanged minute ledger. It then retries at the current revision and completes the existing export/reexport path.
+
+Final round commands: external integration exit0 (81 PASS lines); `npx tsc --noEmit` exit0; `npx eslint src/lib/mcp/pending-edit-draft.ts src/lib/mcp/orchestrator.ts scripts/verify-mcp-external-media.ts` exit0 (two existing unused-import warnings); `git diff --check` exit0. Earlier synthetic-render/provider evidence boundary remains unchanged. No full build or production action.

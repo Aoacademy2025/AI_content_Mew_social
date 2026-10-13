@@ -659,12 +659,20 @@ export async function pendingEditForWebResolved(userId: string, project: Paramet
   return { ...view, draft: { ...view.draft, windowEdits, windowMedia, requiredWindows, ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}) } };
 }
 
-/** A web Apply consumes exactly the media changes reviewed at its CAS revision. */
+export class StaleWebApplyError extends Error {
+  constructor() {
+    super("มีการแก้ไขใหม่ระหว่างใช้การเปลี่ยนแปลง งานนี้ยังไม่ถูกนำไปใช้ กรุณาโหลด Editor ใหม่ ตรวจสอบการแก้ไขล่าสุด แล้วกด Apply อีกครั้ง");
+    this.name = "StaleWebApplyError";
+  }
+}
+
+/** Completion and activation share this transaction: a newer draft must abort both. */
 export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean }) {
   const project = await tx.editorProject.findFirst({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, select: { pendingEditJson: true } });
   const draft = parsePendingEditDraft(project?.pendingEditJson ?? null);
-  if (!draft || draft.baseJobId !== input.sourceJobId) return;
+  if (!draft || draft.baseJobId !== input.sourceJobId) throw new StaleWebApplyError();
   const next = { ...draft, baseJobId: input.jobId, windowEdits: draft.windowEdits.filter(e => !input.indices.includes(e.index)) };
   if (input.transitionApplied) delete next.brollTransition;
-  await tx.editorProject.updateMany({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, data: { pendingEditJson: JSON.stringify(next), pendingEditRevision: { increment: 1 } } });
+  const updated = await tx.editorProject.updateMany({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, data: { pendingEditJson: JSON.stringify(next), pendingEditRevision: { increment: 1 } } });
+  if (updated.count !== 1) throw new StaleWebApplyError();
 }
