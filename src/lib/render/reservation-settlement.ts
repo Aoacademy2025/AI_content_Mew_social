@@ -2,7 +2,7 @@ import type { Prisma, RenderJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { canonicalRenderUrl } from "@/lib/clip-charge";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
-import { parseCreditFunding, refundCreditsInTransaction } from "@/lib/credits";
+import { refundReservationInTransaction } from "@/lib/minute-credits";
 
 export type RenderReservationRefundResult =
   | {
@@ -42,6 +42,46 @@ export function summarizeRenderReservationFunding(job: {
   return { funding: "clips", amount: 1 };
 }
 
+function fundingLink(inputJson: string): { mcpRootJobId?: unknown; sourceJobId?: unknown } {
+  try { return JSON.parse(inputJson) ?? {}; } catch { return {}; }
+}
+
+/** The successful refund and its mirror commit together. Cleared historical flags
+ * alone never prove a refund: call this only after returning this exact reservation. */
+async function settleFundingMirror(tx: Prisma.TransactionClient, render: RenderJob) {
+  if (!render.parentJobId) return;
+  const parent = await tx.videoJob.findFirst({ where: { id: render.parentJobId, userId: render.userId } });
+  if (!parent) return;
+  const quote = parent.budgetQuoteId
+    ? await tx.mcpVideoQuote.findFirst({ where: { id: parent.budgetQuoteId, userId: render.userId, status: "consumed" } }) : null;
+  const link = fundingLink(parent.inputJson);
+  const rootId = quote?.rootJobId ?? link.mcpRootJobId ??
+    (parent.idempotencyKey === `mcp-chain:${link.sourceJobId}` ? link.sourceJobId : null);
+  const linked = typeof rootId === "string"
+    ? await tx.videoJob.findFirst({ where: { id: rootId, userId: render.userId } }) : null;
+  const root = linked && (quote || parent.idempotencyKey === `mcp-chain:${linked.id}` ||
+    (parent.projectId && parent.projectId === linked.projectId)) ? linked : parent;
+  if (!["transferred", "settled"].includes(root.fundingState)) return;
+  // A partial or mismatched reservation cannot certify that the entire mirror was
+  // returned. Keep that case exposed for reconciliation rather than guess.
+  if (root.fundedMeteredMinutes !== render.reservedMinutes ||
+    (root.fundedCreditsSpent ?? 0) !== (render.creditsSpent ?? 0)) return;
+  const candidates = await tx.videoJob.findMany({ where: { userId: render.userId, OR: [
+    { id: root.id },
+    ...(root.budgetQuoteId ? [{ budgetQuoteId: root.budgetQuoteId }] : []),
+    ...(root.projectId ? [{ projectId: root.projectId }] : []),
+    { idempotencyKey: `mcp-chain:${root.id}` },
+  ] }, select: { id: true, inputJson: true, projectId: true, budgetQuoteId: true, idempotencyKey: true, type: true } });
+  const chainIds = candidates.filter(job => {
+    const data = fundingLink(job.inputJson);
+    return job.id === root.id || (root.budgetQuoteId && job.budgetQuoteId === root.budgetQuoteId) ||
+      (root.projectId && job.projectId === root.projectId && data.mcpRootJobId === root.id) ||
+      (job.type === "export" && job.idempotencyKey === `mcp-chain:${root.id}` && data.sourceJobId === root.id);
+  }).map(job => job.id);
+  if (await tx.renderJob.count({ where: { userId: render.userId, parentJobId: { in: chainIds }, reservedQuota: true } })) return;
+  await tx.videoJob.updateMany({ where: { id: root.id, userId: render.userId, fundingState: { in: ["transferred", "settled"] } }, data: { fundingState: "refunded" } });
+}
+
 async function settleRenderReservation(
   tx: Prisma.TransactionClient,
   job: RenderJob,
@@ -67,32 +107,18 @@ async function settleRenderReservation(
   }
 
   const summary = summarizeRenderReservationFunding(job);
-  if (summary.funding === "credits") {
-    const amount = summary.amount;
-    const legacyGranted = Math.max(0, Math.min(job.creditsFromGranted ?? 0, amount));
-    const funding = parseCreditFunding(job.creditFundingJson, {
-      fromGranted: legacyGranted,
-      fromPromotional: job.creditsFromPromotional ?? 0,
-      fromPurchased: amount - legacyGranted - (job.creditsFromPromotional ?? 0),
-    }, amount);
-    await refundCreditsInTransaction(
-      tx,
-      input.userId,
-      funding.fromGranted,
-      funding.fromPurchased,
-      `render-refund:${job.id}:${input.reason}`.slice(0, 300),
-      funding.promotionalDebits,
-    );
-  } else if (summary.funding === "minutes") {
-    if (summary.amount > 0) {
-      await tx.$executeRaw`UPDATE "User" SET "minutesUsed" = MAX(0, "minutesUsed" - ${summary.amount}) WHERE "id" = ${input.userId}`;
-    }
-  } else {
+  if (summary.funding === "clips") {
     await tx.user.updateMany({
       where: { id: input.userId, usageCount: { gt: 0 } },
       data: { usageCount: { decrement: 1 } },
     });
+  } else {
+    // Reuse the existing bucket-aware helper: mixed funding must restore both
+    // included minutes and the exact credit buckets, not just its credit portion.
+    await refundReservationInTransaction(tx, input.userId, job,
+      `render-refund:${job.id}:${input.reason}`.slice(0, 300));
   }
+  await settleFundingMirror(tx, job);
 
   const outputUrl = canonicalRenderUrl(job.videoUrl);
   if (outputUrl) {

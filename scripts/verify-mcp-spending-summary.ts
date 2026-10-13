@@ -119,6 +119,98 @@ async function main() {
   assert.equal(delivered?.status, "done");
   assert.equal(delivered?.billingReceipt?.includedRenderMinutes, 2);
   assert.equal(await getVideoJobStatusTool("foreign", "external-root"), null);
+  // Review B1: use the actual transactional refund, including mixed funding,
+  // descendant ownership and rollback. Each case owns a separate synthetic user.
+  const { refundVideoJobTerminalRenderReservations } = await import("../src/lib/render/reservation-settlement");
+  const refundFailures: string[] = [];
+  async function refundCase(name: string, run: () => Promise<void>) {
+    try { await run(); console.log(`PASS refund receipt: ${name}`); }
+    catch (error) { refundFailures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  async function refundFixture(id: string, includedMinutes = 2, overflowMinutes = 0, descendant = false) {
+    const owner = `refund-${id}`;
+    const credits = overflowMinutes * creditCostFor("minute");
+    await prisma.user.create({ data: { id: owner, name: "Refund fixture", email: `${owner}@example.test`, plan: "PRO", minutesUsed: includedMinutes, minutesLimit: 100 } });
+    await grantCredits(owner, 100, "purchase", "fixture");
+    if (credits) assert((await spendCredits(owner, credits, `render-overflow:${id}`)).ok);
+    const project = await prisma.editorProject.create({ data: { userId: owner } });
+    await prisma.videoJob.create({ data: { id, userId: owner, projectId: project.id, status: "failed", inputJson: JSON.stringify({ mcpHold: true }), fundingState: "transferred", fundedMeteredMinutes: includedMinutes + overflowMinutes, fundedCreditsSpent: credits } });
+    const parent = descendant ? `${id}-export` : id;
+    if (descendant) {
+      await prisma.videoJob.create({ data: { id: parent, userId: owner, projectId: project.id, type: "export", status: "failed", inputJson: JSON.stringify({ mcpRootJobId: id, sourceJobId: id }) } });
+      await prisma.renderJob.create({ data: { id: `${id}-free-base`, userId: owner, parentJobId: id, type: "RENDER", status: "DONE", payload: "{}" } });
+    }
+    const renderId = `${id}-render`;
+    await prisma.renderJob.create({ data: { id: renderId, userId: owner, parentJobId: parent, type: descendant ? "BURN" : "RENDER", status: "DONE", payload: "{}", reservedQuota: true, reservedMinutes: includedMinutes + overflowMinutes, creditsSpent: credits || null } });
+    return { owner, parent, renderId };
+  }
+  await refundCase("included-minute completion and retry", async () => {
+    const { owner, parent } = await refundFixture("included-refund");
+    assert.equal((await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" })).refundedJobs, 1);
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner } })).minutesUsed, 0);
+    const receipt = await getVideoJobCostReceipt({ videoJobId: parent, userId: owner });
+    assert.equal(receipt?.reservedIncludedRenderMinutes, 0, "confirmed minute refund must not reconstruct the mirror");
+    assert.equal(receipt?.settlementStatus, "refunded");
+    assert.equal((await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "retry" })).refundedJobs, 0);
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner } })).minutesUsed, 0);
+  });
+  await refundCase("mixed minute/credit completion", async () => {
+    const { owner, parent } = await refundFixture("mixed-refund", 2, 1);
+    await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" });
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner } })).minutesUsed, 0, "mixed refund must restore included minutes as well as credits");
+    const receipt = await getVideoJobCostReceipt({ videoJobId: parent, userId: owner });
+    assert.equal(receipt?.confirmedRefundCredits, creditCostFor("minute"));
+    assert.equal(receipt?.reservedIncludedRenderMinutes, 0);
+    assert.equal(receipt?.outstandingReservedCredits, 0);
+    assert.equal(receipt?.availableCredits, 100);
+    assert.equal(receipt?.settlementStatus, "refunded");
+  });
+  await refundCase("pending descendant refund then confirmed completion", async () => {
+    const { owner, parent, renderId } = await refundFixture("descendant-refund", 2, 0, true);
+    await prisma.renderJob.update({ where: { id: renderId }, data: { status: "RUNNING" } });
+    assert.equal((await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" })).kind, "in_flight");
+    assert.equal((await getVideoJobCostReceipt({ videoJobId: parent, userId: owner }))?.reservedIncludedRenderMinutes, 2);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: "descendant-refund" } })).fundingState, "transferred");
+    await prisma.renderJob.update({ where: { id: renderId }, data: { status: "FAILED" } });
+    await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" });
+    const receipt = await getVideoJobCostReceipt({ videoJobId: "descendant-refund", userId: owner });
+    assert.equal(receipt?.reservedIncludedRenderMinutes, 0);
+    assert.equal(receipt?.settlementStatus, "refunded");
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: "descendant-refund" } })).fundingState, "refunded");
+  });
+  await refundCase("failed refund rolls back flags and preserves exposure", async () => {
+    const { owner, parent, renderId } = await refundFixture("rollback-refund", 2, 1);
+    // Missing original promotional grant makes the real refund helper fail after
+    // the reservation claim, proving all preceding mutations roll back together.
+    await prisma.renderJob.update({ where: { id: renderId }, data: { creditsFromPromotional: creditCostFor("minute"), creditFundingJson: JSON.stringify({ fromGranted: 0, fromPurchased: 0, fromPromotional: creditCostFor("minute"), promotionalDebits: [{ grantId: "missing-grant", amount: creditCostFor("minute") }], debits: [{ bucket: "promotional", grantId: "missing-grant", amount: creditCostFor("minute") }] }) } });
+    await assert.rejects(refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" }));
+    assert.equal((await prisma.renderJob.findUniqueOrThrow({ where: { id: renderId } })).reservedQuota, true);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: parent } })).fundingState, "transferred");
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner } })).minutesUsed, 2);
+    assert.equal((await getVideoJobCostReceipt({ videoJobId: parent, userId: owner }))?.confirmedRefundCredits, 0);
+  });
+  await refundCase("partial reservation cannot certify full mirror refund", async () => {
+    const { owner, parent, renderId } = await refundFixture("partial-refund");
+    await prisma.renderJob.update({ where: { id: renderId }, data: { reservedMinutes: 1 } });
+    await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" });
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner } })).minutesUsed, 1);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: parent } })).fundingState, "transferred");
+    const receipt = await getVideoJobCostReceipt({ videoJobId: parent, userId: owner });
+    assert.equal(receipt?.fundingReconciliationRequired, true);
+    assert.equal(receipt?.settlementStatus, "reconciliation_required");
+  });
+  await refundCase("historical cleared flags stay unconfirmed", async () => {
+    const { owner, parent, renderId } = await refundFixture("historical-ambiguous");
+    await prisma.renderJob.update({ where: { id: renderId }, data: { reservedQuota: false, reservedMinutes: null, creditsSpent: null } });
+    assert.equal((await refundVideoJobTerminalRenderReservations({ videoJobId: parent, userId: owner, reason: "fixture" })).refundedJobs, 0);
+    const receipt = await getVideoJobCostReceipt({ videoJobId: parent, userId: owner });
+    assert.equal(receipt?.reservedIncludedRenderMinutes, 2);
+    assert.equal(receipt?.confirmedRefundCredits, 0);
+    assert.equal(receipt?.settlementStatus, "reconciliation_required");
+    assert.equal(receipt?.fundingReconciliationRequired, true);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: parent } })).fundingState, "transferred");
+  });
+  assert.deepEqual(refundFailures, [], refundFailures.join("\n"));
   // Execute the actual registered route callback with only the MCP/Clerk transport
   // stubbed. This specifically covers the budget-hold early return, not a source scan.
   const registered = new Map<string, (args: { id: string }, extra: unknown) => Promise<{ content: { text: string }[] }>>();

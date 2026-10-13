@@ -180,6 +180,7 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
     let reservedImageCredits = 0, reservedRenderCredits = 0, reservedIncludedRenderMinutes = 0;
     let consumedTrialImageUnits = 0, reservedTrialImageUnits = 0, refundedTrialImageUnits = 0;
     let pendingRefundExposureCredits = 0;
+    let fundingReconciliationRequired = false;
     const refundPending = jobs.some(job => job.reservationRefundPending);
     for (const image of images) {
       if (image.fundingSource === "starter_allowance") {
@@ -226,6 +227,7 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
       const returned = refunds.filter(row => row.action?.startsWith(`video-job-refund:${job.id}:`) || renderIds.some(id => row.action?.startsWith(`render-refund:${id}:`) || row.action === `queue-for job ${id}` || row.action === `queue-superseding QUEUED job ${id}`)).reduce((n, row) => n + row.delta, 0);
       const amount = Math.max(0, (job.fundedCreditsSpent ?? 0) - returned);
       const minutes = included(job.fundedMeteredMinutes, job.fundedCreditsSpent ?? 0);
+      if (job.fundingState !== "reserved" && renderIds.length > 0 && (amount > 0 || minutes > 0)) fundingReconciliationRequired = true;
       if (job.fundingState === "settled" && renderIds.length === 0) { renderCredits += amount; includedRenderMinutes += minutes; }
       else { reservedRenderCredits += amount; reservedIncludedRenderMinutes += minutes; }
       if (job.reservationRefundPending) pendingRefundExposureCredits += amount;
@@ -240,7 +242,7 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
     const renderReceipt = renderReceiptFrom(active);
     const confirmedRefundCredits = refunds.reduce((n, row) => n + row.delta, 0);
     const hasOutstanding = outstandingReservedCredits > 0 || reservedTrialImageUnits > 0 || reservedIncludedRenderMinutes > 0 || active.some(render => render.status !== "DONE");
-    const settlementStatus = refundPending ? "refund_pending" : hasOutstanding ? "in_progress" :
+    const settlementStatus = refundPending ? "refund_pending" : fundingReconciliationRequired ? "reconciliation_required" : hasOutstanding ? "in_progress" :
       imageCredits + renderCredits + includedRenderMinutes + consumedTrialImageUnits > 0 || active.some(render => render.status === "DONE") ? "settled" :
       confirmedRefundCredits > 0 || refundedTrialImageUnits > 0 || jobs.some(job => job.fundingState === "refunded") ? "refunded" : "unfunded";
     // A queued or fully refunded canceled job legitimately has no settled render.
@@ -266,7 +268,7 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
       // The durable marker says reconciliation is pending, but does not allocate a
       // guaranteed refund amount. Never turn the whole exposed balance into a promise.
       pendingRefundCredits: refundPending ? null : 0,
-      pendingRefundExposureCredits, refundPending,
+      pendingRefundExposureCredits, refundPending, fundingReconciliationRequired,
       consumedTrialImageUnits, reservedTrialImageUnits, refundedTrialImageUnits,
       // CreditBalance contains available money AFTER reservations; never subtract them twice.
       availableCredits: (balance?.granted ?? 0) + (balance?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0),

@@ -60,3 +60,35 @@ Task 5 must wire **`scripts/verify-mcp-spending-summary.ts`** into CI, retain on
 Orca copied `.env` and `.env.r2.production` into the new worktree despite `--setup skip`. The copies were removed from **this worktree only**, without printing their contents, once discovered. Early onboarding imports observed managed flags from that environment. Inspection of the existing import path showed `managed-stock.server → prisma`, whose module initialization starts busy-timeout/cache-size PRAGMAs. Therefore **startup PRAGMAs may have opened the copied environment's configured database connection before removal; zero database access cannot be claimed**. No deliberate application data operation or provider request was invoked through that onboarding check. Billing fixtures always replaced DATABASE_URL with a throwaway SQLite before importing app code; generation also had an explicit disposable URL. All subsequent application-import commands used explicit disposable DATABASE_URL. The old environment was not reread/reconnected for investigation.
 
 No provider generation, deployment, restart, production cleanup, customer messages, Linear changes or publishing was performed. No intentional production data mutation was part of this work; the startup-PRAGMA uncertainty above remains disclosed. HERO-70 locking risk and live auth/browser readiness remain separate from these regression results.
+
+## Review fix round 1 — B1: authoritative render refunds and funding mirrors
+
+Independent review reproduced a successful two-minute terminal refund that restored `User.minutesUsed` from 2 to 0 but left the parent's `fundingState=transferred`. The new receipt reconstructed that old mirror as two outstanding minutes. The reviewer also independently confirmed the related mixed-funding defect in the existing settlement seam: a three-minute reservation funded by two included minutes plus one credit minute returned credits but left the two included minutes consumed.
+
+Before production edits, added actual-helper regressions to `verify-mcp-spending-summary.ts`. The red run exited **1** with three failures: included refund receipt `2 !== 0`, mixed actual quota refund `2 !== 0`, and descendant refund receipt `2 !== 0`. Existing rollback and historical-ambiguity controls already passed.
+
+The bounded correction reuses `refundReservationInTransaction` in the existing terminal render-settlement transaction for minute/credit funding. This restores both parts of mixed funding through the canonical bucket-aware refund logic. The existing legacy clip-funded `usageCount` branch is retained. No new wallet, schema, price or reservation mechanism was added.
+
+After a successful exact refund, that same transaction resolves the owned direct/quote/held/auto-chain funding root and marks its transferred/settled mirror `refunded` **only when** the refunded reservation's original minute/credit quantities match the complete mirror and no active reservation remains in that owned chain. A running render, failed refund, partial/mismatched amount, unrelated project row or another owner's row cannot certify the whole mirror as returned. The existing flag claim, actual quota/credit return, mirror update and charged-clip deletion all roll back together on failure.
+
+Already-cleared historical flags are deliberately not backfilled as successful refunds. A transferred mirror with unresolved exposure now carries `fundingReconciliationRequired=true` and `settlementStatus=reconciliation_required`, retaining conservative exposure rather than claiming money returned or a render still running. Guidance explains this state and calls for reconciliation. A partial mismatch likewise remains explicitly unresolved; the exposed quantities are an upper bound, not proof of an active exact reservation or a guaranteed refund.
+
+Final targeted fixture cases all pass:
+
+- Pure included-minute completion and idempotent retry: actual used minutes zero, no reconstructed reservation, refunded receipt, retry refunds zero rows.
+- Mixed included/credit completion: actual used minutes zero, exact positive refund ledger, wallet restored, no reserved minutes/credits.
+- Descendant burn transfer: RUNNING remains in flight and keeps the root mirror; FAILED→successful refund settles the root mirror, with the free base render excluded.
+- Real refund failure using a missing original promotional grant: exception rolls back quota changes, render flags and mirror; no confirmed refund is reported.
+- Partial/mismatched reservation: only its actual one minute returns; the full two-minute mirror is not falsely marked refunded, and reconciliation is explicit.
+- Historical already-cleared flags: no new refund occurs, no mirror is invented as refunded, unresolved exposure remains.
+
+Final commands (explicit disposable DATABASE_URL before every app import), all exit **0**:
+
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-spending-summary.ts` — existing fixture plus six refund regressions above.
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-render-reservation-settlement.ts` — existing historical minute/credit/clip, attribution, failure and retry settlement checks.
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-billing-receipt.ts` — original four release checks.
+- `npx tsc --noEmit --pretty false`.
+- Scoped ESLint: `src/lib/render/reservation-settlement.ts`, `src/lib/mcp/billing-receipt.ts`, `src/lib/mcp/onboarding.ts`, `scripts/verify-mcp-spending-summary.ts`.
+- `git diff --check`.
+
+No broad suite rerun, no production action and no new agent. Earlier stale chain-export/audit-status fixture failures remain explicitly unclaimed and assigned to Task 5. The existing spending-summary script now includes these regressions; no additional CI script entry is needed.
