@@ -1,3 +1,7 @@
+import { validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import type { PendingWindowMedia } from "@/lib/pending-broll-media";
+import type { ExternalWindowState } from "@/lib/external-media";
+import { isBrollTransition, type BrollTransition } from "@/lib/broll-window-style";
 /**
  * T8 (ADR 0064, plan G21): the client-safe view of a Pending Edit Draft, matching
  * `pendingEditForWeb()`'s shape (`src/lib/mcp/pending-edit-draft.ts`, server-only — that module
@@ -5,9 +9,7 @@
  * its own small module so `usePostPhaseEditor.ts` / `usePendingEditDraft.ts` never need to import
  * the server module, only this one.
  *
- * `logoOverlay` and `windowEdits` are deliberately absent here — the plan is explicit that the
- * logo stays from the project (the web never adopts the agent's logo), and window edits are an
- * MCP-only concern the web Post phase does not read.
+ * B-roll replacements are owner-resolved by the server before reaching this projection.
  */
 import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
 import type { V2CardLen, V2CardOverrides, V2Caption, V2SubConfig } from "./subtitle-style";
@@ -27,6 +29,10 @@ export type WebPendingEditDraft = {
   backgroundMusic?: BackgroundMusicEdit;
   /** EP5 backlog #14 — absent (a pre-existing MCP draft) reads as 0 by every caller. */
   tailHoldMs?: number;
+  windowEdits?: WindowEdit[];
+  windowMedia?: PendingWindowMedia[];
+  requiredWindows?: ExternalWindowState[];
+  brollTransition?: BrollTransition;
 };
 
 export type WebPendingEdit = {
@@ -65,6 +71,10 @@ export function normalizeWebPendingEdit(value: unknown): WebPendingEdit | null {
   return {
     revision,
     draft: {
+      windowEdits: Array.isArray(d.windowEdits) && !("error" in validateWindowEdits(d.windowEdits)) ? validateWindowEdits(d.windowEdits) as WindowEdit[] : [],
+      windowMedia: Array.isArray(d.windowMedia) ? d.windowMedia as PendingWindowMedia[] : [],
+      requiredWindows: Array.isArray(d.requiredWindows) ? d.requiredWindows as ExternalWindowState[] : [],
+      ...(isBrollTransition(d.brollTransition) ? { brollTransition: d.brollTransition } : {}),
       captions: d.captions,
       originalCaptions: d.originalCaptions,
       ...(Array.isArray(d.words) ? { words: d.words as WebPendingEditDraft["words"] } : {}),
@@ -81,4 +91,26 @@ export function normalizeWebPendingEdit(value: unknown): WebPendingEdit | null {
       ...(typeof d.tailHoldMs === "number" ? { tailHoldMs: clampTailHoldMs(d.tailHoldMs) } : {}),
     },
   };
+}
+
+/** Matches the existing inspector shape; desktop/mobile use the same hook. */
+export function webPendingWindowEdits(draft: WebPendingEditDraft | null) {
+  return new Map((draft?.windowEdits ?? []).map(({ index, replacementKind, start, end, ...edit }) => [index, {
+    ...edit, ...(replacementKind ? { kind: replacementKind } : {}),
+    ...(start !== undefined ? { startSec: start } : {}), ...(end !== undefined ? { endSec: end } : {}),
+  }]));
+}
+
+/** Import status may change without a draft revision. Update only untouched server edits. */
+export function refreshPendingWindowMedia<T>(current: Map<number, T>, previous: Map<number, T>, incoming: Map<number, T>): Map<number, T> {
+  const next = new Map(current);
+  for (const index of new Set([...previous.keys(), ...incoming.keys()])) {
+    const untouched = previous.has(index)
+      ? current.has(index) && JSON.stringify(current.get(index)) === JSON.stringify(previous.get(index))
+      : !current.has(index);
+    if (!untouched) continue;
+    if (incoming.has(index)) next.set(index, incoming.get(index)!);
+    else next.delete(index);
+  }
+  return next;
 }

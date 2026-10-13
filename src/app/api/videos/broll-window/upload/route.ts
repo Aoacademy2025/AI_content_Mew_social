@@ -1,3 +1,4 @@
+import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import path from "path";
 import { getCurrentUser } from "@/lib/clerk-auth";
@@ -124,6 +125,12 @@ export async function POST(req: Request) {
         { status: result.value.status },
       );
     }
+    // Native editor uploads share the same owned-ready media identity as MCP imports.
+    await prisma.mediaImport.create({ data: {
+      userId: user.id, source: "upload", purpose: validated.kind === "image" ? "broll_image" : "broll_video",
+      status: "ready", resultSrc: result.value.src, durationMs: Math.round(result.value.clipDuration * 1000),
+      bytes: file.size, deadlineAt: new Date(),
+    } });
     return NextResponse.json(result.value);
   } finally {
     admission.lease.release();

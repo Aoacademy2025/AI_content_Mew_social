@@ -1,3 +1,4 @@
+import { externalMediaContext } from "@/lib/external-media.server";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import {
@@ -6,7 +7,7 @@ import {
 } from "@/lib/editor-projects";
 import { patchEditorProjectForUser } from "@/lib/editor-project-patch";
 import { prisma } from "@/lib/prisma";
-import { pendingEditForWeb } from "@/lib/mcp/pending-edit-draft";
+import { pendingEditForWebResolved } from "@/lib/mcp/pending-edit-draft";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -24,9 +25,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       where: { id, userId: user.id },
       select: { activeJobId: true, pendingEditJson: true, pendingEditRevision: true },
     });
-    const pendingEdit = pendingEditRow ? pendingEditForWeb(pendingEditRow) : null;
+    const pendingEdit = pendingEditRow ? await pendingEditForWebResolved(user.id, pendingEditRow) : null;
 
-    return NextResponse.json({ project: { ...project, pendingEdit } });
+    const external = project.activeJobId ? await externalMediaContext(user.id, project.activeJobId) : null;
+    const sourceDraft = external ? { ...(project.draft ?? {}), brollSource: "external", stockSource: "none" } : project.draft;
+    return NextResponse.json({ project: { ...project, draft: sourceDraft, pendingEdit } });
   } catch (error) {
     console.error("[api/editor-projects/:id] get error:", error);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });

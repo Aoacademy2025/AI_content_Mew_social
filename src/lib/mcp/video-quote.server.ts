@@ -160,6 +160,7 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
       geminiVoiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede",
       geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
     }),
+    ...(source === "external" ? { brollSource: "external" } : {}),
     avatarMode: "none",
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),
     ...(music ? { bgmFile: music.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),

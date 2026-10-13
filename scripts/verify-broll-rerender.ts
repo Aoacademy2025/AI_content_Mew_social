@@ -147,10 +147,10 @@ check("rejects empty array (0 edits)", isErr(validateWindowEdits([])));
 check("rejects non-array", isErr(validateWindowEdits({ index: 0, src: "/api/stocks/a.mp4" } as unknown)));
 check("rejects null", isErr(validateWindowEdits(null)));
 {
-  const forty = Array.from({ length: 40 }, (_, i) => ({ index: i, src: "/api/stocks/a.mp4" }));
-  check("accepts exactly 40 edits", !isErr(validateWindowEdits(forty)));
-  const fortyOne = Array.from({ length: 41 }, (_, i) => ({ index: i, src: "/api/stocks/a.mp4" }));
-  check("rejects 41 edits (>40)", isErr(validateWindowEdits(fortyOne)));
+  const forty = Array.from({ length: 1500 }, (_, i) => ({ index: i, src: "/api/stocks/a.mp4" }));
+  check("accepts exactly 1500 edits", !isErr(validateWindowEdits(forty)));
+  const fortyOne = Array.from({ length: 1501 }, (_, i) => ({ index: i, src: "/api/stocks/a.mp4" }));
+  check("rejects 1501 edits (>1500)", isErr(validateWindowEdits(fortyOne)));
 }
 
 // dedupe: same index twice -> last wins

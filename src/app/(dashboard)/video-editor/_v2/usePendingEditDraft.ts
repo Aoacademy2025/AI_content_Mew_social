@@ -48,8 +48,16 @@ export function usePendingEditDraft(
   }, [projectId]);
 
   useEffect(() => {
-    void reloadPendingEdit();
+    const timer = window.setTimeout(() => { void reloadPendingEdit(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [reloadPendingEdit, activeJobId]);
+
+  // Media imports settle independently of the draft revision; refresh only while needed.
+  useEffect(() => {
+    if (!pendingEdit?.draft.windowMedia?.some(window => window.status === "pending")) return;
+    const timer = setTimeout(() => { void reloadPendingEdit(); }, 3_000);
+    return () => clearTimeout(timer);
+  }, [pendingEdit, reloadPendingEdit]);
 
   return { pendingEdit, reloadPendingEdit };
 }
