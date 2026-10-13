@@ -146,7 +146,7 @@ export async function sendDueRenewalReminders(
     ) continue;
     run.cashBacked += 1;
 
-    const daysLeft = bangkokCalendarDaysBetween(now, candidate.planExpiresAt);
+    const daysLeft = bangkokCalendarDaysBetween(now, expiresAt);
     const matchedPayment = matchedCashBackedPayment(candidate);
     const periodDays = matchedPayment?.periodDays;
     const decision = promptpayMonthly && periodDays !== undefined
@@ -160,7 +160,7 @@ export async function sendDueRenewalReminders(
       claim = await prisma.renewalReminderLog.create({
         data: {
           userId: candidate.id,
-          termExpiresAt: candidate.planExpiresAt,
+          termExpiresAt: expiresAt,
           kind,
           attemptedAt: now,
         },
