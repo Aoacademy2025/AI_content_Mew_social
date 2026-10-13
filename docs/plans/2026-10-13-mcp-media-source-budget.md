@@ -141,7 +141,7 @@ Owner: integration fixtures, CI coverage, rollout notes, reviewed PR. Depends on
 
 - [x] Wire all new verify scripts into CI; run meaningful regression suites for quote/auth/budget, MCP creation/edit/import, billing/settlement and existing web receipts.
 - [x] Use isolated throwaway SQLite and installed dependency setup; never point tests at production or a shared mutable worktree DB.
-- [ ] TypeScript, lint changed files, production build, MCP CI-coverage; record commands, exit codes and any excerpts on failure.
+- [x] TypeScript, lint changed files, production build, MCP CI-coverage; record commands, exit codes and any excerpts on failure.
 - [x] Four ordinary-user E2E paths and malicious-client bypass tests; no real provider charge needed for regression tests. Production rehearsal remains separately authorized.
 - [x] Independent whole-branch correctness and security reviews, resolve blockers, then open PR with additive-schema and rollback instructions. A rollback must drain new quote-bound jobs or retain enforcement; disabling a gate must not authorize unpaid/unapproved work.
 - [x] No live-readiness claim merely because CI passes. Report actual test coverage and the unresolved separate HERO-70 database risk.
@@ -191,6 +191,6 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 
 ## Status
 
-interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; maintenance compatibility corrected and independently reviewed; full hosted CI pending; not ready to merge
+interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; maintenance compatibility corrected and independently reviewed; all hosted verification steps and current unmocked local production build pass; hosted build retry pending after Next Google-font URL parsing failure; not ready to merge
 
 The approved product scope is settled. The mew-kickoff skill requires production execution in a fresh session; do not request another approval for the same scope.
