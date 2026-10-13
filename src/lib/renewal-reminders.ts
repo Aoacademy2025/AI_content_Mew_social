@@ -117,6 +117,44 @@ export function matchedCashBackedPayment(candidate: RenewalTermCandidate): Renew
   });
 }
 
+export type RenewalGrant = {
+  outcome: string;
+  redeemedAt: Date;
+  entitlementPlan: string | null;
+  entitlementStartsAt: Date | null;
+  entitlementExpiresAt: Date | null;
+  coupon: {
+    type: string;
+    plan: string;
+    durationDays: number;
+  };
+};
+
+function isPaidRenewalPlan(plan: string): boolean {
+  return plan === "PRO" || plan === "BUSINESS";
+}
+
+/**
+ * A grant keeps access past the stored expiry when it is already in effect
+ * at that instant and its own end is later. A coupon that only ends on the
+ * stored expiry, or that starts after a gap, does not.
+ */
+export function grantExtendsPastExpiry(grant: RenewalGrant, expiresAt: Date): boolean {
+  if (grant.coupon.type !== "GRANT" || !isPaidRenewalPlan(grant.coupon.plan)) return false;
+  const legacy = grant.outcome === "LEGACY";
+  if (!legacy && grant.outcome === "PROMO_ONLY") return false;
+  if (!legacy && grant.entitlementPlan && !isPaidRenewalPlan(grant.entitlementPlan)) return false;
+
+  const start = legacy ? grant.redeemedAt : grant.entitlementStartsAt;
+  if (!start || start.getTime() > expiresAt.getTime()) return false;
+
+  if (grant.coupon.durationDays === 0) return true;
+  const end = legacy
+    ? new Date(grant.redeemedAt.getTime() + grant.coupon.durationDays * DAY_MS)
+    : grant.entitlementExpiresAt;
+  return Boolean(end && end.getTime() > expiresAt.getTime());
+}
+
 export type RenewalDeliveryState = {
   notificationDelivered: boolean;
   emailAttempted: boolean;

@@ -128,8 +128,26 @@ async function main() {
   assert.equal(log.emailAttempted, true);
   assert.equal(log.emailDelivered, true);
 
+  const coveredExpiry = await createCandidate({ id: "renewal-test-covered", now: NOW, daysLeft: 14, payment: "plan" });
+  const coveredCoupon = await prisma.coupon.create({
+    data: { code: "RENEWAL-COVER-TEST", plan: "PRO", durationDays: 30, type: "GRANT" },
+  });
+  await prisma.couponRedemption.create({
+    data: {
+      couponId: coveredCoupon.id,
+      userId: "renewal-test-covered",
+      redeemedAt: NOW,
+      outcome: "SCHEDULED",
+      entitlementPlan: "PRO",
+      entitlementStartsAt: coveredExpiry,
+      entitlementExpiresAt: new Date(coveredExpiry.getTime() + 30 * DAY_MS),
+    },
+  });
+
   const second = await sendDueRenewalReminders(NOW, deps as never);
   assert.equal(second.claimed, 0, "a retry cannot reclaim the same reminder");
+  assert.equal(second.remindersSent, 0, "a coupon that continues past the stored expiry sends no renewal");
+  assert.equal(emails.length, 1, "the covered account receives no renewal email");
   assert.equal(second.duplicateClaimsSkipped, 1);
   assert.equal(notifications.length, 1, "a retry creates no duplicate notification");
   assert.equal(emails.length, 1, "a retry makes no duplicate email attempt");

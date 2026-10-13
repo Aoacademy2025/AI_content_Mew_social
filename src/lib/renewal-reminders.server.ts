@@ -8,6 +8,7 @@ import { bangkokCalendarDaysBetween } from "@/lib/day21-convert-reminder";
 import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server";
 import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
 import {
+  grantExtendsPastExpiry,
   isCashBackedRenewalTerm,
   matchedCashBackedPayment,
   renewalDeliveryStatus,
@@ -113,6 +114,16 @@ export async function sendDueRenewalReminders(
           createdAt: true,
         },
       },
+      couponRedemptions: {
+        select: {
+          outcome: true,
+          redeemedAt: true,
+          entitlementPlan: true,
+          entitlementStartsAt: true,
+          entitlementExpiresAt: true,
+          coupon: { select: { type: true, plan: true, durationDays: true } },
+        },
+      },
     },
   });
 
@@ -126,10 +137,12 @@ export async function sendDueRenewalReminders(
   const promptpayMonthly = promptpayMonthlyEnabled();
 
   for (const candidate of candidates) {
+    const expiresAt = candidate.planExpiresAt;
     if (
-      !candidate.planExpiresAt
+      !expiresAt
       || isInternalNorthStarAccount(candidate)
       || !isCashBackedRenewalTerm(candidate)
+      || candidate.couponRedemptions.some((grant) => grantExtendsPastExpiry(grant, expiresAt))
     ) continue;
     run.cashBacked += 1;
 
