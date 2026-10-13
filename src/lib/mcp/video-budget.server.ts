@@ -84,5 +84,5 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
   }
   const { prepareVideoQuote } = await import("./video-quote.server");
   const prepared = await prepareVideoQuote(user, args);
-  return "quoteId" in prepared ? { ...prepared, error: "confirmation_required", code: "confirmation_required" } : prepared;
+  return "quoteId" in prepared ? { ...prepared, error: "confirmation_required", code: "confirmation_required", message: "ต้องให้เจ้าของบัญชียืนยันใบสรุปค่าใช้จ่ายใน Studio ก่อนเริ่มงาน" } : prepared;
 }

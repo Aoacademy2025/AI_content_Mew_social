@@ -90,7 +90,7 @@ assert(
     && (editorExportEnqueue.match(/await inflightCapReached\(user\.id\)/g) ?? []).length === 2,
   "all three web in-flight limits use the shared status set",
 );
-assert(mcpRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "MCP in-flight limit includes provider waits");
+// Actual quote-consumption overlap refusal (including waiting_provider) is exercised by verify-mcp-budget.ts.
 assert(mcpRoute.includes("cancelMcpVideoJob"), "MCP cancel_video_job routes through the chain-aware cancel helper");
 assert(insightsRoute.includes("waitingProvider:"), "admin insights reports waiting-provider count separately");
 // Fix round 1 (A5): web DELETE imports the core from its own module (no chain-export in its

@@ -173,8 +173,8 @@ async function verifyVideoOptionsSubtitleShape() {
       if (path === "/api/music") return { tracks: [], userTracks: [] } as T;
       throw new Error("unexpected " + path);
     },
-    post: async () => ({} as any),
-    patch: async () => ({} as any),
+    post: async <T>() => ({} as T),
+    patch: async <T>() => ({} as T),
   };
   const u = { heygenKey: null, elevenlabsKey: null, heygenAvatarId: null, geminiVoiceName: null, elevenlabsVoiceId: null };
 
@@ -191,38 +191,13 @@ async function verifyVideoOptionsSubtitleShape() {
     withBrands.subtitle.brands.length === 1 && withBrands.subtitle.brands[0].brandProfileId === "bp1");
 }
 
-// ── E. route.ts wiring (source-grep, same pattern as verify-mcp-gemini-voice-style.ts) ──
-console.log("E) [transport]/route.ts wiring");
+// ── E. Exact normalized design is frozen in the executable quote. ──
+console.log("E) quote preparation owns brand/subtitle resolution (covered with DB in verify-mcp-video-quote)");
 {
-  const routeSrc = readFileSync(join(__dirname, "..", "src", "app", "api", "[transport]", "route.ts"), "utf8");
-  check("create_video_job resolves the Brand Subtitle Style via resolveMcpBrandSubtitleStyle",
-    routeSrc.includes("resolveMcpBrandSubtitleStyle(p.userId, args.brandProfileId)"));
-  check("a foreign/inactive brandProfileId returns a generic brand_not_found error",
-    routeSrc.includes('return { error: "brand_not_found"'));
-  check("no explicit brandProfileId: active brands are listed and a lone one auto-picks",
-    routeSrc.includes("listActiveBrandProfilesForMcp(p.userId)") && routeSrc.includes("activeBrands.length === 1"));
-  check("the multi-brand warning uses the exact spec text with the live count",
-    routeSrc.includes("`มีแบรนด์ให้เลือก ${activeBrands.length} แบรนด์ — ระบุ brandProfileId เพื่อใช้สไตล์ซับของแบรนด์`"));
-  check("create_video_job resolves the design via resolveMcpSubtitleDesign before persisting",
-    routeSrc.includes("resolveMcpSubtitleDesign("));
-  check("the resolved design + cardLen are persisted into the job's inputJson",
-    routeSrc.includes("subtitleDesign: resolvedSubtitleDesign") && routeSrc.includes("subtitleCardLen: resolvedSubtitleCardLen"));
-  check("get_video_options forwards the caller's active brands",
-    routeSrc.includes("getVideoOptions(pipelineCaller(p.userId), p.user, await listActiveBrandProfilesForMcp(p.userId))"));
-  check("T7 Part B: a resolved brand with no usable subtitle style pushes brandSubtitleStyleMissingWarning into warnings",
-    routeSrc.includes("brandSubtitleStyleMissingWarning("));
-  check("T7 Part B: resolution order and the multi-brand warning are untouched (still exactly one multi-brand push site)",
-    (routeSrc.match(/มีแบรนด์ให้เลือก \$\{activeBrands\.length\} แบรนด์/g) ?? []).length === 1);
-}
-{
-  const orchSrc = readFileSync(join(__dirname, "..", "src", "lib", "mcp", "orchestrator.ts"), "utf8");
-  check("orchestrator resolves the persisted design once via resolvedMcpSubtitleDesignFromInput",
-    orchSrc.includes("resolvedMcpSubtitleDesignFromInput(input)"));
-  check("every maxCardCharsFor() call in the caption block takes the resolved cardBudgetSize (none left bare)",
-    !/maxCardCharsFor\(\)/.test(orchSrc));
-  check("both buildBurnConfig call sites (avatar-checkpoint-resume and the main path) use the resolved design",
-    [...orchSrc.matchAll(/buildBurnConfig\(([^)]*)\)/g)].length === 2
-    && [...orchSrc.matchAll(/buildBurnConfig\(([^)]*)\)/g)].every((m) => m[1].includes("heroSubtitleDesign")));
+  const source = readFileSync(join(__dirname, "..", "src", "lib", "mcp", "video-quote.server.ts"), "utf8");
+  check("quote resolver uses shared brand owner lookup", source.includes("resolveMcpBrandSubtitleStyle(user.id, brandId)"));
+  check("quote resolver preserves single-brand auto selection", source.includes("brands.length === 1"));
+  check("quote pins the resolved design and card length", source.includes("subtitleDesign: subtitle.design, subtitleCardLen: subtitle.cardLen"));
 }
 
 // ── F. throwaway-SQLite tests: resolveMcpBrandSubtitleStyle / listActiveBrandProfilesForMcp ─

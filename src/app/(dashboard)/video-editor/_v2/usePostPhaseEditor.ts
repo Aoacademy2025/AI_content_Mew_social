@@ -1178,7 +1178,13 @@ export function usePostPhaseEditor(
   // latest. The ref guard is keyed on revision, not object identity, so a re-render that hands
   // back an equal-revision draft is a no-op (never clobbers in-progress typing).
   useEffect(() => {
-    if (!pendingEdit) return;
+    if (!pendingEdit) {
+      // Successful export retires the server draft while this editor stays mounted.
+      // The next mutation must not carry the retired draft's CAS revision.
+      pendingRevisionRef.current = undefined;
+      appliedPendingRevisionRef.current = null;
+      return;
+    }
     const incomingMedia = webPendingWindowEdits(pendingEdit.draft);
     if (appliedPendingRevisionRef.current === pendingEdit.revision) {
       const previousMedia = appliedPendingMediaRef.current;

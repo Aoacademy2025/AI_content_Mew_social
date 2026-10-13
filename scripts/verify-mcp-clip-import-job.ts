@@ -1,7 +1,7 @@
 // verify-mcp-clip-import-job.ts — Task 14 (PR-B, plan docs/plans/2026-10-03-mcp-edit-before-export.md,
 // G2/G5/G14/G22/G28, A10, AC4/AC6/AC8): `create_video_job({clipUrl | clipUploadId, cutawayLayout})`.
 //
-// Every MCP call goes through the REAL route handler (only Clerk + the network key preflight are
+// Historical fixture calls goes through the REAL route handler (only Clerk + the network key preflight are
 // stubbed, same harness shape as verify-mcp-broll-window-edits.ts). Presenter imports run through
 // the REAL import lane and T9's REAL presenter checks (real ffmpeg/ffprobe) with a fake fetch for
 // url rows; the upload path goes through the REAL `PUT /api/mcp-uploads/<token>` route. The
@@ -149,8 +149,44 @@ async function main() {
 
   check("os.tmpdir() is the private test dir", os.tmpdir() === privateTmp, os.tmpdir());
 
-  // ── REAL MCP route, compiled; only Clerk + the network key preflight are stubbed ──
+  // Historical waiting_import jobs retain their semantics. Seed those jobs through the
+  // retained shared import/create cores; public new creation is tested separately below
+  // and in verify-mcp-video-quote / verify-mcp-external-media.
+  async function historicalCreate(user: import("@prisma/client").User, args: import("../src/lib/mcp/create-video-input").CreateVideoJobInput) {
+    const clipCore = await import("../src/lib/mcp/clip-video-job");
+    const chain = await import("../src/lib/mcp/chain-export");
+    const gate = await import("../src/lib/mcp/tool-gating");
+    if ((clipCore.clipFieldsRequested(args) || args.exportMode !== undefined) && !chain.mcpEditorProjectEnabledFor(user)) return gate.featureNotEnabledEnvelope("ใช้ Studio เพื่อสร้างงาน");
+    const parsed = clipCore.parseClipJobArgs(args);
+    if (!parsed.ok) return parsed.failure;
+    if (!parsed.clip) {
+      const { requestVideoJob } = await import("../src/lib/mcp/video-budget.server");
+      const { decideVideoQuote } = await import("../src/lib/mcp/video-quote.server");
+      const quote = await requestVideoJob(user, args);
+      if (!("quoteId" in quote)) return quote;
+      await decideVideoQuote(user.id, quote.quoteId, "approve");
+      return requestVideoJob(user, { quoteId: quote.quoteId });
+    }
+    if (args.idempotencyKey) {
+      const duplicate = await clipCore.duplicateClipJobReply(user.id, args.idempotencyKey);
+      if (duplicate) return duplicate;
+    }
+    if (await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } }) >= 3) return { error: "too_many_jobs", message: "รอให้งานเดิมเสร็จก่อน" };
+    const started = await clipCore.startClipImport(user.id, parsed.clip.source);
+    if (!started.ok) return started.failure;
+    const created = await chain.createMcpVideoJob(user, {
+      script: "", mode: "upload", clipImportId: started.started.importId,
+      cutawayLayout: parsed.clip.cutawayLayout,
+      ...(parsed.clip.cutawayLayout === "fillYourself" ? { stockSource: "none" as const } : {}),
+    }, args.idempotencyKey, { title: args.title, hold: args.exportMode === "hold", waitingImport: true });
+    if (created.kind !== "created") { await clipCore.abandonClipImport(started.started); return { error: "duplicate", message: "งานนี้มีอยู่แล้ว" }; }
+    await clipCore.settleClipImportJobSafely(created.job.id, user.id);
+    return { jobId: created.job.id, status: "queued", ...(args.exportMode === "hold" ? { exportMode: "hold" } : {}) };
+  }
+
+  // Real transport/auth/audit, with an explicit historical creation fixture adapter.
   const routeRequire = (specifier: string): unknown => {
+    if (specifier === "@/lib/mcp/video-budget.server") return { requestVideoJob: historicalCreate };
     if (specifier === "@clerk/nextjs/server") return { auth: async () => { throw new Error("no Clerk in this test"); } };
     if (specifier === "@clerk/mcp-tools/next") return { verifyClerkToken: async () => undefined };
     if (specifier === "@/lib/key-preflight") {
@@ -451,6 +487,13 @@ async function main() {
       data: { status: "canceled", finishedAt: new Date() },
     });
   }
+
+  // The current public boundary never creates a waiting-import job from an unknown URL.
+  const { requestVideoJob: publicCreate } = await import("../src/lib/mcp/video-budget.server");
+  const beforePublic = await prisma.videoJob.count();
+  const unvalidated = await publicCreate(tester.user, { clipUrl: "https://public.example.test/presenter.mp4" });
+  check("new public remote presenter requires validated owned import before approval", unvalidated.code === "presenter_import_required");
+  check("unvalidated public presenter creates no render job", await prisma.videoJob.count() === beforePublic);
 
   // ── A ──
   await section("A) schema: the new fields sit in the shared, agent-neutral schema; non-beta is refused", async () => {

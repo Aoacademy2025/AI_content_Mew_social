@@ -417,6 +417,9 @@ async function main() {
   // the evasion where the key is built into a variable first: EVERY `video:${…}` template
   // in src/ must be either the sweep prefix or one of the two gated mints.
   const KNOWN_VIDEO_TEMPLATES: Record<string, number> = {
+    "src/lib/brand-profile-library.server.ts": 1, // owner-scoped read prefix
+    "src/lib/mcp/billing-receipt.ts": 1, // receipt read prefix
+    "src/lib/mcp/video-budget-checkpoint.ts": 1, // recovery read prefix
     "src/lib/video-image-batch-settlement.ts": 1, // the sweep prefix itself
     "src/app/api/videos/fetch-stock/route.ts": 2, // the two gated mints
   };
@@ -475,8 +478,8 @@ async function main() {
   // 5c. Both mint sites are downstream of an authorizeHeroVideoMint decision.
   const authorizeSites = allIndexesOf(fetchStock, "await authorizeHeroVideoMint({");
   check(
-    "fetch-stock authorizes the mint at BOTH entry points (hero mode + AutoMix AI slots)",
-    authorizeSites.length === 2,
+    "fetch-stock shares one authorization before hero mode and AutoMix AI slots",
+    authorizeSites.length === 1,
     `${authorizeSites.length} call site(s)`,
   );
   const heroMintAt = fetchStock.indexOf("idempotencyKey: `video:${videoJobId}:scene:");
@@ -489,19 +492,8 @@ async function main() {
       && Math.max(...authorizeSites) < Math.min(heroMintAt, autoMixMintAt),
     `authorize@[${authorizeSites.join(",")}] hero@${heroMintAt} automix@${autoMixMintAt}`,
   );
-  check(
-    "hero-only mode answers a denial with the shared denial constant (no re-typed copy)",
-    /if \(useHeroRunpodImage\) \{\s*const mint = await authorizeHeroVideoMint\(\{ fromRenderPipeline, userId, videoJobId: videoJobId! \}\);\s*if \(!mint\.ok\) \{\s*const denial = HERO_VIDEO_MINT_DENIAL_RESPONSES\[mint\.reason\];/.test(
-      fetchStock,
-    ),
-  );
-  check(
-    "AutoMix AI slots require an ok mint decision before any slot is planned",
-    /const heroAutoMixMint = [\s\S]{0,320}?await authorizeHeroVideoMint\(\{ fromRenderPipeline, userId, videoJobId: videoJobId! \}\)/.test(
-      fetchStock,
-    )
-      && /canUseHeroAutoMixAi = Boolean\([\s\S]{0,400}?heroAutoMixMint\?\.ok,/.test(fetchStock),
-  );
+  check("hero-only uses the shared owner/provenance decision", fetchStock.includes("if (!heroVideoMint?.ok)") && fetchStock.includes("HERO_VIDEO_MINT_DENIAL_RESPONSES[reason]"));
+  check("AutoMix uses the same decision before planning", fetchStock.includes("autoMixAiRequested && !autoMixKieAdminOnly ? heroVideoMint : null") && fetchStock.includes("&& heroAutoMixMint?.ok"));
 
   // 5d. The policy module itself must keep provenance as the FIRST gate — an
   // ownership-only check would not close the hole (the attacker uses their own job).

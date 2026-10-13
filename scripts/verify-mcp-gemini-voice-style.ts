@@ -16,10 +16,9 @@
 // scripts/verify-mcp-audit-status.ts for logic embedded in the MCP route closure
 // (not separately exported/importable).
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import assert from "node:assert/strict";
 
 const dir = mkdtempSync(join(tmpdir(), "mcp-gemini-voice-style-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
@@ -127,27 +126,17 @@ async function main() {
   }
 
   // ── 4) Source-grep: route.ts actually wires the gate + warnings this way ───
-  const routeSrc = readFileSync("src/app/api/[transport]/route.ts", "utf8");
-  check(
-    routeSrc.includes('isInternalAiBetaEnabledFor(') && routeSrc.includes("GEMINI_TTS_38_PUBLIC"),
-    "route.ts gates geminiVoiceStyle with isInternalAiBetaEnabledFor + GEMINI_TTS_38_PUBLIC (same as web)",
-  );
-  check(
-    routeSrc.includes('resolveGeminiVoiceStyle('),
-    "route.ts resolves the style id through the shared resolver (same as web)",
-  );
-  check(
-    /geminiVoiceStyle\s*!==\s*"neutral"/.test(routeSrc),
-    "route.ts omits a resolved neutral style from the job input (mirrors web jobs/route.ts:1075)",
-  );
-  check(
-    routeSrc.includes("warnings") && /warning:\s*warnings\[0\]/.test(routeSrc),
-    "route.ts builds warnings: string[] and keeps warning as warnings[0] for back-compat",
-  );
-  check(
-    !/geminiVoiceStyle\s*:\s*args\.geminiVoiceStyle\s*[,}]/.test(routeSrc),
-    "route.ts never forwards args.geminiVoiceStyle raw — it must go through the gate/resolver first",
-  );
+  const { prepareVideoQuote, getVideoQuoteReview } = await import("../src/lib/mcp/video-quote.server");
+  const quoteOwner = await prisma.user.findFirstOrThrow();
+  process.env.GEMINI_TTS_38_PUBLIC = "1";
+  const quote = await prepareVideoQuote(quoteOwner, { script: "Approved style", geminiVoiceStyle: "cheerful" });
+  check("quote preparation accepts allowed style", "quoteId" in quote);
+  if ("quoteId" in quote) {
+    const review = await getVideoQuoteReview(quoteOwner.id, quote.quoteId);
+    check("executable quote pins resolved style", review?.execution.jobInput.geminiVoiceStyle === "cheerful");
+    process.env.GEMINI_TTS_38_PUBLIC = "0";
+    check("later gate changes cannot alter approved style", (await getVideoQuoteReview(quoteOwner.id, quote.quoteId))?.execution.jobInput.geminiVoiceStyle === "cheerful");
+  }
 
   if (previousPublicFlag === undefined) delete process.env.GEMINI_TTS_38_PUBLIC;
   else process.env.GEMINI_TTS_38_PUBLIC = previousPublicFlag;

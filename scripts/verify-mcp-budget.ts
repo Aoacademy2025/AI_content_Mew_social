@@ -44,6 +44,7 @@ async function main() {
     const unapproved = await requestVideoJob(owner, { script: "Unquoted creation." });
     assert.equal(unapproved.code, "confirmation_required");
     assert.ok(unapproved.quoteId);
+    assert.equal(typeof unapproved.message, "string", "confirmation refusal carries a human-readable message");
     assert.equal(await prisma.videoJob.count(), 0);
     assert.equal(await prisma.renderJob.count(), 0);
     assert.equal(await prisma.aiGenerationJob.count(), 0);
@@ -58,6 +59,14 @@ async function main() {
     assert.equal(replay.jobId, first.jobId);
     assert.equal(await prisma.videoJob.count(), 1);
     assert.equal(await prisma.editorProject.count(), 1);
+    const overlapQuote = await quotes.prepareVideoQuote(owner, { script: "Overlap check" });
+    assert.ok(overlapQuote.quoteId);
+    await quotes.decideVideoQuote(owner.id, overlapQuote.quoteId, "approve");
+    const waiting = await Promise.all([0, 1].map(i => prisma.videoJob.create({ data: { userId: owner.id, type: "video", status: "waiting_provider", inputJson: "{}", idempotencyKey: `overlap-${i}` } })));
+    assert.equal((await consumeVideoQuote(owner.id, overlapQuote.quoteId)).code, "too_many_jobs");
+    assert.equal((await prisma.mcpVideoQuote.findUniqueOrThrow({ where: { id: overlapQuote.quoteId } })).status, "approved");
+    await prisma.videoJob.deleteMany({ where: { id: { in: waiting.map(row => row.id) } } });
+    console.log("PASS waiting-provider jobs count toward actual quote-consumption overlap cap");
     const changed = await consumeVideoQuote(owner.id, quote.quoteId, { script: "different" });
     assert.equal(changed.code, "quote_input_changed");
     const job = await prisma.videoJob.findUniqueOrThrow({ where: { id: first.jobId } });

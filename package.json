@@ -323,7 +323,8 @@
     "verify:acoustic-subtitle-clock": "tsx scripts/verify-acoustic-repeat-selection.ts && tsx scripts/verify-acoustic-verified-share-selection.ts && tsx scripts/verify-acoustic-subtitle-clock.ts && tsx scripts/verify-acoustic-subtitle-worker.ts",
     "verify:content-preflight-beat-count": "node --conditions=react-server --import tsx scripts/verify-content-preflight-beat-count.ts",
     "verify:content-preflight-degrade": "tsx scripts/verify-content-preflight-degrade.ts",
-    "verify:ai-audio-preflight": "tsx scripts/verify-ai-audio-preflight.ts"
+    "verify:ai-audio-preflight": "tsx scripts/verify-ai-audio-preflight.ts",
+    "verify:mcp-approved-media": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-video-quote.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget-orchestrator.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-external-media.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-spending-summary.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-external-media-policy.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-external-web-upload.ts && BUDGET_FIXTURE_SOURCE=hero-ai-image node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget-orchestrator.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-image-parent-boundary.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

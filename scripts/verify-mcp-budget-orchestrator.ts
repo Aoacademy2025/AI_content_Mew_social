@@ -167,7 +167,7 @@ async function main() {
       data: { status: "processing", startedAt: new Date(), providerNextPollAt: null },
     });
     const { caller, log } = makeCaller(userId, opts, jobId);
-    await runOrchestrator(jobId, userId, { caller: caller as never, sleep: async () => {} });
+    await runOrchestrator(jobId, userId, { caller: caller as never, sleep: async () => {}, rendersRoot });
     return log;
   }
 
@@ -269,6 +269,20 @@ async function main() {
     assert.equal(renderSeq, beforeResumeRenders, "resume reuses durable base rather than resubmitting render");
     assert.equal(resumedCalls.filter(call => /tts|fetch-stock/.test(call.path)).length, 0, "resume reuses completed narration/media");
     console.log("PASS known-completed base restart resumes retained work without new render or narration");
+    const { exportVideoTool } = await import("../src/lib/mcp/edit-tools");
+    const beforeExportWallet = await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } });
+    const beforeExportMinutes = (await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).minutesUsed;
+    const exported = await exportVideoTool(owner, created.jobId) as { exportJobId?: string; error?: string };
+    assert.ok(exported.exportJobId, JSON.stringify(exported));
+    await runJob(exported.exportJobId, owner.id);
+    const final = await prisma.videoJob.findUniqueOrThrow({ where: { id: exported.exportJobId } });
+    assert.equal(final.status, "done", final.errorMessage ?? "approved image source must reach FINAL export");
+    assert.ok(JSON.parse(final.outputJson!).videoUrl);
+    assert.equal(final.budgetQuoteId, quote.quoteId);
+    assert.deepEqual(await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } }), beforeExportWallet);
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).minutesUsed, beforeExportMinutes);
+    console.log(`PASS ordinary USER ${SOURCE} FINAL export preserves quote and adds no charge`);
+
     const capQuote = await prepareVideoQuote(owner, { script: SCRIPT + " additional", brollSource: SOURCE, exportMode: "hold" });
     await decideVideoQuote(owner.id, capQuote.quoteId, "approve");
     const capRoot = await consumeVideoQuote(owner.id, capQuote.quoteId);
