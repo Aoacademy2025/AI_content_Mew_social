@@ -1,12 +1,13 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { quoteHash, currentQuotePricing, stableQuoteJson, QUOTE_TTL_MS, type QuoteReceipt } from "./video-quote";
 import { VideoBudgetHoldError } from "./video-budget-admission";
-import type { PipelineCaller } from "./pipeline-client";
+import { PipelineApiError, type PipelineCaller } from "./pipeline-client";
 
 type Entry = { path: string; state: "running" | "done"; result?: unknown };
 type Checkpoint = { version: 1; calls: Record<string, Entry>; hold?: { reason: string; quoteId?: string } };
 const parse = (json: string | null): Checkpoint => json ? JSON.parse(json) : { version: 1, calls: {} };
-const cachedPaths = new Set(["/api/videos/tts", "/api/videos/tts-gemini", "/api/videos/audio-duration", "/api/videos/transcribe", "/api/videos/split-script", "/api/videos/keywords", "/api/videos/extract-keywords", "/api/videos/fetch-stock"]);
+const cachedPaths = new Set(["/api/videos/tts", "/api/videos/tts-gemini", "/api/videos/audio-duration", "/api/videos/transcribe", "/api/videos/split-script", "/api/videos/keywords", "/api/videos/extract-keywords", "/api/videos/fetch-stock", "/api/videos/render"]);
 
 /** Successful narration/planning/media responses are durable before the next stage.
  * An ambiguous narration submission is never retried automatically after restart. */
@@ -15,17 +16,37 @@ export function checkpointedBudgetCaller(userId: string, jobId: string, caller: 
     if (!cachedPaths.has(path)) return caller.post<T>(path, body, opts);
     const job = await prisma.videoJob.findFirst({ where: { id: jobId, userId } });
     if (!job?.budgetQuoteId) return caller.post<T>(path, body, opts);
+    if (path === "/api/videos/render") {
+      const renderBody = body as { subtitleOverlayConfig?: unknown };
+      const durable = await prisma.renderJob.findFirst({ where: { userId, parentJobId: jobId, type: renderBody.subtitleOverlayConfig ? "BURN" : "RENDER", status: { in: ["QUEUED", "RUNNING", "DONE"] } }, orderBy: { createdAt: "asc" } });
+      if (durable && (durable.status !== "DONE" || durable.videoUrl)) return { jobId: durable.id } as T;
+    }
     const key = quoteHash({ path, body });
     const checkpoint = parse(job.budgetCheckpointJson);
     if (checkpoint.calls[key]?.state === "done") return checkpoint.calls[key].result as T;
-    if (checkpoint.calls[key]?.state === "running" && path.includes("/tts")) throw new VideoBudgetHoldError("narration_outcome_unknown");
+    if (checkpoint.calls[key]?.state === "running" && (path.includes("/tts") || path === "/api/videos/render")) throw new VideoBudgetHoldError(path === "/api/videos/render" ? "render_outcome_unknown" : "narration_outcome_unknown");
     await prisma.$transaction(async tx => {
       const current = await tx.videoJob.findUniqueOrThrow({ where: { id: jobId } });
       const next = parse(current.budgetCheckpointJson);
       next.calls[key] = { path, state: "running" };
       await tx.videoJob.update({ where: { id: jobId }, data: { budgetCheckpointJson: JSON.stringify(next) } });
     });
-    const result = await caller.post<T>(path, body, { ...opts, retries: 0 });
+    let result: T;
+    try {
+      result = await caller.post<T>(path, body, { ...opts, retries: 0 });
+    } catch (error) {
+      // A definitive admission refusal submitted no render. Preserve unknown
+      // transport outcomes, but do not turn a budget refusal into uncertain spend.
+      if (path === "/api/videos/render" && (error instanceof VideoBudgetHoldError || (error instanceof PipelineApiError && error.status === 409 && error.code === "confirmation_required"))) {
+        await prisma.$transaction(async tx => {
+          const current = await tx.videoJob.findUniqueOrThrow({ where: { id: jobId } });
+          const next = parse(current.budgetCheckpointJson);
+          delete next.calls[key];
+          await tx.videoJob.update({ where: { id: jobId }, data: { budgetCheckpointJson: JSON.stringify(next) } });
+        });
+      }
+      throw error;
+    }
     await prisma.$transaction(async tx => {
       const current = await tx.videoJob.findUniqueOrThrow({ where: { id: jobId } });
       const next = parse(current.budgetCheckpointJson);
@@ -94,9 +115,34 @@ export async function budgetStage<T>(userId: string, jobId: string | undefined, 
   return result;
 }
 
+/** Only durable outcomes can unpark uncertain work; approval holds are never released here. */
+export async function resumeKnownBudgetWorkInTransaction(tx: Prisma.TransactionClient, userId: string, jobId: string, recoveringWorker = false): Promise<boolean> {
+  const job = await tx.videoJob.findFirst({ where: { id: jobId, userId, budgetQuoteId: { not: null }, status: { in: recoveringWorker ? ["processing", "confirmation_required"] : ["confirmation_required"] } } });
+  if (!job?.budgetCheckpointJson) return false;
+  const checkpoint = parse(job.budgetCheckpointJson);
+  if (checkpoint.hold?.quoteId || Object.values(checkpoint.calls).some(call => call.state === "running" && call.path.includes("/tts"))) return false;
+  const approval = await tx.mcpVideoQuote.findFirst({ where: { id: job.budgetQuoteId!, userId, status: "consumed" } });
+  if (!approval) return false;
+  let known = false;
+  if (job.currentStep === "render") {
+    const render = await tx.renderJob.findFirst({ where: { userId, parentJobId: job.id, type: "RENDER", status: { in: ["QUEUED", "RUNNING", "DONE"] } }, orderBy: { createdAt: "asc" } });
+    known = !!render && (render.status !== "DONE" || !!render.videoUrl);
+  } else if (checkpoint.hold?.reason === "image_poll_unknown" || checkpoint.hold?.reason === "image_submission_unknown" || checkpoint.hold?.reason === "image_cancel_unknown") {
+    const images = await tx.aiGenerationJob.findMany({ where: { userId, budgetQuoteId: job.budgetQuoteId, idempotencyKey: { startsWith: `video:${job.id}:` } }, select: { status: true, chargeState: true, outputUrl: true } });
+    known = images.length > 0 && images.every(image => image.status === "completed" && image.chargeState === "settled" && !!image.outputUrl);
+  }
+  if (!known) return false;
+  delete checkpoint.hold;
+  await tx.videoJob.update({ where: { id: job.id }, data: { status: "queued", currentStep: null, startedAt: null, finishedAt: null, errorCode: null, errorMessage: null, outputJson: null, budgetCheckpointJson: JSON.stringify(checkpoint) } });
+  return true;
+}
+
 /** Renew an expired/rejected incremental review without discarding retained work. */
 export async function renewBudgetQuote(userId: string, jobId: string): Promise<string | null> {
   return prisma.$transaction(async tx => {
+    if (await resumeKnownBudgetWorkInTransaction(tx, userId, jobId)) {
+      return (await tx.videoJob.findUniqueOrThrow({ where: { id: jobId } })).budgetQuoteId;
+    }
     const job = await tx.videoJob.findFirst({ where: { id: jobId, userId, status: "confirmation_required" } });
     if (!job?.budgetQuoteId) return null;
     const checkpoint = parse(job.budgetCheckpointJson);

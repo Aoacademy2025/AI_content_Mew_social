@@ -151,6 +151,70 @@ async function main() {
     assert.equal(job.fundingState, "settled");
     assert.ok(JSON.parse(job.outputJson!).preview);
     assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).minutesUsed, 1);
+    // Actual shared route: trusted service context survives omitted/forged body IDs.
+    const Module = (await import("node:module")).default as unknown as { _load: (request: string, ...args: unknown[]) => unknown };
+    const oldLoad = Module._load;
+    let serviceJobId: string | null = created.jobId;
+    Module._load = function(request, ...args) {
+      if (request.includes("clerk-auth")) return { getCurrentUser: async () => owner };
+      if (request.includes("mcp/service-actor")) return { resolveServiceVideoJobId: async () => serviceJobId };
+      if (request.includes("remotion-public-dir")) return { prepareRemotionBundlePublicDir: () => rendersRoot };
+      return oldLoad.call(this, request, ...args);
+    };
+    process.env.RENDER_TMP_ROOT = join(dir, "render-tmp");
+    const { POST } = await import("../src/app/api/videos/render/route");
+    const beforeWallet = await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } });
+    const beforeRenderCount = await prisma.renderJob.count();
+    for (const identity of [{ parentJobId: created.jobId }, {}, { parentJobId: "forged" }]) {
+      const response = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...identity, scenes: [{ text: "fixture" }], videoDuration: 60 }) }));
+      assert.equal(response.status, 409, `bound service render must refuse new spend: ${JSON.stringify(identity)}`);
+    }
+    serviceJobId = null;
+    for (const identity of [{ rerenderOf: { sourceJobId: created.jobId } }, { projectId: created.projectId }]) {
+      const response = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...identity, scenes: [{ text: "fixture" }], videoDuration: 60 }) }));
+      assert.equal(response.status, 409, "web derivative cannot charge outside inherited approval");
+    }
+    assert.equal(await prisma.renderJob.count(), beforeRenderCount);
+    assert.deepEqual(await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } }), beforeWallet);
+    const originalCwd = process.cwd();
+    mkdirSync(join(dir, "public", "renders"), { recursive: true });
+    writeFileSync(join(dir, "public", "renders", "chain-voice.wav"), Buffer.alloc(2000));
+    process.chdir(dir);
+    const freeResponse = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rerenderOf: { sourceJobId: created.jobId }, shortVideoConfig: { ...JSON.parse(job.outputJson!).preview.config, backgroundColors: ["#000000"] } }) }));
+    assert.equal(freeResponse.status, 200, await freeResponse.clone().text());
+    const freeRender = await prisma.renderJob.findUniqueOrThrow({ where: { id: (await freeResponse.json()).jobId } });
+    assert.equal(freeRender.parentJobId, created.jobId);
+    assert.equal(freeRender.reservedQuota, false);
+    assert.deepEqual(await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } }), beforeWallet);
+    const paidBaseUrl = JSON.parse(job.outputJson!).videoUrl;
+    writeFileSync(join(dir, "public", "renders", paidBaseUrl.split("/").at(-1)), Buffer.alloc(2000));
+    for (const boundService of [false, true]) {
+      serviceJobId = boundService ? created.jobId : null;
+      const burnResponse = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: created.projectId, subtitleOverlayConfig: { videoUrl: paidBaseUrl, durationInFrames: 150, captions: [] } }) }));
+      assert.equal(burnResponse.status, 200, await burnResponse.clone().text());
+      const burnRender = await prisma.renderJob.findUniqueOrThrow({ where: { id: (await burnResponse.json()).jobId } });
+      assert.equal(burnRender.reservedQuota, false, "already-paid web and service exports stay free");
+      assert.equal(burnRender.parentJobId, created.jobId);
+    }
+    assert.deepEqual(await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } }), beforeWallet);
+    process.chdir(originalCwd);
+    Module._load = oldLoad;
+    console.log("PASS actual render POST service omission/mismatch and owned web derivative ceiling enforcement");
+    // Crash after durable base completion, before the worker publishes preview.
+    await prisma.videoJob.update({ where: { id: job.id }, data: { status: "processing", currentStep: "render", outputJson: null } });
+    const { recoverProcessingJobsAfterWorkerRestart } = await import("../src/lib/mcp/video-job");
+    await recoverProcessingJobsAfterWorkerRestart();
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } })).status, "queued", "known completed base must resume without new approval");
+    await prisma.videoJob.update({ where: { id: job.id }, data: { status: "confirmation_required", currentStep: "render" } });
+    const resumedReceipt = await prepareVideoQuote(owner, { resumeJobId: job.id });
+    assert.equal(resumedReceipt.quoteId, quote.quoteId, "explicit resume adopts known durable result under original approval");
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } })).status, "queued");
+    const beforeResumeRenders = renderSeq;
+    const resumedCalls = await runJob(job.id, owner.id);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } })).status, "done");
+    assert.equal(renderSeq, beforeResumeRenders, "resume reuses durable base rather than resubmitting render");
+    assert.equal(resumedCalls.filter(call => /tts|fetch-stock/.test(call.path)).length, 0, "resume reuses completed narration/media");
+    console.log("PASS known-completed base restart resumes retained work without new render or narration");
     console.log("PASS ordinary USER approved AutoMix through real orchestrator to held preview; numeric cap propagated; authoritative funding transferred once (media/render providers stubbed)");
   } finally { await prisma.$disconnect(); rmSync(dir, { recursive: true, force: true }); }
 }

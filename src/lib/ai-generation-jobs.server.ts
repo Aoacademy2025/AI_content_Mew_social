@@ -900,6 +900,13 @@ export async function completeImageJob(input: {
       });
     }
     await syncBrandLookPreviewJobInTransaction(tx, updated);
+    if (updated.budgetQuoteId) {
+      const parentId = /^video:([^:]+):/.exec(updated.idempotencyKey ?? "")?.[1];
+      if (parentId) {
+        const { resumeKnownBudgetWorkInTransaction } = await import("./mcp/video-budget-checkpoint");
+        await resumeKnownBudgetWorkInTransaction(tx, input.userId, parentId);
+      }
+    }
     return updated;
   });
 }

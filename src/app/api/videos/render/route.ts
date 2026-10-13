@@ -290,15 +290,31 @@ export async function POST(req: Request) {
     // reserved + completed). Foreign/external/fabricated sources are not found → charge.
     // This still runs before any heavy work (job cancellation / bundle / render), so the
     // PR-1 fail-fast property is preserved.
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf, projectId } = await req.json();
 
-    // parentJobId is request data, so only the server-authenticated service
-    // actor may use it to finish work that began before a deploy drain.
-    const verifiedParentJobId = typeof parentJobId === "string"
-      && parentJobId
-      && (await resolveServiceVideoJobId(userId)) === parentJobId
-      ? parentJobId
-      : undefined;
+    // Service identity is authoritative even when the body omits its parent.
+    const serviceParentJobId = await resolveServiceVideoJobId(userId);
+    if (serviceParentJobId && parentJobId != null && parentJobId !== serviceParentJobId) {
+      throw new VideoBudgetHoldError("render_parent_changed");
+    }
+    let verifiedParentJobId = serviceParentJobId ?? undefined;
+    // Browser derivatives resolve their persisted owner-scoped source/project.
+    // An ineligible free edit must retain its approval instead of becoming an
+    // unrelated, newly charged render. Historical unquoted requests stay unchanged.
+    const sourceJobId = rerenderOf && typeof rerenderOf === "object" ? rerenderOf.sourceJobId : undefined;
+    const ownedProject = typeof projectId === "string"
+      ? await prisma.editorProject.findFirst({ where: { id: projectId, userId }, select: { activeJobId: true } }) : null;
+    const ownedVideo = typeof videoId === "string"
+      ? await prisma.videoJob.findFirst({ where: { videoId, userId, budgetQuoteId: { not: null } }, select: { id: true } }) : null;
+    for (const candidate of [sourceJobId, ownedProject?.activeJobId, ownedVideo?.id, parentJobId]) {
+      if (typeof candidate !== "string") continue;
+      const source = await prisma.videoJob.findFirst({ where: { id: candidate, userId, budgetQuoteId: { not: null } }, select: { id: true, budgetQuoteId: true } });
+      if (!source) continue;
+      if (verifiedParentJobId && verifiedParentJobId !== source.id) {
+        const parent = await prisma.videoJob.findFirst({ where: { id: verifiedParentJobId, userId }, select: { budgetQuoteId: true } });
+        if (parent?.budgetQuoteId !== source.budgetQuoteId) throw new VideoBudgetHoldError("render_parent_changed");
+      } else verifiedParentJobId = source.id;
+    }
     await assertRenderEnqueueOpen(prisma, {
       parentVideoJobId: verifiedParentJobId,
       userId,

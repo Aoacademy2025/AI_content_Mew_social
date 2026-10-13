@@ -932,6 +932,11 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
     }
 
     if (job.budgetQuoteId && job.budgetCheckpointJson && !SAFE_TO_REQUEUE_STEPS.has(job.currentStep ?? "")) {
+      const { resumeKnownBudgetWorkInTransaction } = await import("./video-budget-checkpoint");
+      if (await prisma.$transaction(tx => resumeKnownBudgetWorkInTransaction(tx, job.userId, job.id, true))) {
+        requeued++;
+        continue;
+      }
       // Late ambiguous work cannot be replayed or refunded by generic recovery.
       await prisma.videoJob.updateMany({ where: { id: job.id, status: "processing" }, data: { status: "confirmation_required", errorCode: "confirmation_required", errorMessage: "ต้องตรวจสอบผลของงานเดิมก่อนทำต่อ", reservationRefundPending: false } });
       parked++;
