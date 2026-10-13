@@ -141,12 +141,12 @@ Owner: integration fixtures, CI coverage, rollout notes, reviewed PR. Depends on
 
 - [x] Wire all new verify scripts into CI; run meaningful regression suites for quote/auth/budget, MCP creation/edit/import, billing/settlement and existing web receipts.
 - [x] Use isolated throwaway SQLite and installed dependency setup; never point tests at production or a shared mutable worktree DB.
-- [x] TypeScript, lint changed files, production build, MCP CI-coverage; record commands, exit codes and any excerpts on failure.
+- [ ] TypeScript, lint changed files, production build, MCP CI-coverage; record commands, exit codes and any excerpts on failure.
 - [x] Four ordinary-user E2E paths and malicious-client bypass tests; no real provider charge needed for regression tests. Production rehearsal remains separately authorized.
 - [x] Independent whole-branch correctness and security reviews, resolve blockers, then open PR with additive-schema and rollback instructions. A rollback must drain new quote-bound jobs or retain enforcement; disabling a gate must not authorize unpaid/unapproved work.
 - [x] No live-readiness claim merely because CI passes. Report actual test coverage and the unresolved separate HERO-70 database risk.
 
-Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; Reviewed PR delivered: [#602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge or deployment.
+Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; PR [#602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602) is draft: final GitHub CI exposed the reproduced maintenance-response regression; see maintenance-regression.md. No merge or deployment.
 
 ## Assurance and Budget
 
@@ -154,7 +154,7 @@ Task 5 verification: code candidate `24a7b170` passed independent correctness an
 - Risk: high — human spending approval, credits/reservations, auth/ownership, external-media boundary and additive durable schema.
 - Automatic fix rounds per task: 2.
 - Execution ruling after Task 2 round 2: one explicitly bounded, session-directed correction of known-result resume readiness for confirmed-refunded historical attempts, followed by scoped independent review. The automatic ceiling remains 2; no general extra fix round is authorized. See execution ledger for evidence and rationale.
-- Maximum subagent runs: 25 (Mew explicitly approved one additional independent security-review run on 2026-10-14 after the original security turn was interrupted by the platform). At the ceiling, report achieved/unmet criteria rather than silently weakening gates.
+- Maximum subagent runs: 30 (Mew approved run 25 for independent security completion, then explicitly approved five additional Astra medium runs on 2026-10-14 to finish the maintenance regression and final verification while away). At the ceiling, report achieved/unmet criteria rather than silently weakening gates.
 - Concurrency: fill only live harness slots; one agent per Orca worktree. Separate worker/reviewer worktrees; integrate reviewed branches sequentially where files overlap.
 - Usage checkpoints: before execute, after each frontier wave, before final gate.
 
@@ -180,7 +180,7 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 - [x] AC6: External source works for script-only and presenter flows through URL/upload imports and shared edits, with zero Hero image-generation charges and no automatic paid fallback.
 - [x] AC7: Final receipts reconcile image/render credits and reservations/refunds to durable billing evidence; free eligible edits/export remain free.
 - [x] AC8: Existing web creation, historical jobs, ownership, safe-fetch/import limits and flat tool schemas retain required behavior.
-- [x] AC9: Required tests/build pass with recorded exit codes; independent security/correctness blockers resolved; reviewed PR and deployment notes delivered without deployment.
+- [ ] AC9: Required tests/build pass with recorded exit codes; independent security/correctness blockers resolved; reviewed PR and deployment notes delivered without deployment.
 
 ## Out of scope
 
@@ -191,6 +191,6 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 
 ## Status
 
-interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; GitHub CI pending at opening
+interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; GitHub CI failed on maintenance-response compatibility; not ready to merge
 
 The approved product scope is settled. The mew-kickoff skill requires production execution in a fresh session; do not request another approval for the same scope.
