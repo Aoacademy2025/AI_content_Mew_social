@@ -102,6 +102,47 @@ async function main() {
     assert.equal(domain.quoteExecutionRefusal(consumed, owner.id, { ...input, idempotencyKey: "new-retry" }, domain.currentQuotePricing()), null);
     assert.equal((await service.getVideoQuote(owner.id, fresh.quoteId)).rootJobId, "fixture-original-root");
     assert.equal((await service.decideVideoQuote(owner.id, fresh.quoteId, "reject")).code, "quote_not_actionable");
+    const regressions: string[] = [];
+    async function regression(name: string, check: () => Promise<void>) {
+      try { await check(); } catch (error) { regressions.push(name); console.error(`FAIL snapshot regression: ${name}`, error instanceof Error ? error.message : "assertion"); }
+    }
+    await regression("missing ElevenLabs voice fails before a quote", async () => {
+      const missing = await service.prepareVideoQuote(owner, { ...input, voiceProvider: "elevenlabs" });
+      assert.equal(missing.code, "voice_setup_required");
+      assert.ok(missing.next.includes("voiceId"));
+    });
+    await regression("music selector is pinned before library changes", async () => {
+      await prisma.music.create({ data: { title: "Lofi approved track", filename: "approved.mp3", createdAt: new Date(0) } });
+      const musicQuote = await service.prepareVideoQuote(owner, { ...input, bgmFile: "chill" });
+      assert.ok("quoteId" in musicQuote);
+      const musicWork = await service.getVideoQuoteReview(owner.id, musicQuote.quoteId);
+      assert.equal(musicWork!.execution.jobInput.bgmFile, "/music/approved.mp3");
+      assert.equal(musicWork!.execution.jobInput.bgmVolume, 0.12);
+      await prisma.music.create({ data: { title: "Lofi newly added track", filename: "later.mp3" } });
+      const { resolveBgm } = await import("../src/lib/mcp/bgm-resolve");
+      const library = await prisma.music.findMany({ orderBy: { createdAt: "desc" } });
+      const resolved = resolveBgm(String(musicWork!.execution.jobInput.bgmFile), library.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}` })));
+      assert.equal(resolved.kind === "resolved" && resolved.bgmFile, "/music/approved.mp3");
+      const unresolved = await service.prepareVideoQuote(owner, { ...input, bgmFile: "not-a-real-music-mood" });
+      assert.equal(unresolved.code, "bgm_not_found");
+      const noMusic = await service.prepareVideoQuote(owner, { ...input, bgmFile: "none" });
+      assert.equal((await service.getVideoQuoteReview(owner.id, noMusic.quoteId))!.execution.jobInput.bgmFile, undefined);
+    });
+    await regression("ElevenLabs model is pinned and setting drift refused", async () => {
+      const eleven = await service.prepareVideoQuote(owner, { ...input, voiceProvider: "elevenlabs", voiceId: "approved-voice" });
+      assert.ok("quoteId" in eleven);
+      const work = await service.getVideoQuoteReview(owner.id, eleven.quoteId);
+      assert.equal(work!.execution.jobInput.elevenlabsModel, "v3");
+      assert.equal((await service.decideVideoQuote(owner.id, eleven.quoteId, "approve")).status, "approved");
+      const elevenRow = await prisma.mcpVideoQuote.findUniqueOrThrow({ where: { id: eleven.quoteId } });
+      assert.equal(domain.quoteExecutionRefusal(elevenRow, owner.id, undefined, domain.currentQuotePricing(), new Date(), { elevenlabsModel: "v3" }), null);
+      assert.equal(domain.quoteExecutionRefusal(elevenRow, owner.id, undefined, domain.currentQuotePricing(), new Date(), { elevenlabsModel: "v4" }).code, "quote_settings_changed");
+      assert.equal(domain.quoteExecutionRefusal(elevenRow, owner.id, undefined).code, "quote_settings_changed", "missing current model evidence fails closed");
+      await prisma.user.update({ where: { id: owner.id }, data: { elevenlabsModel: "v4", elevenlabsVoiceId: "later-voice" } });
+      assert.equal((await service.decideVideoQuote(owner.id, eleven.quoteId, "approve")).code, "quote_settings_changed");
+      assert.equal((await service.getVideoQuoteReview(owner.id, eleven.quoteId))!.execution.jobInput.voiceId, "approved-voice");
+    });
+    assert.deepEqual(regressions, []);
     console.log("PASS quote owner/auth/expiry/input/price/zero-spend and presenter checks");
   } finally { await prisma.$disconnect(); rmSync(dir, { recursive: true, force: true }); }
 }

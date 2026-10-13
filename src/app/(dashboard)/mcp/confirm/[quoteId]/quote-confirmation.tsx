@@ -34,9 +34,9 @@ export function QuoteConfirmation({ quote: initial, input, execution }: { quote:
       {input.script && <details className="mt-4 text-sm"><summary className="cursor-pointer font-medium">ตรวจสคริปต์ที่อนุมัติ</summary><p className="mt-3 max-h-64 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{input.script}</p></details>}
       {execution.presenterImportId && <p className="mt-3 text-sm">ใช้คลิปพิธีกรที่คุณนำเข้าสำเร็จแล้ว · ใช้เสียงในคลิป</p>}
       <details className="mt-3 text-sm"><summary className="cursor-pointer font-medium">รายละเอียดเสียง พิธีกร และรูปแบบงาน</summary><dl className="mt-3 space-y-2 text-muted-foreground">
-        <div><dt className="inline">เสียง: </dt><dd className="inline">{execution.presenterImportId ? "จากคลิปพิธีกร" : `${String(execution.jobInput.voiceProvider)} · ${String(execution.jobInput.voiceProvider === "elevenlabs" ? execution.jobInput.voiceId || "ยังไม่ได้เลือกเสียง" : execution.jobInput.geminiVoiceName)}`}</dd></div>
+        <div><dt className="inline">เสียง: </dt><dd className="inline">{execution.presenterImportId ? "จากคลิปพิธีกร" : `${String(execution.jobInput.voiceProvider)}${execution.jobInput.elevenlabsModel ? ` ${String(execution.jobInput.elevenlabsModel)}` : ""} · ${String(execution.jobInput.voiceProvider === "elevenlabs" ? execution.jobInput.voiceId || "ยังไม่ได้เลือกเสียง" : execution.jobInput.geminiVoiceName)}`}</dd></div>
         <div><dt className="inline">พิธีกร AI: </dt><dd className="inline">{execution.jobInput.avatarId ? `${String(execution.jobInput.avatarId)} · ${String(execution.jobInput.avatarMode)}` : "ไม่ใช้"}</dd></div>
-        <div><dt className="inline">เพลง: </dt><dd className="inline break-words">{String(execution.jobInput.bgmFile || "ไม่ใช้")}</dd></div>
+        <div><dt className="inline">เพลง: </dt><dd className="inline break-words">{String(execution.musicTitle || execution.jobInput.bgmFile || "ไม่ใช้")}</dd></div>
         <div><dt className="inline">ส่งออก: </dt><dd className="inline">{execution.exportMode === "hold" ? "พักตัวอย่างไว้ให้ตรวจและแก้ไขก่อน" : "ส่งออกเมื่อสร้างเสร็จ"}</dd></div>
       </dl></details>
     </section>

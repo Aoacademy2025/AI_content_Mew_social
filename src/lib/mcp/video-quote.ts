@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { McpVideoQuote } from "@prisma/client";
+import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
+import type { McpVideoQuote, User } from "@prisma/client";
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import { HERO_AI_IMAGE_CREDITS, creditCostFor } from "@/lib/credit-costs";
 import { buildReceipt } from "@/app/(dashboard)/video-editor/_v2/receipt";
@@ -79,14 +80,25 @@ export function quoteStatus(row: Pick<McpVideoQuote, "status" | "expiresAt">, no
   return (row.status === "draft" || row.status === "approved") && row.expiresAt <= now ? "expired" : row.status;
 }
 
+/** Until the consuming provider seam accepts a trusted pinned model, settings drift
+ * must fail closed. Task 2 must repeat this check at that seam, not just at enqueue. */
+export function quoteAccountDefaultsRefusal(row: Pick<McpVideoQuote, "executionJson">, currentAccount?: Pick<User, "elevenlabsModel"> | null): QuoteFailure | null {
+  const execution = JSON.parse(row.executionJson) as { jobInput?: { voiceProvider?: unknown; elevenlabsModel?: unknown } };
+  if (execution.jobInput?.voiceProvider !== "elevenlabs") return null;
+  if (!currentAccount || execution.jobInput.elevenlabsModel !== elevenLabsSpeechModel(currentAccount.elevenlabsModel)) {
+    return quoteFailure("quote_settings_changed", "รุ่นเสียง ElevenLabs เปลี่ยนไป หรือยังตรวจสอบรุ่นเสียงปัจจุบันไม่ได้ กรุณาตรวจใบยืนยันใหม่");
+  }
+  return null;
+}
+
 /** Task 2 calls this inside the consuming transaction, before existing funding reservations.
  * A consumed quote is replayable after expiry; it must return its original root, not create again. */
-export function quoteExecutionRefusal(row: McpVideoQuote, userId: string, input: PrepareVideoJobInput | undefined, pricing = currentQuotePricing(), now = new Date()): QuoteFailure | null {
+export function quoteExecutionRefusal(row: McpVideoQuote, userId: string, input: PrepareVideoJobInput | undefined, pricing = currentQuotePricing(), now = new Date(), currentAccount?: Pick<User, "elevenlabsModel"> | null): QuoteFailure | null {
   if (row.userId !== userId) return quoteFailure("quote_not_found", "ไม่พบใบยืนยันนี้");
   if (quoteHash(JSON.parse(row.executionJson)) !== row.executionHash || quoteHash(JSON.parse(row.inputJson)) !== row.inputHash || (input && quoteHash(normalizeQuoteInput(input)) !== row.inputHash)) return quoteFailure("quote_input_changed", "ข้อมูลงานไม่ตรงกับใบยืนยัน");
   if (row.status === "consumed" && row.rootJobId) return null;
   if (quoteHash(pricing) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
   if (quoteStatus(row, now) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
   if (row.status !== "approved" || !row.approvedAt) return quoteFailure("confirmation_required", "เจ้าของบัญชียังไม่ได้ยืนยันวงเงินใน Studio");
-  return null;
+  return quoteAccountDefaultsRefusal(row, currentAccount);
 }

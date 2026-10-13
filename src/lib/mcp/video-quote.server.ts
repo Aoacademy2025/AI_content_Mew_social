@@ -13,17 +13,19 @@ import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
 import { resolveMcpSubtitleDesign } from "./orchestrator-steps";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
+import { resolveBgm, isNoneInput } from "./bgm-resolve";
+import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { mcpBrollJobFields } from "./broll-source";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { createMcpVideoJob } from "./chain-export";
 type VideoJobInput = Parameters<typeof createMcpVideoJob>[1];
 import {
   QUOTE_TTL_MS, buildQuoteReceipt, currentQuotePricing, normalizeQuoteInput, quoteFailure,
-  quoteHash, quoteStatus, stableQuoteJson, type VideoQuoteReply, type VideoQuoteView,
+  quoteHash, quoteStatus, stableQuoteJson, quoteAccountDefaultsRefusal, type VideoQuoteReply, type VideoQuoteView,
   type QuoteReceipt, type QuoteFailure,
 } from "./video-quote";
 
-export type QuoteExecution = { jobInput: VideoJobInput; exportMode: "auto" | "hold"; presenterImportId: string | null };
+export type QuoteExecution = { jobInput: VideoJobInput; exportMode: "auto" | "hold"; presenterImportId: string | null; musicTitle?: string | null };
 function publicOrigin() {
   return process.env.MCP_PUBLIC_ORIGIN?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://studio.heroaiengine.com";
 }
@@ -43,7 +45,8 @@ function view(row: McpVideoQuote): VideoQuoteView {
 const notFound = () => quoteFailure("quote_not_found", "ไม่พบใบยืนยันนี้", "ใช้ quoteId ของบัญชีนี้ หรือเรียก prepare_video_job ใหม่");
 const importRequired = () => quoteFailure("presenter_import_required", "ยังไม่ทราบความยาวคลิปจริง จึงยังยืนยันค่าใช้จ่ายไม่ได้", "ใช้ create_upload_url(kind: presenter) แล้ว PUT คลิป รอให้นำเข้าสำเร็จ จากนั้นเรียก prepare_video_job พร้อม clipUploadId ของบัญชีนี้");
 
-/** Reads/local deterministic calculations only. Never imports media, creates a VideoJob,
+/** Local estimation and shared entitlement/balance reads (which may materialize existing
+ * allowance/expiry bookkeeping). Never imports media, creates a VideoJob,
  * calls a provider, or reserves funding. Quota snapshots deliberately do not sync grants;
  * consumption must refresh entitlement/usage and funding before starting. */
 export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): Promise<VideoQuoteReply> {
@@ -122,23 +125,45 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
   const layout = avatar.kind === "ok" ? resolveAvatarLayout(input, await getAvatarPreset(user.id, avatar.avatarId)) : null;
   const source = input.brollSource ?? "stock";
   const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+  const voiceId = (input.voiceId ?? user.elevenlabsVoiceId)?.trim();
+  if (!presenter && voiceProvider === "elevenlabs" && !voiceId) {
+    return quoteFailure("voice_setup_required", "ยังไม่ได้เลือกเสียง ElevenLabs สำหรับงานนี้", "เลือกเสียงใน Studio หรือส่ง voiceId ที่ต้องการ แล้วเรียก prepare_video_job ใหม่");
+  }
+  // Same catalog ordering/ownership and pure selector used by /api/music + the worker.
+  // Resolve locally now: a later catalog insert must not pick a different approved track.
+  let music: { bgmFile: string; title: string } | null = null;
+  if (!isNoneInput(input.bgmFile)) {
+    const [systemTracks, ownerTracks] = await Promise.all([
+      prisma.music.findMany({ orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
+      prisma.userMusic.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
+    ]);
+    const tracks = [
+      ...systemTracks.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}` })),
+      ...ownerTracks.map((track) => ({ title: track.title, bgmFile: `/api/music/${track.filename}` })),
+    ];
+    const resolved = resolveBgm(input.bgmFile, tracks);
+    if (resolved.kind !== "resolved" || !tracks.some((track) => track.bgmFile === resolved.bgmFile)) {
+      return quoteFailure("bgm_not_found", "ไม่พบเพลงที่เลือกในคลังเพลงที่คุณใช้ได้", "เรียก get_video_options แล้วเลือกเพลงที่มีอยู่ หรือระบุ bgmFile: none จากนั้นเตรียมใบยืนยันใหม่");
+    }
+    music = resolved;
+  }
   const styleOpen = isInternalAiBetaEnabledFor(user, process.env.GEMINI_TTS_38_PUBLIC === "1");
   const jobInput: VideoJobInput = {
     script: presenter ? "" : input.script!, title: input.title,
     ...(presenter ? { mode: "upload", clipImportId: presenter.id, clipUrl: presenter.resultSrc!, cutawayLayout: input.cutawayLayout ?? "auto" } : {
-      voiceProvider, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined,
+      voiceProvider, ...(voiceProvider === "elevenlabs" ? { voiceId, elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel) } : {}),
       geminiVoiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede",
       geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
     }),
     avatarMode: "none",
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),
-    ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume } : {}),
+    ...(music ? { bgmFile: music.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
     subtitleDesign: subtitle.design, subtitleCardLen: subtitle.cardLen,
     ...(input.subtitleMode ? { subtitleMode: input.subtitleMode } : {}),
     ...(input.subtitlePosition ? { subtitlePosition: input.subtitlePosition } : {}),
     ...(source === "external" || input.cutawayLayout === "fillYourself" ? { stockSource: "none" } : mcpBrollJobFields(source)),
   };
-  return { jobInput, exportMode: source === "external" ? "hold" : input.exportMode ?? "auto", presenterImportId: presenter?.id ?? null };
+  return { jobInput, exportMode: source === "external" ? "hold" : input.exportMode ?? "auto", presenterImportId: presenter?.id ?? null, musicTitle: music?.title ?? null };
 }
 
 export async function getVideoQuote(userId: string, quoteId: string): Promise<VideoQuoteReply> {
@@ -160,6 +185,11 @@ export async function decideVideoQuote(userId: string, quoteId: string, action: 
     if (quoteStatus(row) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
     if (row.status !== "draft" && row.status !== "approved") return quoteFailure("quote_not_actionable", "ใบยืนยันนี้ไม่สามารถเปลี่ยนสถานะได้แล้ว");
     if (action === "approve" && quoteHash(currentQuotePricing()) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
+    if (action === "approve") {
+      const currentAccount = await tx.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } });
+      const defaultsRefusal = quoteAccountDefaultsRefusal(row, currentAccount);
+      if (defaultsRefusal) return defaultsRefusal;
+    }
     const changed = await tx.mcpVideoQuote.updateMany({
       where: { id: quoteId, userId, status: row.status, expiresAt: { gt: new Date() } },
       data: action === "approve" ? { status: "approved", approvedAt: row.approvedAt ?? new Date() } : { status: "rejected", rejectedAt: new Date() },

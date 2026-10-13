@@ -99,3 +99,36 @@ Sanitized screenshots contain synthetic content only:
 - USER AutoMix generation failure reproduction, atomic consumption/concurrency, durable budget accounting, checkpoint/reapproval and actual-duration growth tests belong to Task 2 and were not represented as passed here.
 - The intermediate commit must not be deployed alone: old create calls retain existing semantics until Task 2 installs the gate.
 - No production writes/deploy/restart, paid provider calls, customer messages or Linear mutations. HERO-70 database contention remains separate and unresolved.
+
+## Independent-review fix round 1 of 2
+
+The reviewer reproduced two medium blocking omissions in the exact-work snapshot: an unresolved ElevenLabs voice could later pick up a newly saved voice, and a stored music mood/title could resolve to a different newly added track. A bounded sibling-default inspection also found that `/api/videos/tts` reads the current account's `elevenlabsModel` at provider time.
+
+Tests were added before fixes. Running `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-video-quote.ts` exited **1** with all three independent failing regression names:
+
+```text
+missing ElevenLabs voice fails before a quote: undefined !== voice_setup_required
+music selector is pinned before library changes: chill !== /music/approved.mp3
+ElevenLabs model is pinned and setting drift refused: undefined !== v3
+```
+
+Fixes:
+
+- Preparation refuses unresolved/blank ElevenLabs voices with `voice_setup_required` and an actionable `voiceId`/Studio setup next step. It does not create a quote whose voice falls through to a future account default.
+- Music resolution uses the existing pure `resolveBgm` against local Music and owner-scoped UserMusic queries with the same ordering as `/api/music`. The execution snapshot contains the concrete selected path and explicit default volume 0.12. None selections contain no music field. Unresolved or unavailable/foreign resource selections refuse with `bgm_not_found`; preparation never fetches a URL or a provider. Human review shows the resolved track title.
+- The execution snapshot now includes the normalized shared `elevenlabsModel` value (`v3`/`v4`), shown in human review. Approval rechecks it against the owner row. `quoteExecutionRefusal` accepts an additional sixth argument, `currentAccount?: { elevenlabsModel: string }`, and fails closed with `quote_settings_changed` for approved ElevenLabs work when the current model is missing or differs. Gemini and original-root replay remain unaffected.
+- Exported `quoteAccountDefaultsRefusal(row, currentAccount)` for the consuming/provider seam. **Task 2 must repeat the model check immediately at the provider seam, or pass the trusted pinned model through to it. A consume-time check alone does not close mid-flight settings changes.** The coordinator received this explicit handoff; this Task 1 fix does not claim to implement Task 2 provider enforcement.
+- Corrected the service comment to acknowledge existing trial-allowance/credit-expiry bookkeeping during shared reads, as the reviewer advised.
+
+The new regression covers missing voice refusal, pinned path and volume, a newer matching music entry, unresolved/none selections, pinned model, approval-time and execution-time model drift, missing model evidence, and preservation of the explicit voice after account updates. Existing quote/auth/no-network/no-spend cases run in the same isolated SQLite suite.
+
+Final commands after the fixes:
+
+| Command | Exit |
+| --- | --- |
+| `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-video-quote.ts` | 0 |
+| `npx tsc --noEmit --pretty false` | 0 |
+| `npx eslint src/lib/mcp/video-quote.ts src/lib/mcp/video-quote.server.ts 'src/app/(dashboard)/mcp/confirm/[quoteId]/quote-confirmation.tsx' scripts/verify-mcp-video-quote.ts` | 0 |
+| `git diff --check` | 0 |
+
+No full build or unrelated suite was repeated. Previous fixture screenshots remain the original Task 1 evidence; this round changes the expanded voice/music labels and server snapshot behavior, verified by the regressions and type/lint checks. No live Clerk, production database, external provider, or other worktree was used or modified.
