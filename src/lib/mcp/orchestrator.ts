@@ -3173,8 +3173,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ...(billingReceipt ? { billingReceipt } : {}),
     });
   } catch (e) {
-    if (e instanceof VideoBudgetHoldError || pipelineFailureDetails(e)?.code === "confirmation_required") {
-      await holdVideoBudget(userId, jobId, e instanceof VideoBudgetHoldError ? e : new VideoBudgetHoldError("downstream_budget", (e as PipelineApiError).body && typeof (e as PipelineApiError).body === "object" ? ((e as PipelineApiError).body as { additional?: VideoBudgetHoldError["additional"] }).additional ?? {} : {}));
+    const budgetFailure = pipelineFailureDetails(e);
+    if (e instanceof VideoBudgetHoldError || budgetFailure?.code === "confirmation_required") {
+      await holdVideoBudget(userId, jobId, e instanceof VideoBudgetHoldError ? e : new VideoBudgetHoldError(budgetFailure?.reason ?? "downstream_budget", budgetFailure?.additional ?? {}));
       return;
     }
     const message = e instanceof Error ? e.message : "internal error";

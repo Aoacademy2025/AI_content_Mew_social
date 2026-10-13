@@ -421,6 +421,12 @@ export async function POST(req: Request) {
       }
     }
 
+    // Browser source/project hints constrain spending; they do not authorize
+    // consuming an original queued job's immutable execution reservation.
+    if (!serviceParentJobId && verifiedParentJobId && !burnAlreadyPaid && !rerenderSkipCharge) {
+      throw new VideoBudgetHoldError("render_execution_requires_worker");
+    }
+
     // T5 (ADR 0064, G4) defence in depth: a job the MCP edit path enqueued carries
     // `inputJson.mcpMustBeFree`. It may ride ONLY the two free paths above; if neither applied,
     // FAIL it here — before any quota check, reservation, funding transfer, supersede or

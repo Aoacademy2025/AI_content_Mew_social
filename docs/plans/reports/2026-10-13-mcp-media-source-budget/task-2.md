@@ -73,3 +73,26 @@ Final round-1 evidence (all exit 0):
 Actual route fixtures use synthetic local media under a temporary working directory and enqueue only; no renderer/provider process executes. The free-edit fixture's initial missing-voice 500 was corrected by supplying its synthetic local voice file, preserving the real asset-existence guard.
 
 A final focused regression distinguished a definite render admission refusal from an unknown render submission. The initial new checkpoint implementation incorrectly retained the refusal as `render_outcome_unknown` (red exit 1). It now clears only a definitive local budget refusal / structured HTTP 409 confirmation-required entry, allowing approved continuation; transport uncertainty remains held. The extended budget script, TypeScript and focused lint reruns exit 0.
+
+## Review fix round 2 — HTTP hold semantics and browser execution authority
+
+Two additional integrated regressions were reproduced before fixing:
+
+1. A real orchestrator call whose synthetic fetch-stock HTTP 409 is decoded by the actual `decodePipelineResponse` produced terminal `failed` instead of `confirmation_required` (red exit 1). The terminal error included `หา B-roll ไม่สำเร็จ (confirmation_required): POST /api/videos/fetch-stock → 409`. The generic error-detail extractor preferred `body.reason` over the canonical code, so the outer budget branch never matched. It also discarded the typed reason used by reconciliation.
+2. Actual render POST with no service context, an owned still-queued quote root in body `parentJobId`, and different scenes returned 200 (red exit 1, expected 409), transferring the original reservation into arbitrary work. Owner association constrained accounting but did not authorize executing that immutable work.
+
+Fixes preserve `confirmation_required` as the canonical pipeline code and carry its separate `reason` and finite nonnegative additional ceilings into the outer hold handler. Other historical error extraction remains unchanged. The orchestrator now persists `image_poll_unknown`, `image_submission_unknown`, or `image_ceiling` rather than flattening them to a generic failure. Browser source/project hints constrain the budget but cannot consume original execution funding; only trusted worker context or a verified already-paid eligible derivative can proceed.
+
+The extended real-orchestrator fixture now starts with decoded HTTP `image_poll_unknown`, verifies reserved funding/no terminal refund, settles the known image, then actually runs the same root to held preview. It verifies one TTS call, the same image ID and row, and unchanged image wallet debit. A separate decoded HTTP no-provider-ID submission remains held with reserved exposure and no approval-based resume. An ordinary image-ceiling HTTP response creates a linked incremental quote for exactly one image/two credits without terminal failure/refund. The actual route fixture rejects browser arbitrary execution against a still-queued quote and leaves its reservation intact; free eligible web rerender and already-paid web/service exports still pass.
+
+Final targeted commands all exit 0:
+
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-budget-orchestrator.ts`
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-mcp-budget.ts`
+- `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-pipeline-retry.ts` (6 assertions)
+- `node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-pipeline-error-specificity.ts`
+- `npx tsc --noEmit --pretty false`
+- Scoped ESLint of the four changed TypeScript files: no errors, two existing unused-variable warnings.
+- `git diff --check`
+
+The error-specificity compatibility script initially exited 1 under `react-server` (`React.createContext is not a function`) and exited 1 without its server-marker harness (`This module cannot be imported from a Client Component module`). A temporary equivalent marker shim passed; the final recorded rerun uses the repository's existing `register-server-only-node.mjs` and passes. No production behavior was changed for test imports. HTTP response/media/provider simulation remains explicitly scoped; no paid provider, real renderer, production write, full build or broad suite was used. Previously documented creative-reroll workflow and image-parent mismatch advisory remain unchanged.
