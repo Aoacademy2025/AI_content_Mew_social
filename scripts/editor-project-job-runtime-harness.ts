@@ -265,10 +265,10 @@ function loadPlainModule(
   fileName: string,
   requireMock: (specifier: string) => unknown,
 ): Record<string, unknown> {
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const factory = new Function("require", "module", "exports", compilePlainModule(source, fileName));
-  factory(requireMock, module, module.exports);
-  return module.exports;
+  factory(requireMock, evaluatedModule, evaluatedModule.exports);
+  return evaluatedModule.exports;
 }
 
 const narrationPlanPath = "src/lib/narration-plan.ts";
@@ -467,8 +467,7 @@ function mountEditorShell(input: {
     return value;
   };
   const fakeReact: Record<string, unknown> = {};
-  const module = { exports: {} as Record<string, unknown> };
-  let runner!: HookRunner<unknown>;
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const jobApi = {
     job: {
       phase: "idle",
@@ -642,8 +641,8 @@ function mountEditorShell(input: {
   });
   factory(
     requireMock,
-    module,
-    module.exports,
+    evaluatedModule,
+    evaluatedModule.exports,
     input.fetch,
     {
       location: {
@@ -652,8 +651,8 @@ function mountEditorShell(input: {
       },
     },
   );
-  const EditorV2Shell = module.exports.EditorV2Shell as () => unknown;
-  runner = new HookRunner(EditorV2Shell);
+  const EditorV2Shell = evaluatedModule.exports.EditorV2Shell as () => unknown;
+  const runner = new HookRunner(EditorV2Shell);
   runner.mount();
   return { runner, marker };
 }
@@ -803,9 +802,8 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     avatarIntroSecs: 5,
     avatarTailSecs: 5,
   };
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const fakeReact: Record<string, unknown> = {};
-  let runner!: HookRunner<JobHook>;
   const factory = new Function(
     "require",
     "module",
@@ -882,8 +880,8 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
   });
   factory(
     requireMock,
-    module,
-    module.exports,
+    evaluatedModule,
+    evaluatedModule.exports,
     fetchRuntime,
     {
       localStorage: {
@@ -898,8 +896,8 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     () => ({}) as unknown,
     () => undefined,
   );
-  const useV2Job = module.exports.useV2Job as (input: typeof project) => JobHook;
-  runner = new HookRunner(() => useV2Job(project));
+  const useV2Job = evaluatedModule.exports.useV2Job as (input: typeof project) => JobHook;
+  const runner = new HookRunner(() => useV2Job(project));
   runner.mount();
 
   // This is the conflict-before-rerender condition: the object captured by the job
@@ -975,9 +973,8 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     avatarIntroSecs: 5,
     avatarTailSecs: 5,
   };
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const fakeReact: Record<string, unknown> = {};
-  let runner!: HookRunner<JobHook>;
   const factory = new Function(
     "require",
     "module",
@@ -1067,8 +1064,8 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
   });
   factory(
     requireMock,
-    module,
-    module.exports,
+    evaluatedModule,
+    evaluatedModule.exports,
     fetchRuntime,
     {
       localStorage: {
@@ -1083,8 +1080,8 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     () => ({}) as unknown,
     () => undefined,
   );
-  const useV2Job = module.exports.useV2Job as (input: typeof project) => JobHook;
-  runner = new HookRunner(() => useV2Job(project));
+  const useV2Job = evaluatedModule.exports.useV2Job as (input: typeof project) => JobHook;
+  const runner = new HookRunner(() => useV2Job(project));
   runner.mount();
 
   const first = runner.current.submit();
@@ -1177,9 +1174,8 @@ function mountAttemptJobHook(
   fetchImpl: (url: string, init?: Record<string, unknown>) => Promise<unknown>,
   storedJobId: string | null = null,
 ): HookRunner<JobHook> {
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const fakeReact: Record<string, unknown> = {};
-  let runner!: HookRunner<JobHook>;
   const factory = new Function(
     "require",
     "module",
@@ -1244,8 +1240,8 @@ function mountAttemptJobHook(
   });
   factory(
     requireMock,
-    module,
-    module.exports,
+    evaluatedModule,
+    evaluatedModule.exports,
     fetchImpl,
     {
       localStorage: {
@@ -1261,8 +1257,8 @@ function mountAttemptJobHook(
     () => ({}) as unknown,
     () => undefined,
   );
-  const useV2Job = module.exports.useV2Job as (input: typeof project) => JobHook;
-  runner = new HookRunner(() => useV2Job(project));
+  const useV2Job = evaluatedModule.exports.useV2Job as (input: typeof project) => JobHook;
+  const runner = new HookRunner(() => useV2Job(project));
   runner.mount();
   return runner;
 }
@@ -2049,7 +2045,7 @@ export async function archiveUnmountInvalidatesLateCompletion(): Promise<void> {
 }
 
 async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<void> {
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const replayQueries: Array<Record<string, unknown>> = [];
   let createCalls = 0;
   class KeyRequiredError extends Error {}
@@ -2171,8 +2167,8 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
-  factory(requireMock, module, module.exports);
-  const POST = module.exports.POST as (request: Request) => Promise<Response>;
+  factory(requireMock, evaluatedModule, evaluatedModule.exports);
+  const POST = evaluatedModule.exports.POST as (request: Request) => Promise<Response>;
   const response = await POST(new Request("https://example.test/api/videos/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2212,7 +2208,7 @@ async function runExactReplayRouteScenario(input: {
   /** rows ที่ legacy prefix scan จะเจอ (คือประวัติ attempt ของ fingerprint นี้) */
   legacyRows?: LegacyVideoJobAttemptRow[];
 }) {
-  const module = { exports: {} as Record<string, unknown> };
+  const evaluatedModule = { exports: {} as Record<string, unknown> };
   const replayQueries: Array<Record<string, unknown>> = [];
   const legacyScanQueries: Array<Record<string, unknown>> = [];
   const createCalls: Array<{
@@ -2541,6 +2537,17 @@ async function runExactReplayRouteScenario(input: {
     // Pure module (voice style id/direction helpers, no deps) — run the real
     // normalizer so exact-replay sees production style coercion.
     if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
+    // Exact replays return before mutable external-media validation. Keep the
+    // import available, but fail if this scenario unexpectedly reaches it.
+    if (specifier === "@/lib/external-media.server") {
+      const unexpectedValidation = async () => {
+        throw new Error("exact-replay scenario unexpectedly reached external-media validation");
+      };
+      return {
+        validateExternalMediaExport: unexpectedValidation,
+        validateExternalWindowEdits: unexpectedValidation,
+      };
+    }
     // T5: the export / B-roll re-render enqueue moved out of the route. Load the REAL module
     // against this same table, so its source lookup still touches the "source-job" gate.
     if (specifier === "@/lib/editor-export-enqueue") {
@@ -2563,8 +2570,8 @@ async function runExactReplayRouteScenario(input: {
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
-  factory(requireMock, module, module.exports);
-  const POST = module.exports.POST as (request: Request) => Promise<Response>;
+  factory(requireMock, evaluatedModule, evaluatedModule.exports);
+  const POST = evaluatedModule.exports.POST as (request: Request) => Promise<Response>;
   const response = await POST(new Request("https://example.test/api/videos/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
