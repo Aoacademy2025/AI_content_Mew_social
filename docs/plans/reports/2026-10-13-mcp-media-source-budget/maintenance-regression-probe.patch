@@ -3,7 +3,7 @@
 @@ -315,6 +315,17 @@
      return { reply, root, projectId: root.projectId };
    }
- 
+
 +  // Isolated final-gate reproduction: real transport and approval consumption under maintenance.
 +  await prisma.siteConfig.upsert({ where: { key: "render_deploy_drain" }, create: { key: "render_deploy_drain", value: "1" }, update: { value: "1" } });
 +  const maintenanceBefore = await money(tester.user.id);

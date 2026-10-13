@@ -56,7 +56,6 @@ Build intentionally left to final hosted CI per coordinator direction. Prior acc
 
 | Group | Command | Initial exit | Corrected rerun |
 | --- | --- | --- | --- |
-
 | 0 | `npm run verify:customer-error-copy` | 0 | — |
 | 1 | `npm run verify:task2-transport` | 0 | — |
 | 2 | `npm run verify:quota-error-shape` | 0 | — |

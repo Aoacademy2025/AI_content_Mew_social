@@ -146,7 +146,7 @@ Owner: integration fixtures, CI coverage, rollout notes, reviewed PR. Depends on
 - [x] Independent whole-branch correctness and security reviews, resolve blockers, then open PR with additive-schema and rollback instructions. A rollback must drain new quote-bound jobs or retain enforcement; disabling a gate must not authorize unpaid/unapproved work.
 - [x] No live-readiness claim merely because CI passes. Report actual test coverage and the unresolved separate HERO-70 database risk.
 
-Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; PR [#602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602) is draft: final GitHub CI exposed the reproduced maintenance-response regression; see maintenance-regression.md. No merge or deployment.
+Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; PR [#602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602) remains draft pending full hosted CI. The maintenance regression is fixed at1505b2e9; independent correctness/security delta reviews PASS through39496a58 and all73 later CI groups pass locally. See maintenance-fix.md and maintenance review reports. No merge or deployment.
 
 ## Assurance and Budget
 
@@ -191,6 +191,6 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 
 ## Status
 
-interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; GitHub CI failed on maintenance-response compatibility; not ready to merge
+interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; maintenance compatibility corrected and independently reviewed; full hosted CI pending; not ready to merge
 
 The approved product scope is settled. The mew-kickoff skill requires production execution in a fresh session; do not request another approval for the same scope.
