@@ -1,7 +1,7 @@
 # Integration and independent final gate focus
 
 Baseline: `4c2461805dcc2633675996a82ce391cfe706ff60`.
-Final candidate: `24a7b170239a81fde00694bb30857c1f92db5e94` (Task5 round1 corrections; independent correctness PASS, final security resumed with approved run25). Task5 report records resolved hook/fixture obligations and public image-boundary probe; independent final review remains pending.
+Final candidate: `24a7b170239a81fde00694bb30857c1f92db5e94` (Task5 round1 corrections; independent correctness and final security PASS, reviewed PR602 delivered). Task5 report records resolved hook/fixture obligations and public image-boundary probe; independent final review remains pending.
 
 ## Verification obligations carried forward
 

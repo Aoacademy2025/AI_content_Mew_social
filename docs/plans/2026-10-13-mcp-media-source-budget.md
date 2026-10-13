@@ -143,10 +143,10 @@ Owner: integration fixtures, CI coverage, rollout notes, reviewed PR. Depends on
 - [x] Use isolated throwaway SQLite and installed dependency setup; never point tests at production or a shared mutable worktree DB.
 - [x] TypeScript, lint changed files, production build, MCP CI-coverage; record commands, exit codes and any excerpts on failure.
 - [x] Four ordinary-user E2E paths and malicious-client bypass tests; no real provider charge needed for regression tests. Production rehearsal remains separately authorized.
-- [ ] Independent whole-branch correctness and security reviews, resolve blockers, then open PR with additive-schema and rollback instructions. A rollback must drain new quote-bound jobs or retain enforcement; disabling a gate must not authorize unpaid/unapproved work.
+- [x] Independent whole-branch correctness and security reviews, resolve blockers, then open PR with additive-schema and rollback instructions. A rollback must drain new quote-bound jobs or retain enforcement; disabling a gate must not authorize unpaid/unapproved work.
 - [x] No live-readiness claim merely because CI passes. Report actual test coverage and the unresolved separate HERO-70 database risk.
 
-Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; final reviewed PR creation remains the delivery step.
+Task 5 verification: code candidate `24a7b170` passed independent correctness and security reviews. Full 56-invocation regression selection plus 13 correction checks, build, TypeScript, changed-file lint and CI coverage passed; Reviewed PR delivered: [#602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge or deployment.
 
 ## Assurance and Budget
 
@@ -180,7 +180,7 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 - [x] AC6: External source works for script-only and presenter flows through URL/upload imports and shared edits, with zero Hero image-generation charges and no automatic paid fallback.
 - [x] AC7: Final receipts reconcile image/render credits and reservations/refunds to durable billing evidence; free eligible edits/export remain free.
 - [x] AC8: Existing web creation, historical jobs, ownership, safe-fetch/import limits and flat tool schemas retain required behavior.
-- [ ] AC9: Required tests/build pass with recorded exit codes; independent security/correctness blockers resolved; reviewed PR and deployment notes delivered without deployment.
+- [x] AC9: Required tests/build pass with recorded exit codes; independent security/correctness blockers resolved; reviewed PR and deployment notes delivered without deployment.
 
 ## Out of scope
 
@@ -191,6 +191,6 @@ Execution override from Mew, 2026-10-13: every worker, reviewer and explorer use
 
 ## Status
 
-interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivery in progress; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: -
+interviewed 2026-10-13 | approved: 2026-10-13 (chat: cost disclosure + human approval + capped spending, then four sources including external agent media; latest “ok approve”) | executed: in progress; code candidate `24a7b170` passes integrated checks and independent correctness, final independent security PASS after explicitly approved run25/25; reviewed PR delivered; ledger docs/plans/reports/2026-10-13-mcp-media-source-budget/progress.md | delivered: 2026-10-14, [PR #602](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/602); no merge/deploy; GitHub CI pending at opening
 
 The approved product scope is settled. The mew-kickoff skill requires production execution in a fresh session; do not request another approval for the same scope.
