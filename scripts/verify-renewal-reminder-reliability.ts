@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  grantExtendsPastExpiry,
   isCashBackedRenewalTerm,
   renewalDeliveryStatus,
   renewalReminderDecision,
@@ -72,6 +73,28 @@ assert.equal(isCashBackedRenewalTerm({
   stripeSubscriptionId: null,
   payments: [{ ...foundingPayment, paidAt: new Date("2025-01-01T00:00:00Z"), createdAt: new Date("2025-01-01T00:00:00Z") }],
 }), false, "stale historical cash cannot turn a later comped term into a renewal");
+
+const couponBase = {
+  outcome: "SCHEDULED",
+  redeemedAt: NOW,
+  entitlementPlan: "PRO",
+  coupon: { type: "GRANT", plan: "PRO", durationDays: 30 },
+};
+assert.equal(grantExtendsPastExpiry({
+  ...couponBase,
+  entitlementStartsAt: EXPIRES,
+  entitlementExpiresAt: new Date(EXPIRES.getTime() + 30 * 24 * 60 * 60 * 1000),
+}, EXPIRES), true, "a coupon that starts as the stored term ends keeps access");
+assert.equal(grantExtendsPastExpiry({
+  ...couponBase,
+  entitlementStartsAt: NOW,
+  entitlementExpiresAt: EXPIRES,
+}, EXPIRES), false, "a coupon that ends on the stored expiry does not extend it");
+assert.equal(grantExtendsPastExpiry({
+  ...couponBase,
+  entitlementStartsAt: new Date(EXPIRES.getTime() + 24 * 60 * 60 * 1000),
+  entitlementExpiresAt: new Date(EXPIRES.getTime() + 31 * 24 * 60 * 60 * 1000),
+}, EXPIRES), false, "a coupon that starts after a gap does not cover the expiry");
 
 assert.equal(renewalDeliveryStatus({ notificationDelivered: true, emailAttempted: true, emailDelivered: true }), "DELIVERED");
 assert.equal(renewalDeliveryStatus({ notificationDelivered: true, emailAttempted: true, emailDelivered: false }), "PARTIAL");
