@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { VideoBudgetHoldError } from "../src/lib/mcp/video-budget-admission";
 import {
   isSqliteWriteContentionError,
 } from "../src/lib/hero-image-resilience";
@@ -59,6 +60,7 @@ async function exercise(error: Error | null) {
     failures,
     recordTelemetryEvent: async (_userId: string, event: { properties: Record<string, unknown> }) => { events.push(event); },
     HeroImageGenerationError,
+    VideoBudgetHoldError,
     isSqliteWriteContentionError,
   };
   const names = Object.keys(dependencies);
@@ -82,6 +84,8 @@ async function exercise(error: Error | null) {
 }
 
 async function main() {
+  const budgetHold = new VideoBudgetHoldError("image_ceiling");
+  await assert.rejects(exercise(budgetHold), error => error === budgetHold, "budget refusal must escape unchanged for approval handling");
   const contention = await exercise(Object.assign(new Error("Socket timeout"), { code: "P1008" }));
   assert.equal(contention.failure.code, "DB_CONTENTION", "local DB timeout must not be called provider polling failure");
   assert.equal(contention.event.properties.errorCode, "DB_CONTENTION");
