@@ -125,6 +125,34 @@ async function main() {
   if (mode === "script") check("faceless first window is B-roll", states.windows?.[0]?.owner === "broll");
   const refused = await edit.exportVideoTool(user, root.id) as any;
   check(`${mode}: empty required export refused`, refused.error === "external_media_required" && refused.next && refused.windowIndices?.length);
+  // Independent final security probe: public render POST, outside enqueue/worker gate.
+  const Module = (await import("node:module")).default as any;
+  const oldLoad = Module._load;
+  Module._load = function(request: string, ...args: any[]) {
+    if (request.includes("clerk-auth")) return { getCurrentUser: async () => user };
+    if (request.includes("mcp/service-actor")) return { resolveServiceVideoJobId: async () => null };
+    if (request.includes("remotion-public-dir")) return { prepareRemotionBundlePublicDir: () => rendersRoot };
+    return oldLoad.call(this, request, ...args);
+  };
+  process.env.RENDER_TMP_ROOT = join(dir, "render-tmp");
+  const { POST } = await import("../src/app/api/videos/render/route");
+  const originalCwd = process.cwd();
+  mkdirSync(join(dir, "public", "renders"), { recursive: true });
+  writeFileSync(join(dir, "public", "renders", output.videoUrl.split("/").at(-1)), Buffer.alloc(2000));
+  process.chdir(dir);
+  const renderCountBefore = await prisma.renderJob.count();
+  for (const identity of [{projectId: root.projectId}, {}, {videoUrl: `https://studio.example.test/renders/${output.videoUrl.split("/").at(-1)}?v=1`}]) {
+    const response = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({...identity, subtitleOverlayConfig: {videoUrl: "videoUrl" in identity ? identity.videoUrl : output.videoUrl, durationInFrames: 480, captions: [], externalMedia:{slots:[]}}}) }));
+    const responseBody = await response.json();
+    console.log("SECURITY_PROBE", JSON.stringify({mode, identity, status:response.status, body:responseBody}));
+    if (responseBody.jobId) {
+      const queued = await prisma.renderJob.findUniqueOrThrow({where:{id:responseBody.jobId}});
+      console.log("SECURITY_QUEUED", JSON.stringify({type:queued.type, status:queued.status, parentJobId:queued.parentJobId,reservedQuota:queued.reservedQuota}));
+    }
+    assert.equal(response.status, 409, "External required slots must block public burn enqueue");
+  }
+  assert.equal(await prisma.renderJob.count(), renderCountBefore);
+  process.chdir(originalCwd); Module._load = oldLoad;
   const rawExport = await prisma.videoJob.create({ data: { userId: user.id, projectId: root.projectId, type: "export", status: "processing", inputJson: JSON.stringify({ mode: "export", sourceJobId: root.id, subtitleOverlayConfig: { videoUrl: output.videoUrl, durationInFrames: 480, externalMedia: { slots: [] } } }) } });
   await runOrchestrator(rawExport.id, user.id, { caller, sleep: async () => {}, refundOneClip: async () => {}, rendersRoot });
   const rawDone = await prisma.videoJob.findUniqueOrThrow({ where: { id: rawExport.id } });
@@ -266,6 +294,19 @@ async function main() {
   await runOrchestrator(ex.id, user.id, { caller, sleep: async () => {}, refundOneClip: async () => {}, rendersRoot });
   const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: ex.id } });
   check(`${mode}: export succeeds`, completed.status === "done");
+  // The same real public route still accepts an applied owned external preview as a free burn.
+  const validUrl = JSON.parse(rr.outputJson!).videoUrl;
+  writeFileSync(join(dir, "public", "renders", validUrl.split("/").at(-1)), Buffer.alloc(2000));
+  process.chdir(dir);
+  try {
+    const valid = await POST(new Request("http://localhost/api/videos/render", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subtitleOverlayConfig: { videoUrl: validUrl, durationInFrames: 480, captions: [] } }) }));
+    const body = await valid.json(); assert.equal(valid.status, 200, JSON.stringify(body));
+    const burn = await prisma.renderJob.findUniqueOrThrow({ where: { id: body.jobId } });
+    assert.equal(burn.reservedQuota, false); assert.equal(burn.type, "BURN");
+    await prisma.renderJob.update({ where: { id: burn.id }, data: { status: "CANCELED" } });
+    check(`${mode}: public burn accepts applied external media without new charge`, true);
+  } finally { process.chdir(originalCwd); }
+
   check(`${mode}: budget context follows descendants`, completed.budgetQuoteId === root.budgetQuoteId && rr.budgetQuoteId === root.budgetQuoteId);
   check(`${mode}: free edit/export ledger`, (await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).minutesUsed === beforeMinutes);
   const again = await edit.exportVideoTool(user, root.id) as any;

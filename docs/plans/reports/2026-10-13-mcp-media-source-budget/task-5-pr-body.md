@@ -7,3 +7,5 @@ Validation:56 regression invocations ultimately pass (one broad sweep, scoped fi
 Schema is additive: `McpVideoQuote`, nullable budget links/checkpoint fields and indexes. Apply schema before enabling matching routes/workers, only after separate deployment authorization. Rollback must drain/reconcile quote-bound work or retain approval/budget enforcement; never remove the gate while new work can still spend. Keep receipts/checkpoints and schema. Full procedure: `docs/ops/mcp-media-approval-rollout.md`.
 
 HERO-70 SQLite contention remains unresolved and separate. No production writes/deployment or live provider charges were performed.
+
+Final-review corrections also enforce external required media at direct public burn admission, expose held descendant continuation through root status, and reuse known late burn outputs after worker recovery. Thirteen scoped verification invocations and production build pass after those corrections. Independent security final gate remains pending.

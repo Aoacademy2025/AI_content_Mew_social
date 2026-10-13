@@ -274,7 +274,24 @@ async function main() {
     const beforeExportMinutes = (await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).minutesUsed;
     const exported = await exportVideoTool(owner, created.jobId) as { exportJobId?: string; error?: string };
     assert.ok(exported.exportJobId, JSON.stringify(exported));
+    // Export submission crosses a worker restart before its durable BURN appears.
+    await prisma.videoJob.update({ where: { id: exported.exportJobId }, data: { status: "processing", currentStep: "burn", budgetCheckpointJson: JSON.stringify({ version: 1, calls: { interrupted: { path: "/api/videos/render", state: "running" } } }) } });
+    await recoverProcessingJobsAfterWorkerRestart();
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: exported.exportJobId } })).status, "confirmation_required");
+    const lateUrl = "/api/renders/late-budget-export.mp4";
+    await prisma.renderJob.create({ data: { userId: owner.id, parentJobId: exported.exportJobId, type: "BURN", status: "DONE", payload: "{}", videoUrl: lateUrl, reservedQuota: false } });
+    writeFileSync(join(rendersRoot, "late-budget-export.mp4"), "fixture render output");
+    const quoteCount = await prisma.mcpVideoQuote.count();
+    const renderCount = await prisma.renderJob.count();
+    const paidAttempts = renderSeq;
+    const narrationCalls = ttsCalls;
+    const resumedExport = await prepareVideoQuote(owner, { resumeJobId: exported.exportJobId });
+    assert.equal(resumedExport.quoteId, quote.quoteId);
     await runJob(exported.exportJobId, owner.id);
+    assert.equal(await prisma.mcpVideoQuote.count(), quoteCount);
+    assert.equal(await prisma.renderJob.count(), renderCount);
+    assert.equal(renderSeq, paidAttempts); assert.equal(ttsCalls, narrationCalls);
+
     const final = await prisma.videoJob.findUniqueOrThrow({ where: { id: exported.exportJobId } });
     assert.equal(final.status, "done", final.errorMessage ?? "approved image source must reach FINAL export");
     assert.ok(JSON.parse(final.outputJson!).videoUrl);

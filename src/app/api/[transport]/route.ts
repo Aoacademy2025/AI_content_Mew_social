@@ -1,4 +1,3 @@
-import { getVideoJobCostReceipt } from "@/lib/mcp/billing-receipt";
 import { requestVideoJob } from "@/lib/mcp/video-budget.server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -12,7 +11,6 @@ import { SERVER_INSTRUCTIONS } from "@/lib/mcp/onboarding";
 
 import { getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
 
 import { getRequestPrincipal, runWithRequestPrincipalSlot, setRequestPrincipal } from "@/lib/mcp/request-principal";
 
@@ -127,15 +125,6 @@ const handler = createMcpHandler(
       { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video) ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้; ถ้ามี editorUrl ให้ส่งลิงก์ \"กดลิงก์นี้เพื่อแก้ต่อในเว็บได้\"; ถ้า failed ให้อธิบายตาม userAction และ refunded/refundPending.", inputSchema: { id: z.string().min(1) } },
       async (args, extra) =>
         runTool("get_video_status", extra, async (p) => {
-          const held = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId, status: "confirmation_required" }, select: { id: true, budgetCheckpointJson: true } });
-          if (held) {
-            const checkpoint = held.budgetCheckpointJson ? JSON.parse(held.budgetCheckpointJson) : null;
-            const quoteId = checkpoint?.hold?.quoteId;
-            return { jobId: held.id, status: "confirmation_required", retainedCheckpoint: true,
-              billingReceipt: await getVideoJobCostReceipt({ videoJobId: held.id, userId: p.userId }),
-              ...(typeof quoteId === "string" ? { quote: await getVideoQuote(p.userId, quoteId) } : {}),
-              next: quoteId ? "ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันวงเงินเพิ่มเติม แล้วเรียก create_video_job ด้วย quoteId ใหม่" : "งานเดิมยังมีผลจากผู้ให้บริการที่ไม่แน่นอน ติดต่อฝ่ายช่วยเหลือเพื่อตรวจผลก่อนลองซ้ำ" };
-          }
           const job = await getVideoJobStatusTool(p.userId, args.id);
           if (job) return job;
           const v = await getVideoStatusTool(p.userId, args.id);
@@ -182,7 +171,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. brollSource = stock (วิดีโอสต็อกฟรี, ค่าเริ่มต้น) | hero-ai-image | automix. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId) แจ้งผู้ใช้ทุกข้อใน warnings. แบรนด์ (brandProfileId) มีผลกับสไตล์ซับเท่านั้น. มีคลิปพิธีกรแนวตั้งอยู่แล้ว (เช่น ทำจาก HeyGen): ส่ง clipUrl (ลิงก์ https สาธารณะ) หรือ clipUploadId (จาก create_upload_url kind presenter) แทน script — ระบบนำเข้าคลิปก่อน (status queued) แล้วทำซับจากเสียงในคลิปและสลับ B-roll; cutawayLayout fillYourself = ไม่ใส่ B-roll อัตโนมัติ (ใส่เองด้วย replace_broll_window). นำเข้าไม่สำเร็จ = งาน failed พร้อม errorCode และไม่ตัดโควต้า.",
+        description: "สร้างวิดีโอจากงานที่เจ้าของบัญชีอนุมัติ: เรียก prepare_video_job โดยเลือก brollSource = stock | hero-ai-image | automix | external ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันใน Studio แล้วเรียก create_video_job ด้วย quoteId เดิมเพื่อเริ่มงาน จากนั้น poll get_video_status. ไม่เริ่มงานหรือจองค่าใช้จ่ายก่อนอนุมัติ. คลิปพิธีกรต้องนำเข้าด้วย create_upload_url kind presenter และตรวจให้พร้อมก่อน prepare_video_job ด้วย clipUploadId; clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน. external ไม่ใช้เครดิตสร้างภาพ แต่ต้องนำเข้าสื่อให้ครบช่วงที่กำหนดก่อน export_video. แจ้ง warnings และเพดานค่าใช้จ่ายให้ผู้ใช้ทราบ.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>

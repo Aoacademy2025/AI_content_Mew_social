@@ -124,8 +124,8 @@ export async function resumeKnownBudgetWorkInTransaction(tx: Prisma.TransactionC
   const approval = await tx.mcpVideoQuote.findFirst({ where: { id: job.budgetQuoteId!, userId, status: "consumed" } });
   if (!approval) return false;
   let known = false;
-  if (job.currentStep === "render") {
-    const render = await tx.renderJob.findFirst({ where: { userId, parentJobId: job.id, type: "RENDER", status: { in: ["QUEUED", "RUNNING", "DONE"] } }, orderBy: { createdAt: "asc" } });
+  if (job.currentStep === "render" || (job.currentStep === "burn" && job.type === "export")) {
+    const render = await tx.renderJob.findFirst({ where: { userId, parentJobId: job.id, type: job.currentStep === "burn" ? "BURN" : "RENDER", status: { in: ["QUEUED", "RUNNING", "DONE"] } }, orderBy: { createdAt: "asc" } });
     known = !!render && (render.status !== "DONE" || !!render.videoUrl);
   } else if (checkpoint.hold?.reason === "image_poll_unknown" || checkpoint.hold?.reason === "image_submission_unknown" || checkpoint.hold?.reason === "image_cancel_unknown") {
     const images = await tx.aiGenerationJob.findMany({ where: { userId, budgetQuoteId: job.budgetQuoteId, idempotencyKey: { startsWith: `video:${job.id}:` } }, select: { status: true, chargeState: true, outputUrl: true } });

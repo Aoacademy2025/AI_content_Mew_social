@@ -1,3 +1,4 @@
+import { getVideoQuote } from "./video-quote.server";
 import { getVideoJobCostReceipt } from "./billing-receipt";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -155,6 +156,20 @@ function scaledProgress(progress: number, from: number, to: number): number {
   return from + Math.round((clamped * (to - from)) / 100);
 }
 
+async function retainedConfirmation(userId: string, heldJobId: string) {
+  const held = await prisma.videoJob.findFirst({ where: { id: heldJobId, userId, status: "confirmation_required" }, select: { budgetCheckpointJson: true } });
+  if (!held) return {};
+  const checkpoint = held.budgetCheckpointJson ? JSON.parse(held.budgetCheckpointJson) : null;
+  const quoteId = checkpoint?.hold?.quoteId;
+  const quote = typeof quoteId === "string" ? await getVideoQuote(userId, quoteId) : null;
+  return {
+    status: "confirmation_required", heldJobId, retainedCheckpoint: true,
+    reason: checkpoint?.hold?.reason ?? "provider_outcome_unknown",
+    ...(quote ? { quote } : {}),
+    next: quote && "status" in quote ? (["expired", "rejected"].includes(quote.status) ? `เรียก prepare_video_job พร้อม resumeJobId: ${heldJobId} เพื่อยืนยันงานที่บันทึกไว้` : quote.next) : "งานเดิมยังมีผลจากผู้ให้บริการที่ไม่แน่นอน ติดต่อฝ่ายช่วยเหลือเพื่อตรวจผลก่อนลองซ้ำ",
+  };
+}
+
 /**
  * T8 (ADR 0063): get_video_status for an MCP chain — one job from the agent's point of view,
  * whichever of the two ids it holds. Preview 0–85, export 85–100; failure fields come from
@@ -252,6 +267,7 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: preview.id, userId }),
+    ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
     ...(exportHalfEnded && editorUrl ? { editorUrl } : {}),
   };
@@ -343,6 +359,7 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: root.id, userId }),
+    ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null } : {}),
     ...(rootDone ? { previewUrl, editorUrl } : {}),
   };
@@ -399,6 +416,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: job.id, userId }),
+    ...(job.status === "confirmation_required" ? await retainedConfirmation(userId, job.id) : {}),
   };
 }
 

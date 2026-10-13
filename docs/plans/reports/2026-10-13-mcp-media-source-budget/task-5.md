@@ -45,3 +45,7 @@ Production confirmation component + HTTP adapter were exercised at desktop1280 a
 - Baseline-wide lint warnings are documented separately in the verification report; no lint errors remain.
 
 Worker remains active for independent final review and up to two confirmed-blocker fix rounds. Root owns plan/progress integration and authorized PR delivery.
+
+## Final review fix round 1
+
+Three independently reproduced blockers were addressed: direct external burn required-slot bypass, hidden held descendants in root status, and late known BURN resume. See [round 1 evidence](task-5-round-1.md) for red/green commands, counts, production build and remaining review gates. Worker remains active for independent recheck.

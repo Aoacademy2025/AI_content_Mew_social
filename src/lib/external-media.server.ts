@@ -1,3 +1,4 @@
+import { canonicalRenderUrl } from "./clip-charge";
 import { prisma } from "./prisma";
 import { externalMediaPlan, externalWindowStates, mediaWindows, isPresenterHookWindow, type ExternalWindowState } from "./external-media";
 import { MAX_BROLL_WINDOW_EDITS, mergeWindowEdits, type WindowEdit } from "./broll-rerender";
@@ -97,4 +98,24 @@ export async function validateExternalWindowEdits(userId: string, sourceJobId: s
   const owned = new Set(rows.map(r => r.resultSrc));
   const missing = edits.filter(e => e.src && !owned.has(e.src)).map(e => ({ index: e.index, required: true, owner: "broll" as const, state: "failed" as const, importError: "import_missing" }));
   return missing.length ? requiredMediaFailure(missing) : null;
+}
+
+/** Resolve the actual owned render bytes, not client project IDs or media-policy flags. */
+export async function validateExternalMediaBurn(userId: string, videoUrl: string | null | undefined): Promise<ExternalMediaRefusal | null> {
+  const canonical = canonicalRenderUrl(videoUrl);
+  if (!canonical) return null;
+  const filename = canonical.slice("/api/renders/".length);
+  const [outputs, renders] = await Promise.all([
+    prisma.videoJob.findMany({ where: { userId, outputJson: { contains: filename } }, select: { id: true, outputJson: true } }),
+    prisma.renderJob.findMany({ where: { userId, videoUrl: { contains: filename }, parentJobId: { not: null } }, select: { videoUrl: true, parentJobId: true } }),
+  ]);
+  const sources = new Set(outputs.filter(row => canonicalRenderUrl(parseVideoJobOutput(row.outputJson)?.videoUrl) === canonical).map(row => row.id));
+  for (const render of renders) {
+    if (render.parentJobId && canonicalRenderUrl(render.videoUrl) === canonical) sources.add(render.parentJobId);
+  }
+  for (const sourceJobId of sources) {
+    const refusal = await validateExternalMediaExport({ userId, sourceJobId });
+    if (refusal) return refusal;
+  }
+  return null;
 }

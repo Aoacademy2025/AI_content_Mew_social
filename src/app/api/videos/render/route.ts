@@ -1,3 +1,4 @@
+import { validateExternalMediaBurn } from "@/lib/external-media.server";
 import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
@@ -327,6 +328,11 @@ export async function POST(req: Request) {
     const isAvatarMode = !!avatarVideoUrl;
     const isShortVideo = !!shortVideoConfig;
     const isSubtitleOverlay = !!subtitleOverlayConfig;
+    if (isSubtitleOverlay) {
+      const refusal = await validateExternalMediaBurn(userId, subtitleOverlayConfig?.videoUrl);
+      if (refusal) return NextResponse.json(refusal, { status: 409 });
+    }
+
     const renderScopeId = normalizeRenderScopeId(jobScopeId);
     const renderOwnerKey = `${userId}:${renderScopeId}`;
 
