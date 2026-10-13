@@ -83,6 +83,7 @@ model User {
   styles                          Style[]
   contents                        Content[]
   videos                          Video[]
+  mcpVideoQuotes                  McpVideoQuote[]
   mcpTokens                       McpToken[]
   mcpUploadTokens                 McpUploadToken[]
   mediaImports                    MediaImport[]
@@ -1952,4 +1953,36 @@ model BrandLibraryOperation {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, requestId])
+}
+
+// Human spending consent for one immutable public MCP request. Approval reserves nothing.
+model McpVideoQuote {
+  id                      String   @id @default(cuid())
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status                  String   @default("draft") // draft | approved | consumed | rejected; expired is derived
+  inputJson               String
+  inputHash               String
+  executionJson           String // resolved voice/avatar/brand/layout; contains no credentials
+  executionHash           String
+  pricingJson             String
+  pricingHash             String
+  receiptJson             String
+  source                  String
+  imageCountCeiling       Int
+  imageCreditCeiling      Int
+  includedRenderMinutes   Int
+  renderCreditCeiling     Int
+  totalHeroCreditCeiling  Int
+  expiresAt               DateTime
+  approvedAt              DateTime?
+  rejectedAt              DateTime?
+  consumedAt              DateTime?
+  rootJobId               String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, expiresAt])
+  @@index([rootJobId])
 }

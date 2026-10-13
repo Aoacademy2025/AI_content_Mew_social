@@ -74,3 +74,12 @@ export const createVideoJobInputShape = {
 
 export const createVideoJobInputSchema = z.object(createVideoJobInputShape);
 export type CreateVideoJobInput = z.infer<typeof createVideoJobInputSchema>;
+
+/** Preparation supports external before the execution/edit lane is enabled. */
+export const prepareVideoJobInputShape = {
+  ...createVideoJobInputShape,
+  brollSource: z.enum([...MCP_BROLL_SOURCES, "external"]).optional()
+    .describe("stock = สต็อก, hero-ai-image = ภาพ AI, automix = สต็อกผสมภาพ AI, external = นำเข้าสื่อจากเครื่องมือของคุณ ไม่ใช้เครดิต Hero สร้างภาพ"),
+} satisfies z.ZodRawShape;
+export const prepareVideoJobInputSchema = z.object(prepareVideoJobInputShape);
+export type PrepareVideoJobInput = z.infer<typeof prepareVideoJobInputSchema>;

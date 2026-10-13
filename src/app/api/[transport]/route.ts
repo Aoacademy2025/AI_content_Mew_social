@@ -50,7 +50,8 @@ import { resolveMcpSubtitleDesign, brandSubtitleStyleMissingWarning } from "@/li
 import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
-import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
+import { prepareVideoQuote, getVideoQuote } from "@/lib/mcp/video-quote.server";
+import { createVideoJobInputShape, prepareVideoJobInputShape } from "@/lib/mcp/create-video-input";
 import {
   abandonClipImport,
   clipFieldsRequested,
@@ -190,6 +191,21 @@ const handler = createMcpHandler(
       { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/B-roll/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
       async (_args, extra) => runTool("get_video_options", extra, async (p) =>
         getVideoOptions(pipelineCaller(p.userId), p.user, await listActiveBrandProfilesForMcp(p.userId))),
+    );
+
+    server.registerTool(
+      "prepare_video_job",
+      {
+        title: "Prepare video spending quote",
+        description: "ถามผู้ใช้ก่อนว่าจะใช้ stock, hero-ai-image, automix หรือ external แล้วประเมินวงเงินโดยไม่สร้างงานหรือหักเครดิต ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันใน Studio; agent ยืนยันแทนไม่ได้. คลิปพิธีกรต้องนำเข้าสำเร็จผ่าน create_upload_url(kind: presenter) และ PUT ก่อนส่ง clipUploadId",
+        inputSchema: prepareVideoJobInputShape,
+      },
+      async (args, extra) => runTool("prepare_video_job", extra, async (p) => prepareVideoQuote(p.user, args), { brollSource: args.brollSource, hasScript: Boolean(args.script), hasPresenter: Boolean(args.clipUrl || args.clipUploadId) }, { next: "ตรวจข้อมูลแล้วเรียก prepare_video_job ใหม่" }),
+    );
+    server.registerTool(
+      "get_video_quote",
+      { title: "Get video quote status", description: "อ่านสถานะใบยืนยันของบัญชีนี้ ไม่อนุมัติและไม่เริ่มงาน; เมื่อ approved ให้เรียก create_video_job ด้วย quoteId เดิม", inputSchema: { quoteId: z.string().min(1).max(64) } },
+      async (args, extra) => runTool("get_video_quote", extra, async (p) => getVideoQuote(p.userId, args.quoteId), args, { next: "ใช้ quoteId ของบัญชีนี้ หรือเรียก prepare_video_job ใหม่" }),
     );
 
     server.registerTool(
