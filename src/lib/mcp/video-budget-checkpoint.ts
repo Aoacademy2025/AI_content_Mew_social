@@ -129,7 +129,8 @@ export async function resumeKnownBudgetWorkInTransaction(tx: Prisma.TransactionC
     known = !!render && (render.status !== "DONE" || !!render.videoUrl);
   } else if (checkpoint.hold?.reason === "image_poll_unknown" || checkpoint.hold?.reason === "image_submission_unknown" || checkpoint.hold?.reason === "image_cancel_unknown") {
     const images = await tx.aiGenerationJob.findMany({ where: { userId, budgetQuoteId: job.budgetQuoteId, idempotencyKey: { startsWith: `video:${job.id}:` } }, select: { status: true, chargeState: true, outputUrl: true } });
-    known = images.length > 0 && images.every(image => image.status === "completed" && image.chargeState === "settled" && !!image.outputUrl);
+    const liveImages = images.filter(image => !(image.status === "failed" && image.chargeState === "refunded"));
+    known = liveImages.length > 0 && liveImages.every(image => image.status === "completed" && image.chargeState === "settled" && !!image.outputUrl);
   }
   if (!known) return false;
   delete checkpoint.hold;

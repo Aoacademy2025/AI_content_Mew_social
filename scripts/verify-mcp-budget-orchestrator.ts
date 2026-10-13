@@ -15,6 +15,7 @@ execFileSync("./node_modules/.bin/prisma", ["db", "push", "--skip-generate"], { 
 const rendersRoot = join(dir, "renders");
 mkdirSync(rendersRoot);
 const SCRIPT = "สวัสดีค่ะ วันนี้มาดูรีวิวครีมกันแดดกัน เนื้อบางเบามาก ซึมไวสุดๆ".repeat(8);
+const SOURCE = process.env.BUDGET_FIXTURE_SOURCE === "hero-ai-image" ? "hero-ai-image" : "automix";
 const TIMING = { provider: "gemini", segments: [{ text: SCRIPT, startMs: 0, durationMs: 5000 }], chars: null };
 type StubOptions = { failBaseRender?: boolean; failBurn?: boolean; budgetCap?: boolean; unknownImage?: boolean };
 let renderSeq = 0, gallerySeq = 0, stockCalls = 0;
@@ -28,12 +29,12 @@ async function main() {
   const owner = await prisma.user.create({ data: { name: "Ordinary user", email: "budget-orchestrator@example.test", role: "USER", plan: "PRO", minutesLimit: 100, usagePeriodStartedAt: new Date(), planExpiresAt: new Date(Date.now() + 86400000), geminiKey: "fixture", pexelsKey: "fixture" } });
   await prisma.payment.create({ data: { userId: owner.id, stripeSessionId: "ordinary-paid", plan: "PRO", amount: 100, status: "PAID", paidAt: new Date() } });
   await prisma.creditBalance.create({ data: { userId: owner.id, purchased: 100 } });
-  const quote = await prepareVideoQuote(owner, { script: SCRIPT, brollSource: "automix", exportMode: "hold" });
+  const quote = await prepareVideoQuote(owner, { script: SCRIPT, brollSource: SOURCE, exportMode: "hold" });
   assert.ok("quoteId" in quote && quote.imageCountCeiling > 0);
   await decideVideoQuote(owner.id, quote.quoteId, "approve");
   const created = await consumeVideoQuote(owner.id, quote.quoteId);
   assert.ok(created.jobId);
-  const { createReservedImageJob, completeImageJob } = await import("../src/lib/ai-generation-jobs.server");
+  const { createReservedImageJob, completeImageJob, failAndRefundAiJob } = await import("../src/lib/ai-generation-jobs.server");
   const { currentQuotePricing } = await import("../src/lib/mcp/video-quote");
   const { decodePipelineResponse } = await import("../src/lib/mcp/pipeline-client");
   let imageJobId = "";
@@ -65,12 +66,20 @@ async function main() {
         }
         if (path === "/api/videos/fetch-stock") {
           const request = body as { maxAiImages?: number; stockSource?: string };
-          assert.equal(request.stockSource, "auto-mix");
+          assert.equal(request.stockSource, SOURCE === "hero-ai-image" ? "kie-image" : "auto-mix");
           assert.equal(typeof request.maxAiImages, "number", "ordinary USER reaches actual receipt guard with numeric approved cap");
-          assert.equal(request.maxAiImages, quote.imageCountCeiling);
+          const active = await prisma.videoJob.findUniqueOrThrow({ where: { id: activeJobId } });
+          const approved = await prisma.mcpVideoQuote.findUniqueOrThrow({ where: { id: active.budgetQuoteId! } });
+          assert.equal(request.maxAiImages, approved.imageCountCeiling);
           if (opts.budgetCap) return decodePipelineResponse<T>("POST", path, 409, JSON.stringify({ error: "confirmation_required", code: "confirmation_required", reason: "image_ceiling", additional: { images: 1, imageCredits: 2 } }));
           if (activeJobId === created.jobId || opts.unknownImage) {
-            const image = await createReservedImageJob({ userId, model: "z-image-turbo", inputPreview: "retained fixture scene", inputJson: JSON.stringify({ videoJobId: activeJobId, sceneIndex: 0 }), creditCost: currentQuotePricing().perImageCredits, quoteVersion: "fixture", costBudgetUsdMicros: 100, provider: "runpod", providerModel: "fixture", providerRoute: "fixture", providerEndpoint: "fixture", estimatedCostUsdMicros: 1, idempotencyKey: `video:${activeJobId}:automix:0`, mediaExpiresAt: new Date(Date.now() + 86400000), productSurface: "automix" });
+            const imageInput = { userId, model: "z-image-turbo", inputPreview: "retained fixture scene", inputJson: JSON.stringify({ videoJobId: activeJobId, sceneIndex: 0 }), creditCost: currentQuotePricing().perImageCredits, quoteVersion: "fixture", costBudgetUsdMicros: 100, provider: "runpod", providerModel: "fixture", providerRoute: "fixture", providerEndpoint: "fixture", estimatedCostUsdMicros: 1, idempotencyKey: `video:${activeJobId}:scene:0:provider-attempt:0:scene-retry:1`, mediaExpiresAt: new Date(Date.now() + 86400000), productSurface: SOURCE === "hero-ai-image" ? "hero_video" as const : "automix" as const };
+            if (activeJobId === created.jobId) {
+              const retired = await createReservedImageJob({ ...imageInput, idempotencyKey: `video:${activeJobId}:scene:0:provider-attempt:0` });
+              assert.ok(retired.ok);
+              if (retired.created) await failAndRefundAiJob(userId, retired.job.id, "RUNPOD_FAILED", "confirmed retired attempt", true);
+            }
+            const image = await createReservedImageJob(imageInput);
             assert.ok(image.ok);
             if (activeJobId === created.jobId) {
               if (imageJobId) assert.equal(image.job.id, imageJobId, "resume retains image identity");
@@ -177,7 +186,8 @@ async function main() {
     assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: created.jobId } })).status, "queued");
     await runJob(created.jobId, owner.id);
     assert.equal(ttsCalls, 1, "HTTP hold continuation must not repeat narration");
-    assert.equal(await prisma.aiGenerationJob.count({ where: { budgetQuoteId: quote.quoteId } }), 1);
+    assert.equal(await prisma.aiGenerationJob.count({ where: { budgetQuoteId: quote.quoteId, chargeState: "settled" } }), 1);
+    assert.equal(await prisma.aiGenerationJob.count({ where: { budgetQuoteId: quote.quoteId, status: "failed", chargeState: "refunded" } }), 1);
     assert.deepEqual(await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } }), walletAfterImage);
     console.log("PASS HTTP uncertainty → retained hold → known image settlement → same-root continuation without repeated TTS/image charge");
     const job = await prisma.videoJob.findUniqueOrThrow({ where: { id: created.jobId } });
@@ -259,7 +269,7 @@ async function main() {
     assert.equal(renderSeq, beforeResumeRenders, "resume reuses durable base rather than resubmitting render");
     assert.equal(resumedCalls.filter(call => /tts|fetch-stock/.test(call.path)).length, 0, "resume reuses completed narration/media");
     console.log("PASS known-completed base restart resumes retained work without new render or narration");
-    const capQuote = await prepareVideoQuote(owner, { script: SCRIPT + " additional", brollSource: "automix", exportMode: "hold" });
+    const capQuote = await prepareVideoQuote(owner, { script: SCRIPT + " additional", brollSource: SOURCE, exportMode: "hold" });
     await decideVideoQuote(owner.id, capQuote.quoteId, "approve");
     const capRoot = await consumeVideoQuote(owner.id, capQuote.quoteId);
     assert.ok(capRoot.jobId);
@@ -274,7 +284,7 @@ async function main() {
     assert.equal(capIncrement.imageCreditCeiling, 2);
     assert.equal(capHeld.fundingState, "reserved");
     assert.equal(capHeld.reservationRefundPending, false);
-    const unknownQuote = await prepareVideoQuote(owner, { script: SCRIPT, brollSource: "automix", exportMode: "hold" });
+    const unknownQuote = await prepareVideoQuote(owner, { script: SCRIPT, brollSource: SOURCE, exportMode: "hold" });
     await decideVideoQuote(owner.id, unknownQuote.quoteId, "approve");
     const unknownRoot = await consumeVideoQuote(owner.id, unknownQuote.quoteId);
     assert.ok(unknownRoot.jobId);
@@ -289,7 +299,7 @@ async function main() {
     assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: unknownRoot.jobId } })).status, "confirmation_required");
     console.log("PASS actual HTTP no-ID submission uncertainty retains exposure and cannot resume through approval");
     console.log("PASS ordinary image cap HTTP response creates exact linked incremental approval without terminal refund");
-    console.log("PASS ordinary USER approved AutoMix through real orchestrator to held preview; numeric cap propagated; authoritative funding transferred once (media/render providers stubbed)");
+    console.log(`PASS ordinary USER approved ${SOURCE} through real orchestrator to held preview; numeric cap propagated; authoritative funding transferred once (media/render providers stubbed)`);
   } finally { await prisma.$disconnect(); rmSync(dir, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

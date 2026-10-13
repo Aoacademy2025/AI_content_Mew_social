@@ -96,3 +96,21 @@ Final targeted commands all exit 0:
 - `git diff --check`
 
 The error-specificity compatibility script initially exited 1 under `react-server` (`React.createContext is not a function`) and exited 1 without its server-marker harness (`This module cannot be imported from a Client Component module`). A temporary equivalent marker shim passed; the final recorded rerun uses the repository's existing `register-server-only-node.mjs` and passes. No production behavior was changed for test imports. HTTP response/media/provider simulation remains explicitly scoped; no paid provider, real renderer, production write, full build or broad suite was used. Previously documented creative-reroll workflow and image-parent mismatch advisory remain unchanged.
+
+## Session-directed bounded correction — retired image attempts
+
+Authorized separately after the two automatic rounds: only the image-resume readiness predicate and its regressions changed. The actual orchestrator HTTP fixture first reproduced a confirmed failed/refunded predecessor plus a completed/settled retry staying `confirmation_required` (exit 1, expected `queued`).
+
+Production diff is two lines replacing the prior `images.every(...)` condition: remove only rows whose durable state is BOTH `status: failed` and `chargeState: refunded`; require at least one remaining row; require every remaining row completed, settled and output-bearing. Owner, consumed approval, hold-quote, narration ambiguity and parent-status checks remain intact. No wallet/refund semantics changed.
+
+Regression evidence covers all three required states:
+
+- Real HTTP hold → known completed retry with a failed/refunded predecessor → same-root continuation to held preview, stable retry image ID, one settled image, one refunded predecessor, unchanged wallet after settlement/resume and one TTS call. Uses provider-attempt/scene-retry keys and runs with both AutoMix and Hero-only quotes.
+- A completed image plus a still-reserved/submitting/no-ID sibling stays held and cannot renew into resume. Confirming/refunding that sibling then allows continuation using the existing completed image.
+- A batch containing only confirmed-refunded failures has no completed output and remains held.
+
+The first Hero-only variant reached the corrected continuation successfully but a later pre-existing synthetic cap scenario failed because the fixture compared a different script's cap against the first root's image count. The fixture now reads each active root's own approved count; no production change was needed.
+
+Targeted final verification: `verify-mcp-budget.ts`; `verify-mcp-budget-orchestrator.ts` with default AutoMix and with `BUDGET_FIXTURE_SOURCE=hero-ai-image` (all using `NODE_OPTIONS=--conditions=react-server`); TypeScript; scoped lint for the predicate and two fixtures; and `git diff --check`. Exit codes recorded with the commit handoff. No new provider, deployment, broad feature or billing change.
+
+Final bounded-correction exit codes: budget DB fixture 0; AutoMix orchestrator fixture 0; Hero-only orchestrator fixture 0; TypeScript 0; scoped ESLint 0 (no warnings); diff check 0. Initial red recovery assertion exited 1 as recorded above.
