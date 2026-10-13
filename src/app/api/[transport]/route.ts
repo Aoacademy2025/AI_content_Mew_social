@@ -1,3 +1,4 @@
+import { RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { requestVideoJob } from "@/lib/mcp/video-budget.server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -176,7 +177,18 @@ const handler = createMcpHandler(
       },
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
-          return requestVideoJob(p.user, args);
+          try {
+            return await requestVideoJob(p.user, args);
+          } catch (error) {
+            if (error instanceof RenderDeployDrainError) {
+              return {
+                error: "render_maintenance", code: "render_maintenance", retryable: true,
+                message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE,
+                next: "รอสักครู่แล้วเรียก create_video_job อีกครั้งด้วย quoteId เดิม",
+              };
+            }
+            throw error;
+          }
         }, args),
     );
 

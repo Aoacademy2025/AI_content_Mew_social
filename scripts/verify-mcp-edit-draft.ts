@@ -315,6 +315,42 @@ async function main() {
     return { reply, root, projectId: root.projectId };
   }
 
+  await section("approved public creation during maintenance preserves its approval and funding", async () => {
+    const owner = await makeUser("u-maintenance", "maintenance@example.test");
+    check("maintenance fixture is an ordinary USER", owner.user.role === "USER");
+    await prisma.creditBalance.create({ data: { userId: owner.user.id, granted: 50, purchased: 25 } });
+    const prepared = await callTool(owner.token, "prepare_video_job", {
+      script: SCRIPT, voiceProvider: "gemini", brollSource: "stock", exportMode: "hold",
+    });
+    if (typeof prepared.quoteId !== "string") throw new Error(`fixture quote: ${JSON.stringify(prepared)}`);
+    const quoteId = prepared.quoteId;
+    const { decideVideoQuote } = fromSrc("lib/mcp/video-quote.server") as typeof import("../src/lib/mcp/video-quote.server");
+    await decideVideoQuote(owner.user.id, quoteId, "approve");
+    const snapshot = async () => ({
+      funding: await money(owner.user.id),
+      wallet: await prisma.creditBalance.findUnique({ where: { userId: owner.user.id } }),
+      quote: await prisma.mcpVideoQuote.findUniqueOrThrow({ where: { id: quoteId } }),
+      jobs: await prisma.videoJob.findMany({ where: { userId: owner.user.id } }),
+      projects: await prisma.editorProject.findMany({ where: { userId: owner.user.id } }),
+    });
+    const before = await snapshot();
+    check("maintenance fixture has an approved unconsumed quote", before.quote.status === "approved" && before.quote.rootJobId === null);
+    await prisma.siteConfig.upsert({ where: { key: "render_deploy_drain" }, create: { key: "render_deploy_drain", value: "1" }, update: { value: "1" } });
+    try {
+      const reply = await callTool(owner.token, "create_video_job", { quoteId });
+      check("maintenance refusal has its specific retryable error", reply.error === "render_maintenance" && reply.retryable === true, JSON.stringify(reply));
+      check("maintenance refusal preserves shared Thai customer copy", reply.message === "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่", JSON.stringify(reply));
+      check("maintenance refusal tells the agent to retry the same approved quote", typeof reply.next === "string" && reply.next.includes("create_video_job") && reply.next.includes("quoteId"));
+      check("maintenance rolls back quote, jobs, projects and funding", JSON.stringify(await snapshot()) === JSON.stringify(before));
+    } finally {
+      await prisma.siteConfig.delete({ where: { key: "render_deploy_drain" } });
+    }
+    const retried = await callTool(owner.token, "create_video_job", { quoteId });
+    check("same approval creates a job after maintenance ends", typeof retried.jobId === "string", JSON.stringify(retried));
+    const replay = await callTool(owner.token, "create_video_job", { quoteId });
+    check("retry keeps one root job identity", replay.jobId === retried.jobId && await prisma.videoJob.count({ where: { userId: owner.user.id } }) === 1);
+  });
+
   // ── A ──
   await section("A) real route tools/list: beta sees the edit tools, non-beta does not; schemas are agent-neutral", async () => {
     const betaTools = await listTools(tester.token);
