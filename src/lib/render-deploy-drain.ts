@@ -86,7 +86,7 @@ export async function readRenderQueueCounts(client: QueueCountClient = prisma, n
   // settles between the two reads is counted twice (safe) — never in neither.
   const parked = await client.videoJob.findMany({ where: { status: "waiting_import" }, select: { userId: true, inputJson: true } });
   const [runnable, renderJobs] = await Promise.all([
-    client.videoJob.count({ where: { status: { in: VIDEO_JOB_INFLIGHT_STATUSES.filter((status) => status !== "waiting_import") } } }),
+    client.videoJob.count({ where: { status: { in: VIDEO_JOB_INFLIGHT_STATUSES.filter((status) => status !== "waiting_import" && status !== "confirmation_required") } } }),
     client.renderJob.count({ where: { status: { in: ["QUEUED", "RUNNING"] } } }),
   ]);
   const videoJobs = runnable + await countParkedJobsThatCanStillRun(client, parked, now);

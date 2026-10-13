@@ -1,3 +1,5 @@
+import { checkpointedBudgetCaller, holdVideoBudget } from "./video-budget-checkpoint";
+import { VideoBudgetHoldError } from "./video-budget-admission";
 import type { User } from "@prisma/client";
 import { acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-subtitle-worker";
 import { SUBTITLE_MIN_CARD_MS } from "@/lib/mcp/subtitle-quality";
@@ -214,7 +216,7 @@ interface CreateInput {
   omniVoiceId?: string;
   /** Backend pinned by the accepting server; never selected by a browser. */
   voiceBackend?: "runpod" | "hostinger";
-  avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v"; avatarIntroSecs?: number; avatarTailSecs?: number;
+  avatarMode?: "none" | "full" | "bookend" | "bookend-both"; avatarId?: string; avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v"; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
@@ -807,7 +809,7 @@ export async function alignNarrationOnce(args: {
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
-  const caller = deps.caller ?? pipelineCaller(userId, jobId);
+  const caller = checkpointedBudgetCaller(userId, jobId, deps.caller ?? pipelineCaller(userId, jobId));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
   let baseReservationSettledThisRun = false;
@@ -2228,6 +2230,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
 
       await step("stock", 55);
+      if (job.budgetQuoteId && forceStockBroll && input.stockSource === "kie-image") throw new VideoBudgetHoldError("unapproved_stock_fallback");
       const upAiGen = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
       const upStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
       const upAligned = alignBrollWindowsToKeywords(upVisibleWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
@@ -2892,6 +2895,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
+    if (job.budgetQuoteId && forceStockBroll && input.stockSource === "kie-image") throw new VideoBudgetHoldError("unapproved_stock_fallback");
     const aiGenSource = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
     const effectiveStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
     const stock = brollDisabled ? { results: [] as unknown[] } : await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
@@ -2992,7 +2996,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const avatarModel = "none";
     const avatarVideoUrl: string | null = null;
     const tailAvatarUrl: string | null = null;
-    if (input.avatarMode) {
+    if (input.avatarMode && input.avatarMode !== "none") {
       // Defense-in-depth: the route only ever persists avatarMode together with a
       // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
       // malformed job rather than generating with avatarModel=undefined.
@@ -3105,7 +3109,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           avatarMode: input.avatarMode ?? null,
           avatarIntroSecs: input.avatarIntroSecs ?? 5,
           avatarTailSecs: input.avatarTailSecs ?? 5,
-          compositeBaseUrl: input.avatarMode ? baseUrl : null,
+          compositeBaseUrl: input.avatarMode && input.avatarMode !== "none" ? baseUrl : null,
           tailAvatarUrl,
           // word timeline สำหรับ "ความยาวการ์ด 1/2/3/4 คำ" ในจอแต่งซับ (regroup ฝั่ง
           // editor ด้วย timing เป๊ะ ไม่ต้อง interpolate) — MCP path (non-preview) ไม่แตะ
@@ -3169,6 +3173,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ...(billingReceipt ? { billingReceipt } : {}),
     });
   } catch (e) {
+    if (e instanceof VideoBudgetHoldError || pipelineFailureDetails(e)?.code === "confirmation_required") {
+      await holdVideoBudget(userId, jobId, e instanceof VideoBudgetHoldError ? e : new VideoBudgetHoldError("downstream_budget", (e as PipelineApiError).body && typeof (e as PipelineApiError).body === "object" ? ((e as PipelineApiError).body as { additional?: VideoBudgetHoldError["additional"] }).additional ?? {} : {}));
+      return;
+    }
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
     const contentPreflightFailure = contentPreflightFailureDetails(e);
@@ -3193,7 +3201,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const reason = `video_${phaseName || "unknown"}_canceled`;
       let settlementPending = false;
       try {
-        await refundSettledVideoImageBatch({ userId, videoJobId: jobId, reason });
+        const imageSettlement = await refundSettledVideoImageBatch({ userId, videoJobId: jobId, reason });
+        if (imageSettlement.pendingJobs > 0) settlementPending = true;
       } catch (settlementError) {
         settlementPending = true;
         console.error(`[mcp-worker] canceled job ${jobId} failed to refund image batch`, settlementError);
@@ -3231,11 +3240,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     let financialSettlementPending = false;
     if (!unknownAvatarProviderOutcome) {
       try {
-        await refundSettledVideoImageBatch({
+        const imageSettlement = await refundSettledVideoImageBatch({
           userId,
           videoJobId: jobId,
           reason: settlementReason,
         });
+        if (imageSettlement.pendingJobs > 0) financialSettlementPending = true;
       } catch (settlementError) {
         financialSettlementPending = true;
         console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);

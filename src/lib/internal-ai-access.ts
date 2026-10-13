@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import type { PaidEquivalentDecision } from "@/lib/paid-equivalent-entitlement.server";
 import type { StarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
@@ -133,6 +134,7 @@ export function isHeroAiImageEligible(
 
 export async function resolveHeroAiImageAccess(
   user: Pick<User, "id" | "email" | "role" | "plan" | "suspended" | "trialStartedAt">,
+  tx?: Prisma.TransactionClient,
 ): Promise<HeroAiImageAccessDecision> {
   if (user.suspended) {
     return {
@@ -151,13 +153,13 @@ export async function resolveHeroAiImageAccess(
   // entitlement modules. The database-backed branch loads them only on use.
   const [
     { resolvePaidEquivalentEntitlement },
-    { getStarterAiImageAllowanceStatus },
+    { getStarterAiImageAllowanceStatus, starterAllowanceStatusInTransaction },
   ] = await Promise.all([
     import("@/lib/paid-equivalent-entitlement.server"),
     import("@/lib/starter-ai-image-allowance.server"),
   ]);
-  const paidEquivalent = await resolvePaidEquivalentEntitlement(user.id);
-  const allowance = await getStarterAiImageAllowanceStatus(user.id);
+  const paidEquivalent = await resolvePaidEquivalentEntitlement(user.id, new Date(), undefined, tx);
+  const allowance = tx ? await starterAllowanceStatusInTransaction(tx, user.id) : await getStarterAiImageAllowanceStatus(user.id);
   if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") {
     return {
       canUse: false, canPreview: true, mode: "preview", source: paidEquivalent.source,

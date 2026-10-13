@@ -4,7 +4,7 @@
 // worker never claims it — claimNextRunnableJob only takes `queued` and due `waiting_provider`
 // rows — so it holds no render slot until the import is ready and settleClipImportJob moves it
 // to `queued`.
-export const VIDEO_JOB_INFLIGHT_STATUSES = ["queued", "processing", "waiting_provider", "waiting_import"] as const;
+export const VIDEO_JOB_INFLIGHT_STATUSES = ["queued", "processing", "waiting_provider", "waiting_import", "confirmation_required"] as const;
 
 export function toPublicVideoJobStatus(status: string): string {
   if (status === "waiting_provider") return "processing";

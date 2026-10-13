@@ -87,6 +87,7 @@ export async function refundSettledVideoImageBatch(input: {
   videoJobId: string;
   reason: string;
 }): Promise<{
+  pendingJobs: number;
   refundedJobs: number;
   refundedCredits: number;
   creditsFromGranted: number;
@@ -110,6 +111,7 @@ export async function refundSettledVideoImageBatch(input: {
       },
       orderBy: { createdAt: "asc" },
     });
+    let pendingJobs = 0;
     let refundedJobs = 0;
     let refundedCredits = 0;
     let creditsFromGranted = 0;
@@ -117,6 +119,10 @@ export async function refundSettledVideoImageBatch(input: {
     let creditsFromPurchased = 0;
 
     for (const job of jobs) {
+      if (job.budgetQuoteId && job.chargeState === "reserved") {
+        const ambiguous = await tx.aiGenerationAttempt.count({ where: { jobId: job.id, status: { in: ["submitting", "submitted", "queued", "in_progress"] } } });
+        if (ambiguous > 0) { pendingJobs++; continue; }
+      }
       const previousChargeState = job.chargeState;
       const claimed = await tx.aiGenerationJob.updateMany({
         where: { id: job.id, userId: input.userId, chargeState: previousChargeState },
@@ -191,6 +197,7 @@ export async function refundSettledVideoImageBatch(input: {
     }
 
     return {
+      pendingJobs,
       refundedJobs,
       refundedCredits,
       creditsFromGranted,

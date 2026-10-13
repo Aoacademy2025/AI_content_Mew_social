@@ -81,12 +81,9 @@ export class VideoJobFundingError extends Error {
   }
 }
 
-export async function createVideoJob(
-  userId: string,
-  input: unknown,
-  idempotencyKey?: string,
-  opts: {
+export type CreateVideoJobOptions = {
     projectId?: string | null;
+    budgetQuoteId?: string | null;
     type?: string | null;
     idempotencyFingerprint?: string | null;
     projectVisualPin?: {
@@ -98,8 +95,15 @@ export async function createVideoJob(
     /** T14 (A10): "waiting_import" parks the job until its presenter import is ready — the
      *  worker never claims it, so it holds no render slot. Default "queued". */
     initialStatus?: "queued" | "waiting_import";
-  } = {},
-) {
+};
+
+
+export async function createVideoJob(userId: string, input: unknown, idempotencyKey?: string, opts: CreateVideoJobOptions = {}) {
+  if (opts.funding) await syncMinuteWindow(userId);
+  return prisma.$transaction(tx => createVideoJobInTransaction(tx, userId, input, idempotencyKey, opts));
+}
+
+export async function createVideoJobInTransaction(tx: Prisma.TransactionClient, userId: string, input: unknown, idempotencyKey?: string, opts: CreateVideoJobOptions = {}) {
   const preparedInput = (() => {
     if (
       (opts.type && opts.type !== "create")
@@ -120,11 +124,16 @@ export async function createVideoJob(
       narrationPlan: compileNarrationPlan(candidate.script),
     };
   })();
-  if (opts.funding) {
-    await syncMinuteWindow(userId);
-  }
-  return prisma.$transaction(async (tx) => {
+
     await assertRenderEnqueueOpen(tx);
+    // Shared web/MCP descendants inherit attribution from their verified source job.
+    let budgetQuoteId = opts.budgetQuoteId ?? null;
+    const sourceId = preparedInput && typeof preparedInput === "object" && "sourceJobId" in preparedInput ? preparedInput.sourceJobId : null;
+    if (typeof sourceId === "string") {
+      const source = await tx.videoJob.findFirst({ where: { id: sourceId, userId }, select: { budgetQuoteId: true } });
+      budgetQuoteId = source?.budgetQuoteId ?? budgetQuoteId;
+    }
+
     const funding = opts.funding
       ? await reserveMinutesOrCreditsInTransaction(
           tx,
@@ -142,6 +151,7 @@ export async function createVideoJob(
     return tx.videoJob.create({
       data: {
         userId,
+        budgetQuoteId,
         projectId: opts.projectId ?? null,
         contentPreflightId: opts.projectVisualPin?.contentPreflightId ?? null,
         projectVisualContextJson: opts.projectVisualPin?.projectVisualContextJson ?? null,
@@ -167,7 +177,6 @@ export async function createVideoJob(
           : {}),
       },
     });
-  });
 }
 
 /** Atomically claim the oldest queued job (→ processing). Returns it, or null if none. */
@@ -789,6 +798,8 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
       videoId: true,
       currentStep: true,
       errorMessage: true,
+      budgetQuoteId: true,
+      budgetCheckpointJson: true,
       providerCheckpointJson: true,
       providerNextPollAt: true,
       project: { select: { activeExportJobId: true } },
@@ -920,6 +931,12 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
       continue;
     }
 
+    if (job.budgetQuoteId && job.budgetCheckpointJson && !SAFE_TO_REQUEUE_STEPS.has(job.currentStep ?? "")) {
+      // Late ambiguous work cannot be replayed or refunded by generic recovery.
+      await prisma.videoJob.updateMany({ where: { id: job.id, status: "processing" }, data: { status: "confirmation_required", errorCode: "confirmation_required", errorMessage: "ต้องตรวจสอบผลของงานเดิมก่อนทำต่อ", reservationRefundPending: false } });
+      parked++;
+      continue;
+    }
     const previousRequeues = restartRequeueCount(job.errorMessage);
     const isSafeToReplay = job.currentStep === null || SAFE_TO_REQUEUE_STEPS.has(job.currentStep);
     const retryLimitReached = previousRequeues >= maxRequeues;

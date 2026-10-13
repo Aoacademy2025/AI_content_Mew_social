@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Plan, User } from "@prisma/client";
+import type { Plan, User, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type PaidEquivalentPlan = "PRO" | "BUSINESS";
@@ -270,19 +270,20 @@ export async function resolvePaidEquivalentEntitlement(
   userId: string,
   now: Date = new Date(),
   preloaded?: User,
+  db: Prisma.TransactionClient = prisma,
 ): Promise<PaidEquivalentDecision> {
   if (preloaded && preloaded.id === userId) {
     const [payments, couponRedemptions, administratorGrants] = await Promise.all([
-      prisma.payment.findMany({
+      db.payment.findMany({
         where: { userId, status: "PAID", periodDays: { gt: 0 } },
         orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
         select: PAYMENT_EVIDENCE_SELECT,
       }),
-      prisma.couponRedemption.findMany({
+      db.couponRedemption.findMany({
         where: { userId, coupon: { type: "GRANT" } },
         select: COUPON_EVIDENCE_SELECT,
       }),
-      prisma.administratorGrant.findMany({ where: { userId }, select: GRANT_EVIDENCE_SELECT }),
+      db.administratorGrant.findMany({ where: { userId }, select: GRANT_EVIDENCE_SELECT }),
     ]);
     return decidePaidEquivalentEntitlement({
       user: preloaded,
@@ -292,7 +293,7 @@ export async function resolvePaidEquivalentEntitlement(
     }, now);
   }
 
-  const user = await prisma.user.findUnique({
+  const user = await db.user.findUnique({
     where: { id: userId },
     select: {
       plan: true,

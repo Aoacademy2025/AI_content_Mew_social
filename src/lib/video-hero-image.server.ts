@@ -1,3 +1,4 @@
+import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import "server-only";
 
 import { createHash } from "node:crypto";
@@ -433,6 +434,11 @@ export async function generateHeroImageForVideo(
           inProgress: submitted.status === "IN_PROGRESS",
         }) ?? job;
       } catch (error) {
+        if (job.budgetQuoteId && !(error instanceof ImageGenerationConfigError)) {
+          // Submission may have reached RunPod. Keep reservation and attempt identity;
+          // never sell the capacity again while delivery is unknown.
+          throw new VideoBudgetHoldError("image_submission_unknown");
+        }
         const detail = error instanceof Error ? error.message : "Image provider submission failed";
         const providerFailure = classifyRunpodTerminalFailure(detail);
         if (providerFailure.systemic) {
@@ -443,6 +449,7 @@ export async function generateHeroImageForVideo(
           job.id,
           error instanceof ImageGenerationConfigError ? error.code : providerFailure.code,
           detail,
+          error instanceof ImageGenerationConfigError,
         );
         throw new HeroImageGenerationError(
           "ส่งงาน Hero AI Image ไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
@@ -517,6 +524,7 @@ export async function generateHeroImageForVideo(
       } catch (error) {
         pollFailures += 1;
         if (pollFailures < 5) continue;
+        if (job.budgetQuoteId) throw new VideoBudgetHoldError("image_poll_unknown");
         // Keep the reservation and provider id durable: a temporary status outage
         // must not refund work that RunPod may already have completed.
         throw new HeroImageGenerationError(
@@ -611,6 +619,7 @@ export async function generateHeroImageForVideo(
             job.id,
             "OUTPUT_INVALID",
             snapshot.error || "RunPod completed without an image",
+            true,
           );
           throw new HeroImageGenerationError(
             "Hero AI Image สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
@@ -649,6 +658,7 @@ export async function generateHeroImageForVideo(
             job.id,
             "OUTPUT_INVALID",
             error instanceof Error ? error.message : "RunPod output could not be stored",
+            true,
           );
           throw new HeroImageGenerationError("บันทึกภาพไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว", "OUTPUT_INVALID");
         }
@@ -665,6 +675,7 @@ export async function generateHeroImageForVideo(
             ? `RUNPOD_${snapshot.status}`
             : providerFailure.code,
           snapshot.error || `RunPod job ${snapshot.status.toLowerCase()}`,
+          true,
         );
         throw new HeroImageGenerationError(
           "Hero AI Image สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
@@ -731,8 +742,10 @@ export async function generateHeroImageForVideo(
         queueTimedOut
           ? "RunPod image job exceeded the bounded queue wait and both same-engine attempts were exhausted"
           : "RunPod image job exceeded the bounded execution wait and was cancelled",
+        true,
       );
     }
+    if (job.budgetQuoteId && !cancelled) throw new VideoBudgetHoldError("image_cancel_unknown");
     throw new HeroImageGenerationError(
       cancelled
         ? "Hero AI Image รอนานเกินเวลาที่กำหนด งานเดิมถูกยกเลิกและคืนเครดิตหรือสิทธิ์แล้ว"

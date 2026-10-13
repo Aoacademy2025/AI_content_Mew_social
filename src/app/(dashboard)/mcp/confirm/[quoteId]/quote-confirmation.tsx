@@ -49,6 +49,7 @@ export function QuoteConfirmation({ quote: initial, input, execution }: { quote:
         <div className="flex justify-between gap-4"><dt>เรนเดอร์ส่วนเกิน {quote.renderMinutesCeiling - quote.includedRenderMinutes} นาที × {quote.pricing.minuteCreditRate} เครดิต</dt><dd className="shrink-0 tabular-nums">{quote.renderCreditCeiling} เครดิต</dd></div>
         <div className="flex justify-between gap-4 border-t border-border pt-5 text-base font-semibold"><dt>รวมไม่เกิน</dt><dd className="shrink-0 tabular-nums">{quote.totalHeroCreditCeiling} Hero credits</dd></div>
       </dl>
+      {quote.incremental && <p className="mt-4 text-sm">วงเงินเพิ่มเติมสำหรับทำต่อจากงานที่บันทึกไว้ ไม่สร้างเสียงหรือภาพที่เสร็จแล้วซ้ำ · วงเงินรวมหลังยืนยันไม่เกิน {quote.cumulativeHeroCreditCeiling} Hero credits</p>}
       <p className="mt-4 text-sm leading-relaxed text-muted-foreground">พร้อมใช้ ณ ตอนประเมิน {quote.availableCredits} เครดิต · กันไว้กับงานอื่น {quote.reservedCredits} เครดิต · หากใช้เต็มวงเงินจะเหลือ {Math.max(0, quote.projectedRemainingCredits)} เครดิต</p>
       {quote.projectedRemainingCredits < 0 && <p className="mt-3 text-sm text-amber-600 dark:text-amber-400">เครดิตยังไม่พอ ขาด {-quote.projectedRemainingCredits} เครดิต — เติมเครดิตหรือลดงานก่อนเริ่ม</p>}
       {quote.source === "automix" && <p className="mt-3 text-sm text-muted-foreground">อนุมัติส่วนผสมสต็อกและภาพ AI ตามวงเงินนี้ ไม่เพิ่มภาพ AI แบบเสียเครดิตเอง</p>}

@@ -226,7 +226,7 @@ export async function retryPendingVideoJobReservationRefunds(
   for (const job of jobs) {
     try {
       const reason = job.reservationRefundReason ?? "pending-video-failure-refund";
-      await refundSettledVideoImageBatch({
+      const imageSettlement = await refundSettledVideoImageBatch({
         userId: job.userId,
         videoJobId: job.id,
         reason,
@@ -240,7 +240,7 @@ export async function retryPendingVideoJobReservationRefunds(
             reason,
           })
         : { kind: "settled" as const, candidateJobs: 0, refundedJobs: 0 };
-      const done = result.kind === "settled";
+      const done = result.kind === "settled" && imageSettlement.pendingJobs === 0;
       await prisma.videoJob.updateMany({
         where: {
           id: job.id,

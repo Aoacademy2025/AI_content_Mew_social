@@ -69,6 +69,7 @@ export const createVideoJobInputShape = {
     .describe("uploadId จาก create_upload_url(kind: \"presenter\") หลังจาก PUT ไฟล์คลิปพิธีกรแล้ว — ใช้เมื่อคลิปไม่มีลิงก์สาธารณะ. ส่ง clipUploadId หรือ clipUrl อย่างใดอย่างหนึ่งเท่านั้น ห้ามส่งทั้งคู่"),
   cutawayLayout: z.enum(["auto", "fillYourself"]).optional()
     .describe("ใช้ได้เฉพาะเมื่อส่งคลิป: auto = ระบบสลับ B-roll เข้าบางช่วงให้ (ค่าเริ่มต้น); fillYourself = ทุกช่วงเป็นพิธีกร ไม่มี B-roll อัตโนมัติ แล้วค่อยใส่ B-roll เองทีละช่วงด้วย replace_broll_window"),
+  quoteId: z.string().min(1).max(64).optional(),
   idempotencyKey: z.string().max(120).optional(),
 } satisfies z.ZodRawShape;
 
@@ -77,8 +78,9 @@ export type CreateVideoJobInput = z.infer<typeof createVideoJobInputSchema>;
 
 /** Preparation supports external before the execution/edit lane is enabled. */
 export const prepareVideoJobInputShape = {
+  resumeJobId: z.string().min(1).max(64).optional().describe("ขอใบยืนยันเพิ่มเติมใหม่สำหรับงาน confirmation_required ที่บันทึกไว้แล้ว"),
   ...createVideoJobInputShape,
-  brollSource: z.enum([...MCP_BROLL_SOURCES, "external"]).optional()
+  brollSource: z.enum(MCP_BROLL_SOURCES).optional()
     .describe("stock = สต็อก, hero-ai-image = ภาพ AI, automix = สต็อกผสมภาพ AI, external = นำเข้าสื่อจากเครื่องมือของคุณ ไม่ใช้เครดิต Hero สร้างภาพ"),
 } satisfies z.ZodRawShape;
 export const prepareVideoJobInputSchema = z.object(prepareVideoJobInputShape);

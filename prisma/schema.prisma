@@ -1103,6 +1103,9 @@ model ScriptGenerationUsage {
 }
 
 model VideoJob {
+  budgetQuoteId String?
+  budgetCheckpointJson String?
+  budgetCheckpointRevision Int @default(0)
   id                           String         @id @default(cuid())
   userId                       String
   user                         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1149,6 +1152,7 @@ model VideoJob {
   @@index([contentPreflightId])
   @@index([createdAt]) // DB-1: admin/insights does createdAt-range scans across ALL users
   @@index([mediaExpiresAt])
+  @@index([userId, budgetQuoteId, fundingState])
 }
 
 model ToolCallAudit {
@@ -1624,6 +1628,7 @@ model GeneratedImage {
 // changing their expiry semantics. Voice jobs use plan audio-minutes and therefore keep
 // creditCost=0.
 model AiGenerationJob {
+  budgetQuoteId String?
   id                            String                @id @default(cuid())
   userId                        String
   user                          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1688,6 +1693,7 @@ model AiGenerationJob {
   @@index([kind, chargeState, updatedAt])
   @@index([productSurface, status, finishedAt])
   @@index([canaryRunId, canarySlotId])
+  @@index([userId, budgetQuoteId, chargeState])
 }
 
 // Legacy activation windows retained for audit and settlement compatibility.
@@ -1957,6 +1963,8 @@ model BrandLibraryOperation {
 
 // Human spending consent for one immutable public MCP request. Approval reserves nothing.
 model McpVideoQuote {
+  parentQuoteId String?
+  checkpointRevision Int?
   id                      String   @id @default(cuid())
   userId                  String
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1985,4 +1993,5 @@ model McpVideoQuote {
   @@index([userId, createdAt])
   @@index([status, expiresAt])
   @@index([rootJobId])
+  @@index([parentQuoteId, status])
 }

@@ -39,7 +39,7 @@ function view(row: McpVideoQuote): VideoQuoteView {
     next: status === "draft" ? "ส่ง confirmationUrl ให้เจ้าของบัญชีเปิดและยืนยันใน Studio แล้วเรียก get_video_quote"
       : status === "approved" ? "เรียก create_video_job ด้วย quoteId นี้ โดยใช้ข้อมูลงานเดิม"
       : status === "consumed" ? "เรียก get_video_status ด้วย rootJobId — อย่าสร้างงานซ้ำ"
-      : "เรียก prepare_video_job เพื่อเริ่มใบยืนยันใหม่",
+      : row.parentQuoteId ? `เรียก prepare_video_job พร้อม resumeJobId: ${row.rootJobId} เพื่อยืนยันงานที่บันทึกไว้` : "เรียก prepare_video_job เพื่อเริ่มใบยืนยันใหม่",
   };
 }
 const notFound = () => quoteFailure("quote_not_found", "ไม่พบใบยืนยันนี้", "ใช้ quoteId ของบัญชีนี้ หรือเรียก prepare_video_job ใหม่");
@@ -53,6 +53,11 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   const parsed = prepareVideoJobInputSchema.safeParse(raw);
   if (!parsed.success) return quoteFailure("invalid_input", "ข้อมูลงานไม่ถูกต้อง", "ตรวจชนิดและช่วงค่าตาม schema ของ prepare_video_job");
   if (user.suspended) return quoteFailure("account_suspended", "บัญชีนี้ยังสร้างงานไม่ได้", "ติดต่อฝ่ายช่วยเหลือใน Studio");
+  if (parsed.data.resumeJobId) {
+    const { renewBudgetQuote } = await import("./video-budget-checkpoint");
+    const renewed = await renewBudgetQuote(user.id, parsed.data.resumeJobId);
+    return renewed ? getVideoQuote(user.id, renewed) : quoteFailure("resume_unavailable", "ยังไม่มีงานพร้อมขอยืนยันเพิ่มเติม", "เรียก get_video_status ของงานเดิมเพื่อตรวจสถานะ");
+  }
   const input = normalizeQuoteInput(parsed.data);
   const clip = parseClipJobArgs(input);
   if (!clip.ok) return clip.failure;

@@ -1,3 +1,4 @@
+import { admitBudgetImage } from "@/lib/mcp/video-budget-admission";
 import "server-only";
 
 import type { AiGenerationAttempt, AiGenerationJob, Prisma } from "@prisma/client";
@@ -75,7 +76,7 @@ function parseInput(value: string | null): Record<string, unknown> | null {
   }
 }
 
-const LIVE_VIDEO_JOB_STATUSES = ["queued", "processing", "waiting_provider"] as const;
+const LIVE_VIDEO_JOB_STATUSES = ["queued", "processing", "waiting_provider", "confirmation_required"] as const;
 
 function parentVideoJobIdFromImageKey(idempotencyKey: string | null | undefined): string | null {
   const match = /^video:([^:]+):/.exec(idempotencyKey ?? "");
@@ -301,6 +302,7 @@ export async function createReservedImageJob(input: {
       };
     }
     const fundingSource = allowance.kind === "reserved" ? "starter_allowance" as const : "credits" as const;
+    const budgetQuoteId = await admitBudgetImage(tx, input, fundingSource);
     let funding: CreditFunding = {
       fromGranted: 0,
       fromPromotional: 0,
@@ -333,6 +335,7 @@ export async function createReservedImageJob(input: {
       data: {
         userId: input.userId,
         kind: "image",
+        budgetQuoteId,
         provider: input.provider,
         model: input.model,
         providerModel: input.providerModel,
@@ -708,11 +711,17 @@ export async function failAndRefundAiJob(
   jobId: string,
   errorCode: string,
   errorMessage: string,
+  providerOutcomeKnown = false,
 ): Promise<AiGenerationJob | null> {
   return prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: jobId, userId } });
     if (!job) return null;
     if (job.status === "completed" || job.chargeState === "settled") return job;
+    if (job.budgetQuoteId && !providerOutcomeKnown) {
+      const exposed = await tx.aiGenerationAttempt.count({ where: { jobId: job.id, status: { in: ["submitting", "submitted", "queued", "in_progress"] } } });
+      if (exposed > 0) return job;
+    }
+
 
     await tx.aiGenerationAttempt.updateMany({
       where: { jobId: job.id, status: { in: ["planned", "submitting", "submitted", "queued", "in_progress"] } },

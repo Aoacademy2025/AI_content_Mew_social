@@ -1,3 +1,4 @@
+import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
@@ -583,6 +584,10 @@ export async function POST(req: Request) {
       // createVideoJob already reserved this exact confirmed amount. Ownership
       // moved to this render; do not reserve it a second time.
     } else if (useMinuteQuota) {
+      if (verifiedParentJobId) {
+        const budgetParent = await prisma.videoJob.findFirst({ where: { id: verifiedParentJobId, userId }, select: { budgetQuoteId: true } });
+        if (budgetParent?.budgetQuoteId) throw new VideoBudgetHoldError("render_funding_transfer_required");
+      }
       // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
       // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
       // never enters the credit branch, so this is byte-identical to reserveMinutes.
@@ -1481,6 +1486,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ jobId });
   } catch (error) {
+    if (error instanceof VideoBudgetHoldError) return NextResponse.json({ error: error.code, code: error.code, message: error.message, reason: error.reason, additional: error.additional }, { status: 409 });
     if (quotaReserved && reservedUserId) {
       // Bucket-aware refund (mirrors the in-flight refundReservedClip). credit-funded →
       // refundCredits; minute-funded → refundMinutes; else clips. CREDITS_LIVE off →
