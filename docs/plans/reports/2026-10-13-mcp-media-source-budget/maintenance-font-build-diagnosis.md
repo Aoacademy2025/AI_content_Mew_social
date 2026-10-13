@@ -45,3 +45,6 @@ DATABASE_URL=file:/tmp/mcp-maintenance-font-build.db CI=true NEXT_DISABLE_ESLINT
 ## Decision
 
 No bounded mock-fixture bug was found. No font design, dependency, installed loader or production source change is justified from the available evidence. Coordinator will retry the failed hosted job once on unchanged code to test the upstream-response hypothesis. If it repeats, capture the actual CSS/font URL from that environment before considering any correction. A successful retry would establish recovery, not retrospectively reveal the missing offending URL.
+
+## Hosted retry result
+Hosted run [38454659351](https://github.com/Aoacademy2025/AI_content_Mew_social/actions/runs/38454659351) at2ddec568 completed SUCCESS, including every verification step and the actual production build. Application code/dependencies are unchanged from the failed run. This establishes recovery without a speculative font fix; it does not identify the original offending URL.
