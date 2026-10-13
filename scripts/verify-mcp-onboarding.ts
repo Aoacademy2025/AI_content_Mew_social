@@ -188,8 +188,12 @@ const mediaImportSection = SERVER_INSTRUCTIONS.slice(SERVER_INSTRUCTIONS.indexOf
 assert(!/10\s*นาที/.test(mediaImportSection) && SERVER_INSTRUCTIONS.includes("ห้ามสัญญาเวลารวมตายตัว"),
   "instructions: never promise a fixed total import time (no '10 นาที' beyond the BUSINESS length cap)");
 const routeForT14 = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
-assert(routeForT14.includes("clipUrl (ลิงก์ https สาธารณะ)") && routeForT14.includes("cutawayLayout fillYourself"),
-  "create_video_job tool description: presenter clip via clipUrl/clipUploadId + fillYourself");
+const createDescription = routeForT14.match(/title: "Create video job",\s*description: "([^"]+)"/)?.[1] ?? "";
+assert(createDescription.includes("clipUploadId")
+  && createDescription.includes("clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน")
+  && createDescription.includes("quoteId เดิม")
+  && createDescription.includes("stock | hero-ai-image | automix | external"),
+  "create_video_job tool description: validated presenter import and approved quote for all four sources");
 
 assert(
   !/claude|anthropic|chatgpt|openai|copilot|gpt-?\d/i.test(SERVER_INSTRUCTIONS),
@@ -237,8 +241,8 @@ function main() {
     "cancel_video_job tool description: base-render charge + non-refundable HeyGen");
   assert(routeSrc.includes("ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้") && routeSrc.includes("กดลิงก์นี้เพื่อแก้ต่อในเว็บได้"),
     "get_video_status tool description: warnings/subtitleQa/editorUrl/userAction+refund");
-  assert(routeSrc.includes("แจ้งผู้ใช้ทุกข้อใน warnings") && routeSrc.includes("มีผลกับสไตล์ซับเท่านั้น"),
-    "create_video_job tool description: warnings + brand=subtitle-only");
+  assert(createDescription.includes("แจ้ง warnings") && createDescription.includes("เพดานค่าใช้จ่าย"),
+    "create_video_job tool description: relay warnings and spending ceilings");
 
   console.log(`\n${passed} assertions passed ✅`);
 }
