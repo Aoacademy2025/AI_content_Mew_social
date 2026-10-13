@@ -1,3 +1,4 @@
+import { getVideoJobCostReceipt } from "./billing-receipt";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
@@ -250,7 +251,7 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
     ...(failure ? failure : {}),
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: output?.billingReceipt ?? null,
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: preview.id, userId }),
     ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
     ...(exportHalfEnded && editorUrl ? { editorUrl } : {}),
   };
@@ -341,7 +342,7 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     ...(failure ? failure : {}),
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: output?.billingReceipt ?? null,
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: root.id, userId }),
     ...(done ? { videoId: output?.videoId ?? null } : {}),
     ...(rootDone ? { previewUrl, editorUrl } : {}),
   };
@@ -397,7 +398,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     error: job.errorMessage ?? null,
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: output?.billingReceipt ?? null,
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: job.id, userId }),
   };
 }
 

@@ -1,9 +1,13 @@
+import { EXTERNAL_MEDIA_DISCLOSURE, currentQuotePricing } from "./video-quote";
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
 import { HEYGEN_EXTERNAL_COST_DISCLOSURE, HEYGEN_ENGINE_LABELS, type HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { McpActiveBrandProfileSummary } from "@/lib/brand-profile-library.server";
+
+export const MEDIA_SOURCE_QUESTION = "อยากใช้ภาพประกอบแบบไหน: สต็อก, Hero AI Image, AutoMix หรือให้ AI ที่คุณคุยอยู่สร้าง/หาภาพและวิดีโอแล้วนำเข้าให้?";
+export const MEDIA_TOOL_UNAVAILABLE = "เครื่องมือที่เชื่อมต่ออยู่ยังสร้างหรือค้นหาสื่อนี้ไม่ได้ คุณส่งไฟล์/ลิงก์ให้ผม หรือเลือกแหล่งสื่ออื่นได้";
 
 async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
@@ -146,11 +150,16 @@ export async function getVideoOptions(
     },
     broll: {
       default: "stock" as const,
-      howToChoose: "ถามผู้ใช้ว่าจะใช้ภาพแบบไหน แล้วส่ง brollSource ตอน create_video_job ไม่ส่ง = วิดีโอสต็อกฟรี",
+      howToChoose: MEDIA_SOURCE_QUESTION,
+      next: "เลือกแหล่ง → prepare_video_job → ส่ง confirmationUrl ให้ผู้ใช้ยืนยันใน Studio → get_video_quote → create_video_job({quoteId})",
+      pricing: currentQuotePricing(),
+      renderDisclosure: "ทุกแหล่งยังใช้นาทีเรนเดอร์ตามแผนหรือ Hero credits ส่วนเกิน ดูวงเงินจริงในใบยืนยัน",
+      unavailableTools: MEDIA_TOOL_UNAVAILABLE,
       options: [
-        { value: "stock", title: "วิดีโอสต็อก", detail: "Pexels · Pixabay ฟรี", needsStockKey: true },
-        { value: "hero-ai-image", title: "Hero AI Image", detail: "ภาพ AI ทุกช่วง ใช้เครดิตของแผน ไม่ต้องมีคีย์สต็อก", needsStockKey: false },
+        { value: "stock", title: "วิดีโอสต็อก", detail: "Pexels · Pixabay ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน", needsStockKey: true },
+        { value: "hero-ai-image", title: "Hero AI Image", detail: "ภาพ AI ทุกช่วง ใช้ Hero credits หรือสิทธิ์ทดลองตามใบยืนยัน ไม่ต้องมีคีย์สต็อก", needsStockKey: false },
         { value: "automix", title: "AutoMix", detail: "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ต้องมีคีย์สต็อก", needsStockKey: true },
+        { value: "external", title: "สื่อจากเครื่องมือของคุณ/ไฟล์/ลิงก์", detail: EXTERNAL_MEDIA_DISCLOSURE, needsStockKey: false },
       ],
     },
   };

@@ -1,3 +1,4 @@
+import { getVideoJobCostReceipt } from "@/lib/mcp/billing-receipt";
 import { requestVideoJob } from "@/lib/mcp/video-budget.server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -131,6 +132,7 @@ const handler = createMcpHandler(
             const checkpoint = held.budgetCheckpointJson ? JSON.parse(held.budgetCheckpointJson) : null;
             const quoteId = checkpoint?.hold?.quoteId;
             return { jobId: held.id, status: "confirmation_required", retainedCheckpoint: true,
+              billingReceipt: await getVideoJobCostReceipt({ videoJobId: held.id, userId: p.userId }),
               ...(typeof quoteId === "string" ? { quote: await getVideoQuote(p.userId, quoteId) } : {}),
               next: quoteId ? "ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันวงเงินเพิ่มเติม แล้วเรียก create_video_job ด้วย quoteId ใหม่" : "งานเดิมยังมีผลจากผู้ให้บริการที่ไม่แน่นอน ติดต่อฝ่ายช่วยเหลือเพื่อตรวจผลก่อนลองซ้ำ" };
           }
