@@ -100,7 +100,7 @@ check(
 // ── D. Both create paths must still run the deterministic gate ──
 for (const [label, path] of [
   ["web create", "src/app/api/videos/jobs/route.ts"],
-  ["MCP create_video_job", "src/app/api/[transport]/route.ts"],
+  ["MCP approved create_video_job", "src/lib/mcp/video-budget.server.ts"],
 ] as const) {
   const src = repoFile(path);
   check(`D (${label}): imports the preflight`, src.includes("render-plan-preflight"));
