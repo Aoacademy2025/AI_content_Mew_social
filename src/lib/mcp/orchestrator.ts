@@ -172,6 +172,10 @@ import {
 import { resolveTightenOptions } from "@/lib/presenter-tighten";
 import { tightenPresenterVideoFile } from "@/lib/presenter-tighten.server";
 import { applyTtsPaceToGeneratedAudio } from "@/lib/tts-pace.server";
+import {
+  resolveInitialHeadlineHookFromJobInput,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -296,6 +300,13 @@ interface CreateInput {
   tightenSpeed?: number;
   /** EP5 #4: Presenter auto punch-in zoom (1.0x ↔ 1.15x upper-center on presenter layer). */
   punchZoom?: boolean;
+  /** EP5 #5: First-3-second visual hook overlay config or flat create_video_job hook fields. */
+  headlineHook?: HeadlineHookConfig | string;
+  headlineHookSubtext?: string;
+  headlineHookStyle?: string;
+  headlineHookDurationMs?: number;
+  visualHook?: string;
+  visualHookStyle?: string;
   /**
    * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
    * finished video to Gallery from the worker, not from a mounted browser component.
@@ -1342,7 +1353,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       await step("burn", 88);
       const render = await caller.post<{ jobId: string }>("/api/videos/render", {
-        subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, heroSubtitleDesign, RENDER_FPS),
+        subtitleOverlayConfig: buildBurnConfig(
+          compositeUrl,
+          captions,
+          checkpoint.audioDurationMs,
+          heroSubtitleDesign,
+          RENDER_FPS,
+          resolveInitialHeadlineHookFromJobInput(
+            input as unknown as Record<string, unknown>,
+            checkpoint.audioDurationMs,
+            resolvedSubtitleDesign.verticalPos,
+          ),
+        ),
         parentJobId: jobId,
       });
       const burnedUrl = await pollRender(
@@ -3238,7 +3260,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await step("burn", 88);
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
-      subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, heroSubtitleDesign, RENDER_FPS),
+      subtitleOverlayConfig: buildBurnConfig(
+        finalBase,
+        captions,
+        durMs,
+        heroSubtitleDesign,
+        RENDER_FPS,
+        resolveInitialHeadlineHookFromJobInput(
+          input as unknown as Record<string, unknown>,
+          durMs,
+          resolvedSubtitleDesign.verticalPos,
+        ),
+      ),
       parentJobId: jobId,
     });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });

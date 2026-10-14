@@ -15,6 +15,11 @@ import {
   TIGHTEN_MIN_MAX_GAP_MS,
   TIGHTEN_MIN_SPEED,
 } from "@/lib/presenter-tighten";
+import {
+  HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_DURATION_MS,
+  MIN_HEADLINE_HOOK_DURATION_MS,
+} from "@/lib/headline-hook";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -31,6 +36,11 @@ const GEMINI_VOICE_STYLE_IDS = GEMINI_VOICE_STYLES.map((style) => style.id) as [
 const SUBTITLE_STYLE_IDS = V2_QUICK_STYLES.map((style) => style.key) as [
   (typeof V2_QUICK_STYLES)[number]["key"],
   ...(typeof V2_QUICK_STYLES)[number]["key"][],
+];
+
+const HEADLINE_HOOK_PRESET_IDS = [...HEADLINE_HOOK_PRESETS] as [
+  (typeof HEADLINE_HOOK_PRESETS)[number],
+  ...(typeof HEADLINE_HOOK_PRESETS)[number][],
 ];
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -68,6 +78,20 @@ export const createVideoJobInputShape = {
     .describe("โทนซับ: viral (เด้งไวรัล) | shadow (เงาเข้ม) | outline (ขอบหนา) | clean (มินิมอล)"),
   subtitleColor: z.string().regex(HEX_COLOR).optional(),
   subtitleAccentColor: z.string().regex(HEX_COLOR).optional(),
+  highlightKeywords: z.boolean().optional()
+    .describe("true = ไฮไลต์คำสำคัญหรือตัวเลขเด่น 1–2 คำต่อการ์ดซับอัตโนมัติด้วยสีเน้น (accentColor)"),
+  headlineHook: z.string().min(1).max(200).optional()
+    .describe("ข้อความพาดหัวฮุค 3 วินาทีแรกด้านบนของคลิป (ไม่เกิน 64 ตัวอักษร 2 บรรทัด — ระบบตัดให้พอดีอัตโนมัติ)"),
+  headlineHookSubtext: z.string().max(200).optional()
+    .describe("ข้อความรองใต้พาดหัวฮุคเปิดคลิป (ไม่เกิน 90 ตัวอักษร 1 บรรทัด)"),
+  headlineHookStyle: z.enum(HEADLINE_HOOK_PRESET_IDS).optional()
+    .describe("สไตล์การ์ดพาดหัวเปิดคลิป: banner (แถบพาดหัวเต็มความกว้าง) | stat-burst (ป้ายสถิติ/ตัวเลขเด่น) | question-pill (แคปซูลคำถามชวนคิด) | viral | news | clean"),
+  headlineHookDurationMs: z.number().int().min(MIN_HEADLINE_HOOK_DURATION_MS).max(MAX_HEADLINE_HOOK_DURATION_MS).optional()
+    .describe("ระยะเวลาแสดงพาดหัวเปิดคลิป (3000–20000 ms; ค่าเริ่มต้น 3500 ms)"),
+  visualHook: z.string().min(1).max(200).optional()
+    .describe("ชื่อเรียกย่อของ headlineHook — ข้อความฮุคเปิดคลิป 3 วินาทีแรก"),
+  visualHookStyle: z.enum(HEADLINE_HOOK_PRESET_IDS).optional()
+    .describe("ชื่อเรียกย่อของ headlineHookStyle — สไตล์การ์ดฮุคเปิดคลิป (banner | stat-burst | question-pill | viral | news | clean)"),
   brandProfileId: z.string().max(64).optional()
     .describe("ใช้สไตล์ซับของแบรนด์นี้ — ถ้ามีแบรนด์ active แบรนด์เดียว ระบบเลือกให้อัตโนมัติโดยไม่ต้องระบุ"),
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()

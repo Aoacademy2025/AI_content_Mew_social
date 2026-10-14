@@ -11,6 +11,7 @@ import {
   type OrchCaption,
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
+import { resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import { isTransientDbError } from "@/lib/prisma-transient-retry";
@@ -132,9 +133,13 @@ export async function createMcpVideoJob(
     return { kind: "created", job: await createVideoJob(user.id, input, idempotencyKey), projectId: null };
   }
 
+  const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(input);
   const project = await createEditorProject(user.id, {
     title: opts.title,
-    draft: { createdVia: MCP_PROJECT_CREATED_VIA },
+    draft: {
+      createdVia: MCP_PROJECT_CREATED_VIA,
+      ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
+    },
   });
   let job: VideoJob;
   try {
@@ -521,12 +526,18 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
       ? caption.tag
       : (index === 0 ? "hook" : "body"),
   }));
+  const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(
+    previewInput,
+    sourcePreview.audioDurationMs,
+    design.verticalPos,
+  );
   const subtitleOverlayConfig = buildBurnConfig(
     baseVideoUrl,
     captions,
     sourcePreview.audioDurationMs,
     v2SubConfigToHeroDesign(design),
     RENDER_FPS,
+    initialHeadlineHook,
   );
   const script = typeof previewInput.script === "string" ? previewInput.script.slice(0, 20_000) : "";
   return {
@@ -539,6 +550,7 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
       subtitleConfig: design,
       cardLen,
       captionOverrides: {},
+      ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
     },
     ...(script.trim() ? { exportScript: script } : {}),
   };

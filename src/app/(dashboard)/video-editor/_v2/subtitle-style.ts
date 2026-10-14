@@ -67,6 +67,8 @@ export interface V2SubConfig {
   outlineSize: number;
   /** % จากขอบบน (10–95) */
   verticalPos: number;
+  /** EP5 #2: Auto-highlight 1–2 key words/numbers per caption card with accentColor */
+  highlightKeywords?: boolean;
 }
 
 export const DEFAULT_V2_SUB: V2SubConfig = {
@@ -82,6 +84,7 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   outline: false,
   outlineSize: 2,
   verticalPos: 82,
+  highlightKeywords: false,
 };
 
 export type V2FontWeight = SubtitleFontWeight;
@@ -284,6 +287,7 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(cfg.highlightKeywords ? { subtitleHighlightKeywords: true } : {}),
     ...(tailHoldFrames > 0 ? { tailHoldFrames } : {}),
     ...(normalizedHeadlineHook?.enabled ? { headlineHook: normalizedHeadlineHook } : {}),
     ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),

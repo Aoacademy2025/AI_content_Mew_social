@@ -14,6 +14,7 @@ import { resolveAvatarRequest } from "./avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
 import { resolveMcpSubtitleDesign } from "./orchestrator-steps";
+import { resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import { resolveBgm, isNoneInput } from "./bgm-resolve";
 import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
@@ -71,7 +72,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   if (clip.clip) {
     if (clip.clip.source.kind !== "upload") return importRequired();
     presenter = await prisma.mediaImport.findFirst({ where: { id: clip.clip.source.id, userId: user.id, purpose: "presenter", status: "ready" }, select: { id: true, resultSrc: true, durationMs: true } });
-    if (!presenter?.resultSrc || !presenter.durationMs || presenter.durationMs <= 0) return importRequired();
+    if (!presenter?.resultSrc || !presenter.durationMs || !Number.isFinite(presenter.durationMs) || presenter.durationMs <= 0) return importRequired();
     const tightenResolved = resolveTightenOptions(input);
     durationSeconds = tightenResolved.enabled
       ? Math.max(1, Math.round(((presenter.durationMs / 1000) / tightenResolved.speed) * 100) / 100)
@@ -143,6 +144,7 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
     brandStyle = lookup.style ?? null;
   }
   const subtitle = resolveMcpSubtitleDesign(input, brandStyle);
+  const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(input, 60_000, subtitle.design.verticalPos);
   const layout = avatar.kind === "ok" ? resolveAvatarLayout(input, await getAvatarPreset(user.id, avatar.avatarId)) : null;
   const source = input.brollSource ?? "stock";
   const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
@@ -195,6 +197,7 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),
     ...(music ? { bgmFile: music.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
     subtitleDesign: subtitle.design, subtitleCardLen: subtitle.cardLen,
+    ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
     ...(input.subtitleMode ? { subtitleMode: input.subtitleMode } : {}),
     ...(input.subtitlePosition ? { subtitlePosition: input.subtitlePosition } : {}),
     ...(source === "external" || input.cutawayLayout === "fillYourself" ? { stockSource: "none" } : mcpBrollJobFields(source)),

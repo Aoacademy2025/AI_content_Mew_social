@@ -141,6 +141,7 @@ export interface SubtitleOverlayConfig {
   subtitleShadow?: boolean;
   subtitleOutline?: boolean;
   subtitleOutlineSize?: number;
+  subtitleHighlightKeywords?: boolean;
   bgmFile?: string;
   bgmVolume?: number;
   /** EP5 U7: the music was changed after creation. The base video is muted and the voice track
@@ -180,6 +181,7 @@ export interface ShortVideoConfig {
   subtitleShadow?: boolean;
   subtitleOutline?: boolean;
   subtitleOutlineSize?: number;
+  subtitleHighlightKeywords?: boolean;
   /** Subtle Ken Burns motion (slow zoom) on b-roll so it isn't a static slideshow.
    *  Set by generate-config from env STOCK_KEN_BURNS; default off. */
   kenBurns?: boolean;

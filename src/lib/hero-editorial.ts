@@ -24,6 +24,7 @@ export type HeroSubtitleDesign = {
   shadow?: boolean;
   outline?: boolean;
   outlineSize?: number;
+  highlightKeywords?: boolean;
 };
 
 /**
@@ -75,5 +76,6 @@ export function buildHeroSubtitleOverlayConfig(input: {
     ...(design.shadow !== undefined ? { subtitleShadow: design.shadow } : {}),
     ...(design.outline !== undefined ? { subtitleOutline: design.outline } : {}),
     ...(design.outlineSize !== undefined ? { subtitleOutlineSize: design.outlineSize } : {}),
+    ...(design.highlightKeywords ? { subtitleHighlightKeywords: true } : {}),
   };
 }

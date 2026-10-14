@@ -34,6 +34,9 @@ const PRESET_LABELS: Record<HeadlineHookPreset, { label: string; description: st
   viral: { label: "Viral", description: "ตัวใหญ่ ตัดขอบชัด" },
   news: { label: "News", description: "แถบข่าว อ่านเร็ว" },
   clean: { label: "Clean", description: "เรียบ สุภาพ" },
+  banner: { label: "Banner", description: "ป้ายฮุกสีสด สะดุดตา" },
+  "stat-burst": { label: "Stat Burst", description: "เน้นตัวเลข กรอบทอง" },
+  "question-pill": { label: "Question Pill", description: "แคปซูลคำถาม ชวนคิด" },
 };
 
 function charCount(value: string) {
@@ -78,6 +81,9 @@ function Switch({ checked, onChange }: { checked: boolean; onChange: (checked: b
 function PresetSample({ preset }: { preset: HeadlineHookPreset }) {
   const isNews = preset === "news";
   const isClean = preset === "clean";
+  const isBanner = preset === "banner";
+  const isStatBurst = preset === "stat-burst";
+  const isQuestionPill = preset === "question-pill";
   return (
     <div
       aria-hidden="true"
@@ -90,19 +96,56 @@ function PresetSample({ preset }: { preset: HeadlineHookPreset }) {
       <div
         style={{
           maxWidth: "88%",
-          padding: isNews ? "5px 8px 5px 10px" : isClean ? "5px 8px" : 0,
+          padding: isNews
+            ? "5px 8px 5px 10px"
+            : isClean || isBanner || isStatBurst
+              ? "5px 8px"
+              : isQuestionPill
+                ? "5px 10px"
+                : 0,
           borderLeft: isNews ? "3px solid #FF5A2F" : undefined,
-          borderRadius: isClean ? 5 : undefined,
-          background: isNews ? "rgba(8,8,13,.9)" : isClean ? "rgba(8,8,13,.55)" : undefined,
-          color: "#fff",
+          border: isStatBurst
+            ? "1.5px solid #FACC15"
+            : isQuestionPill
+              ? "1.5px solid rgba(56,189,248,.75)"
+              : isBanner
+                ? "1px solid rgba(255,255,255,.32)"
+                : undefined,
+          borderRadius: isQuestionPill
+            ? 999
+            : isStatBurst
+              ? 7
+              : isClean || isBanner
+                ? 5
+                : undefined,
+          background: isNews
+            ? "rgba(8,8,13,.9)"
+            : isClean
+              ? "rgba(8,8,13,.55)"
+              : isBanner
+                ? "linear-gradient(135deg,#F97316,#DC2626)"
+                : isStatBurst
+                  ? "rgba(9,10,18,.92)"
+                  : isQuestionPill
+                    ? "rgba(15,23,42,.92)"
+                    : undefined,
+          color: isStatBurst ? "#FACC15" : "#fff",
           font: `800 9px ${font.heading}`,
           lineHeight: 1.08,
           textAlign: "center",
           textShadow: preset === "viral" ? "0 1px 0 #000,1px 0 0 #000,-1px 0 0 #000" : undefined,
         }}
       >
-        ประเด็นสำคัญ
-        <div style={{ marginTop: 2, color: "#FFE44D", fontSize: 6.5 }}>รู้เรื่องแม้ปิดเสียง</div>
+        {isStatBurst ? "300% โตไว" : isQuestionPill ? "รู้หรือไม่?" : "ประเด็นสำคัญ"}
+        <div
+          style={{
+            marginTop: 2,
+            color: isQuestionPill ? "#7DD3FC" : isStatBurst ? "#F8FAFC" : "#FFE44D",
+            fontSize: 6.5,
+          }}
+        >
+          รู้เรื่องแม้ปิดเสียง
+        </div>
       </div>
     </div>
   );

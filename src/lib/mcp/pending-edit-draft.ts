@@ -23,7 +23,11 @@ import {
   resolvedMcpSubtitleDesignFromInput,
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
-import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-hook";
+import {
+  normalizeHeadlineHook,
+  resolveInitialHeadlineHookFromJobInput,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
 import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
@@ -263,11 +267,14 @@ export function seedPendingEditDraft(input: {
   const fullText = snapshot?.preview.fullText ?? preview.fullText;
   const projectDraft = record(parseJson(input.projectDraftJson)) ?? {};
   const subtitleConfig = (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design };
-  const headlineHook = normalizeHeadlineHook(
-    projectDraft.headlineHook,
-    draftDurationMs(preview, captions),
-    subtitleConfig.verticalPos,
-  );
+  const totalDurationMs = draftDurationMs(preview, captions);
+  const headlineHook = projectDraft.headlineHook !== undefined
+    ? normalizeHeadlineHook(projectDraft.headlineHook, totalDurationMs, subtitleConfig.verticalPos)
+    : resolveInitialHeadlineHookFromJobInput(
+        rootInput as Record<string, unknown>,
+        totalDurationMs,
+        subtitleConfig.verticalPos,
+      );
   const logoOverlay = normalizeLogoOverlayConfig(projectDraft.logoOverlay);
   const backgroundMusic = normalizeBackgroundMusicEdit(projectDraft.backgroundMusic);
   return {

@@ -166,6 +166,7 @@ export const setSubtitleStyleInputShape = {
   outline: z.boolean().optional().describe("เปิด/ปิดเส้นขอบ"),
   outlineSize: z.number().int().describe("ความหนาเส้นขอบ 1-8").optional(),
   verticalPos: z.number().int().describe("ตำแหน่งแนวตั้งของซับ 10-95 (% จากขอบบน)").optional(),
+  highlightKeywords: z.boolean().optional().describe("เปิด/ปิดไฮไลต์คำสำคัญหรือตัวเลขเด่น 1–2 คำต่อการ์ดซับอัตโนมัติด้วยสีเน้น (accentColor)"),
 } satisfies z.ZodRawShape;
 
 const HEADLINE_HOOK_FONT_VALUES = HEADLINE_HOOK_FONTS.map((font) => font.value);
@@ -415,6 +416,7 @@ function subtitleStyleView(config: V2SubConfig) {
     outline: config.outline,
     outlineSize: config.outlineSize,
     verticalPos: config.verticalPos,
+    highlightKeywords: Boolean(config.highlightKeywords),
   };
 }
 
@@ -863,6 +865,7 @@ export async function setSubtitleStyleTool(userId: string, args: ShapeArgs<typeo
       outline: args.outline !== undefined ? args.outline : current.outline,
       outlineSize: args.outlineSize !== undefined ? args.outlineSize : current.outlineSize,
       verticalPos: args.verticalPos !== undefined ? args.verticalPos : current.verticalPos,
+      highlightKeywords: args.highlightKeywords !== undefined ? args.highlightKeywords : Boolean(current.highlightKeywords),
     };
     const normalized = normalizeSubtitleStylePresetConfig(candidate);
     if (!normalized) {

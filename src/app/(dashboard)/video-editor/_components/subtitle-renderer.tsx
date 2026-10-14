@@ -32,6 +32,7 @@ export function renderSubEl(
   shadow = false,
   outline = false,
   outlineSize = 2,
+  highlightKeywords = false,
 ): React.ReactNode {
   // The Remotion renderer expects the final pixel size; scale it here so the
   // preview overlay (e.g. 260/1080 phone frame) matches what gets rendered at 1080.
@@ -52,6 +53,6 @@ export function renderSubEl(
     captionDurFrames,
     textEffect,
     accentColor,
-    { shadow, outline, outlineSize, lineBudgetSize: fontSizePx },
+    { shadow, outline, outlineSize, lineBudgetSize: fontSizePx, highlightKeywords },
   );
 }

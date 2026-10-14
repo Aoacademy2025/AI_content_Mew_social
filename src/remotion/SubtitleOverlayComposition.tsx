@@ -29,6 +29,7 @@ export function SubtitleOverlayComposition({
   subtitleShadow = false,
   subtitleOutline = false,
   subtitleOutlineSize = 2,
+  subtitleHighlightKeywords = false,
   bgmFile,
   bgmVolume = 0.12,
   audioMix,
@@ -140,6 +141,7 @@ export function SubtitleOverlayComposition({
               shadow={subtitleShadow}
               outline={subtitleOutline}
               outlineSize={subtitleOutlineSize}
+              highlightKeywords={subtitleHighlightKeywords}
             />
           </Sequence>
         );

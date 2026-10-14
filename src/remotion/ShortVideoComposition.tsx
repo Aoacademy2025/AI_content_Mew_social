@@ -484,6 +484,7 @@ export function AnimatedSubtitle({
   shadow = false,
   outline = false,
   outlineSize = 2,
+  highlightKeywords = false,
 }: {
   popup: NonNullable<ShortVideoConfig["keywordPopups"]>[number];
   preset: SubtitleStylePreset;
@@ -494,6 +495,7 @@ export function AnimatedSubtitle({
   shadow?: boolean;
   outline?: boolean;
   outlineSize?: number;
+  highlightKeywords?: boolean;
 }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -587,6 +589,7 @@ export function AnimatedSubtitle({
             shadow,
             outline,
             outlineSize,
+            highlightKeywords,
           })}
         </div>
       </div>
@@ -624,6 +627,7 @@ export function ShortVideoComposition({
   subtitleShadow = false,
   subtitleOutline = false,
   subtitleOutlineSize = 2,
+  subtitleHighlightKeywords = false,
   kenBurns = false,
   watermark = false,
   backgroundColors,
@@ -779,6 +783,7 @@ export function ShortVideoComposition({
               shadow={subtitleShadow}
               outline={subtitleOutline}
               outlineSize={subtitleOutlineSize}
+              highlightKeywords={subtitleHighlightKeywords}
             />
           </Sequence>
         );
