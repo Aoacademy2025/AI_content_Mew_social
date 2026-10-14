@@ -142,6 +142,48 @@ async function main() {
       assert.equal((await service.decideVideoQuote(owner.id, eleven.quoteId, "approve")).code, "quote_settings_changed");
       assert.equal((await service.getVideoQuoteReview(owner.id, eleven.quoteId))!.execution.jobInput.voiceId, "approved-voice");
     });
+    await regression("quote HTTP handlers map P2028/SQLite lock errors to 503 database_busy and decideVideoQuote avoids interactive $transaction", async () => {
+      const busyHandlers = createQuoteHttpHandlers(async () => {
+        const err = Object.assign(new Error("Transaction API error: Unable to start a transaction in the given time."), { code: "P2028" });
+        throw err;
+      });
+      const busyGetRes = await busyHandlers.GET(new Request(`https://studio.example.test/api/mcp-quotes/${fresh.quoteId}`), context);
+      assert.equal(busyGetRes.status, 503);
+      assert.equal((await busyGetRes.json()).code, "database_busy");
+      const busyPostRes = await busyHandlers.POST(post(), context);
+      assert.equal(busyPostRes.status, 503);
+      assert.equal((await busyPostRes.json()).code, "database_busy");
+
+      await prisma.user.update({ where: { id: owner.id }, data: { elevenlabsModel: "v3" } });
+      const noTxQuote = await service.prepareVideoQuote(owner, input);
+      assert.ok("quoteId" in noTxQuote);
+      const origTx = prisma.$transaction.bind(prisma);
+      (prisma as unknown as { $transaction: typeof prisma.$transaction }).$transaction = (async () => {
+        throw Object.assign(new Error("decideVideoQuote must not open an interactive transaction"), { code: "P2028" });
+      }) as unknown as typeof prisma.$transaction;
+      try {
+        const approved = await service.decideVideoQuote(owner.id, noTxQuote.quoteId, "approve");
+        assert.ok("status" in approved && approved.status === "approved");
+      } finally {
+        (prisma as unknown as { $transaction: typeof prisma.$transaction }).$transaction = origTx;
+      }
+
+      const startNowQuote = await service.prepareVideoQuote(owner, { script: "Auto-start from web confirmation click.", brollSource: "stock" });
+      assert.ok("quoteId" in startNowQuote);
+      const startNowRes = await signedIn.POST(
+        new Request(`https://studio.example.test/api/mcp-quotes/${startNowQuote.quoteId}`, {
+          method: "POST",
+          headers: { origin: "https://studio.example.test", "content-type": "application/json" },
+          body: JSON.stringify({ action: "approve", startNow: true }),
+        }),
+        { params: Promise.resolve({ quoteId: startNowQuote.quoteId }) },
+      );
+      assert.equal(startNowRes.status, 200);
+      const startNowBody = await startNowRes.json();
+      assert.equal(startNowBody.status, "consumed");
+      assert.ok(startNowBody.rootJobId);
+      assert.ok(typeof startNowBody.editorUrl === "string" && startNowBody.editorUrl.startsWith("/video-editor?projectId="));
+    });
     assert.deepEqual(regressions, []);
     console.log("PASS quote owner/auth/expiry/input/price/zero-spend and presenter checks");
   } finally { await prisma.$disconnect(); rmSync(dir, { recursive: true, force: true }); }

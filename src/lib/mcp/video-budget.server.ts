@@ -8,10 +8,19 @@ import { prisma } from "@/lib/prisma";
 import { syncMinuteWindow } from "@/lib/minute-limits";
 import { resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
 import { createVideoJobInTransaction, VideoJobFundingError, withVideoJobSqliteRetry } from "./video-job";
-import { currentQuotePricing, quoteHash, quoteExecutionRefusal, quoteFailure, type QuoteReceipt } from "./video-quote";
-import type { PrepareVideoJobInput } from "./create-video-input";
+import { currentQuotePricing, normalizeQuoteInput, quoteAccountDefaultsRefusal, quoteHash, quoteExecutionRefusal, quoteFailure, type QuoteReceipt } from "./video-quote";
+import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import type { QuoteExecution } from "./video-quote.server";
 import { VideoBudgetHoldError } from "./video-budget-admission";
+
+function confirmationRequiredReply<T extends { quoteId: string; confirmationUrl: string }>(quote: T) {
+  return {
+    ...quote,
+    error: "confirmation_required",
+    code: "confirmation_required",
+    message: `ต้องให้เจ้าของบัญชียืนยันใบสรุปค่าใช้จ่ายใน Studio ก่อนเริ่มงาน (กดลิงก์เพื่อยืนยันและเริ่มสร้างวิดีโอทันที การพิมพ์ตอบตกลงในแชทเริ่มงานไม่ได้): ${quote.confirmationUrl}`,
+  };
+}
 
 export async function consumeVideoQuote(userId: string, quoteId: string, changedInput?: PrepareVideoJobInput, _idempotencyKey?: string) {
   void _idempotencyKey; // Quote identity, not transport keys, owns execution idempotency.
@@ -24,8 +33,15 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       const refusal = quoteExecutionRefusal(quote, userId, changedInput, currentQuotePricing(), new Date(), user);
       if (refusal) return refusal;
       if (quote.status === "consumed" && quote.rootJobId) {
-        const root = await tx.videoJob.findFirst({ where: { id: quote.rootJobId, userId }, select: { status: true } });
-        return root ? { jobId: quote.rootJobId, status: root.status, replayed: true } : quoteFailure("quote_job_unavailable", "ไม่พบงานเดิม กรุณาติดต่อฝ่ายช่วยเหลือ");
+        const root = await tx.videoJob.findFirst({ where: { id: quote.rootJobId, userId }, select: { status: true, projectId: true } });
+        return root
+          ? {
+              jobId: quote.rootJobId,
+              status: root.status,
+              replayed: true,
+              ...(root.projectId ? { projectId: root.projectId, editorUrl: `/video-editor?projectId=${root.projectId}` } : {}),
+            }
+          : quoteFailure("quote_job_unavailable", "ไม่พบงานเดิม กรุณาติดต่อฝ่ายช่วยเหลือ");
       }
       if (user.suspended) return quoteFailure("account_suspended", "บัญชีนี้ยังสร้างงานไม่ได้");
       if (!mcpAccessAllowed(classifyEntitlement(user).effectivePlan)) return quoteFailure("plan_required", "สิทธิ์แผนปัจจุบันยังสร้างงานผ่าน MCP ไม่ได้");
@@ -82,7 +98,47 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
     const { quoteId, idempotencyKey, ...work } = args;
     return consumeVideoQuote(user.id, quoteId, Object.keys(work).length ? work : undefined, idempotencyKey);
   }
+  const parsed = prepareVideoJobInputSchema.safeParse(args);
+  if (parsed.success && !parsed.data.resumeJobId) {
+    const normalized = normalizeQuoteInput(parsed.data);
+    const inputHash = quoteHash(normalized);
+    const pricingHash = quoteHash(currentQuotePricing());
+    const now = new Date();
+    const candidates = await prisma.mcpVideoQuote.findMany({
+      where: {
+        userId: user.id,
+        parentQuoteId: null,
+        inputHash,
+        pricingHash,
+        expiresAt: { gt: now },
+        status: { in: ["approved", "consumed", "draft"] },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    });
+    const valid = candidates.filter((row) => !quoteAccountDefaultsRefusal(row, user));
+    const approvedRow = valid.find((row) => row.status === "approved");
+    if (approvedRow) {
+      return consumeVideoQuote(user.id, approvedRow.id, undefined, args.idempotencyKey);
+    }
+    const consumedRow = valid.find((row) => row.status === "consumed" && row.rootJobId);
+    if (consumedRow?.rootJobId) {
+      const rootJob = await prisma.videoJob.findFirst({
+        where: { id: consumedRow.rootJobId, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
+        select: { id: true },
+      });
+      if (rootJob) {
+        return consumeVideoQuote(user.id, consumedRow.id, undefined, args.idempotencyKey);
+      }
+    }
+    const existingDraft = valid.find((row) => row.status === "draft");
+    if (existingDraft) {
+      const { getVideoQuote } = await import("./video-quote.server");
+      const existingView = await getVideoQuote(user.id, existingDraft.id);
+      if ("quoteId" in existingView) return confirmationRequiredReply(existingView);
+    }
+  }
   const { prepareVideoQuote } = await import("./video-quote.server");
   const prepared = await prepareVideoQuote(user, args);
-  return "quoteId" in prepared ? { ...prepared, error: "confirmation_required", code: "confirmation_required", message: "ต้องให้เจ้าของบัญชียืนยันใบสรุปค่าใช้จ่ายใน Studio ก่อนเริ่มงาน" } : prepared;
+  return "quoteId" in prepared ? confirmationRequiredReply(prepared) : prepared;
 }

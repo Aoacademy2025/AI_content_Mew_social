@@ -16,6 +16,7 @@ import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import { resolveBgm, isNoneInput } from "./bgm-resolve";
 import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { mcpBrollJobFields } from "./broll-source";
+import { withVideoJobSqliteRetry } from "./video-job";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { createMcpVideoJob } from "./chain-export";
 type VideoJobInput = Parameters<typeof createMcpVideoJob>[1];
@@ -29,14 +30,15 @@ export type QuoteExecution = { jobInput: VideoJobInput; exportMode: "auto" | "ho
 function publicOrigin() {
   return process.env.MCP_PUBLIC_ORIGIN?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://studio.heroaiengine.com";
 }
-function view(row: McpVideoQuote): VideoQuoteView {
+function view(row: McpVideoQuote, editorUrl?: string | null): VideoQuoteView {
   const status = quoteStatus(row);
   return {
     ...JSON.parse(row.receiptJson) as QuoteReceipt,
     quoteId: row.id, status, expiresAt: row.expiresAt.toISOString(), approvedAt: row.approvedAt?.toISOString() ?? null,
     rootJobId: row.rootJobId,
+    ...(editorUrl ? { editorUrl } : {}),
     confirmationUrl: new URL(`/mcp/confirm/${encodeURIComponent(row.id)}`, publicOrigin()).toString(),
-    next: status === "draft" ? "ส่ง confirmationUrl ให้เจ้าของบัญชีเปิดและยืนยันใน Studio แล้วเรียก get_video_quote"
+    next: status === "draft" ? "ส่ง confirmationUrl ให้เจ้าของบัญชีเปิดและยืนยันใน Studio (ต้องแสดงลิงก์ confirmationUrl ให้ผู้ใช้คลิกเปิดในเบราว์เซอร์เพื่อกดปุ่มเริ่มงาน การพิมพ์ตอบตกลงในแชทเริ่มงานไม่ได้) แล้วเรียก get_video_quote หรือ create_video_job"
       : status === "approved" ? "เรียก create_video_job ด้วย quoteId นี้ โดยใช้ข้อมูลงานเดิม"
       : status === "consumed" ? "เรียก get_video_status ด้วย rootJobId — อย่าสร้างงานซ้ำ"
       : row.parentQuoteId ? `เรียก prepare_video_job พร้อม resumeJobId: ${row.rootJobId} เพื่อยืนยันงานที่บันทึกไว้` : "เรียก prepare_video_job เพื่อเริ่มใบยืนยันใหม่",
@@ -96,7 +98,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   const execution = await resolveQuoteExecution(user, input, presenter);
   if ("error" in execution) return execution;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withVideoJobSqliteRetry("prepare quote", () => prisma.$transaction(async (tx) => {
     const now = new Date();
     const active = await tx.mcpVideoQuote.count({ where: { userId: user.id, status: { in: ["draft", "approved"] }, expiresAt: { gt: now } } });
     if (active >= 20) return null;
@@ -108,7 +110,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
       includedRenderMinutes: receipt.includedRenderMinutes, renderCreditCeiling: receipt.renderCreditCeiling,
       totalHeroCreditCeiling: receipt.totalHeroCreditCeiling, expiresAt: new Date(now.getTime() + QUOTE_TTL_MS),
     } });
-  });
+  }));
   return result ? view(result) : quoteFailure("too_many_quotes", "มีใบยืนยันที่ยังใช้งานได้หลายรายการ", "ปฏิเสธใบยืนยันเก่าใน Studio หรือรอ 30 นาทีแล้วลองใหม่");
 }
 
@@ -172,35 +174,52 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
   return { jobInput, exportMode: source === "external" ? "hold" : input.exportMode ?? "auto", presenterImportId: presenter?.id ?? null, musicTitle: music?.title ?? null };
 }
 
+async function resolveConsumedEditorUrl(userId: string, rootJobId: string | null): Promise<string | null> {
+  if (!rootJobId) return null;
+  const job = await prisma.videoJob.findFirst({ where: { id: rootJobId, userId }, select: { projectId: true } });
+  return job?.projectId ? `/video-editor?projectId=${job.projectId}` : null;
+}
+
 export async function getVideoQuote(userId: string, quoteId: string): Promise<VideoQuoteReply> {
   const row = await prisma.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
-  return row ? view(row) : notFound();
+  if (!row) return notFound();
+  return view(row, await resolveConsumedEditorUrl(userId, row.rootJobId));
 }
 
 /** Protected human review only; never return the private work through a public tool reply. */
 export async function getVideoQuoteReview(userId: string, quoteId: string) {
   const row = await prisma.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
-  return row ? { quote: view(row), input: JSON.parse(row.inputJson) as PrepareVideoJobInput, execution: JSON.parse(row.executionJson) as QuoteExecution } : null;
+  if (!row) return null;
+  const editorUrl = await resolveConsumedEditorUrl(userId, row.rootJobId);
+  return { quote: view(row, editorUrl), input: JSON.parse(row.inputJson) as PrepareVideoJobInput, execution: JSON.parse(row.executionJson) as QuoteExecution };
 }
 
-/** Only the Clerk-browser HTTP adapter calls this. CAS protects approve/reject vs consumption. */
+/** Only the Clerk-browser HTTP adapter calls this. CAS protects approve/reject vs consumption
+ * without opening an interactive transaction that would queue on SQLite's BEGIN IMMEDIATE lock. */
 export async function decideVideoQuote(userId: string, quoteId: string, action: "approve" | "reject"): Promise<VideoQuoteReply> {
-  return prisma.$transaction(async (tx) => {
-    const row = await tx.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
-    if (!row) return notFound();
-    if (quoteStatus(row) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
-    if (row.status !== "draft" && row.status !== "approved") return quoteFailure("quote_not_actionable", "ใบยืนยันนี้ไม่สามารถเปลี่ยนสถานะได้แล้ว");
-    if (action === "approve" && quoteHash(currentQuotePricing()) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
-    if (action === "approve") {
-      const currentAccount = await tx.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } });
-      const defaultsRefusal = quoteAccountDefaultsRefusal(row, currentAccount);
-      if (defaultsRefusal) return defaultsRefusal;
-    }
-    const changed = await tx.mcpVideoQuote.updateMany({
-      where: { id: quoteId, userId, status: row.status, expiresAt: { gt: new Date() } },
-      data: action === "approve" ? { status: "approved", approvedAt: row.approvedAt ?? new Date() } : { status: "rejected", rejectedAt: new Date() },
-    });
-    if (changed.count !== 1) return quoteFailure("quote_not_actionable", "สถานะใบยืนยันเปลี่ยนแล้ว กรุณาเปิดใหม่");
-    return view(await tx.mcpVideoQuote.findUniqueOrThrow({ where: { id: quoteId } }));
-  });
+  const row = await prisma.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
+  if (!row) return notFound();
+  if (action === "approve" && row.status === "consumed" && row.rootJobId) {
+    return view(row, await resolveConsumedEditorUrl(userId, row.rootJobId));
+  }
+  if (quoteStatus(row) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
+  if (row.status !== "draft" && row.status !== "approved") return quoteFailure("quote_not_actionable", "ใบยืนยันนี้ไม่สามารถเปลี่ยนสถานะได้แล้ว");
+  if (action === "approve" && quoteHash(currentQuotePricing()) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
+  if (action === "approve") {
+    const currentAccount = await prisma.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } });
+    const defaultsRefusal = quoteAccountDefaultsRefusal(row, currentAccount);
+    if (defaultsRefusal) return defaultsRefusal;
+  }
+  const now = new Date();
+  const data = action === "approve"
+    ? { status: "approved", approvedAt: row.approvedAt ?? now }
+    : { status: "rejected", rejectedAt: now };
+  const changed = await withVideoJobSqliteRetry("decide quote", () =>
+    prisma.mcpVideoQuote.updateMany({
+      where: { id: quoteId, userId, status: row.status, expiresAt: { gt: now } },
+      data,
+    }),
+  );
+  if (changed.count !== 1) return quoteFailure("quote_not_actionable", "สถานะใบยืนยันเปลี่ยนแล้ว กรุณาเปิดใหม่");
+  return view({ ...row, ...data, updatedAt: now });
 }

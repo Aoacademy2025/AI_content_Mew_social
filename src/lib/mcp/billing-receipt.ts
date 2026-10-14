@@ -129,53 +129,54 @@ function storedObject(json: string | null): Record<string, unknown> {
  * the release invariant. This owner-scoped read also works before delivery and after failure.
  * Every component is read in one database snapshot; reservations are already wallet debits. */
 export async function getVideoJobCostReceipt(input: { videoJobId: string; userId: string }) {
-  return prisma.$transaction(async tx => {
-    const requested = await tx.videoJob.findFirst({ where: { id: input.videoJobId, userId: input.userId } });
-    if (!requested) return null;
-    const requestedInput = storedObject(requested.inputJson);
-    const quote = requested.budgetQuoteId
-      ? await tx.mcpVideoQuote.findFirst({ where: { id: requested.budgetQuoteId, userId: input.userId, status: "consumed" } })
-      : null;
-    const hintedRoot = quote?.rootJobId ?? requestedInput.mcpRootJobId ??
-      (requested.idempotencyKey === `mcp-chain:${requestedInput.sourceJobId}` ? requestedInput.sourceJobId : null);
-    const linkedRoot = typeof hintedRoot === "string"
-      ? await tx.videoJob.findFirst({ where: { id: hintedRoot, userId: input.userId } }) : null;
-    const root = linkedRoot && (quote || requested.idempotencyKey === `mcp-chain:${linkedRoot.id}` ||
-      (requested.projectId && requested.projectId === linkedRoot.projectId)) ? linkedRoot : requested;
-    const candidates = await tx.videoJob.findMany({ where: { userId: input.userId, OR: [
-      { id: root.id },
-      ...(root.budgetQuoteId ? [{ budgetQuoteId: root.budgetQuoteId }] : []),
-      ...(root.projectId ? [{ projectId: root.projectId }] : []),
-      { idempotencyKey: `mcp-chain:${root.id}` },
-    ] } });
-    const jobs = candidates.filter(job => {
-      if (job.id === root.id) return true;
-      const data = storedObject(job.inputJson);
-      return (root.budgetQuoteId && job.budgetQuoteId === root.budgetQuoteId) ||
-        (root.projectId && job.projectId === root.projectId && data.mcpRootJobId === root.id) ||
-        (job.type === "export" && job.idempotencyKey === `mcp-chain:${root.id}` && data.sourceJobId === root.id);
-    });
-    const ids = jobs.map(job => job.id);
-    const approvals = root.budgetQuoteId ? await tx.mcpVideoQuote.findMany({
-      where: { userId: input.userId, rootJobId: root.id, status: "consumed", OR: [{ id: root.budgetQuoteId }, { parentQuoteId: root.budgetQuoteId }] },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    }) : [];
-    const quoteIds = approvals.map(approval => approval.id);
-    const images = await tx.aiGenerationJob.findMany({ where: { userId: input.userId, kind: "image", OR: [
+  const requested = await prisma.videoJob.findFirst({ where: { id: input.videoJobId, userId: input.userId } });
+  if (!requested) return null;
+  const requestedInput = storedObject(requested.inputJson);
+  const quote = requested.budgetQuoteId
+    ? await prisma.mcpVideoQuote.findFirst({ where: { id: requested.budgetQuoteId, userId: input.userId, status: "consumed" } })
+    : null;
+  const hintedRoot = quote?.rootJobId ?? requestedInput.mcpRootJobId ??
+    (requested.idempotencyKey === `mcp-chain:${requestedInput.sourceJobId}` ? requestedInput.sourceJobId : null);
+  const linkedRoot = typeof hintedRoot === "string"
+    ? await prisma.videoJob.findFirst({ where: { id: hintedRoot, userId: input.userId } }) : null;
+  const root = linkedRoot && (quote || requested.idempotencyKey === `mcp-chain:${linkedRoot.id}` ||
+    (requested.projectId && requested.projectId === linkedRoot.projectId)) ? linkedRoot : requested;
+  const candidates = await prisma.videoJob.findMany({ where: { userId: input.userId, OR: [
+    { id: root.id },
+    ...(root.budgetQuoteId ? [{ budgetQuoteId: root.budgetQuoteId }] : []),
+    ...(root.projectId ? [{ projectId: root.projectId }] : []),
+    { idempotencyKey: `mcp-chain:${root.id}` },
+  ] } });
+  const jobs = candidates.filter(job => {
+    if (job.id === root.id) return true;
+    const data = storedObject(job.inputJson);
+    return (root.budgetQuoteId && job.budgetQuoteId === root.budgetQuoteId) ||
+      (root.projectId && job.projectId === root.projectId && data.mcpRootJobId === root.id) ||
+      (job.type === "export" && job.idempotencyKey === `mcp-chain:${root.id}` && data.sourceJobId === root.id);
+  });
+  const ids = jobs.map(job => job.id);
+  const approvals = root.budgetQuoteId ? await prisma.mcpVideoQuote.findMany({
+    where: { userId: input.userId, rootJobId: root.id, status: "consumed", OR: [{ id: root.budgetQuoteId }, { parentQuoteId: root.budgetQuoteId }] },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  }) : [];
+  const quoteIds = approvals.map(approval => approval.id);
+  const [images, renders, balance, promotional] = await Promise.all([
+    prisma.aiGenerationJob.findMany({ where: { userId: input.userId, kind: "image", OR: [
       ...(quoteIds.length ? [{ budgetQuoteId: { in: quoteIds } }] : []),
       ...ids.map(id => ({ idempotencyKey: { startsWith: `video:${id}:` } })),
-    ] } });
-    const renders = await tx.renderJob.findMany({ where: { userId: input.userId, parentJobId: { in: ids } } });
-    const refundActions = [
-      ...images.flatMap(image => [{ action: `ai-image-refund:${image.id}` }, { action: { startsWith: `ai-image-output-refund:${image.id}:` } }, { action: { startsWith: `ai-image-batch-refund:${image.id}:` } }]),
-      ...jobs.flatMap(job => [{ action: { startsWith: `video-job-refund:${job.id}:` } }, { action: `video-job-trim:${job.id}` }]),
-      ...renders.flatMap(render => [{ action: { startsWith: `render-refund:${render.id}:` } }, { action: `queue-for job ${render.id}` }, { action: `queue-superseding QUEUED job ${render.id}` }]),
-    ];
-    const refunds = await tx.creditLedger.findMany({ where: { userId: input.userId, kind: "refund", delta: { gt: 0 }, OR: refundActions }, select: { action: true, delta: true } });
-    const [balance, promotional] = await Promise.all([
-      tx.creditBalance.findUnique({ where: { userId: input.userId } }),
-      tx.promotionalCreditGrant.aggregate({ where: { userId: input.userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } }),
-    ]);
+    ] } }),
+    prisma.renderJob.findMany({ where: { userId: input.userId, parentJobId: { in: ids } } }),
+    prisma.creditBalance.findUnique({ where: { userId: input.userId } }),
+    prisma.promotionalCreditGrant.aggregate({ where: { userId: input.userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } }),
+  ]);
+  const refundActions = [
+    ...images.flatMap(image => [{ action: `ai-image-refund:${image.id}` }, { action: { startsWith: `ai-image-output-refund:${image.id}:` } }, { action: { startsWith: `ai-image-batch-refund:${image.id}:` } }]),
+    ...jobs.flatMap(job => [{ action: { startsWith: `video-job-refund:${job.id}:` } }, { action: `video-job-trim:${job.id}` }]),
+    ...renders.flatMap(render => [{ action: { startsWith: `render-refund:${render.id}:` } }, { action: `queue-for job ${render.id}` }, { action: `queue-superseding QUEUED job ${render.id}` }]),
+  ];
+  const refunds = refundActions.length
+    ? await prisma.creditLedger.findMany({ where: { userId: input.userId, kind: "refund", delta: { gt: 0 }, OR: refundActions }, select: { action: true, delta: true } })
+    : [];
     let imageCredits = 0, renderCredits = 0, includedRenderMinutes = 0;
     let reservedImageCredits = 0, reservedRenderCredits = 0, reservedIncludedRenderMinutes = 0;
     let consumedTrialImageUnits = 0, reservedTrialImageUnits = 0, refundedTrialImageUnits = 0;
@@ -272,8 +273,7 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
       consumedTrialImageUnits, reservedTrialImageUnits, refundedTrialImageUnits,
       // CreditBalance contains available money AFTER reservations; never subtract them twice.
       availableCredits: (balance?.granted ?? 0) + (balance?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0),
-      renderChargeCount: active.length,
-      externalCharges,
-    };
-  });
+    renderChargeCount: active.length,
+    externalCharges,
+  };
 }
