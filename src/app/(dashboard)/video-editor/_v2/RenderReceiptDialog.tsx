@@ -104,8 +104,8 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
   // Upload mode knows the real file duration after metadata/upload. Script mode can only
   // estimate until TTS returns the actual audio duration.
   const estSec = useMemo(
-    () => (p.mode === "upload" && p.clipDurationSec > 0 ? p.clipDurationSec : estimateClipSecV2(p.mode === "upload" ? "" : p.script)),
-    [p.mode, p.script, p.clipDurationSec],
+    () => (p.mode === "upload" && p.clipDurationSec > 0 ? p.clipDurationSec : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed)),
+    [p.mode, p.script, p.clipDurationSec, p.ttsSpeed],
   );
   const exactDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const quotedTargetClipCount = exactDuration

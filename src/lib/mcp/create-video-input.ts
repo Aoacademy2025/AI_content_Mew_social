@@ -3,6 +3,18 @@ import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { GEMINI_VOICE_STYLES } from "@/lib/gemini-voice-styles";
 import { MCP_BROLL_SOURCES } from "@/lib/mcp/broll-source";
 import { V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
+import {
+  TARGET_DURATION_SEC_MAX,
+  TARGET_DURATION_SEC_MIN,
+  TTS_SPEED_MAX,
+  TTS_SPEED_MIN,
+} from "@/lib/tts-pace";
+import {
+  TIGHTEN_MAX_MAX_GAP_MS,
+  TIGHTEN_MAX_SPEED,
+  TIGHTEN_MIN_MAX_GAP_MS,
+  TIGHTEN_MIN_SPEED,
+} from "@/lib/presenter-tighten";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -35,6 +47,10 @@ export const createVideoJobInputShape = {
   voiceId: z.string().optional(),
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),
   geminiVoiceStyle: z.enum(GEMINI_VOICE_STYLE_IDS).optional(),
+  ttsSpeed: z.number().min(TTS_SPEED_MIN).max(TTS_SPEED_MAX).optional()
+    .describe("ความเร็วเสียงพากย์ TTS (0.85–1.25; ค่าเริ่มต้น 1.0) — ใช้เฉพาะงานสร้างจาก script"),
+  targetDurationSec: z.number().min(TARGET_DURATION_SEC_MIN).max(TARGET_DURATION_SEC_MAX).optional()
+    .describe("เป้าหมายความยาวคลิปเป็นวินาที (5–600) — ระบบคำนวณความเร็ว TTS อัตโนมัติในช่วง 0.85x–1.20x เพื่อให้ใกล้เป้าหมายที่สุดโดยยังฟังเป็นธรรมชาติ"),
   avatarMode: z.enum(["none", "full", "bookend", "bookend-both"]).optional(),
   avatarId: z.string().optional(),
   avatarEngine: z.enum(["avatar_iii", "avatar_iv", "avatar_v"]).optional(),
@@ -69,6 +85,14 @@ export const createVideoJobInputShape = {
     .describe("uploadId จาก create_upload_url(kind: \"presenter\") หลังจาก PUT ไฟล์คลิปพิธีกรแล้ว — ใช้เมื่อคลิปไม่มีลิงก์สาธารณะ. ส่ง clipUploadId หรือ clipUrl อย่างใดอย่างหนึ่งเท่านั้น ห้ามส่งทั้งคู่"),
   cutawayLayout: z.enum(["auto", "fillYourself"]).optional()
     .describe("ใช้ได้เฉพาะเมื่อส่งคลิป: auto = ระบบสลับ B-roll เข้าบางช่วงให้ (ค่าเริ่มต้น); fillYourself = ทุกช่วงเป็นพิธีกร ไม่มี B-roll อัตโนมัติ แล้วค่อยใส่ B-roll เองทีละช่วงด้วย replace_broll_window"),
+  tighten: z.boolean().optional()
+    .describe("ใช้เฉพาะเมื่อส่งคลิปพิธีกร (clipUrl / clipUploadId): true = ตัดช่องว่างเงียบ > 400 ms เหลือ 100 ms พร้อมครอสเฟดเสียง 12 ms และเร่งจังหวะ 1.10x อัตโนมัติก่อนถอดซับ"),
+  tightenMaxGapMs: z.number().int().min(TIGHTEN_MIN_MAX_GAP_MS).max(TIGHTEN_MAX_MAX_GAP_MS).optional()
+    .describe("ใช้คู่กับคลิปพิธีกร: ความยาวช่องว่างเงียบขั้นต่ำที่จะตัดออก (250–2000 ms; ค่าเริ่มต้น 400 ms)"),
+  tightenSpeed: z.number().min(TIGHTEN_MIN_SPEED).max(TIGHTEN_MAX_SPEED).optional()
+    .describe("ใช้คู่กับคลิปพิธีกร: ความเร็วคลิปหลังตัดช่องว่างเงียบ (1.0–1.25; ค่าเริ่มต้น 1.10)"),
+  punchZoom: z.boolean().optional()
+    .describe("true = ซูมสลับจังหวะ 1.00x ↔ 1.15x บนภาพพิธีกรอัตโนมัติตามรอยตัดหรือประโยค โดยไม่กระทบตำแหน่งซับไตเติล"),
   quoteId: z.string().min(1).max(64).optional(),
   idempotencyKey: z.string().max(120).optional(),
 } satisfies z.ZodRawShape;

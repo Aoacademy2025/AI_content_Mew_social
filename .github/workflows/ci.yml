@@ -440,6 +440,7 @@ jobs:
           # Approved external media exercises real ffprobe/normalization.
           npm run verify:mcp-approved-media
           npm run verify:export-audio-sync
+          npm run verify:mcp-wave1-backlog
 
       - name: Build
         run: npm run build

@@ -6,6 +6,8 @@ import { minutesFromSeconds } from "@/lib/minute-round";
 import { resolveHeroAiImageAccess, isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
+import { estimatePacedDurationSeconds } from "@/lib/tts-pace";
+import { resolveTightenOptions } from "@/lib/presenter-tighten";
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import { parseClipJobArgs } from "./clip-video-job";
 import { resolveAvatarRequest } from "./avatar-steps";
@@ -64,12 +66,23 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   const clip = parseClipJobArgs(input);
   if (!clip.ok) return clip.failure;
   let durationSeconds = estimateClipSecV2(input.script ?? "");
+  let quoteWarnings: string[] = [];
   let presenter: { id: string; resultSrc: string | null; durationMs: number | null } | null = null;
   if (clip.clip) {
     if (clip.clip.source.kind !== "upload") return importRequired();
     presenter = await prisma.mediaImport.findFirst({ where: { id: clip.clip.source.id, userId: user.id, purpose: "presenter", status: "ready" }, select: { id: true, resultSrc: true, durationMs: true } });
     if (!presenter?.resultSrc || !presenter.durationMs || presenter.durationMs <= 0) return importRequired();
-    durationSeconds = presenter.durationMs / 1000;
+    const tightenResolved = resolveTightenOptions(input);
+    durationSeconds = tightenResolved.enabled
+      ? Math.max(1, Math.round(((presenter.durationMs / 1000) / tightenResolved.speed) * 100) / 100)
+      : presenter.durationMs / 1000;
+  } else if (durationSeconds > 0 && (input.ttsSpeed !== undefined || input.targetDurationSec !== undefined)) {
+    const paced = estimatePacedDurationSeconds(durationSeconds, {
+      ttsSpeed: input.ttsSpeed,
+      targetDurationSec: input.targetDurationSec,
+    });
+    durationSeconds = paced.durationSeconds;
+    if (paced.warning) quoteWarnings = [paced.warning];
   }
   if (!(durationSeconds > 0) || !Number.isFinite(durationSeconds)) return quoteFailure("invalid_input", "ไม่พบเนื้อหาที่ใช้สร้างวิดีโอ", "ส่ง script ที่มีคำพูด หรือคลิปพิธีกรที่นำเข้าสำเร็จแล้ว");
   const source = input.brollSource ?? "stock";
@@ -87,7 +100,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   // Without the minute meter, existing clip quota enforcement handles render usage.
   const remainingMinutes = pricing.minuteQuotaLive ? Math.max(0, Math.floor(minuteQuota.minutesLimit - minuteQuota.minutesUsed)) : minutesFromSeconds(durationSeconds);
   const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
-  const receipt = buildQuoteReceipt({
+  const baseReceipt = buildQuoteReceipt({
     source, durationSeconds, exactDuration: Boolean(presenter), remainingMinutes,
     totalMinutes: pricing.minuteQuotaLive ? minuteQuota.minutesLimit : remainingMinutes,
     availableCredits: balance.total, reservedCredits: reserved + (pendingRender._sum.fundedCreditsSpent ?? 0),
@@ -95,6 +108,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     hasAvatar: !presenter && Boolean(input.avatarMode && input.avatarMode !== "none"), avatarEngine: input.avatarEngine,
     voiceProvider: presenter ? undefined : voiceProvider, noAutomaticBroll, pricing,
   });
+  const receipt: QuoteReceipt = quoteWarnings.length > 0 ? { ...baseReceipt, warnings: quoteWarnings } : baseReceipt;
   const execution = await resolveQuoteExecution(user, input, presenter);
   if ("error" in execution) return execution;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
@@ -157,11 +171,25 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
   const styleOpen = isInternalAiBetaEnabledFor(user, process.env.GEMINI_TTS_38_PUBLIC === "1");
   const jobInput: VideoJobInput = {
     script: presenter ? "" : input.script!, title: input.title,
-    ...(presenter ? { mode: "upload", clipImportId: presenter.id, clipUrl: presenter.resultSrc!, cutawayLayout: input.cutawayLayout ?? "auto" } : {
-      voiceProvider, ...(voiceProvider === "elevenlabs" ? { voiceId, elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel) } : {}),
-      geminiVoiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede",
-      geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
-    }),
+    ...(presenter
+      ? {
+          mode: "upload",
+          clipImportId: presenter.id,
+          clipUrl: presenter.resultSrc!,
+          cutawayLayout: input.cutawayLayout ?? "auto",
+          ...(input.tighten !== undefined ? { tighten: input.tighten } : {}),
+          ...(input.tightenMaxGapMs !== undefined ? { tightenMaxGapMs: input.tightenMaxGapMs } : {}),
+          ...(input.tightenSpeed !== undefined ? { tightenSpeed: input.tightenSpeed } : {}),
+        }
+      : {
+          voiceProvider,
+          ...(voiceProvider === "elevenlabs" ? { voiceId, elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel) } : {}),
+          geminiVoiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede",
+          geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
+          ...(input.ttsSpeed !== undefined ? { ttsSpeed: input.ttsSpeed } : {}),
+          ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),
+        }),
+    ...(input.punchZoom !== undefined ? { punchZoom: input.punchZoom } : {}),
     ...(source === "external" ? { brollSource: "external" } : {}),
     avatarMode: "none",
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),

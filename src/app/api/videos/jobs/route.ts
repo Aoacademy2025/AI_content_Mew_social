@@ -100,6 +100,19 @@ import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-c
 import { requiresFirstClipScript } from "@/lib/first-clip-path";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 import { isReservedMcpChainIdempotencyKey } from "@/lib/mcp/chain-key";
+import {
+  estimatePacedDurationSeconds,
+  TARGET_DURATION_SEC_MAX,
+  TTS_SPEED_MAX,
+  TARGET_DURATION_SEC_MIN,
+  TTS_SPEED_MIN,
+} from "@/lib/tts-pace";
+import {
+  TIGHTEN_MAX_MAX_GAP_MS,
+  TIGHTEN_MAX_SPEED,
+  TIGHTEN_MIN_MAX_GAP_MS,
+  TIGHTEN_MIN_SPEED,
+} from "@/lib/presenter-tighten";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -127,6 +140,10 @@ type Body = {
   confirmedMeteredMinutes?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown; brollTransition?: unknown;
+  // Wave 1 backlog: TTS pace / length target, presenter tighten, presenter punch-in zoom
+  ttsSpeed?: unknown; targetDurationSec?: unknown;
+  tighten?: unknown; tightenMaxGapMs?: unknown; tightenSpeed?: unknown;
+  punchZoom?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
   // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
@@ -327,6 +344,7 @@ export async function POST(req: Request) {
           sourceJobId: str(body.sourceJobId, 120),
           windowEdits: body.windowEdits,
           brollTransition: body.brollTransition,
+          punchZoom: body.punchZoom,
           expectedPendingRevision: num(body.expectedPendingRevision, 0, MAX_PENDING_EDIT_REVISION),
           idempotencyKey,
           idempotencyFingerprint,
@@ -408,7 +426,31 @@ export async function POST(req: Request) {
     if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
-    const estimatedScriptDurationSec = uploadMode ? 0 : estimateClipSecV2(script);
+    const ttsSpeed = !uploadMode ? num(body.ttsSpeed, TTS_SPEED_MIN, TTS_SPEED_MAX) : undefined;
+    const targetDurationSec = !uploadMode
+      ? num(body.targetDurationSec, TARGET_DURATION_SEC_MIN, TARGET_DURATION_SEC_MAX)
+      : undefined;
+    const tighten = uploadMode && typeof body.tighten === "boolean" ? body.tighten : undefined;
+    const tightenMaxGapMs = uploadMode
+      ? num(body.tightenMaxGapMs, TIGHTEN_MIN_MAX_GAP_MS, TIGHTEN_MAX_MAX_GAP_MS)
+      : undefined;
+    const tightenSpeed = uploadMode
+      ? num(body.tightenSpeed, TIGHTEN_MIN_SPEED, TIGHTEN_MAX_SPEED)
+      : undefined;
+    const punchZoom = typeof body.punchZoom === "boolean" ? body.punchZoom : undefined;
+
+    const rawEstimatedScriptDurationSec = uploadMode ? 0 : estimateClipSecV2(script);
+    const estimatedScriptDurationSec = uploadMode
+      ? 0
+      : Math.max(
+          1,
+          Math.round(
+            estimatePacedDurationSeconds(rawEstimatedScriptDurationSec, {
+              ttsSpeed,
+              targetDurationSec,
+            }).durationSeconds,
+          ),
+        );
     const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode)
       ? body.avatarMode
       : undefined;
@@ -989,6 +1031,12 @@ export async function POST(req: Request) {
           ...(stockProviders?.length ? { stockProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
+          ...(ttsSpeed !== undefined ? { ttsSpeed } : {}),
+          ...(targetDurationSec !== undefined ? { targetDurationSec } : {}),
+          ...(tighten !== undefined ? { tighten } : {}),
+          ...(tightenMaxGapMs !== undefined ? { tightenMaxGapMs } : {}),
+          ...(tightenSpeed !== undefined ? { tightenSpeed } : {}),
+          ...(punchZoom !== undefined ? { punchZoom } : {}),
         },
         idempotencyKey,
         {

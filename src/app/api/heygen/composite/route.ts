@@ -210,6 +210,8 @@ async function cutawayComposite(
   personRangesSec: { start: number; end: number }[],
   timeoutMs: number,
   audioFromBackground = false,
+  punchZoom = false,
+  punchZoomCuesSec: readonly number[] = [],
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   if (!buildEnableExpr(personRangesSec)) {
@@ -218,7 +220,10 @@ async function cutawayComposite(
     // no person ranges must skip the composite and ship the base render instead.
     throw new Error("cutaway composite requires at least one valid person range");
   }
-  const filter = buildCutawayCompositeFilter(personRangesSec);
+  const filter = buildCutawayCompositeFilter(
+    personRangesSec,
+    punchZoom ? { punchZoom: true, cueTimesSec: punchZoomCuesSec } : undefined,
+  );
   if (!filter) throw new Error("cutaway composite requires at least one valid person range");
   console.log("[cutaway-composite] filter:", filter);
   await runFfmpeg(ffmpeg, [
@@ -666,6 +671,8 @@ export async function POST(req: Request) {
     cutawayAudioFromBackground = false,
     avatarLayout = null,
     personRanges = [],
+    punchZoom = false,
+    punchZoomCuesSec = [],
   } = body ?? {};
 
   const layout = clampAvatarLayout(avatarLayout);
@@ -807,6 +814,8 @@ export async function POST(req: Request) {
         personRanges,
         ffmpegTimeoutMs,
         cutawayAudioFromBackground === true,
+        punchZoom === true,
+        Array.isArray(punchZoomCuesSec) ? punchZoomCuesSec : [],
       );
     } else if (mode === "rembg") {
       const rembgRawPath = path.join(rendersDir, `composite-${ts}-rembg-raw.mp4`);

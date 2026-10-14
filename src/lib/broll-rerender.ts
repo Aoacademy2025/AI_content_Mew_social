@@ -203,27 +203,38 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   return Array.from(byIndex.values());
 }
 
-/** One free re-render: the window edits plus an optional new project default transition. */
-export type BrollRerenderRequest = { windowEdits: WindowEdit[]; brollTransition?: BrollTransition };
+/** One free re-render: the window edits plus an optional new project default transition and/or presenter punchZoom. */
+export type BrollRerenderRequest = { windowEdits: WindowEdit[]; brollTransition?: BrollTransition; punchZoom?: boolean };
 
 /**
- * Validate a whole `broll-rerender` request. A project default (`brollTransition`, EP5 #11)
- * is a change on its own, so it may come with no window edits at all; without one this is
- * exactly `validateWindowEdits` (same errors, same result).
+ * Validate a whole `broll-rerender` request. A project default (`brollTransition`, EP5 #11) or
+ * presenter zoom (`punchZoom`, EP5 #4) is a change on its own, so it may come with no window edits
+ * at all; without either this is exactly `validateWindowEdits` (same errors, same result).
  */
 export function validateBrollRerenderRequest(
   windowEdits: unknown,
   brollTransition: unknown,
+  punchZoom?: unknown,
 ): BrollRerenderRequest | { error: string } {
   if (brollTransition !== undefined && !isBrollTransition(brollTransition)) return { error: TRANSITION_ERROR };
-  if (isBrollTransition(brollTransition)) {
+  if (punchZoom !== undefined && typeof punchZoom !== "boolean") return { error: "ตั้งค่าการซูมผู้พูดไม่ถูกต้อง" };
+  const hasProjectLevelChange = isBrollTransition(brollTransition) || typeof punchZoom === "boolean";
+  if (hasProjectLevelChange) {
     if (windowEdits === undefined || (Array.isArray(windowEdits) && windowEdits.length === 0)) {
-      return { windowEdits: [], brollTransition };
+      return {
+        windowEdits: [],
+        ...(isBrollTransition(brollTransition) ? { brollTransition } : {}),
+        ...(typeof punchZoom === "boolean" ? { punchZoom } : {}),
+      };
     }
   }
   const edits = validateWindowEdits(windowEdits);
   if ("error" in edits) return edits;
-  return { windowEdits: edits, ...(isBrollTransition(brollTransition) ? { brollTransition } : {}) };
+  return {
+    windowEdits: edits,
+    ...(isBrollTransition(brollTransition) ? { brollTransition } : {}),
+    ...(typeof punchZoom === "boolean" ? { punchZoom } : {}),
+  };
 }
 
 export type AppliedFirstPassVisualRejectionReason =

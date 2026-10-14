@@ -47,6 +47,11 @@ type ClipArgs = {
   clipUploadId?: string;
   cutawayLayout?: CutawayLayout;
   avatarMode?: string;
+  tighten?: boolean;
+  tightenMaxGapMs?: number;
+  tightenSpeed?: number;
+  ttsSpeed?: number;
+  targetDurationSec?: number;
 };
 
 /** Same bound as replace_broll_window's url (edit-tools MAX_MEDIA_URL_CHARS). */
@@ -68,6 +73,16 @@ const LAYOUT_WITHOUT_CLIP = failure(
   "invalid_input",
   "cutawayLayout ใช้ได้เฉพาะเมื่อส่งคลิปพิธีกร (clipUrl / clipUploadId)",
   "ตัด cutawayLayout ออก หรือส่งคลิปพิธีกรมาด้วย",
+);
+const TIGHTEN_WITHOUT_CLIP = failure(
+  "invalid_input",
+  "tighten / tightenMaxGapMs / tightenSpeed ใช้ได้เฉพาะเมื่อส่งคลิปพิธีกร (clipUrl / clipUploadId)",
+  "ตัด tighten ออก หรือใช้ ttsSpeed / targetDurationSec สำหรับปรับจังหวะเสียงพากย์จาก script แทน",
+);
+const TTS_PACE_WITH_CLIP = failure(
+  "invalid_input",
+  "ttsSpeed และ targetDurationSec ใช้ได้เฉพาะงานสร้างเสียงพากย์จาก script เท่านั้น",
+  "ตัด ttsSpeed / targetDurationSec ออก หรือใช้ tighten / tightenSpeed เพื่อปรับจังหวะคลิปพิธีกรแทน",
 );
 const AVATAR_WITH_CLIP = failure(
   "invalid_input",
@@ -92,7 +107,14 @@ const CLIP_UPLOAD_NOT_FOUND: ClipJobFailure = {
 
 /** Any of the T14 fields present — the route's beta gate keys on this. */
 export function clipFieldsRequested(args: ClipArgs): boolean {
-  return args.clipUrl !== undefined || args.clipUploadId !== undefined || args.cutawayLayout !== undefined;
+  return (
+    args.clipUrl !== undefined ||
+    args.clipUploadId !== undefined ||
+    args.cutawayLayout !== undefined ||
+    args.tighten !== undefined ||
+    args.tightenMaxGapMs !== undefined ||
+    args.tightenSpeed !== undefined
+  );
 }
 
 /**
@@ -102,12 +124,19 @@ export function clipFieldsRequested(args: ClipArgs): boolean {
 export function parseClipJobArgs(args: ClipArgs): { ok: true; clip: ClipRequest | null } | { ok: false; failure: ClipJobFailure } {
   const hasUrl = args.clipUrl !== undefined;
   const hasUpload = args.clipUploadId !== undefined;
+  const hasTighten =
+    args.tighten !== undefined ||
+    args.tightenMaxGapMs !== undefined ||
+    args.tightenSpeed !== undefined;
+  const hasTtsPace = args.ttsSpeed !== undefined || args.targetDurationSec !== undefined;
   if (hasUrl && hasUpload) return { ok: false, failure: BOTH_SOURCES };
   if (!hasUrl && !hasUpload) {
     if (args.cutawayLayout !== undefined) return { ok: false, failure: LAYOUT_WITHOUT_CLIP };
+    if (hasTighten) return { ok: false, failure: TIGHTEN_WITHOUT_CLIP };
     if (args.script === undefined) return { ok: false, failure: NO_CONTENT };
     return { ok: true, clip: null };
   }
+  if (hasTtsPace) return { ok: false, failure: TTS_PACE_WITH_CLIP };
   if (args.avatarMode !== undefined && args.avatarMode !== "none") return { ok: false, failure: AVATAR_WITH_CLIP };
   const cutawayLayout: CutawayLayout = args.cutawayLayout === "fillYourself" ? "fillYourself" : "auto";
   if (hasUpload) return { ok: true, clip: { source: { kind: "upload", id: String(args.clipUploadId) }, cutawayLayout } };

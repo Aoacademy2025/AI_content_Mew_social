@@ -323,6 +323,8 @@ export async function enqueueBrollRerender(input: {
   windowEdits: unknown;
   /** EP5 #11: optional new project default transition (may come with no window edits). */
   brollTransition?: unknown;
+  /** EP5 #4: optional new presenter punch-in zoom setting (may come with no window edits). */
+  punchZoom?: unknown;
   idempotencyKey: string;
   idempotencyFingerprint?: string | null;
   rootJobId?: string;
@@ -337,7 +339,7 @@ export async function enqueueBrollRerender(input: {
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
-  const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition);
+  const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition, input.punchZoom);
   if ("error" in requestRes) return refuse(400, "invalid_edits", requestRes.error);
 
   const srcJob = await prisma.videoJob.findUnique({
@@ -384,6 +386,7 @@ export async function enqueueBrollRerender(input: {
       windowEdits: requestRes.windowEdits,
       ...(webPendingEditRevision !== undefined ? { webPendingEditRevision } : {}),
       ...(requestRes.brollTransition ? { brollTransition: requestRes.brollTransition } : {}),
+      ...(typeof requestRes.punchZoom === "boolean" ? { punchZoom: requestRes.punchZoom } : {}),
       ...rootLinkInput(input.rootJobId),
       ...(input.rootJobId && input.mcpExportAfter
         ? {

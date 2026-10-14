@@ -169,6 +169,9 @@ import {
   commitAppliedSceneRerollAssetsInTransaction,
   prepareAppliedSceneRerollAssets,
 } from "@/lib/scene-reroll-apply.server";
+import { resolveTightenOptions } from "@/lib/presenter-tighten";
+import { tightenPresenterVideoFile } from "@/lib/presenter-tighten.server";
+import { applyTtsPaceToGeneratedAudio } from "@/lib/tts-pace.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -284,6 +287,15 @@ interface CreateInput {
   windowEdits?: WindowEdit[];
   /** EP5 #11: new project default B-roll transition, written into the re-rendered config. */
   brollTransition?: string;
+  /** EP5 #17: TTS speed multiplier (0.85..1.25) and/or target duration in seconds (5..600). */
+  ttsSpeed?: number;
+  targetDurationSec?: number;
+  /** EP5 #1: Presenter silence trim + pace tighten on uploaded clips. */
+  tighten?: boolean;
+  tightenMaxGapMs?: number;
+  tightenSpeed?: number;
+  /** EP5 #4: Presenter auto punch-in zoom (1.0x ↔ 1.15x upper-center on presenter layer). */
+  punchZoom?: boolean;
   /**
    * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
    * finished video to Gallery from the worker, not from a mounted browser component.
@@ -1126,6 +1138,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     });
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
+    const jobWarnings: string[] = [];
 
     const heroVoiceCheckpointFor = (voiceJob: {
       id: string;
@@ -1275,6 +1288,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           mode: "preview",
           videoUrl: compositeUrl,
           subtitleQa,
+          ...(jobWarnings.length > 0 ? { warnings: jobWarnings } : {}),
           subtitleEvidence: {
             captions,
             words: checkpoint.words,
@@ -1355,6 +1369,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         videoUrl: burnedUrl,
         videoId: created.id,
         subtitleQa,
+        ...(jobWarnings.length > 0 ? { warnings: jobWarnings } : {}),
         subtitleEvidence: {
           captions,
           words: checkpoint.words,
@@ -1470,7 +1485,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if (!preview || !Array.isArray(srcBgVideos)) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูล b-roll ที่แก้ไขได้"); return; }
 
       // Re-validate the edits server-side (defense-in-depth; the jobs route already validated).
-      const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition);
+      const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition, input.punchZoom);
       if ("error" in requestRes) { await failJob(jobId, requestRes.error); return; }
       const externalEditRefusal = await validateExternalWindowEdits(userId, src.id, requestRes.windowEdits);
       if (externalEditRefusal) {
@@ -1489,6 +1504,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // EP5 #11: a new project default lives in the base config, so every later re-render
         // and export (which burns onto this base) keeps it. Absent = the source's own value.
         ...(requestRes.brollTransition ? { brollTransition: requestRes.brollTransition } : {}),
+        ...(typeof requestRes.punchZoom === "boolean" ? { punchZoom: requestRes.punchZoom } : {}),
       };
 
       await step("render", 40);
@@ -1552,6 +1568,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             rrCompositeBaseUrl = null;
           } else {
             await step("composite", 80);
+            const rrPunchZoomCuesSec = Array.isArray(rrBaseConfig.punchZoomCuesSec)
+              ? (rrBaseConfig.punchZoomCuesSec as unknown[]).filter(
+                  (n): n is number => typeof n === "number" && Number.isFinite(n),
+                )
+              : preview.captions.map((c) => Number((c.startMs / 1000).toFixed(3)));
             const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
               avatarVideoUrl: preview.avatarVideoUrl,
               bgVideoUrl: rrNewBase,
@@ -1559,6 +1580,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               personRanges: rrCutawayPersonRanges,
               cutawayAudioFromBackground: typeof rrBaseConfig.bgmFile === "string"
                 && rrBaseConfig.bgmFile.length > 0,
+              ...(rrBaseConfig.punchZoom === true
+                ? { punchZoom: true, punchZoomCuesSec: rrPunchZoomCuesSec }
+                : {}),
             }, { retries: 0 });
             rrFinalUrl = rrComp.videoUrl;
             rrCompositeBaseUrl = null;
@@ -1626,7 +1650,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           if (src.projectId && input.webPendingEditRevision !== undefined) {
             await rebaseWebPendingMedia(tx, { userId, projectId: src.projectId, sourceJobId: src.id,
               jobId: completedJob.id, revision: input.webPendingEditRevision,
-              indices: editsRes.map(e => e.index), transitionApplied: !!requestRes.brollTransition });
+              indices: editsRes.map(e => e.index), transitionApplied: !!requestRes.brollTransition,
+              punchZoomApplied: typeof requestRes.punchZoom === "boolean" });
           }
         },
       });
@@ -2034,6 +2059,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (input.mode === "upload") {
       if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
       let forceStockBroll = false;
+      let jumpCutTimesSec: number[] = [];
+
+      const tightenOpts = resolveTightenOptions({
+        tighten: input.tighten,
+        tightenMaxGapMs: input.tightenMaxGapMs,
+        tightenSpeed: input.tightenSpeed,
+      });
+      if (tightenOpts.enabled) {
+        const tightened = await tightenPresenterVideoFile({
+          clipUrl: input.clipUrl,
+          tighten: input.tighten,
+          tightenMaxGapMs: input.tightenMaxGapMs,
+          tightenSpeed: input.tightenSpeed,
+        });
+        input.clipUrl = tightened.clipUrl;
+        jumpCutTimesSec = tightened.jumpCutTimesSec;
+      }
 
       await step("captions", 20);
       const tx = await caller.post<{
@@ -2319,10 +2361,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       );
 
       await step("render", 75);
+      const punchZoomCuesSec = Array.from(
+        new Set([
+          ...jumpCutTimesSec,
+          ...upCaps.map((c) => Number((c.startMs / 1000).toFixed(3))),
+        ]),
+      ).sort((a, b) => a - b);
       const upBaseConfig = {
         ...(externalOwnershipPlan ? authorExternalMediaPlan(upCfg.config, externalOwnershipPlan.person) : upCfg.config),
         keywordPopups: [] as unknown[],
         ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+        ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
+        ...(punchZoomCuesSec.length > 0 ? { punchZoomCuesSec } : {}),
       };
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
@@ -2347,6 +2397,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         bgVideoUrl: upReelUrl,
         personRanges,
         cutawayAudioFromBackground: Boolean(input.bgmFile),
+        ...(input.punchZoom === true
+          ? { punchZoom: true, punchZoomCuesSec }
+          : {}),
       }, { retries: 0 });
 
       const upFinalDuration = Date.now() - phaseStartedAt;
@@ -2448,6 +2501,25 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
       if (candidateDurationMs <= 0) {
         throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
+      }
+
+      if (input.ttsSpeed !== undefined || input.targetDurationSec !== undefined) {
+        const paced = await applyTtsPaceToGeneratedAudio({
+          voiceUrl: candidate.voiceUrl,
+          audioDurationMs: candidateDurationMs,
+          timing: candidate.timing as TtsTiming | undefined,
+          ttsSpeed: input.ttsSpeed,
+          targetDurationSec: input.targetDurationSec,
+        });
+        candidate.voiceUrl = paced.voiceUrl;
+        candidateDurationMs = Math.max(1, Math.round(paced.audioDurationMs));
+        candidate.audioDurationMs = candidateDurationMs;
+        if (paced.timing !== undefined) {
+          candidate.timing = paced.timing;
+        }
+        if (paced.pace.warning) {
+          jobWarnings.push(paced.pace.warning);
+        }
       }
 
       await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(candidateDurationMs / 1_000));
@@ -3001,7 +3073,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await step("render", 75);
-    const baseConfig = { ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config), keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
+    const baseConfig = {
+      ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config),
+      keywordPopups: [] as unknown[],
+      ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+      ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
+    };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
       parentJobId: jobId,
@@ -3112,6 +3189,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         mode: "preview",
         videoUrl: finalBase,
         subtitleQa,
+        ...(jobWarnings.length > 0 ? { warnings: jobWarnings } : {}),
         subtitleEvidence: {
           captions,
           words: capRes.words,
@@ -3186,6 +3264,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       videoUrl: burnedUrl,
       videoId: created.id,
       subtitleQa,
+      ...(jobWarnings.length > 0 ? { warnings: jobWarnings } : {}),
       subtitleEvidence: {
         captions,
         words: capRes.words,

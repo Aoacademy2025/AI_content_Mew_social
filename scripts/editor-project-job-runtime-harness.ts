@@ -18,6 +18,8 @@ import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/
 // React or server dependency, so the harness exercises the actual source mapping.
 import * as brollSourceModule from "../src/app/(dashboard)/video-editor/_v2/broll-source";
 import * as brollFillYourselfModule from "../src/lib/broll-fill-yourself";
+import * as ttsPaceModule from "../src/lib/tts-pace";
+import * as presenterTightenModule from "../src/lib/presenter-tighten";
 
 /** The AI-audio ceiling preflight (HERO-25) reads the user's usage window through prisma.
  *  This harness replays the create route to prove idempotency and project recovery, not
@@ -2164,6 +2166,8 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     // headline-hook/etc., none of which this scenario exercises, so stub just the constant
     // the route actually uses (kept byte-equal to the real module's value).
     if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
+    if (specifier === "@/lib/tts-pace") return ttsPaceModule;
+    if (specifier === "@/lib/presenter-tighten") return presenterTightenModule;
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
@@ -2567,6 +2571,8 @@ async function runExactReplayRouteScenario(input: {
         },
       };
     }
+    if (specifier === "@/lib/tts-pace") return ttsPaceModule;
+    if (specifier === "@/lib/presenter-tighten") return presenterTightenModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

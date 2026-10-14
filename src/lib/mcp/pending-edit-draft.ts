@@ -95,11 +95,13 @@ export type PendingEditDraft = {
   windowEdits: PendingEditWindowEdit[];
   /** EP5 #11: a new project-default B-roll transition the next export re-renders with. */
   brollTransition?: BrollTransition;
+  /** EP5 #4: a new project-level presenter auto punch-in zoom setting the next export re-renders with. */
+  punchZoom?: boolean;
 };
 
-/** True when the next export must re-render the B-roll (window edits or a new project default). */
-export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition">): boolean {
-  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined;
+/** True when the next export must re-render the B-roll/base (window edits, project transition, or punchZoom). */
+export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition" | "punchZoom">): boolean {
+  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined || draft.punchZoom !== undefined;
 }
 
 /** The base render an export burns onto: `project.activeJobId`'s finished preview. */
@@ -211,6 +213,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   const backgroundMusic = input.backgroundMusic === undefined ? undefined : normalizeBackgroundMusicEdit(input.backgroundMusic);
   if (headlineHook === null || logoOverlay === null || backgroundMusic === null) return null;
   if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
+  if (input.punchZoom !== undefined && typeof input.punchZoom !== "boolean") return null;
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -228,6 +231,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
     ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
+    ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
   };
 }
 
@@ -539,6 +543,7 @@ export async function clearPendingEditDraftIfRevision(
         baseJobId: stored.baseJobId,
         windowEdits: stored.windowEdits,
         ...(stored.brollTransition ? { brollTransition: stored.brollTransition } : {}),
+        ...(typeof stored.punchZoom === "boolean" ? { punchZoom: stored.punchZoom } : {}),
       });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
@@ -607,6 +612,7 @@ export type PendingEditForWeb = {
     windowMedia?: PendingWindowMedia[];
     requiredWindows?: ExternalWindowState[];
     brollTransition?: BrollTransition;
+    punchZoom?: boolean;
   };
 };
 
@@ -656,7 +662,17 @@ export async function pendingEditForWebResolved(userId: string, project: Paramet
     const window = requiredWindows.find(w => w.index === media.index);
     if (window && media.status !== "ready") { window.state = media.status; if (media.error) window.importError = media.error; }
   }
-  return { ...view, draft: { ...view.draft, windowEdits, windowMedia, requiredWindows, ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}) } };
+  return {
+    ...view,
+    draft: {
+      ...view.draft,
+      windowEdits,
+      windowMedia,
+      requiredWindows,
+      ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}),
+      ...(typeof draft.punchZoom === "boolean" ? { punchZoom: draft.punchZoom } : {}),
+    },
+  };
 }
 
 export class StaleWebApplyError extends Error {
@@ -667,12 +683,13 @@ export class StaleWebApplyError extends Error {
 }
 
 /** Completion and activation share this transaction: a newer draft must abort both. */
-export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean }) {
+export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean; punchZoomApplied?: boolean }) {
   const project = await tx.editorProject.findFirst({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, select: { pendingEditJson: true } });
   const draft = parsePendingEditDraft(project?.pendingEditJson ?? null);
   if (!draft || draft.baseJobId !== input.sourceJobId) throw new StaleWebApplyError();
   const next = { ...draft, baseJobId: input.jobId, windowEdits: draft.windowEdits.filter(e => !input.indices.includes(e.index)) };
   if (input.transitionApplied) delete next.brollTransition;
+  if (input.punchZoomApplied) delete next.punchZoom;
   const updated = await tx.editorProject.updateMany({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, data: { pendingEditJson: JSON.stringify(next), pendingEditRevision: { increment: 1 } } });
   if (updated.count !== 1) throw new StaleWebApplyError();
 }
