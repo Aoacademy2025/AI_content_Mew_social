@@ -167,6 +167,22 @@ async function main() {
       } finally {
         (prisma as unknown as { $transaction: typeof prisma.$transaction }).$transaction = origTx;
       }
+
+      const startNowQuote = await service.prepareVideoQuote(owner, { script: "Auto-start from web confirmation click.", brollSource: "stock" });
+      assert.ok("quoteId" in startNowQuote);
+      const startNowRes = await signedIn.POST(
+        new Request(`https://studio.example.test/api/mcp-quotes/${startNowQuote.quoteId}`, {
+          method: "POST",
+          headers: { origin: "https://studio.example.test", "content-type": "application/json" },
+          body: JSON.stringify({ action: "approve", startNow: true }),
+        }),
+        { params: Promise.resolve({ quoteId: startNowQuote.quoteId }) },
+      );
+      assert.equal(startNowRes.status, 200);
+      const startNowBody = await startNowRes.json();
+      assert.equal(startNowBody.status, "consumed");
+      assert.ok(startNowBody.rootJobId);
+      assert.ok(typeof startNowBody.editorUrl === "string" && startNowBody.editorUrl.startsWith("/video-editor?projectId="));
     });
     assert.deepEqual(regressions, []);
     console.log("PASS quote owner/auth/expiry/input/price/zero-spend and presenter checks");

@@ -45,6 +45,17 @@ async function main() {
     assert.equal(unapproved.code, "confirmation_required");
     assert.ok(unapproved.quoteId);
     assert.equal(typeof unapproved.message, "string", "confirmation refusal carries a human-readable message");
+    assert.ok(unapproved.message.includes(unapproved.confirmationUrl), "confirmation refusal message includes confirmationUrl");
+    const retryUnapproved = await requestVideoJob(owner, { script: "Unquoted creation." });
+    assert.equal(retryUnapproved.code, "confirmation_required");
+    assert.equal(retryUnapproved.quoteId, unapproved.quoteId, "omitting quoteId reuses active draft quote for identical input");
+    await quotes.decideVideoQuote(owner.id, unapproved.quoteId, "approve");
+    const autoMatched = await requestVideoJob(owner, { script: "Unquoted creation." });
+    assert.ok("jobId" in autoMatched && autoMatched.jobId, "omitting quoteId after approval auto-consumes matching approved quote");
+    const autoReplayed = await requestVideoJob(owner, { script: "Unquoted creation." });
+    assert.ok("jobId" in autoReplayed && autoReplayed.jobId === autoMatched.jobId && autoReplayed.replayed === true, "omitting quoteId after consumption replays active job");
+    await prisma.videoJob.deleteMany({ where: { id: autoMatched.jobId } });
+    await prisma.editorProject.deleteMany({ where: { userId: owner.id } });
     assert.equal(await prisma.videoJob.count(), 0);
     assert.equal(await prisma.renderJob.count(), 0);
     assert.equal(await prisma.aiGenerationJob.count(), 0);

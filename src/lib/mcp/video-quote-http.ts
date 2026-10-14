@@ -1,11 +1,12 @@
 import { isDatabaseBusyError } from "@/lib/prisma-errors";
+import { RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { decideVideoQuote, getVideoQuote } from "./video-quote.server";
 import { quoteFailure, type VideoQuoteReply } from "./video-quote";
 
 type Context = { params: Promise<{ quoteId: string }> };
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 function reply(result: VideoQuoteReply) {
-  return json(result, "error" in result ? result.code === "quote_not_found" ? 404 : result.code === "database_busy" ? 503 : 409 : 200);
+  return json(result, "error" in result ? result.code === "quote_not_found" ? 404 : (result.code === "database_busy" || result.code === "render_maintenance") ? 503 : 409 : 200);
 }
 function busyReply() {
   return reply(quoteFailure("database_busy", "ระบบมีงานเข้าพร้อมกันเยอะ คำสั่งนี้ยังไม่สำเร็จ", "รอสักครู่แล้วกดยืนยันอีกครั้ง"));
@@ -40,14 +41,26 @@ export function createQuoteHttpHandlers(browserOwner: () => Promise<string | nul
         }
         if (!request.headers.get("content-type")?.startsWith("application/json")) return json(quoteFailure("invalid_input", "รูปแบบคำขอไม่ถูกต้อง"), 400);
         let action: unknown;
+        let startNow = false;
         try {
           const text = await request.text();
           if (text.length > 1024) throw new Error("too_large");
-          action = (JSON.parse(text) as { action?: unknown }).action;
+          const parsed = JSON.parse(text) as { action?: unknown; startNow?: unknown };
+          action = parsed.action;
+          startNow = parsed.startNow === true;
         } catch { return json(quoteFailure("invalid_input", "รูปแบบคำขอไม่ถูกต้อง"), 400); }
         if (action !== "approve" && action !== "reject") return json(quoteFailure("invalid_input", "เลือกยืนยันหรือปฏิเสธใบยืนยัน"), 400);
-        return reply(await decideVideoQuote(userId, (await context.params).quoteId, action));
+        const { quoteId } = await context.params;
+        const decided = await decideVideoQuote(userId, quoteId, action);
+        if ("error" in decided || action !== "approve" || !startNow) return reply(decided);
+        const { consumeVideoQuote } = await import("./video-budget.server");
+        const consumed = await consumeVideoQuote(userId, quoteId);
+        if ("error" in consumed) return reply(consumed);
+        return reply(await getVideoQuote(userId, quoteId));
       } catch (err) {
+        if (err instanceof RenderDeployDrainError) {
+          return reply(quoteFailure("render_maintenance", RENDER_MAINTENANCE_CUSTOMER_MESSAGE, "รอสักครู่แล้วกดยืนยันอีกครั้ง"));
+        }
         if (isDatabaseBusyError(err)) return busyReply();
         throw err;
       }
