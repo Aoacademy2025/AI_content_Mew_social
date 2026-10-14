@@ -16,6 +16,7 @@ import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import { resolveBgm, isNoneInput } from "./bgm-resolve";
 import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { mcpBrollJobFields } from "./broll-source";
+import { withVideoJobSqliteRetry } from "./video-job";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { createMcpVideoJob } from "./chain-export";
 type VideoJobInput = Parameters<typeof createMcpVideoJob>[1];
@@ -96,7 +97,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   const execution = await resolveQuoteExecution(user, input, presenter);
   if ("error" in execution) return execution;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withVideoJobSqliteRetry("prepare quote", () => prisma.$transaction(async (tx) => {
     const now = new Date();
     const active = await tx.mcpVideoQuote.count({ where: { userId: user.id, status: { in: ["draft", "approved"] }, expiresAt: { gt: now } } });
     if (active >= 20) return null;
@@ -108,7 +109,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
       includedRenderMinutes: receipt.includedRenderMinutes, renderCreditCeiling: receipt.renderCreditCeiling,
       totalHeroCreditCeiling: receipt.totalHeroCreditCeiling, expiresAt: new Date(now.getTime() + QUOTE_TTL_MS),
     } });
-  });
+  }));
   return result ? view(result) : quoteFailure("too_many_quotes", "มีใบยืนยันที่ยังใช้งานได้หลายรายการ", "ปฏิเสธใบยืนยันเก่าใน Studio หรือรอ 30 นาทีแล้วลองใหม่");
 }
 
@@ -183,24 +184,29 @@ export async function getVideoQuoteReview(userId: string, quoteId: string) {
   return row ? { quote: view(row), input: JSON.parse(row.inputJson) as PrepareVideoJobInput, execution: JSON.parse(row.executionJson) as QuoteExecution } : null;
 }
 
-/** Only the Clerk-browser HTTP adapter calls this. CAS protects approve/reject vs consumption. */
+/** Only the Clerk-browser HTTP adapter calls this. CAS protects approve/reject vs consumption
+ * without opening an interactive transaction that would queue on SQLite's BEGIN IMMEDIATE lock. */
 export async function decideVideoQuote(userId: string, quoteId: string, action: "approve" | "reject"): Promise<VideoQuoteReply> {
-  return prisma.$transaction(async (tx) => {
-    const row = await tx.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
-    if (!row) return notFound();
-    if (quoteStatus(row) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
-    if (row.status !== "draft" && row.status !== "approved") return quoteFailure("quote_not_actionable", "ใบยืนยันนี้ไม่สามารถเปลี่ยนสถานะได้แล้ว");
-    if (action === "approve" && quoteHash(currentQuotePricing()) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
-    if (action === "approve") {
-      const currentAccount = await tx.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } });
-      const defaultsRefusal = quoteAccountDefaultsRefusal(row, currentAccount);
-      if (defaultsRefusal) return defaultsRefusal;
-    }
-    const changed = await tx.mcpVideoQuote.updateMany({
-      where: { id: quoteId, userId, status: row.status, expiresAt: { gt: new Date() } },
-      data: action === "approve" ? { status: "approved", approvedAt: row.approvedAt ?? new Date() } : { status: "rejected", rejectedAt: new Date() },
-    });
-    if (changed.count !== 1) return quoteFailure("quote_not_actionable", "สถานะใบยืนยันเปลี่ยนแล้ว กรุณาเปิดใหม่");
-    return view(await tx.mcpVideoQuote.findUniqueOrThrow({ where: { id: quoteId } }));
-  });
+  const row = await prisma.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
+  if (!row) return notFound();
+  if (quoteStatus(row) === "expired") return quoteFailure("quote_expired", "ใบยืนยันหมดอายุแล้ว");
+  if (row.status !== "draft" && row.status !== "approved") return quoteFailure("quote_not_actionable", "ใบยืนยันนี้ไม่สามารถเปลี่ยนสถานะได้แล้ว");
+  if (action === "approve" && quoteHash(currentQuotePricing()) !== row.pricingHash) return quoteFailure("quote_price_changed", "ราคา หรือเงื่อนไขเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
+  if (action === "approve") {
+    const currentAccount = await prisma.user.findUnique({ where: { id: userId }, select: { elevenlabsModel: true } });
+    const defaultsRefusal = quoteAccountDefaultsRefusal(row, currentAccount);
+    if (defaultsRefusal) return defaultsRefusal;
+  }
+  const now = new Date();
+  const data = action === "approve"
+    ? { status: "approved", approvedAt: row.approvedAt ?? now }
+    : { status: "rejected", rejectedAt: now };
+  const changed = await withVideoJobSqliteRetry("decide quote", () =>
+    prisma.mcpVideoQuote.updateMany({
+      where: { id: quoteId, userId, status: row.status, expiresAt: { gt: now } },
+      data,
+    }),
+  );
+  if (changed.count !== 1) return quoteFailure("quote_not_actionable", "สถานะใบยืนยันเปลี่ยนแล้ว กรุณาเปิดใหม่");
+  return view({ ...row, ...data, updatedAt: now });
 }
