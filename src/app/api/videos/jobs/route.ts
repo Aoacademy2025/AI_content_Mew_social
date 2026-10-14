@@ -230,7 +230,7 @@ async function replayIdempotentVideoJob(
 /** An in-band refusal from the shared editor enqueue (T5), in this route's existing shape. */
 function editorEnqueueRefusalResponse(refusal: EditorEnqueueRefusal) {
   return NextResponse.json(
-    { error: refusal.error, ...(refusal.message ? { message: refusal.message } : {}) },
+    { error: refusal.error, ...(refusal.message ? { message: refusal.message } : {}), ...(refusal.next ? { next: refusal.next } : {}), ...(refusal.windowIndices ? { windowIndices: refusal.windowIndices } : {}) },
     { status: refusal.status },
   );
 }
@@ -327,6 +327,7 @@ export async function POST(req: Request) {
           sourceJobId: str(body.sourceJobId, 120),
           windowEdits: body.windowEdits,
           brollTransition: body.brollTransition,
+          expectedPendingRevision: num(body.expectedPendingRevision, 0, MAX_PENDING_EDIT_REVISION),
           idempotencyKey,
           idempotencyFingerprint,
         });

@@ -437,6 +437,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends fonts-thai-tlwg
           npm run verify:mcp-preview-frame
           npm run verify:mcp-clip-import-job
+          # Approved external media exercises real ffprobe/normalization.
+          npm run verify:mcp-approved-media
           npm run verify:export-audio-sync
 
       - name: Build

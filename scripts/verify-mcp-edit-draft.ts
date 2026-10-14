@@ -297,9 +297,16 @@ async function main() {
       select: { pendingEditJson: true, pendingEditRevision: true, activeJobId: true },
     });
   }
+  async function approvedCreate(who: { user: { id: string }; token: string }, args: Json) {
+    const prepared = await callTool(who.token, "create_video_job", args);
+    if (prepared.error !== "confirmation_required" || typeof prepared.quoteId !== "string") throw new Error(`fixture quote: ${JSON.stringify(prepared)}`);
+    const { decideVideoQuote } = fromSrc("lib/mcp/video-quote.server") as typeof import("../src/lib/mcp/video-quote.server");
+    await decideVideoQuote(who.user.id, prepared.quoteId, "approve");
+    return callTool(who.token, "create_video_job", { quoteId: prepared.quoteId });
+  }
   /** create_video_job(exportMode:"hold") through the route, then run the root to its Base Render. */
   async function heldRootVia(who: { user: { id: string }; token: string }, key: string) {
-    const reply = await callTool(who.token, "create_video_job", {
+    const reply = await approvedCreate(who, {
       script: SCRIPT, voiceProvider: "gemini", exportMode: "hold", idempotencyKey: key,
     });
     if (typeof reply.jobId !== "string") throw new Error(`fixture: hold create failed: ${JSON.stringify(reply)}`);
@@ -307,6 +314,42 @@ async function main() {
     if (root.status !== "done" || !root.projectId) throw new Error(`fixture: held root ended ${root.status}: ${root.errorMessage}`);
     return { reply, root, projectId: root.projectId };
   }
+
+  await section("approved public creation during maintenance preserves its approval and funding", async () => {
+    const owner = await makeUser("u-maintenance", "maintenance@example.test");
+    check("maintenance fixture is an ordinary USER", owner.user.role === "USER");
+    await prisma.creditBalance.create({ data: { userId: owner.user.id, granted: 50, purchased: 25 } });
+    const prepared = await callTool(owner.token, "prepare_video_job", {
+      script: SCRIPT, voiceProvider: "gemini", brollSource: "stock", exportMode: "hold",
+    });
+    if (typeof prepared.quoteId !== "string") throw new Error(`fixture quote: ${JSON.stringify(prepared)}`);
+    const quoteId = prepared.quoteId;
+    const { decideVideoQuote } = fromSrc("lib/mcp/video-quote.server") as typeof import("../src/lib/mcp/video-quote.server");
+    await decideVideoQuote(owner.user.id, quoteId, "approve");
+    const snapshot = async () => ({
+      funding: await money(owner.user.id),
+      wallet: await prisma.creditBalance.findUnique({ where: { userId: owner.user.id } }),
+      quote: await prisma.mcpVideoQuote.findUniqueOrThrow({ where: { id: quoteId } }),
+      jobs: await prisma.videoJob.findMany({ where: { userId: owner.user.id } }),
+      projects: await prisma.editorProject.findMany({ where: { userId: owner.user.id } }),
+    });
+    const before = await snapshot();
+    check("maintenance fixture has an approved unconsumed quote", before.quote.status === "approved" && before.quote.rootJobId === null);
+    await prisma.siteConfig.upsert({ where: { key: "render_deploy_drain" }, create: { key: "render_deploy_drain", value: "1" }, update: { value: "1" } });
+    try {
+      const reply = await callTool(owner.token, "create_video_job", { quoteId });
+      check("maintenance refusal has its specific retryable error", reply.error === "render_maintenance" && reply.retryable === true, JSON.stringify(reply));
+      check("maintenance refusal preserves shared Thai customer copy", reply.message === "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่", JSON.stringify(reply));
+      check("maintenance refusal tells the agent to retry the same approved quote", typeof reply.next === "string" && reply.next.includes("create_video_job") && reply.next.includes("quoteId"));
+      check("maintenance rolls back quote, jobs, projects and funding", JSON.stringify(await snapshot()) === JSON.stringify(before));
+    } finally {
+      await prisma.siteConfig.delete({ where: { key: "render_deploy_drain" } });
+    }
+    const retried = await callTool(owner.token, "create_video_job", { quoteId });
+    check("same approval creates a job after maintenance ends", typeof retried.jobId === "string", JSON.stringify(retried));
+    const replay = await callTool(owner.token, "create_video_job", { quoteId });
+    check("retry keeps one root job identity", replay.jobId === retried.jobId && await prisma.videoJob.count({ where: { userId: owner.user.id } }) === 1);
+  });
 
   // ── A ──
   await section("A) real route tools/list: beta sees the edit tools, non-beta does not; schemas are agent-neutral", async () => {
@@ -331,7 +374,7 @@ async function main() {
   });
 
   // ── B ──
-  await section("B) non-beta: a direct call of each edit tool and exportMode are refused with feature_not_enabled", async () => {
+  await section("B) non-beta edit tools stay gated; creation always requires approval", async () => {
     for (const name of NEW_TOOLS) {
       const args: Json = name === "set_caption_text" ? { jobId: "any", index: 0, text: "x" } : { jobId: "any" };
       const reply = await callTool(outsider.token, name, args);
@@ -346,8 +389,8 @@ async function main() {
     const projectsBefore = await prisma.editorProject.count({ where: { userId: outsider.user.id } });
     for (const exportMode of ["hold", "auto"]) {
       const reply = await callTool(outsider.token, "create_video_job", { script: SCRIPT, exportMode });
-      check(`exportMode:"${exportMode}" from a non-beta account → feature_not_enabled`,
-        reply.error === "feature_not_enabled" && checkFailureEnvelope(reply).length === 0, JSON.stringify(reply));
+      check(`exportMode:"${exportMode}" from a non-beta account → confirmation_required`,
+        reply.error === "confirmation_required" && typeof reply.quoteId === "string", JSON.stringify(reply));
     }
     check("the refused creates wrote no job and no project",
       await prisma.videoJob.count({ where: { userId: outsider.user.id } }) === jobsBefore
@@ -355,23 +398,23 @@ async function main() {
     const audit = await prisma.toolCallAudit.findFirst({
       where: { userId: outsider.user.id, toolName: "create_video_job" }, orderBy: { createdAt: "desc" },
     });
-    check("the exportMode refusal is audited as denied", audit?.status === "denied", JSON.stringify(audit));
+    check("the approval requirement is audited as an in-band error", audit?.status === "error", JSON.stringify(audit));
   });
 
   // ── C ──
-  await section("C) create_video_job without exportMode behaves exactly as before (regression)", async () => {
-    const plain = await callTool(outsider.token, "create_video_job", { script: SCRIPT, voiceProvider: "gemini", idempotencyKey: "edit-plain-1" });
+  await section("C) approved default creation uses the shared preview/export chain", async () => {
+    const plain = await approvedCreate(outsider, { script: SCRIPT, voiceProvider: "gemini", idempotencyKey: "edit-plain-1" });
     check("non-beta default create queues", typeof plain.jobId === "string" && plain.status === "queued", JSON.stringify(plain));
-    check("non-beta reply keys unchanged", JSON.stringify(Object.keys(plain).sort()) === JSON.stringify(["jobId", "message", "nextStep", "status"]),
+    check("approved reply exposes project and editor", JSON.stringify(Object.keys(plain).sort()) === JSON.stringify(["editorUrl", "jobId", "projectId", "status"]),
       JSON.stringify(Object.keys(plain)));
     const plainRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(plain.jobId) } });
     const plainInput = inputOf(plainRow);
-    check("non-beta job: no project, no hold / chain markers",
-      plainRow.projectId === null && plainInput.mcpHold === undefined && plainInput.mcpChainExport === undefined
-        && plainInput.previewMode === undefined, JSON.stringify(plainInput));
+    check("ordinary approved job uses project and automatic export",
+      plainRow.projectId !== null && plainInput.mcpHold === undefined && plainInput.mcpChainExport === true
+        && plainInput.previewMode === true, JSON.stringify(plainInput));
 
-    const auto = await callTool(tester.token, "create_video_job", { script: SCRIPT, voiceProvider: "gemini", idempotencyKey: "edit-auto-1" });
-    check("beta default create reply keys unchanged", JSON.stringify(Object.keys(auto).sort()) === JSON.stringify(["jobId", "message", "nextStep", "status"]),
+    const auto = await approvedCreate(tester, { script: SCRIPT, voiceProvider: "gemini", idempotencyKey: "edit-auto-1" });
+    check("beta approved reply exposes project and editor", JSON.stringify(Object.keys(auto).sort()) === JSON.stringify(["editorUrl", "jobId", "projectId", "status"]),
       JSON.stringify(auto));
     const autoRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(auto.jobId) } });
     const autoInput = inputOf(autoRow);

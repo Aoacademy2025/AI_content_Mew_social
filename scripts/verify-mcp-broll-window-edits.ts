@@ -200,7 +200,18 @@ async function main() {
   }
   const failures: Array<{ tool: string; reply: Json }> = [];
   const replies: Array<{ tool: string; text: string }> = [];
+  const fixtureOwners = new Map<string, string>();
+  // Legacy edit scenarios begin only after the real quote/owner approval/consume flow.
   async function callTool(token: string, name: string, args: Json): Promise<Json> {
+    const reply = await rawCallTool(token, name, args);
+    if (name !== "create_video_job" || reply.code !== "confirmation_required" || typeof reply.quoteId !== "string") return reply;
+    const ownerId = fixtureOwners.get(token);
+    if (!ownerId) throw new Error("Unknown fixture owner");
+    const { decideVideoQuote } = await import("../src/lib/mcp/video-quote.server");
+    await decideVideoQuote(ownerId, reply.quoteId, "approve");
+    return rawCallTool(token, name, { quoteId: reply.quoteId });
+  }
+  async function rawCallTool(token: string, name: string, args: Json): Promise<Json> {
     const message = await rpc(token, "tools/call", { name, arguments: args });
     const result = message.result as { content?: Array<{ text?: string }> } | undefined;
     const text = result?.content?.[0]?.text;
@@ -235,6 +246,7 @@ async function main() {
     });
     const user = await prisma.user.findUniqueOrThrow({ where: { id } });
     const { token } = await createMcpToken(id, "verify-mcp-broll-window-edits");
+    fixtureOwners.set(token, user.id);
     return { user, token };
   }
   // Internal-tester emails pass the MCP Editor Project gate (and the B-roll window-edit beta).

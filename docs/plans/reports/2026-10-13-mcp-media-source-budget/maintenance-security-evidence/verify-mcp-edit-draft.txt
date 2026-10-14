@@ -1,0 +1,173 @@
+approved public creation during maintenance preserves its approval and funding
+  PASS  maintenance fixture is an ordinary USER
+  PASS  maintenance fixture has an approved unconsumed quote
+  PASS  maintenance refusal has its specific retryable error
+  PASS  maintenance refusal preserves shared Thai customer copy
+  PASS  maintenance refusal tells the agent to retry the same approved quote
+  PASS  maintenance rolls back quote, jobs, projects and funding
+  PASS  same approval creates a job after maintenance ends
+  PASS  retry keeps one root job identity
+A) real route tools/list: beta sees the edit tools, non-beta does not; schemas are agent-neutral
+  PASS  beta tools/list includes get_edit_state
+  PASS  beta tools/list includes set_caption_text
+  PASS  beta tools/list includes export_video
+  PASS  non-beta tools/list hides get_edit_state
+  PASS  non-beta tools/list hides set_caption_text
+  PASS  non-beta tools/list hides export_video
+  PASS  non-beta still sees every existing tool
+  PASS  G13: every new tool's emitted schema is agent-neutral
+  PASS  create_video_job exposes exportMode as a plain optional string enum (auto|hold)
+  PASS  create_video_job's schema stays free of oneOf/anyOf/allOf
+B) non-beta edit tools stay gated; creation always requires approval
+  PASS  get_edit_state: feature_not_enabled envelope
+  PASS  get_edit_state: the refusal is audited as denied
+  PASS  set_caption_text: feature_not_enabled envelope
+  PASS  set_caption_text: the refusal is audited as denied
+  PASS  export_video: feature_not_enabled envelope
+  PASS  export_video: the refusal is audited as denied
+  PASS  exportMode:"hold" from a non-beta account → confirmation_required
+  PASS  exportMode:"auto" from a non-beta account → confirmation_required
+  PASS  the refused creates wrote no job and no project
+  PASS  the approval requirement is audited as an in-band error
+C) approved default creation uses the shared preview/export chain
+  PASS  non-beta default create queues
+  PASS  approved reply exposes project and editor
+  PASS  ordinary approved job uses project and automatic export
+  PASS  beta approved reply exposes project and editor
+  PASS  beta default create stays the ADR 0063 auto chain (mcpChainExport, no mcpHold)
+D) exportMode:"hold" → held with previewUrl + editorUrl; survives a poll and a watchdog sweep
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=startup 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=tts 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=captions 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=keywords 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=stock 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub step=config 0.0s
+[mcp-worker] job cmv71f6sf001rq6l91cuaskub PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=4 subMode=sentence
+  PASS  hold reply queues the job
+  PASS  held root input: mcpHold + previewMode, never mcpChainExport
+  PASS  poll 1: get_video_status = held
+  PASS  poll 1: previewUrl is the absolute base URL
+  PASS  poll 1: editorUrl is the project's
+  PASS  watchdog sweep exported nothing
+  PASS  poll 2: get_video_status = held
+  PASS  poll 2: previewUrl is the absolute base URL
+  PASS  poll 2: editorUrl is the project's
+  PASS  no export row exists after polls + sweep
+E) get_edit_state returns the seeded draft, writes nothing and calls nothing
+  PASS  no network call
+  PASS  status held + previewUrl
+  PASS  captions = the preview's, as [{index,text,startMs,endMs}]
+  PASS  cardLen + subtitleStyle come from the root's resolved design
+  PASS  headlineHook is null (the MCP project draft has none)
+  PASS  windows come from the base config's bgVideos
+  PASS  each window: owner broll, not replaced, no import
+  PASS  draftRevision 0 before any edit
+  PASS  allowed lists 12 fonts, 17 presets, 10 effects and the numeric ranges
+  PASS  next names a tool
+  PASS  reading wrote nothing
+F) set_caption_text changes text only, keeps timing, and refuses bad input with envelopes
+  PASS  edit accepted at draftRevision 1
+  PASS  no network call
+  PASS  card 0 text changed (trimmed)
+  PASS  card 0 timing unchanged
+  PASS  every other card unchanged
+  PASS  draftRevision is 1
+  PASS  the draft is stored on the project
+  PASS  originalCaptions keep the preview text
+  PASS  index out of range → invalid_input envelope
+  PASS  negative index → invalid_input envelope
+  PASS  blank text → invalid_input envelope
+  PASS  over-long text → invalid_input envelope
+  PASS  unknown jobId → invalid_input envelope
+  PASS  another user's jobId is refused exactly like an unknown id
+  PASS  refusals wrote nothing
+  PASS  an in-band refusal is audited as error
+G) export_video: free burn of activeJobId with the edit; replay; concurrent edit survives the clear
+  PASS  no network call
+  PASS  export accepted: exporting at draftRevision 1
+  PASS  G7 key mcp-export:<root>:1
+  PASS  G9 source = project.activeJobId
+  PASS  export carries mcpRootJobId + mcpMustBeFree + the applied revision
+  PASS  never the auto-chain marker
+  PASS  subtitleOverlayConfig burns onto the paid base
+  PASS  subtitleOverlayConfig contains the edit
+  PASS  editSnapshot carries the edited captions
+  PASS  enqueue reserved/charged nothing
+  PASS  a second export_video at the same revision replays the same export
+  PASS  still one export row
+  PASS  get_video_status(root) = exporting
+  PASS  edit during export → revision 2
+[mcp-worker] job cmv71f6x3002zq6l9z50nc1ja step=startup 0.0s
+[mcp-worker] job cmv71f6x3002zq6l9z50nc1ja step=burn 0.0s
+[mcp-worker] job cmv71f6x3002zq6l9z50nc1ja EXPORT total=0s source=cmv71f6sf001rq6l91cuaskub
+  PASS  export finished
+  PASS  G3: the export made no provider call (HeyGen/TTS/Gemini/stock)
+  PASS  the export only burned and saved
+  PASS  G3: no ChargedClip, reservation, minutes or credits
+  PASS  the burn ran free (reservedQuota false)
+  PASS  held export passed the fail-closed billing gate (settled receipt)
+  PASS  G12: the edit made during the export survives (no clear at revision 1)
+  PASS  get_video_status(root) = done with a videoUrl
+  PASS  re-export gets a new export at revision 2
+  PASS  re-export key mcp-export:<root>:2
+  PASS  re-export burns the surviving edit
+[mcp-worker] job cmv71f6zt003cq6l9l2zbtosu step=startup 0.0s
+[mcp-worker] job cmv71f6zt003cq6l9l2zbtosu step=burn 0.0s
+[mcp-worker] job cmv71f6zt003cq6l9l2zbtosu EXPORT total=0s source=cmv71f6sf001rq6l91cuaskub
+  PASS  re-export finished
+  PASS  G12: a matching revision clears the draft and bumps the revision
+  PASS  after the clear the draft reseeds from the latest export's snapshot
+  PASS  re-export left money untouched
+H) CAS: one lost race retries internally; two lost races → stale_revision
+  PASS  lib: one lost race → reloaded + retried once → ok
+  PASS  lib: the retried write landed
+  PASS  lib: two lost races → stale_revision (no third attempt)
+  PASS  tool: two lost races → stale_revision envelope
+  PASS  tool: the refused text was never stored
+I) G4: a base whose burn is not free → export_not_free, nothing written
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=startup 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=tts 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=captions 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=keywords 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=stock 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w step=config 0.0s
+[mcp-worker] job cmv71f71v003sq6l9fv55th5w PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=4 subMode=sentence
+  PASS  edit stored
+  PASS  export_not_free envelope
+  PASS  fixture: the base really is unpaid
+  PASS  no job written
+  PASS  no money row written
+  PASS  the draft is untouched
+J) held export billing gate: a chain without exactly one settled charge refuses to deliver
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=startup 0.0s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=tts 0.1s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=captions 0.0s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=keywords 0.0s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=stock 0.0s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr step=config 0.0s
+[mcp-worker] job cmv71f74s004vq6l9wrzgg7sr PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=4 subMode=sentence
+  PASS  edit stored at revision 1
+  PASS  export enqueued at revision 1
+[mcp-worker] job cmv71f786005sq6l9ho8f13xa step=startup 0.0s
+  PASS  export refused at the release gate
+  PASS  no Gallery save happened
+  PASS  a failed export never clears the draft
+  PASS  retry after a failed export pins the draft forward to a fresh key
+  PASS  retry key mcp-export:<root>:2 still burns the edit
+K) G14: every failure reply seen from a new tool is a full envelope
+  PASS  at least one failure was exercised per new tool
+  PASS  get_edit_state feature_not_enabled: envelope
+  PASS  set_caption_text feature_not_enabled: envelope
+  PASS  export_video feature_not_enabled: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text invalid_input: envelope
+  PASS  set_caption_text stale_revision: envelope
+  PASS  export_video export_not_free: envelope
+
+130 passed, 0 failed
+✅ MCP edit draft: all checks passed

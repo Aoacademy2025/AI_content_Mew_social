@@ -1,3 +1,4 @@
+import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
@@ -94,7 +95,11 @@ async function handleTts(req: Request) {
   if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
   if (!user?.elevenlabsKey) return NextResponse.json({ error: "ElevenLabs API key not set", missingKey: "elevenlabs" }, { status: 400 });
   const apiKey = decryptKey(user.elevenlabsKey);
-  const speechModel = elevenLabsSpeechModel(user.elevenlabsModel);
+  const serviceJobId = await resolveServiceVideoJobId(authUser.id);
+  const serviceJob = serviceJobId ? await prisma.videoJob.findFirst({ where: { id: serviceJobId, userId: authUser.id }, select: { budgetQuoteId: true, inputJson: true } }) : null;
+  const pinned = serviceJob?.budgetQuoteId ? JSON.parse(serviceJob.inputJson) : null;
+  if (pinned && (pinned.voiceProvider !== "elevenlabs" || !["v3", "v4"].includes(pinned.elevenlabsModel) || pinned.voiceId !== voiceId)) return NextResponse.json({ code: "confirmation_required", error: "confirmation_required", message: "เสียงไม่ตรงกับใบยืนยัน" }, { status: 409 });
+  const speechModel = pinned ? elevenLabsSpeechModel(pinned.elevenlabsModel) : elevenLabsSpeechModel(user.elevenlabsModel);
   const selectedVoiceId = typeof voiceId === "string" && voiceId.trim() ? voiceId.trim() : "9lvVsLbaxGND6aZnt1W1";
 
   if (preview === true) {

@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import { admitBudgetRender, VideoBudgetHoldError } from "./video-budget-admission";
 import { prisma } from "@/lib/prisma";
 import {
   creditCostFor,
@@ -164,7 +166,11 @@ export async function reconcileVideoJobFunding(
 
   await syncMinuteWindow(userId);
 
-  const result = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(tx => reconcileVideoJobFundingInTransaction(tx, videoJobId, userId, actualMeteredMinutes));
+}
+
+export async function reconcileVideoJobFundingInTransaction(tx: Prisma.TransactionClient, videoJobId: string, userId: string, actualMeteredMinutes: number) {
+  const result = await (async () => {
     const job = await tx.videoJob.findFirst({
       where: { id: videoJobId, userId },
       select: {
@@ -181,6 +187,9 @@ export async function reconcileVideoJobFunding(
     }
     if (actualMeteredMinutes > job.fundedMeteredMinutes) {
       const extra = actualMeteredMinutes - job.fundedMeteredMinutes;
+      const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { minutesLimit: true, minutesUsed: true } });
+      const extraCreditsEstimate = Math.max(0, extra - Math.max(0, current.minutesLimit - current.minutesUsed)) * creditCostFor("minute");
+      await admitBudgetRender(tx, userId, videoJobId, extraCreditsEstimate, actualMeteredMinutes);
       const topUp = await reserveMinutesOrCreditsInTransaction(tx, userId, extra, {
         creditsLive: process.env.CREDITS_LIVE === "1",
         ref: `duration-extend:${videoJobId}`,
@@ -263,13 +272,11 @@ export async function reconcileVideoJobFunding(
       },
     });
     return { kind: "trimmed" as const };
-  });
-
+  })();
   if (result.kind === "confirmation") {
-    throw new VideoJobFundingConfirmationRequiredError(
-      result.confirmed,
-      actualMeteredMinutes,
-    );
+    const job = await tx.videoJob.findFirst({ where: { id: videoJobId, userId }, select: { budgetQuoteId: true } });
+    if (job?.budgetQuoteId) throw new VideoBudgetHoldError("insufficient_render_funding");
+    throw new VideoJobFundingConfirmationRequiredError(result.confirmed, actualMeteredMinutes);
   }
 }
 

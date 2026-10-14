@@ -8,6 +8,8 @@
  * hook เป็นเจ้าของ videoRef (Shell mount จอแต่งซับทีละจอเท่านั้น → ref ไม่ชนกัน).
  */
 
+import { externalWindowStates } from "@/lib/external-media";
+import { webPendingWindowEdits, refreshPendingWindowMedia } from "./pending-edit-view";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -263,6 +265,9 @@ export function usePostPhaseEditor(
   // over the normal source (editSnapshot / the raw preview) for every field it carries. The web
   // never writes back to this draft — only a successful export clears it (G12, server-side).
   const pendingDraft = pendingEdit?.draft ?? null;
+  const pendingRevisionRef = useRef<number | undefined>(pendingEdit?.revision);
+  const appliedPendingRevisionRef = useRef<number | null>(null);
+  const appliedPendingMediaRef = useRef<Map<number, WindowEdit>>(new Map());
   const effectiveFullText = pendingDraft?.fullText ?? preview?.fullText;
   const effectiveWords = pendingDraft?.words ?? preview?.words;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
@@ -312,7 +317,9 @@ export function usePostPhaseEditor(
   const pendingApplyRef = useRef<PendingBrollApply | null>(null);
   const currentApplyOwnerRef = useRef({ accountId, projectId, jobId: job.jobId });
   const previousApplyOwnerRef = useRef({ accountId, projectId });
-  currentApplyOwnerRef.current = { accountId, projectId, jobId: job.jobId };
+  useEffect(() => {
+    currentApplyOwnerRef.current = { accountId, projectId, jobId: job.jobId };
+  }, [accountId, projectId, job.jobId]);
   const brollViewTrackedRef = useRef(false);
   const brollAppliedSummariesRef = useRef<Map<string, BrollGrowthSummary>>(new Map());
   const [timeMs, setTimeMs] = useState(0);
@@ -473,7 +480,7 @@ export function usePostPhaseEditor(
   // configOverride แทนที่ preview.config หลัง apply สำเร็จ (เห็น bgVideos ใหม่บน timeline)
   // — captions/overrides/cfg เป็น state แยกอยู่แล้ว (init ครั้งเดียวจาก preview เดิม) จึงไม่ถูก
   // เขียนทับตอน config เปลี่ยน (ตามสเปค: ต้องรอด "ไม่แตะ" ของแก้ซับ).
-  const [windowEdits, setWindowEditsState] = useState<Map<number, WindowEdit>>(new Map());
+  const [windowEdits, setWindowEditsState] = useState<Map<number, WindowEdit>>(() => webPendingWindowEdits(pendingDraft));
   const windowUndoRef = useRef<Map<number, WindowEdit>[]>([]);
   const windowRedoRef = useRef<Map<number, WindowEdit>[]>([]);
   const [windowHistory, setWindowHistory] = useState({ undo: 0, redo: 0 });
@@ -497,7 +504,7 @@ export function usePostPhaseEditor(
   const previewConfig = configOverride ?? preview?.config ?? null;
   // EP5 #11: a staged project-default transition (null = keep the base's). Applied with the
   // window edits through the same free re-render; counts as one pending B-roll change.
-  const [brollTransitionDraft, setBrollTransitionDraft] = useState<BrollTransition | null>(null);
+  const [brollTransitionDraft, setBrollTransitionDraft] = useState<BrollTransition | null>(pendingDraft?.brollTransition ?? null);
   const pendingBrollEditCount = windowEdits.size + (brollTransitionDraft ? 1 : 0);
   const baseBrollTransition = effectiveBrollTransition(
     undefined,
@@ -842,6 +849,7 @@ export function usePostPhaseEditor(
           body: JSON.stringify({ idempotencyKey: operation.idempotencyKey,
             mode: "broll-rerender", sourceJobId: operation.sourceJobId,
             windowEdits: operation.windowEdits,
+            ...(pendingRevisionRef.current !== undefined ? { expectedPendingRevision: pendingRevisionRef.current } : {}),
             ...(operation.brollTransition ? { brollTransition: operation.brollTransition } : {}) }),
         }) : await fetch(`/api/videos/jobs?idempotencyKey=${encodeURIComponent(operation.idempotencyKey)}&sourceJobId=${encodeURIComponent(operation.sourceJobId)}`);
         const d = await res.json().catch(() => null);
@@ -940,6 +948,15 @@ export function usePostPhaseEditor(
             projectId: p.projectId ?? job.projectId ?? null,
             contentPreflightId: p.contentPreflightId ?? job.contentPreflightId ?? null,
           });
+          if (onReloadPendingEdit) {
+            const latest = await onReloadPendingEdit();
+            pendingRevisionRef.current = latest?.revision;
+            // Applying media must not replace the user's local caption/style edits.
+            if (latest) {
+              appliedPendingRevisionRef.current = latest.revision;
+              appliedPendingMediaRef.current = webPendingWindowEdits(latest.draft);
+            }
+          }
           toast.success("อัปเดตวิดีโอแล้ว");
           pendingApplyRef.current = null;
           setApplyingWindows(null);
@@ -1160,11 +1177,27 @@ export function usePostPhaseEditor(
   // reload, where a NEW draft (bumped revision) must overwrite local edits with the agent's
   // latest. The ref guard is keyed on revision, not object identity, so a re-render that hands
   // back an equal-revision draft is a no-op (never clobbers in-progress typing).
-  const appliedPendingRevisionRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!pendingEdit || appliedPendingRevisionRef.current === pendingEdit.revision) return;
+    if (!pendingEdit) {
+      // Successful export retires the server draft while this editor stays mounted.
+      // The next mutation must not carry the retired draft's CAS revision.
+      pendingRevisionRef.current = undefined;
+      appliedPendingRevisionRef.current = null;
+      return;
+    }
+    const incomingMedia = webPendingWindowEdits(pendingEdit.draft);
+    if (appliedPendingRevisionRef.current === pendingEdit.revision) {
+      const previousMedia = appliedPendingMediaRef.current;
+      setWindowEditsState(current => refreshPendingWindowMedia(current, previousMedia, incomingMedia));
+      appliedPendingMediaRef.current = incomingMedia;
+      return;
+    }
+    appliedPendingMediaRef.current = incomingMedia;
     appliedPendingRevisionRef.current = pendingEdit.revision;
+    pendingRevisionRef.current = pendingEdit.revision;
     const draft = pendingEdit.draft;
+    setWindowEditsState(webPendingWindowEdits(draft));
+    setBrollTransitionDraft(draft.brollTransition ?? null);
     setCaptions(cloneCaptions(draft.captions));
     originalCapsRef.current = cloneCaptions(draft.originalCaptions);
     committedRef.current = cloneCaptions(draft.captions);
@@ -1564,7 +1597,7 @@ export function usePostPhaseEditor(
         },
         script: narrationMasterText || undefined,
         sceneCount: captions.length,
-        ...(pendingEdit ? { expectedPendingRevision: pendingEdit.revision } : {}),
+        ...(pendingRevisionRef.current !== undefined ? { expectedPendingRevision: pendingRevisionRef.current } : {}),
         ...(exportMusic ? { backgroundMusic: exportMusic } : {}),
       });
       if (!result.ok) {
@@ -1692,7 +1725,11 @@ export function usePostPhaseEditor(
     logo,
     stylePresets,
     // T8 (ADR 0064, G21): the exact Thai banner text when a draft was loaded, else null.
-    pendingEditBanner: pendingDraft ? PENDING_EDIT_BANNER_TEXT : null,
+    pendingEditBanner: pendingDraft ? [PENDING_EDIT_BANNER_TEXT,
+      ...(pendingDraft.windowMedia ?? []).filter(w => w.status !== "ready").map(w => `ช่วง ${w.index + 1}: ${w.status === "pending" ? "กำลังนำเข้าสื่อ" : "นำเข้าสื่อไม่สำเร็จ กรุณาเปลี่ยนไฟล์"}`),
+      ...(pendingDraft.requiredWindows ?? externalWindowStates(previewConfig, previewConfig)).filter(w => w.required && w.state === "unfilled").map(w => `ช่วง ${w.index + 1}: ต้องใส่ภาพหรือวิดีโอก่อนส่งออก`),
+    ].join(" · ") : externalWindowStates(previewConfig, previewConfig).filter(w => w.required && w.state !== "ready")
+      .map(w => `ช่วง ${w.index + 1}: ต้องใส่ภาพหรือวิดีโอก่อนส่งออก`).join(" · ") || null,
     layerVisibility: editorLayerVisibility,
     layerAvailability,
     setLayerEnabled,

@@ -132,6 +132,8 @@ export type PipelineFailureDetails = {
   message: string;
   code?: string;
   provider?: string;
+  reason?: string;
+  additional?: { images?: number; imageCredits?: number; renderCredits?: number; renderMinutes?: number };
 };
 
 /** Preserve structured endpoint failures when a background pipeline job becomes terminal. */
@@ -150,7 +152,8 @@ export function pipelineFailureDetails(error: unknown): PipelineFailureDetails |
   const nestedCode = nestedError && typeof nestedError === "object" && !Array.isArray(nestedError)
     ? (nestedError as Record<string, unknown>).code
     : undefined;
-  const code = typeof record.reason === "string"
+  const confirmationRequired = record.code === "confirmation_required" || nestedCode === "confirmation_required";
+  const code = confirmationRequired ? "confirmation_required" : typeof record.reason === "string"
     ? record.reason
     : typeof record.code === "string"
       ? record.code
@@ -160,7 +163,15 @@ export function pipelineFailureDetails(error: unknown): PipelineFailureDetails |
   const provider = typeof record.provider === "string" ? record.provider : undefined;
 
   if (typeof message !== "string" || message.trim().length === 0) return null;
-  return { message: message.trim(), ...(code ? { code } : {}), ...(provider ? { provider } : {}) };
+  const additional: NonNullable<PipelineFailureDetails["additional"]> = {};
+  if (confirmationRequired && record.additional && typeof record.additional === "object") {
+    const values = record.additional as Record<string, unknown>;
+    for (const key of ["images", "imageCredits", "renderCredits", "renderMinutes"] as const) {
+      const value = values[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) additional[key] = value;
+    }
+  }
+  return { message: message.trim(), ...(code ? { code } : {}), ...(provider ? { provider } : {}), ...(confirmationRequired ? { reason: typeof record.reason === "string" ? record.reason : "downstream_budget", additional } : {}) };
 }
 
 /** Decode the JSON contract shared by every internal pipeline endpoint. */

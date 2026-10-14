@@ -269,7 +269,9 @@ const state = {
 };
 
 async function installMocks(): Promise<Array<{ restore: () => void }>> {
-  const anyModel = () => new Proxy({}, { get: () => async () => null });
+  // Empty fixture tables follow Prisma's collection shape. This lets the real
+  // external-media policy establish that these legacy media files have no quote lineage.
+  const anyModel = () => new Proxy({}, { get: (_target, key) => async () => key === "findMany" ? [] : null });
   const base: Record<string, unknown> = {
     user: {
       findUnique: async () => ({
@@ -1272,6 +1274,7 @@ async function loadRenderRoute(): Promise<RenderReplay> {
   const ts = (await import("typescript")).default;
   const real: Record<string, unknown> = {
     "@/lib/render-input-guard": await import("../src/lib/render-input-guard"),
+    "@/lib/external-media.server": await import("../src/lib/external-media.server"),
     "@/lib/broll-coverage": await import("../src/lib/broll-coverage"),
     "@/lib/broll-placeholders": await import("../src/lib/broll-placeholders"),
     "@/lib/headline-hook": await import("../src/lib/headline-hook"),
@@ -1312,6 +1315,7 @@ async function loadRenderRoute(): Promise<RenderReplay> {
       VideoJobFundingConfirmationRequiredError,
     },
     "@/lib/mcp/service-actor": { resolveServiceVideoJobId: async () => null },
+    "@/lib/mcp/video-budget-admission": { VideoBudgetHoldError: class extends Error {} },
     // PR-A T5: the MCP must-be-free gate is only consulted for a service actor (never here).
     "@/lib/mcp/render-free": {
       MCP_EXPORT_NOT_FREE_CODE: "export_not_free",

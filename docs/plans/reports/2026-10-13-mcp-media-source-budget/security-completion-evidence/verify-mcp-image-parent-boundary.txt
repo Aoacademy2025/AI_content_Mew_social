@@ -1,0 +1,3 @@
+[fetch-stock] relevance source=profile domain="general" +0/-0
+[fetch-stock] relevance source=profile domain="general" +0/-0
+PASS actual fetch-stock HTTP refuses forged body provenance/parent/key before image reservation; ordinary USER, owned historical and foreign IDs

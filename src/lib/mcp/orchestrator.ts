@@ -1,3 +1,8 @@
+import { rebaseWebPendingMedia, StaleWebApplyError } from "@/lib/mcp/pending-edit-draft";
+import { validateExternalMediaExport, validateExternalWindowEdits } from "@/lib/external-media.server";
+import { authorExternalMediaPlan } from "@/lib/external-media";
+import { checkpointedBudgetCaller, holdVideoBudget } from "./video-budget-checkpoint";
+import { VideoBudgetHoldError } from "./video-budget-admission";
 import type { User } from "@prisma/client";
 import { acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-subtitle-worker";
 import { SUBTITLE_MIN_CARD_MS } from "@/lib/mcp/subtitle-quality";
@@ -208,13 +213,16 @@ export interface OrchestratorDeps {
 }
 
 interface CreateInput {
+  brollSource?: "external";
+  cutawayLayout?: "auto" | "fillYourself";
+  webPendingEditRevision?: number;
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
   narrationPlan?: NarrationPlanV1;
   /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
   /** Backend pinned by the accepting server; never selected by a browser. */
   voiceBackend?: "runpod" | "hostinger";
-  avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v"; avatarIntroSecs?: number; avatarTailSecs?: number;
+  avatarMode?: "none" | "full" | "bookend" | "bookend-both"; avatarId?: string; avatarEngine?: "avatar_iii" | "avatar_iv" | "avatar_v"; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
@@ -807,7 +815,7 @@ export async function alignNarrationOnce(args: {
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
-  const caller = deps.caller ?? pipelineCaller(userId, jobId);
+  const caller = checkpointedBudgetCaller(userId, jobId, deps.caller ?? pipelineCaller(userId, jobId));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
   let baseReservationSettledThisRun = false;
@@ -1464,6 +1472,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Re-validate the edits server-side (defense-in-depth; the jobs route already validated).
       const requestRes = validateBrollRerenderRequest(input.windowEdits, input.brollTransition);
       if ("error" in requestRes) { await failJob(jobId, requestRes.error); return; }
+      const externalEditRefusal = await validateExternalWindowEdits(userId, src.id, requestRes.windowEdits);
+      if (externalEditRefusal) {
+        await failJob(jobId, { code: externalEditRefusal.error, message: `${externalEditRefusal.message} — ${externalEditRefusal.next}` });
+        return;
+      }
       const editsRes = requestRes.windowEdits;
       const mergeRes = mergeWindowEdits(srcBgVideos, editsRes);
       if ("error" in mergeRes) { await failJob(jobId, mergeRes.error); return; }
@@ -1605,11 +1618,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...(rrCutawayPersonRanges ? { cutawayPersonRanges: rrCutawayPersonRanges } : {}),
         },
       }, {
-        onTransition: ({ tx, job: completedJob }) =>
-          commitAppliedSceneRerollAssetsInTransaction(tx, {
+        onTransition: async ({ tx, job: completedJob }) => {
+          await commitAppliedSceneRerollAssetsInTransaction(tx, {
             appliedVideoJobId: completedJob.id,
             promotions: preparedSceneRerollPromotions,
-          }),
+          });
+          if (src.projectId && input.webPendingEditRevision !== undefined) {
+            await rebaseWebPendingMedia(tx, { userId, projectId: src.projectId, sourceJobId: src.id,
+              jobId: completedJob.id, revision: input.webPendingEditRevision,
+              indices: editsRes.map(e => e.index), transitionApplied: !!requestRes.brollTransition });
+          }
+        },
       });
       if (
         rrCompletion.transitioned
@@ -1683,6 +1702,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const preview = parsed?.preview;
       if (!preview) {
         await failJob(jobId, { message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก", code: "source_not_exportable" });
+        return;
+      }
+      const requiredRefusal = await validateExternalMediaExport({ userId, sourceJobId: src.id, checkPending: false });
+      if (requiredRefusal) {
+        await failJob(jobId, { code: requiredRefusal.error, message: `${requiredRefusal.message} — ${requiredRefusal.next}` });
         return;
       }
       const sourceSubtitleQa = parsed?.subtitleQa;
@@ -2115,6 +2139,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
         { fillYourself: brollDisabled },
       );
+      const externalOwnershipPlan = input.brollSource === "external"
+        ? planCutaway(upWindowsRaw, { fillYourself: input.cutawayLayout === "fillYourself" })
+        : null;
       const visibleBrollRanges = new Set(
         upCutawayPlan.broll.map((range) => `${range.startMs}:${range.endMs}`),
       );
@@ -2228,6 +2255,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
 
       await step("stock", 55);
+      if (job.budgetQuoteId && forceStockBroll && input.stockSource === "kie-image") throw new VideoBudgetHoldError("unapproved_stock_fallback");
       const upAiGen = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
       const upStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
       const upAligned = alignBrollWindowsToKeywords(upVisibleWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
@@ -2292,7 +2320,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       await step("render", 75);
       const upBaseConfig = {
-        ...upCfg.config,
+        ...(externalOwnershipPlan ? authorExternalMediaPlan(upCfg.config, externalOwnershipPlan.person) : upCfg.config),
         keywordPopups: [] as unknown[],
         ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
       };
@@ -2892,6 +2920,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
+    if (job.budgetQuoteId && forceStockBroll && input.stockSource === "kie-image") throw new VideoBudgetHoldError("unapproved_stock_fallback");
     const aiGenSource = !forceStockBroll && (input.stockSource === "kie-image" || input.stockSource === "auto-mix");
     const effectiveStockSource = forceStockBroll ? DEFAULT_STOCK_SOURCE : (input.stockSource ?? DEFAULT_STOCK_SOURCE);
     const stock = brollDisabled ? { results: [] as unknown[] } : await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
@@ -2972,7 +3001,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await step("render", 75);
-    const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
+    const baseConfig = { ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config), keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
       parentJobId: jobId,
@@ -2992,7 +3021,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const avatarModel = "none";
     const avatarVideoUrl: string | null = null;
     const tailAvatarUrl: string | null = null;
-    if (input.avatarMode) {
+    if (input.avatarMode && input.avatarMode !== "none") {
       // Defense-in-depth: the route only ever persists avatarMode together with a
       // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
       // malformed job rather than generating with avatarModel=undefined.
@@ -3105,7 +3134,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           avatarMode: input.avatarMode ?? null,
           avatarIntroSecs: input.avatarIntroSecs ?? 5,
           avatarTailSecs: input.avatarTailSecs ?? 5,
-          compositeBaseUrl: input.avatarMode ? baseUrl : null,
+          compositeBaseUrl: input.avatarMode && input.avatarMode !== "none" ? baseUrl : null,
           tailAvatarUrl,
           // word timeline สำหรับ "ความยาวการ์ด 1/2/3/4 คำ" ในจอแต่งซับ (regroup ฝั่ง
           // editor ด้วย timing เป๊ะ ไม่ต้อง interpolate) — MCP path (non-preview) ไม่แตะ
@@ -3169,6 +3198,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ...(billingReceipt ? { billingReceipt } : {}),
     });
   } catch (e) {
+    if (e instanceof StaleWebApplyError) {
+      await failJob(jobId, { code: "stale_revision", message: e.message });
+      return;
+    }
+    const budgetFailure = pipelineFailureDetails(e);
+    if (e instanceof VideoBudgetHoldError || budgetFailure?.code === "confirmation_required") {
+      await holdVideoBudget(userId, jobId, e instanceof VideoBudgetHoldError ? e : new VideoBudgetHoldError(budgetFailure?.reason ?? "downstream_budget", budgetFailure?.additional ?? {}));
+      return;
+    }
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
     const contentPreflightFailure = contentPreflightFailureDetails(e);
@@ -3193,7 +3231,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const reason = `video_${phaseName || "unknown"}_canceled`;
       let settlementPending = false;
       try {
-        await refundSettledVideoImageBatch({ userId, videoJobId: jobId, reason });
+        const imageSettlement = await refundSettledVideoImageBatch({ userId, videoJobId: jobId, reason });
+        if (imageSettlement.pendingJobs > 0) settlementPending = true;
       } catch (settlementError) {
         settlementPending = true;
         console.error(`[mcp-worker] canceled job ${jobId} failed to refund image batch`, settlementError);
@@ -3231,11 +3270,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     let financialSettlementPending = false;
     if (!unknownAvatarProviderOutcome) {
       try {
-        await refundSettledVideoImageBatch({
+        const imageSettlement = await refundSettledVideoImageBatch({
           userId,
           videoJobId: jobId,
           reason: settlementReason,
         });
+        if (imageSettlement.pendingJobs > 0) financialSettlementPending = true;
       } catch (settlementError) {
         financialSettlementPending = true;
         console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);

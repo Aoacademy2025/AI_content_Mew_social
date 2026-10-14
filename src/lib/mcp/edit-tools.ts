@@ -1,3 +1,6 @@
+import { externalWindowStates, externalMediaPlan, previewWindowOwner, isPresenterHookWindow } from "@/lib/external-media";
+import { validateExternalMediaExport, ownedDraftImports } from "@/lib/external-media.server";
+import { resolvePendingWindowMedia } from "@/lib/pending-broll-media";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -10,7 +13,7 @@ import { getVideoJobStatusTool, mcpEditorUrl } from "@/lib/mcp/tools";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import { assertMcpRenderFree, McpRenderNotFreeError } from "@/lib/mcp/render-free";
 import { brollWindowEditEnabled, enqueueBrollRerender, enqueueEditorExport } from "@/lib/editor-export-enqueue";
-import { mergeWindowEdits, validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import { MAX_BROLL_WINDOW_EDITS, mergeWindowEdits, validateWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
 import {
   BROLL_FITS,
   BROLL_TRANSITIONS,
@@ -413,20 +416,7 @@ function subtitleStyleView(config: V2SubConfig) {
 }
 
 /** Exclusive Scene Ownership, read the way the web Post phase reads it (brollWindowVisible). */
-function windowOwner(preview: VideoJobPreviewData, index: number): "presenter" | "broll" {
-  const bgVideos = (preview.config as { bgVideos?: unknown }).bgVideos;
-  const raw = Array.isArray(bgVideos) ? bgVideos[index] as Record<string, unknown> | null : null;
-  if (!raw || typeof raw !== "object") return "broll";
-  if (typeof raw.brollEnabled === "boolean") return raw.brollEnabled ? "broll" : "presenter";
-  if (preview.avatarModel !== "upload-cutaway" || !Array.isArray(preview.cutawayPersonRanges)) return "broll";
-  const start = Number(raw.start);
-  const end = Number(raw.end);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return "broll";
-  const midpoint = start + (end - start) / 2;
-  return preview.cutawayPersonRanges.some((range) => midpoint >= range.start && midpoint < range.end)
-    ? "presenter"
-    : "broll";
-}
+const windowOwner = previewWindowOwner;
 
 /** The Held Preview's total clip length — shared by the window spans below and the real
  *  rendered-timeline computation (U1), so both agree on the same outer bound. */
@@ -450,19 +440,7 @@ type ImportView = {
 
 /** T13: the caller's own Media Imports the draft's window edits point at (owner-scoped). */
 export async function draftImportViews(userId: string, draft: PendingEditDraft): Promise<Map<string, ImportView>> {
-  const ids = [...new Set(draft.windowEdits.flatMap((edit) => (edit.importId ? [edit.importId] : [])))];
-  if (ids.length === 0) return new Map();
-  const rows = await prisma.mediaImport.findMany({
-    where: { id: { in: ids }, userId },
-    select: { id: true, status: true, errorCode: true, resultSrc: true, durationMs: true, purpose: true },
-  });
-  return new Map(rows.map((row) => [row.id, {
-    status: row.status,
-    errorCode: row.errorCode,
-    resultSrc: row.resultSrc,
-    durationMs: row.durationMs,
-    purpose: row.purpose,
-  }]));
+  return ownedDraftImports(userId, draft);
 }
 
 /** A window edit's import as the agent sees it; a vanished row reads as failed. */
@@ -502,45 +480,7 @@ export function reportableWindowEdits(
   windowEdits: PendingEditWindowEdit[],
   imports: Map<string, ImportView>,
 ): WindowEdit[] {
-  const rootPreview = rootPreviewOf(root);
-  const edits: WindowEdit[] = [];
-  for (const edit of windowEdits) {
-    const style = windowEditStyle(edit);
-    if (edit.importId) {
-      const row = imports.get(edit.importId);
-      if (!row || row.status !== "ready" || !row.resultSrc) continue;
-      const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
-      edits.push({
-        index: edit.index,
-        src: row.resultSrc,
-        enabled: true,
-        replacementKind: "upload",
-        ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
-        ...(seconds ? { clipDuration: seconds } : {}),
-        ...style,
-      });
-      continue;
-    }
-    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND) {
-      if (Object.keys(style).length > 0) edits.push({ index: edit.index, ...style });
-      continue;
-    }
-    if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) continue;
-    if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false, ...style });
-      continue;
-    }
-    const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
-    edits.push({
-      index: edit.index,
-      src: edit.src ?? "",
-      enabled: true,
-      ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
-      ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
-      ...style,
-    });
-  }
-  return edits;
+  return resolvePendingWindowMedia(rootPreviewOf(root), windowEdits, imports).flatMap(p => p.edit ? [p.edit] : []);
 }
 
 /** EP5 #11 / U3: the style half of a pending window edit, as `WindowEdit` fields. */
@@ -607,6 +547,7 @@ function editWindows(
 ) {
   const preview = base.preview;
   const rootPreview = base.id === root.id ? preview : rootPreviewOf(root);
+  const requirements = externalWindowStates(rootPreview?.config, { bgVideos: mergedBgVideosForReport(root, base, draft.windowEdits, imports) });
   return previewWindowSpans(preview).map((span) => {
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
     const view = importViewOf(edit, imports);
@@ -620,6 +561,8 @@ function editWindows(
       renderedStartMs: renderedSpan?.startMs ?? null,
       renderedEndMs: renderedSpan?.endMs ?? null,
       owner: windowOwner(preview, span.index),
+      ...(requirements.find(w => w.index === span.index) ?? {}),
+      ...(view && view.status !== "ready" ? { state: view.status === "failed" ? "failed" : "pending" } : {}),
       replaced: replacesMedia || windowReplacedInBase(root, rootPreview, base, span.index),
       pending: edit !== undefined,
       importStatus: view?.status ?? null,
@@ -648,6 +591,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
   const status = await getVideoJobStatusTool(userId, held.root.id);
   const statusFields = (status ?? {}) as { status?: string; previewUrl?: string | null; editorUrl?: string | null };
   const imports = await draftImportViews(userId, state.draft);
+  const externalRefusal = await validateExternalMediaExport({ userId, sourceJobId: state.base.id, draft: state.draft, allowPending: true });
   // U1: report the timeline the renderer actually produces, not the raw stored boundaries —
   // same coverage function the render route calls, fed the base's bgVideos with every
   // resolvable pending window edit merged on (mirrors the free re-render's own merge).
@@ -664,7 +608,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     headlineHook: state.draft.headlineHook ?? null,
     backgroundMusic: await backgroundMusicView(userId, state.draft, state.base.preview),
     tailHoldMs: state.draft.tailHoldMs,
-    windows: editWindows(held.root, state.draft, state.base, imports, rendered),
+    windows: editWindows(held.root, state.draft, state.base, imports, rendered).map(w => ({ ...w, ...(externalRefusal?.windows.find(required => required.index === w.index) ?? {}) })),
     brollTransition: draftProjectTransition(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
@@ -1091,8 +1035,7 @@ export async function discardEditsTool(userId: string, jobId: unknown) {
 
 // ── replace_broll_window (G19, G27) ───────────────────────────────────────────────────────────
 
-/** validateWindowEdits' own per-export cap (MAX_EDITS in broll-rerender.ts). */
-const MAX_DRAFT_WINDOW_EDITS = 40;
+const MAX_DRAFT_WINDOW_EDITS = MAX_BROLL_WINDOW_EDITS;
 const BROLL_IMPORT_PURPOSES = ["broll_image", "broll_video"] as const;
 const NEXT_WINDOWS = "เรียก get_edit_state เพื่อดู windows[].index ที่แก้ได้";
 const NEXT_MEDIA = "ส่งลิงก์ https สาธารณะของรูปหรือวิดีโอ (url) หรืออัปโหลดด้วย create_upload_url แล้วส่ง uploadId";
@@ -1172,9 +1115,8 @@ function bgVideoAt(config: unknown, index: number): Record<string, unknown> | nu
 }
 
 /** Window 0 of an auto-layout Cutaway Mode clip is the presenter's opening hook. */
-function presenterHookLocked(root: McpChainRow, preview: VideoJobPreviewData): boolean {
-  if (preview.avatarModel !== "upload-cutaway") return false;
-  return parseRecord(root.inputJson)?.cutawayLayout !== "fillYourself";
+function presenterHookLocked(root: McpChainRow, preview: VideoJobPreviewData, index: number): boolean {
+  return isPresenterHookWindow(rootPreviewOf(root) ?? preview, parseRecord(root.inputJson)?.cutawayLayout, index);
 }
 
 function rootPreviewOf(root: McpChainRow): VideoJobPreviewData | null {
@@ -1200,7 +1142,7 @@ function originalWindowEdit(
     return { ok: true, edit: null };
   }
   const rootSrc = typeof rootWindow.src === "string" && rootWindow.src ? rootWindow.src : null;
-  if (windowOwner(rootPreview, index) === "broll" && (!rootSrc || "error" in validateWindowEdits([{ index, src: rootSrc }]))) {
+  if (!(!rootWindow.src && rootWindow.brollEnabled === false) && !externalMediaPlan(rootPreview.config)?.slots[index]?.required && windowOwner(rootPreview, index) === "broll" && (!rootSrc || "error" in validateWindowEdits([{ index, src: rootSrc }]))) {
     return { ok: false, failure: ORIGINAL_UNAVAILABLE };
   }
   return { ok: true, edit: { index, src: rootSrc, replacementKind: "original" } };
@@ -1237,7 +1179,7 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
   });
   if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
-  if (index === 0 && presenterHookLocked(root, base.preview)) return WINDOW_LOCKED;
+  if (presenterHookLocked(root, base.preview, index)) return WINDOW_LOCKED;
 
   let source: "url" | "upload" | "original";
   let importId: string | null = null;
@@ -1539,45 +1481,10 @@ async function rerenderEditsFor(
   }
   if (pending.length > 0) return { ok: false, failure: importsPendingFailure(pending) };
 
-  const rootPreview = rootPreviewOf(root);
-  const edits: WindowEdit[] = [];
-  for (const edit of ordered) {
-    const style = windowEditStyle(edit);
-    const row = edit.importId ? byId.get(edit.importId) : undefined;
-    if (row) {
-      const seconds = typeof row.durationMs === "number" && row.durationMs > 0 ? row.durationMs / 1_000 : null;
-      edits.push({
-        index: edit.index,
-        src: row.resultSrc ?? "",
-        enabled: true,
-        replacementKind: "upload",
-        ...(row.purpose === "broll_image" ? { stillImage: true } : {}),
-        ...(seconds ? { clipDuration: seconds } : {}),
-        ...style,
-      });
-      continue;
-    }
-    if (edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND && Object.keys(style).length > 0) {
-      edits.push({ index: edit.index, ...style });
-      continue;
-    }
-    if (edit.replacementKind !== "original" || !rootPreview || !bgVideoAt(rootPreview.config, edit.index)) {
-      return { ok: false, failure: ORIGINAL_UNAVAILABLE };
-    }
-    if (windowOwner(rootPreview, edit.index) === "presenter") {
-      edits.push({ index: edit.index, enabled: false, ...style });
-      continue;
-    }
-    const clipDuration = Number(bgVideoAt(rootPreview.config, edit.index)?.clipDuration);
-    edits.push({
-      index: edit.index,
-      src: edit.src ?? "",
-      enabled: true,
-      ...(bgVideoAt(rootPreview.config, edit.index)?.stillImage === true ? { stillImage: true } : {}),
-      ...(Number.isFinite(clipDuration) && clipDuration > 0 ? { clipDuration } : {}),
-      ...style,
-    });
-  }
+  const media = resolvePendingWindowMedia(rootPreviewOf(root), ordered, byId);
+  const invalid = media.find(p => p.status === "failed");
+  if (invalid) return { ok: false, failure: importFailedFailure(invalid.index, invalid.error ?? "import_missing") };
+  const edits = media.flatMap(p => p.edit ? [p.edit] : []);
   // EP5 #11: only a new project default is pending — the re-render changes no window.
   if (edits.length === 0 && state.draft.brollTransition !== undefined) return { ok: true, edits };
   const validated = validateWindowEdits(edits);
@@ -1725,6 +1632,8 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
   const loaded = await loadState(user.id, root);
   if (!loaded.ok) return loaded.failure;
   let state: PendingEditState = loaded.state;
+  const externalRefusal = await validateExternalMediaExport({ userId: user.id, sourceJobId: state.base.id, draft: state.draft, allowPending: true });
+  if (externalRefusal) return externalRefusal;
   if (draftHasBrollChanges(state.draft)) return exportWithWindowEdits(user, root, state, depth);
 
   let checkedBaseUrl: string | null = null;

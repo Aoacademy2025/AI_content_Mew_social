@@ -1,0 +1,1 @@
+verify-hero-image-scene-error: ALL PASS

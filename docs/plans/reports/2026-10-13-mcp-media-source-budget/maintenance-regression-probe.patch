@@ -1,0 +1,20 @@
+--- scripts/verify-mcp-edit-draft.ts
++++ scripts/.mcp-maintenance-final-probe.ts
+@@ -315,6 +315,17 @@
+     return { reply, root, projectId: root.projectId };
+   }
+
++  // Isolated final-gate reproduction: real transport and approval consumption under maintenance.
++  await prisma.siteConfig.upsert({ where: { key: "render_deploy_drain" }, create: { key: "render_deploy_drain", value: "1" }, update: { value: "1" } });
++  const maintenanceBefore = await money(tester.user.id);
++  const maintenanceReply = await approvedCreate(tester, { script: SCRIPT, voiceProvider: "gemini", exportMode: "hold" });
++  console.log("MAINTENANCE_PUBLIC_REPLY", JSON.stringify(maintenanceReply));
++  check("approved public creation preserves customer-facing maintenance message", maintenanceReply.message === "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่", JSON.stringify(maintenanceReply));
++  check("maintenance refusal does not change funding", JSON.stringify(await money(tester.user.id)) === JSON.stringify(maintenanceBefore));
++  await prisma.siteConfig.delete({ where: { key: "render_deploy_drain" } });
++  await prisma.$disconnect();
++  return;
++
+   // ── A ──
+   await section("A) real route tools/list: beta sees the edit tools, non-beta does not; schemas are agent-neutral", async () => {
+     const betaTools = await listTools(tester.token);

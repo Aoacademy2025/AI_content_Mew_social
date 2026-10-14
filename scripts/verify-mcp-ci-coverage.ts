@@ -30,6 +30,7 @@ const GLOB_PATTERNS: RegExp[] = [
   /^verify-mcp-.*\.ts$/,
   /^verify-media-import.*\.ts$/,
   /^verify-safe-fetch\.ts$/,
+  /^verify-external-(?:media-policy|web-upload)\.ts$/,
 ];
 
 let failures = 0;

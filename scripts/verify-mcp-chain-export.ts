@@ -302,11 +302,12 @@ async function main() {
       (await prisma.videoJob.count({ where: { userId: owner.id } })) === 0
       && (await prisma.editorProject.count({ where: { userId: owner.id } })) === 0);
 
-    const routeSrc = readFileSync("src/app/api/[transport]/route.ts", "utf8");
-    check("route: create_video_job goes through createMcpVideoJob",
-      routeSrc.includes("createMcpVideoJob(") && !/createVideoJob\(\s*p\.userId/.test(routeSrc));
-    check("route: reserved key maps to the existing duplicate copy",
-      /reserved_key[\s\S]{0,200}idempotencyKey นี้ถูกใช้แล้ว/.test(routeSrc));
+    const { requestVideoJob } = await import("../src/lib/mcp/video-budget.server");
+    const beforeQuoteJobs = await prisma.videoJob.count({ where: { userId: owner.id } });
+    const unapproved = await requestVideoJob(owner, { script: "A new stock video", brollSource: "stock" });
+    check("public create prepares a receipt instead of queuing unapproved work", unapproved.code === "confirmation_required" && "quoteId" in unapproved);
+    const reservedPublic = await requestVideoJob(owner, { script: "A new stock video", idempotencyKey: "mcp-chain:forged" });
+    check("reserved public key cannot create a job without human approval", !reservedPublic.jobId && await prisma.videoJob.count({ where: { userId: owner.id } }) === beforeQuoteJobs);
     const chainSrc = readFileSync("src/lib/mcp/chain-export.ts", "utf8");
     check("flag = isInternalAiBetaEnabledFor(user, MCP_EDITOR_PROJECT_PUBLIC === \"1\")",
       /isInternalAiBetaEnabledFor\(\s*user,\s*process\.env\.MCP_EDITOR_PROJECT_PUBLIC === "1"\s*\)/.test(chainSrc));

@@ -71,6 +71,13 @@ async function main(): Promise<void> {
         },
       };
     }
+    // This fixture exercises base-render coverage, never subtitle BURN policy.
+    if (specifier === "@/lib/external-media.server") {
+      return { validateExternalMediaBurn: async () => {
+        throw new Error("base-render coverage fixture unexpectedly reached BURN policy");
+      } };
+    }
+    if (specifier === "@/lib/mcp/video-budget-admission") return { VideoBudgetHoldError: class extends Error {} };
     if (specifier === "@/lib/clerk-auth") return { getCurrentUser: async () => ({ id: "route-user" }) };
     if (specifier === "@/lib/notifications") return { createNotification: async () => undefined };
     if (specifier === "@/lib/plan-limits") {

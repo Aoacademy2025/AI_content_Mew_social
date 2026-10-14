@@ -234,7 +234,17 @@ async function main() {
     return content;
   }
   /** A JSON (text) reply — every refusal, and every tool other than a successful preview. */
+  const fixtureOwners = new Map<string, string>();
   async function callTool(token: string, name: string, args: Json): Promise<Json> {
+    const reply = await rawCallTool(token, name, args);
+    if (name !== "create_video_job" || reply.code !== "confirmation_required" || typeof reply.quoteId !== "string") return reply;
+    const ownerId = fixtureOwners.get(token);
+    if (!ownerId) throw new Error("Unknown fixture owner");
+    const { decideVideoQuote } = await import("../src/lib/mcp/video-quote.server");
+    await decideVideoQuote(ownerId, reply.quoteId, "approve");
+    return rawCallTool(token, name, { quoteId: reply.quoteId });
+  }
+  async function rawCallTool(token: string, name: string, args: Json): Promise<Json> {
     const content = await callContent(token, name, args);
     const text = content.find((block) => block.type === "text")?.text;
     if (!text) throw new Error(`tools/call ${name} has no text block: ${JSON.stringify(content).slice(0, 300)}`);
@@ -301,6 +311,7 @@ async function main() {
     });
     const user = await prisma.user.findUniqueOrThrow({ where: { id } });
     const { token } = await createMcpToken(id, "verify-mcp-preview-frame");
+    fixtureOwners.set(token, user.id);
     return { user, token };
   }
   // Internal-tester emails pass the MCP Editor Project gate; example.com does not.
@@ -517,7 +528,7 @@ async function main() {
     const ready = await prisma.mediaImport.create({
       data: {
         userId: tester.user.id, purpose: "broll_video", source: "upload", status: "ready",
-        resultSrc: "/api/renders/preview-red.mp4", durationMs: 4_000, deadlineAt: new Date(Date.now() + 3_600_000),
+        resultSrc: "/api/stocks/preview-red.mp4", durationMs: 4_000, deadlineAt: new Date(Date.now() + 3_600_000),
       },
     });
     const pending = await prisma.mediaImport.create({

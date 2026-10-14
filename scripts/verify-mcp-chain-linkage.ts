@@ -116,6 +116,8 @@ async function main() {
   const enqueue = await import("../src/lib/editor-export-enqueue");
   const renderFree = await import("../src/lib/mcp/render-free");
   const budget = await import("../src/lib/rerender-skip-budget");
+  const videoBudget = await import("../src/lib/mcp/video-budget-admission");
+  const externalMedia = await import("../src/lib/external-media.server");
   const brollCoverage = await import("../src/lib/broll-coverage");
   const brollPlaceholders = await import("../src/lib/broll-placeholders");
   const headlineHook = await import("../src/lib/headline-hook");
@@ -195,6 +197,8 @@ async function main() {
     if (specifier === "@/lib/mcp/service-actor") {
       return { resolveServiceVideoJobId: async (userId: string) => (userId === routeUserId ? serviceJobId : null) };
     }
+    if (specifier === "@/lib/external-media.server") return externalMedia;
+    if (specifier === "@/lib/mcp/video-budget-admission") return videoBudget;
     if (specifier === "@/lib/rerender-skip-budget") return budget;
     if (specifier === "@/lib/mcp/render-free") return renderFree;
     if (specifier === "path") return nodePath;

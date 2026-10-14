@@ -1,0 +1,14 @@
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/src/lib/mcp/video-quote' imported from /Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/scripts/verify-mcp-video-quote.ts
+    at finalizeResolution (node:internal/modules/esm/resolve:272:11)
+    at moduleResolve (node:internal/modules/esm/resolve:879:10)
+    at defaultResolve (node:internal/modules/esm/resolve:1006:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:708:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:728:38)
+    at nextStep (node:internal/modules/customization_hooks:189:26)
+    at resolveBaseSync (file:///Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/node_modules/tsx/dist/register-C4vWVmug.mjs:2:10932)
+    at resolveDirectorySync (file:///Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/node_modules/tsx/dist/register-C4vWVmug.mjs:2:12238)
+    at resolveTsPathsSync (file:///Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/node_modules/tsx/dist/register-C4vWVmug.mjs:2:13445)
+    at resolve (file:///Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/node_modules/tsx/dist/register-C4vWVmug.mjs:2:15991) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///Users/mewsocialmacmini/orca/workspaces/AI_content_Mew_social/mcp-budget-task1/src/lib/mcp/video-quote'
+}

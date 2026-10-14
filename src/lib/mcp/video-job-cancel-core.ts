@@ -99,11 +99,12 @@ export async function cancelVideoJobCore(
     );
   }
   try {
-    await refundSettledVideoImageBatch({
+    const images = await refundSettledVideoImageBatch({
       userId,
       videoJobId: job.id,
       reason: "video_user_canceled",
     });
+    if (images.pendingJobs > 0) settlementPending = true;
   } catch (error) {
     settlementPending = true;
     console.error(

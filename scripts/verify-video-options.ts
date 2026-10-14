@@ -30,8 +30,8 @@ function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[]; requestedPat
       }
       throw new Error("unexpected " + path);
     },
-    post: async () => ({} as any),
-    patch: async () => ({} as any),
+    post: async <T>() => ({} as T),
+    patch: async <T>() => ({} as T),
   };
 }
 
@@ -39,30 +39,36 @@ async function main() {
   const u = { heygenKey: "k", elevenlabsKey: "k", heygenAvatarId: "av1", geminiVoiceName: "Aoede", elevenlabsVoiceId: "v1" };
   const requestedPaths: string[] = [];
   const o = await getVideoOptions(mock({ requestedPaths }), u);
+  assert(o.broll.options.map(item => item.value).join(",") === "stock,hero-ai-image,automix,external", "all four media source options");
+  assert(o.broll.default === "stock", "omitted source remains stock compatibility default");
+  assert(o.broll.next.includes("prepare_video_job") && o.broll.next.includes("confirmationUrl") && o.broll.next.includes("get_video_quote") && o.broll.next.includes("create_video_job({quoteId})"), "source selection routes to authenticated approval before creation");
+  assert(o.broll.unavailableTools.includes("ยังสร้างหรือค้นหาสื่อนี้ไม่ได้"), "unavailable external capabilities are disclosed");
+  assert(o.broll.renderDisclosure.includes("นาทีเรนเดอร์") && o.broll.options[0].detail.includes("เครดิตส่วนเกิน"), "stock still discloses render usage");
+  assert(o.broll.options[3].detail.includes("เครื่องมือภายนอกของคุณอาจมีค่าใช้จ่าย"), "external tools can have separate charges");
   const moodTracks = "byMood" in o.music
     ? o.music.byMood.flatMap((bucket) => bucket.tracks)
     : [];
   assert(moodTracks.some((m) => m.bgmFile === "/music/chill.mp3" && m.title === "Lofi-RnB-Laid Back"), "music mapped to bgmFile path");
   assert(moodTracks.some((m) => m.bgmFile === "/api/music/user-1.wav" && m.title === "Cinematic-Dramatic Custom"), "user uploaded music mapped to api music bgmFile path");
-  assert(Array.isArray(o.avatars) && (o.avatars as any[])[0].avatarId === "av1", "avatars mapped");
+  assert(Array.isArray(o.avatars) && (o.avatars as { avatarId: string; supportedEngines: string[] }[])[0].avatarId === "av1", "avatars mapped");
   assert(requestedPaths.includes("/api/heygen/my-avatars") && !requestedPaths.includes("/api/heygen/avatars"), "MCP uses the fast own-avatar catalog, not the huge public catalog");
   assert(o.savedAvatarId === "av1", "saved avatar id surfaced");
   assert(Array.isArray(o.voices.gemini) && o.voices.gemini.length > 0, "gemini voices present (static)");
-  assert(Array.isArray(o.voices.elevenlabs) && (o.voices.elevenlabs as any[])[0].voiceId === "v1", "elevenlabs voices mapped");
+  assert(Array.isArray(o.voices.elevenlabs) && (o.voices.elevenlabs as { voiceId: string }[])[0].voiceId === "v1", "elevenlabs voices mapped");
   assert(JSON.stringify(o.avatarModes) === JSON.stringify(["none", "full", "bookend", "bookend-both"]), "avatarModes enum");
-  assert((o.avatars as any[])[0].supportedEngines.join(",") === "avatar_iii,avatar_iv", "private look exposes supported engines");
+  assert((o.avatars as { avatarId: string; supportedEngines: string[] }[])[0].supportedEngines.join(",") === "avatar_iii,avatar_iv", "private look exposes supported engines");
   const unknownCapabilities = await getVideoOptions(mock({ avatars: [{ avatar_id: "unknown-capabilities", avatar_name: "Unknown" }] }), u);
-  assert(!("supportedEngines" in (unknownCapabilities.avatars as any[])[0]), "MCP preserves unknown capability metadata instead of publishing a known-empty list");
+  assert(!("supportedEngines" in (unknownCapabilities.avatars as object[])[0]), "MCP preserves unknown capability metadata instead of publishing a known-empty list");
   assert(o.avatarEngines.map((e) => e.value).join(",") === "avatar_iii,avatar_iv,avatar_v", "MCP exposes explicit engine choices");
   assert(o.avatarBilling.route === "BYOK" && o.avatarBilling.disclosure.includes("ไม่รวมอยู่ในเครดิต HERO"), "MCP discloses external HeyGen billing");
 
   // no-key user → needsKey, not a crash
   const o2 = await getVideoOptions(mock(), { heygenKey: null, elevenlabsKey: null, heygenAvatarId: null, geminiVoiceName: null, elevenlabsVoiceId: null });
-  assert((o2.avatars as any).needsKey === true && (o2.voices.elevenlabs as any).needsKey === true, "no key → needsKey (not crash)");
+  assert((o2.avatars as { needsKey?: boolean }).needsKey === true && (o2.voices.elevenlabs as { needsKey?: boolean }).needsKey === true, "no key → needsKey (not crash)");
 
   // section failure degrades gracefully
   const o3 = await getVideoOptions(mock({ failVoices: true }), u);
-  assert((o3.voices.elevenlabs as any).error && (o3.voices.elevenlabs as any).note?.includes("voiceId"), "failing voices → {error,note} (saved voiceId still usable), whole tool still returns");
+  assert(!!(o3.voices.elevenlabs as { error?: string; note?: string }).error && !! (o3.voices.elevenlabs as { error?: string; note?: string }).note?.includes("voiceId"), "failing voices → {error,note} (saved voiceId still usable), whole tool still returns");
 
   // Defensive filtering keeps public avatars out even if an upstream route regresses,
   // and duplicate private looks do not inflate MCP context.

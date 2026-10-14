@@ -1,0 +1,39 @@
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=startup 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=tts 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=captions 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=keywords 0.1s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=startup 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=tts 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=captions 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=keywords 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=stock 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=config 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=32 subMode=sentence
+PASS HTTP uncertainty → retained hold → known image settlement → same-root continuation without repeated TTS/image charge
+[render] brand background — 0 customer-filled b-roll segment(s)
+[render] subtitle-overlay bgmFile: (none)
+[render] subtitle-overlay bgmFile: (none)
+PASS actual render POST service omission/mismatch and owned web derivative ceiling enforcement
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=startup 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=tts 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=captions 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=keywords 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=stock 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq step=config 0.0s
+[mcp-worker] job cmv6zcl6n0008q6xjotniu2fq PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=32 subMode=sentence
+PASS known-completed base restart resumes retained work without new render or narration
+[mcp-worker] job cmv6zclk90031q6xjuwq35zcg step=startup 0.0s
+[mcp-worker] job cmv6zclk90031q6xjuwq35zcg step=burn 0.0s
+[mcp-worker] job cmv6zclk90031q6xjuwq35zcg EXPORT total=0s source=cmv6zcl6n0008q6xjotniu2fq
+PASS ordinary USER hero-ai-image FINAL export preserves quote and adds no charge
+[mcp-worker] job cmv6zcllh003eq6xjiwkbglie step=startup 0.0s
+[mcp-worker] job cmv6zcllh003eq6xjiwkbglie step=tts 0.0s
+[mcp-worker] job cmv6zcllh003eq6xjiwkbglie step=captions 0.0s
+[mcp-worker] job cmv6zcllh003eq6xjiwkbglie step=keywords 0.0s
+[mcp-worker] job cmv6zcln40044q6xjwb0d1qpt step=startup 0.0s
+[mcp-worker] job cmv6zcln40044q6xjwb0d1qpt step=tts 0.0s
+[mcp-worker] job cmv6zcln40044q6xjwb0d1qpt step=captions 0.0s
+[mcp-worker] job cmv6zcln40044q6xjwb0d1qpt step=keywords 0.0s
+PASS actual HTTP no-ID submission uncertainty retains exposure and cannot resume through approval
+PASS ordinary image cap HTTP response creates exact linked incremental approval without terminal refund
+PASS ordinary USER approved hero-ai-image through real orchestrator to held preview; numeric cap propagated; authoritative funding transferred once (media/render providers stubbed)

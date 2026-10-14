@@ -6,11 +6,11 @@ import {
 } from "@/lib/internal-ai-access";
 
 /** Public MCP names. The worker still receives the editor's stockSource values. */
-export const MCP_BROLL_SOURCES = ["stock", "hero-ai-image", "automix"] as const;
+export const MCP_BROLL_SOURCES = ["stock", "hero-ai-image", "automix", "external"] as const;
 export type McpBrollSource = (typeof MCP_BROLL_SOURCES)[number];
 
 export function mcpBrollSource(value: unknown): McpBrollSource {
-  return value === "hero-ai-image" || value === "automix" ? value : "stock";
+  return value === "external" || value === "hero-ai-image" || value === "automix" ? value : "stock";
 }
 
 export function mcpBrollUsesHeroImages(source: McpBrollSource): boolean {
@@ -19,12 +19,13 @@ export function mcpBrollUsesHeroImages(source: McpBrollSource): boolean {
 
 /** Fields stored on the video job. Stock stays absent so the worker keeps its default. */
 export function mcpBrollJobFields(source: McpBrollSource): {
-  stockSource?: "kie-image" | "auto-mix";
+  stockSource?: "kie-image" | "auto-mix" | "none";
   imageEngine?: "runpod";
   imageModel?: "z-image-turbo";
   autoMixProviders?: string[];
   autoMixWeights?: { video: number; photo: number; ai: number };
 } {
+  if (source === "external") return { stockSource: "none" };
   if (source === "hero-ai-image") {
     return { stockSource: "kie-image", imageEngine: "runpod", imageModel: "z-image-turbo" };
   }

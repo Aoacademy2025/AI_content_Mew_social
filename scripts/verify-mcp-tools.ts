@@ -68,6 +68,7 @@ async function main() {
     data: {
       userId: alice.id,
       status: "done",
+      fundingState: "settled", fundedMeteredMinutes: 1, fundedCreditsSpent: 2,
       progress: 100,
       inputJson: JSON.stringify({ script: "พร้อมใช้" }),
       outputJson: JSON.stringify({
@@ -89,6 +90,10 @@ async function main() {
       }),
     },
   });
+  await prisma.renderJob.create({ data: {
+    userId: alice.id, parentJobId: completedJob.id, type: "RENDER", status: "DONE", payload: "{}",
+    reservedQuota: true, reservedMinutes: 1, creditsSpent: 2, videoUrl: "/api/renders/final.mp4",
+  } });
   const completedJobStatus = await getVideoJobStatusTool(alice.id, completedJob.id);
   assert(
     completedJobStatus?.subtitleQa?.status === "passed"

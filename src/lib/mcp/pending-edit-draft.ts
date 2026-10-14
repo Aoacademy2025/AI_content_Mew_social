@@ -1,3 +1,8 @@
+import type { Prisma } from "@prisma/client";
+import { externalWindowStates, type ExternalWindowState } from "@/lib/external-media";
+import { ownedDraftImports, validateExternalMediaExport } from "@/lib/external-media.server";
+import { resolvePendingWindowMedia, type PendingWindowMedia } from "@/lib/pending-broll-media";
+import { MAX_BROLL_WINDOW_EDITS, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
 import { prisma } from "@/lib/prisma";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
@@ -162,7 +167,7 @@ function editorFields(draft: Pick<PendingEditDraft, "captions" | "originalCaptio
 }
 
 function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
-  if (!Array.isArray(value) || value.length > 200) return null;
+  if (!Array.isArray(value) || value.length > MAX_BROLL_WINDOW_EDITS) return null;
   const edits: PendingEditWindowEdit[] = [];
   for (const candidate of value) {
     const item = record(candidate);
@@ -584,13 +589,7 @@ export function toEditorSnapshotDraft(draft: PendingEditDraft): EditorExportDraf
   return structuredClone(editorFields(draft));
 }
 
-/** T8 (ADR 0064, G21): the fields the web Post phase needs, projected from the stored draft —
- *  only when it still targets the project's current base (`activeJobId`). `rootJobId`, `logoOverlay`
- *  and `windowEdits` are MCP-only concerns and are never surfaced here: the web keeps its own logo
- *  from the project (per the plan, "logo stays from the project"), and web edits never touch
- *  windowEdits. A project with no stored draft, or a draft seeded for a different base job
- *  (the agent edited an earlier render than the one the project now points at), reads as `null` —
- *  the web Post phase then behaves exactly as it does today. */
+/** Shared client-safe caption/style projection. Async owner-resolved media is added below. */
 export type PendingEditForWeb = {
   revision: number;
   draft: {
@@ -604,6 +603,10 @@ export type PendingEditForWeb = {
     headlineHook?: HeadlineHookConfig;
     backgroundMusic?: BackgroundMusicEdit;
     tailHoldMs: number;
+    windowEdits?: WindowEdit[];
+    windowMedia?: PendingWindowMedia[];
+    requiredWindows?: ExternalWindowState[];
+    brollTransition?: BrollTransition;
   };
 };
 
@@ -630,4 +633,46 @@ export function pendingEditForWeb(project: {
       tailHoldMs: draft.tailHoldMs,
     },
   };
+}
+
+/** Owner-resolved web projection: raw import IDs/URLs never become browser render sources. */
+export async function pendingEditForWebResolved(userId: string, project: Parameters<typeof pendingEditForWeb>[0]): Promise<PendingEditForWeb | null> {
+  const view = pendingEditForWeb(project);
+  const draft = parsePendingEditDraft(project.pendingEditJson);
+  if (!view || !draft) return null;
+  const rows = await prisma.videoJob.findMany({ where: { userId, id: { in: [draft.rootJobId, draft.baseJobId] } }, select: { id: true, outputJson: true, projectId: true } });
+  const root = rows.find(r => r.id === draft.rootJobId);
+  const base = rows.find(r => r.id === draft.baseJobId);
+  if (!root || !base || root.projectId !== base.projectId) return null;
+  const rootPreview = parseVideoJobOutput(root.outputJson)?.preview ?? null;
+  const basePreview = parseVideoJobOutput(base.outputJson)?.preview;
+  if (!basePreview) return null;
+  const windowMedia = resolvePendingWindowMedia(rootPreview, draft.windowEdits, await ownedDraftImports(userId, draft));
+  const windowEdits = windowMedia.flatMap(w => w.edit ? [w.edit] : []);
+  const merged = mergeWindowEdits((basePreview.config as { bgVideos?: unknown[] }).bgVideos ?? [], windowEdits);
+  const refusal = await validateExternalMediaExport({ userId, sourceJobId: draft.baseJobId, draft, allowPending: true });
+  const requiredWindows = refusal?.windows ?? externalWindowStates(rootPreview?.config, "error" in merged ? basePreview.config : { bgVideos: merged.bgVideos });
+  for (const media of windowMedia) {
+    const window = requiredWindows.find(w => w.index === media.index);
+    if (window && media.status !== "ready") { window.state = media.status; if (media.error) window.importError = media.error; }
+  }
+  return { ...view, draft: { ...view.draft, windowEdits, windowMedia, requiredWindows, ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}) } };
+}
+
+export class StaleWebApplyError extends Error {
+  constructor() {
+    super("มีการแก้ไขใหม่ระหว่างใช้การเปลี่ยนแปลง งานนี้ยังไม่ถูกนำไปใช้ กรุณาโหลด Editor ใหม่ ตรวจสอบการแก้ไขล่าสุด แล้วกด Apply อีกครั้ง");
+    this.name = "StaleWebApplyError";
+  }
+}
+
+/** Completion and activation share this transaction: a newer draft must abort both. */
+export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean }) {
+  const project = await tx.editorProject.findFirst({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, select: { pendingEditJson: true } });
+  const draft = parsePendingEditDraft(project?.pendingEditJson ?? null);
+  if (!draft || draft.baseJobId !== input.sourceJobId) throw new StaleWebApplyError();
+  const next = { ...draft, baseJobId: input.jobId, windowEdits: draft.windowEdits.filter(e => !input.indices.includes(e.index)) };
+  if (input.transitionApplied) delete next.brollTransition;
+  const updated = await tx.editorProject.updateMany({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, data: { pendingEditJson: JSON.stringify(next), pendingEditRevision: { increment: 1 } } });
+  if (updated.count !== 1) throw new StaleWebApplyError();
 }

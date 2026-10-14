@@ -175,13 +175,15 @@ async function refundJob(input: {
   reason: string;
   dryRun: boolean;
   cancel?: CancelOutcome;
+  providerOutcomeKnown?: boolean;
 }): Promise<StaleReservedImageDecision> {
   const { job, reason } = input;
   const cancel = input.cancel ?? {};
+  if (job.budgetQuoteId && !input.providerOutcomeKnown && !input.cancel?.cancelOk) return { jobId: job.id, action: "skip", reason: "provider_outcome_unknown", credits: 0, ...cancel };
   if (input.dryRun) {
     return { jobId: job.id, action: "refund", reason, credits: job.creditCost, ...cancel };
   }
-  const updated = await failAndRefundAiJob(job.userId, job.id, input.errorCode, input.errorMessage);
+  const updated = await failAndRefundAiJob(job.userId, job.id, input.errorCode, input.errorMessage, input.providerOutcomeKnown || input.cancel?.cancelOk);
   if (updated?.chargeState !== "refunded") {
     // Another worker (or the original request) settled/refunded it first. The
     // transition guard inside failAndRefundAiJob already prevented a second payout.
@@ -192,7 +194,7 @@ async function refundJob(input: {
 
 async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<StaleReservedImageDecision> {
   const parentStatus = await terminalParentVideoStatus(job);
-  if (parentStatus) {
+  if (parentStatus && !job.budgetQuoteId) {
     // A terminal parent can no longer consume a reserved image. This includes a
     // successful `done` AutoMix which deliberately omitted an ambiguous slot:
     // accepting a late provider result would charge for an image that is absent
@@ -253,9 +255,11 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
   }
 
   if (snapshot.status === "COMPLETED") {
+    if (parentStatus) return refundJob({ job, errorCode: REFUND_PARENT_TERMINAL, errorMessage: `Parent video is ${parentStatus}`, reason: `parent_${parentStatus}`, dryRun, providerOutcomeKnown: true });
     if (!snapshot.image) {
       return refundJob({
         job,
+        providerOutcomeKnown: true,
         errorCode: REFUND_OUTPUT_LOST,
         errorMessage: "Provider reported COMPLETED without an image",
         reason: "output_missing",
@@ -274,6 +278,7 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
     } catch (error) {
       return refundJob({
         job,
+        providerOutcomeKnown: true,
         errorCode: REFUND_OUTPUT_LOST,
         errorMessage: `Provider output could not be stored: ${safeMessage(error)}`,
         reason: "output_unretrievable",
@@ -301,6 +306,7 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
       errorCode: REFUND_STALE,
       errorMessage: snapshot.error || `Provider job ${snapshot.status.toLowerCase()}`,
       reason: `provider_${snapshot.status.toLowerCase()}`,
+      providerOutcomeKnown: true,
       dryRun,
     });
   }

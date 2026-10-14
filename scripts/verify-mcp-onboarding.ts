@@ -52,6 +52,16 @@ assert(guide.avatarViaChat === true, "setup guide flags avatar as available via 
 assert(guide.steps.find((s) => s.key === "gemini")!.required === true, "gemini step is required");
 assert(guide.steps.find((s) => s.key === "elevenlabs")!.required === false, "elevenlabs step is optional");
 
+// Approved media-source and spending conversation.
+assert(SERVER_INSTRUCTIONS.includes("อยากใช้ภาพประกอบแบบไหน: สต็อก, Hero AI Image, AutoMix หรือให้ AI ที่คุณคุยอยู่สร้าง/หาภาพและวิดีโอแล้วนำเข้าให้?"), "ask all four sources before creation");
+assert(SERVER_INSTRUCTIONS.includes("เครื่องมือที่เชื่อมต่ออยู่ยังสร้างหรือค้นหาสื่อนี้ไม่ได้ คุณส่งไฟล์/ลิงก์ให้ผม หรือเลือกแหล่งสื่ออื่นได้"), "honest unavailable-tool disclosure");
+assert(SERVER_INSTRUCTIONS.includes("ไม่ใช้ Hero credits สำหรับการสร้างภาพ · การเรนเดอร์ยังใช้นาทีตามแผนหรือเครดิตส่วนเกิน · เครื่องมือภายนอกของคุณอาจมีค่าใช้จ่ายของตัวเอง"), "external costs distinguish image and render");
+for (const term of ["prepare_video_job", "confirmationUrl", "get_video_quote", "create_video_job({quoteId})", "insufficient", "quote_expired", "quote_price_changed", "pendingRefundCredits", "confirmedRefundCredits", "receipt_required", "render_receipt_required", "confirmation_required"]) {
+  assert(SERVER_INSTRUCTIONS.includes(term), `spending guidance: ${term}`);
+}
+assert(SERVER_INSTRUCTIONS.includes("ห้ามเรียกว่าวิดีโอทั้งชิ้นฟรี"), "zero image credits still disclose render usage");
+assert(SERVER_INSTRUCTIONS.includes("ยังไม่มีขั้นตอนขอใบยืนยันสำหรับ creative reroll รายช่วง"), "do not invent reroll approval workflow");
+
 // --- server instructions carry the guardrails the assistant must honor ---
 assert(SERVER_INSTRUCTIONS.includes(SETTINGS_URL), "instructions tell where to set keys");
 assert(SERVER_INSTRUCTIONS.includes("ห้าม"), "instructions forbid pasting keys into chat (security)");
@@ -112,7 +122,7 @@ assert(
 // once; re-export always free; export_not_free / stale_revision explained) — agent-neutral,
 // never names a specific agent product (G32). -----------------------------------------------
 assert(
-  SERVER_INSTRUCTIONS.includes('create_video_job(exportMode:"hold")')
+  SERVER_INSTRUCTIONS.includes('exportMode:"hold" ตอน prepare_video_job')
     && SERVER_INSTRUCTIONS.includes("get_edit_state(jobId)")
     && SERVER_INSTRUCTIONS.includes("export_video(jobId) ครั้งเดียวเมื่อแก้ครบ"),
   "instructions: edit-before-export flow is hold → get_edit_state → small edits → export_video once",
@@ -155,7 +165,7 @@ assert(SERVER_INSTRUCTIONS.includes(`ไม่เกิน ${formatImportBytes(M
   && SERVER_INSTRUCTIONS.includes(`${formatImportBytes(MAX_IMPORT_BYTES_PER_DAY)} ต่อ 24 ชั่วโมง`)
   && SERVER_INSTRUCTIONS.includes("Content-Length"),
   "instructions: per-user byte budgets (staging share / hour / 24 h) match limits.ts, and PUT declares Content-Length");
-assert(SERVER_INSTRUCTIONS.includes("create_video_job({clipUrl})") && SERVER_INSTRUCTIONS.includes("create_video_job({clipUploadId})")
+assert(SERVER_INSTRUCTIONS.includes("clipUrl หรือ clipUploadId ตอน prepare_video_job") && SERVER_INSTRUCTIONS.includes("create_video_job({quoteId})")
   && SERVER_INSTRUCTIONS.includes("ห้ามส่งทั้งคู่") && SERVER_INSTRUCTIONS.includes("HeyGen")
   && SERVER_INSTRUCTIONS.includes('"fillYourself"') && SERVER_INSTRUCTIONS.includes('currentStep "import"')
   && SERVER_INSTRUCTIONS.includes("ไม่ตัดโควต้าหรือเครดิต"),
@@ -178,8 +188,12 @@ const mediaImportSection = SERVER_INSTRUCTIONS.slice(SERVER_INSTRUCTIONS.indexOf
 assert(!/10\s*นาที/.test(mediaImportSection) && SERVER_INSTRUCTIONS.includes("ห้ามสัญญาเวลารวมตายตัว"),
   "instructions: never promise a fixed total import time (no '10 นาที' beyond the BUSINESS length cap)");
 const routeForT14 = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
-assert(routeForT14.includes("clipUrl (ลิงก์ https สาธารณะ)") && routeForT14.includes("cutawayLayout fillYourself"),
-  "create_video_job tool description: presenter clip via clipUrl/clipUploadId + fillYourself");
+const createDescription = routeForT14.match(/title: "Create video job",\s*description: "([^"]+)"/)?.[1] ?? "";
+assert(createDescription.includes("clipUploadId")
+  && createDescription.includes("clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน")
+  && createDescription.includes("quoteId เดิม")
+  && createDescription.includes("stock | hero-ai-image | automix | external"),
+  "create_video_job tool description: validated presenter import and approved quote for all four sources");
 
 assert(
   !/claude|anthropic|chatgpt|openai|copilot|gpt-?\d/i.test(SERVER_INSTRUCTIONS),
@@ -227,8 +241,8 @@ function main() {
     "cancel_video_job tool description: base-render charge + non-refundable HeyGen");
   assert(routeSrc.includes("ถ้ามี warnings/subtitleQa ให้แจ้งผู้ใช้") && routeSrc.includes("กดลิงก์นี้เพื่อแก้ต่อในเว็บได้"),
     "get_video_status tool description: warnings/subtitleQa/editorUrl/userAction+refund");
-  assert(routeSrc.includes("แจ้งผู้ใช้ทุกข้อใน warnings") && routeSrc.includes("มีผลกับสไตล์ซับเท่านั้น"),
-    "create_video_job tool description: warnings + brand=subtitle-only");
+  assert(createDescription.includes("แจ้ง warnings") && createDescription.includes("เพดานค่าใช้จ่าย"),
+    "create_video_job tool description: relay warnings and spending ceilings");
 
   console.log(`\n${passed} assertions passed ✅`);
 }

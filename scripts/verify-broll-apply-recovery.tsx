@@ -27,7 +27,9 @@ window.__adopted = [];
 const accountId = new URLSearchParams(location.search).get("account") ?? "account-a";
 function Probe() {
   const [version, setVersion] = useState(0);
-  const ed = usePostPhaseEditor(job, "", { projectId, accountId,
+  const [pendingEdit, setPendingEdit] = useState(null);
+  window.__setPending = setPendingEdit;
+  const ed = usePostPhaseEditor(job, "", { projectId, accountId, pendingEdit,
     narrativeSourceKind: "manual", onExportJob: async () => ({ ok: true }),
     onAdoptJob: (value) => window.__adopted.push(value), onNewProject: () => {} });
   useEffect(() => { window.__ed = ed; window.__version = version; });
@@ -351,6 +353,26 @@ async function main() {
     await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1,
       { timeout: 5_000 });
     console.log("PASS: development StrictMode remount keeps one known-job recovery alive");
+
+    // Keep the real hook mounted while export clears the server draft, then stage new work.
+    await page.goto(`http://127.0.0.1:${address.port}/video-editor`);
+    await page.waitForSelector("#stage");
+    await page.evaluate(() => (window as unknown as { __setPending: (v: unknown) => void }).__setPending({ revision: 7, draft: {
+      version: 1, sourceJobId: "source-job", captions: [], originalCaptions: [],
+      subtitleConfig: {}, cardLen: 20, captionOverrides: {}, windowEdits: [],
+    } }));
+    await page.waitForFunction(() => (window as unknown as { __ed: { pendingEditBanner: unknown } }).__ed.pendingEditBanner !== null);
+    await page.evaluate(() => (window as unknown as { __setPending: (v: unknown) => void }).__setPending(null));
+    await page.waitForFunction(() => !(window as unknown as { __ed: { pendingEditBanner: unknown } }).__ed.pendingEditBanner);
+    await page.click("#stage");
+    await page.click("#apply");
+    await page.waitForFunction(() => (window as unknown as { __postBodies: unknown[] }).__postBodies.length === 1);
+    assert.equal(await page.evaluate(() => (window as unknown as { __postBodies: Record<string, unknown>[] }).__postBodies[0].expectedPendingRevision), undefined,
+      "cleared server draft must not send its retired revision with the next Apply");
+    await page.evaluate(() => localStorage.removeItem("editor-v2-broll-apply:account-a:project-a"));
+    await page.evaluate(() => { (window as unknown as { __finish: boolean }).__finish = true; });
+    await page.waitForFunction(() => (window as unknown as { __adopted: unknown[] }).__adopted.length === 1);
+    console.log("PASS: mounted pending draft → null → new Apply drops retired revision");
 
     // EP5 #11 / U3: a staged transition/fit and project default travel in the POST body and the
     // journal, survive a refresh, and clear once the re-render is adopted.

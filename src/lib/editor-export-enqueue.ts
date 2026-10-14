@@ -1,3 +1,5 @@
+import { parsePendingEditDraft } from "@/lib/mcp/pending-edit-draft";
+import { validateExternalMediaExport, validateExternalWindowEdits } from "@/lib/external-media.server";
 import type { VideoJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
@@ -42,6 +44,8 @@ export type EditorEnqueueRefusal = {
   status: number;
   error: string;
   message?: string;
+  next?: string;
+  windowIndices?: number[];
 };
 
 export type EditorEnqueueResult = { ok: true; job: VideoJob } | EditorEnqueueRefusal;
@@ -154,6 +158,8 @@ export async function enqueueEditorExport(input: {
   await assertCurrentEditorExportSource(user.id, sourceProjectId, sourceJobId);
   const parsed = parseVideoJobOutput(srcJob.outputJson);
   if (!parsed?.preview) return refuse(400, "source_not_exportable", "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก");
+  const externalRefusal = await validateExternalMediaExport({ userId: user.id, sourceJobId });
+  if (externalRefusal) return { ok: false, status: 409, ...externalRefusal };
   const editSnapshot = input.editorSnapshot === undefined
     ? undefined
     : createEditorExportSnapshot({
@@ -327,6 +333,7 @@ export async function enqueueBrollRerender(input: {
    * hop drops exactly those from the draft when it rebases the draft onto the re-render.
    */
   mcpExportAfter?: { appliedDraftWindowEdits: unknown[] };
+  expectedPendingRevision?: number;
 }): Promise<EditorEnqueueResult> {
   const { user, sourceJobId } = input;
   if (!sourceJobId) return refuse(400, "invalid_source", SOURCE_NOT_FOUND_MESSAGE);
@@ -351,6 +358,17 @@ export async function enqueueBrollRerender(input: {
   if (input.rootJobId && !(await rootBelongsToProject(user.id, input.rootJobId, srcJob.projectId))) {
     return refuse(404, "source_not_found", SOURCE_NOT_FOUND_MESSAGE);
   }
+  const importRefusal = await validateExternalWindowEdits(user.id, sourceJobId, requestRes.windowEdits);
+  if (importRefusal) return { ok: false, status: 409, ...importRefusal };
+  let webPendingEditRevision: number | undefined;
+  if (!input.rootJobId && srcJob.projectId) {
+    await assertCurrentEditorExportSource(user.id, srcJob.projectId, sourceJobId);
+    const project = await prisma.editorProject.findFirst({ where: { id: srcJob.projectId, userId: user.id }, select: { pendingEditJson: true, pendingEditRevision: true } });
+    const pending = parsePendingEditDraft(project?.pendingEditJson ?? null);
+    if ((pending?.windowEdits.length || input.expectedPendingRevision !== undefined)
+      && project?.pendingEditRevision !== input.expectedPendingRevision) return refuse(409, "stale_revision", STALE_PENDING_REVISION_MESSAGE);
+    if (pending && input.expectedPendingRevision !== undefined) webPendingEditRevision = input.expectedPendingRevision;
+  }
   if (await inflightCapReached(user.id)) return refuse(429, "too_many_jobs", TOO_MANY_JOBS_MESSAGE);
 
   // Inherit the SOURCE job's projectId (server-trusted — never a body projectId) so the
@@ -364,6 +382,7 @@ export async function enqueueBrollRerender(input: {
       previewMode: true,
       sourceJobId,
       windowEdits: requestRes.windowEdits,
+      ...(webPendingEditRevision !== undefined ? { webPendingEditRevision } : {}),
       ...(requestRes.brollTransition ? { brollTransition: requestRes.brollTransition } : {}),
       ...rootLinkInput(input.rootJobId),
       ...(input.rootJobId && input.mcpExportAfter

@@ -41,24 +41,10 @@ check(
   mcpStockKeyRefusal({ needsStockKey: false, hasOwnStockKey: false, managedStockEligible: false }) === false,
 );
 
-// ── Wiring: the route actually calls through, not just the key check ────────
+// Quote preparation is deliberately local and performs no provider-key preflight.
+// The real managed-stock resolver is independently covered by verify-managed-stock-server.
 const route = readFileSync(new URL("../src/app/api/[transport]/route.ts", import.meta.url), "utf8");
-check(
-  "the gate no longer refuses on raw key presence alone (old bug)",
-  !/if \(needsStockKey && !u\.pexelsKey && !u\.pixabayKey\) return missingKeyError/.test(route),
-);
-check(
-  "create_video_job consults resolveManagedStockAccess for a keyless stock request",
-  route.includes("resolveManagedStockAccess(u, { hasOwnPexelsKey: false, hasOwnPixabayKey: false })"),
-);
-check(
-  "the managed lookup only runs when it is actually needed (keyless + stock required)",
-  /needsStockKey && !hasOwnStockKey\s*\n\s*\? await resolveManagedStockAccess/.test(route),
-);
-check(
-  "the refusal itself goes through the tested pure decision function",
-  /if \(mcpStockKeyRefusal\(\{[\s\S]{0,200}return missingKeyError\("broll"\)/.test(route),
-);
+check("public creation delegates to the approval gate", route.includes("requestVideoJob(p.user, args)"));
 
 console.log(failures === 0 ? "\n✅ ALL MCP STOCK GATE CHECKS PASSED" : `\n❌ ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

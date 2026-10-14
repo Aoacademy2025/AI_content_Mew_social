@@ -1,3 +1,5 @@
+import { budgetStage } from "@/lib/mcp/video-budget-checkpoint";
+import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import { NextResponse } from "next/server";
 import { createStockImagePrefix } from "@/lib/stock-image-paths";
 import { getCurrentUser } from "@/lib/clerk-auth";
@@ -1010,6 +1012,7 @@ async function llmRankCandidates(
         results[start + i] = chunkResult[i];
       }
     } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
       console.warn(`[fetch-stock] LLM chunk ${start}-${end - 1} failed:`, e);
       // Keep default -1 for this chunk so selection uses soft-score fallback.
     }
@@ -1019,6 +1022,13 @@ async function llmRankCandidates(
 
 // POST /api/videos/fetch-stock
 export async function POST(req: Request) {
+  try { return await handleFetchStock(req); }
+  catch (error) {
+    if (error instanceof VideoBudgetHoldError) return NextResponse.json({ error: error.code, code: error.code, message: error.message, reason: error.reason, additional: error.additional }, { status: 409 });
+    throw error;
+  }
+}
+async function handleFetchStock(req: Request) {
   const routeStartedAt = Date.now();
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -1392,7 +1402,8 @@ export async function POST(req: Request) {
   let llmMode: "managed" | "byok" | null = null;
   if (user) {
     try { const resolved = resolveGeminiKey(user); llmKey = resolved.key; llmMode = resolved.mode; }
-    catch (e) { if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
+    catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e; if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
   }
 
   // ── Managed-kie credit metering (money path) ──────────────────────────────
@@ -1758,6 +1769,7 @@ export async function POST(req: Request) {
                 endpointId: heroAutoMixOffer!.providerEndpoint,
               });
             } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
               heroAutoMixTelemetry.heroAutoMixCostGuardError =
                 error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
               console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
@@ -2121,6 +2133,11 @@ export async function POST(req: Request) {
     relevanceScore?: number;
   }[] = [];
 
+  const retainResult = async (asset: (typeof results)[number]) => {
+    const retained = await budgetStage(userId, fromRenderPipeline ? videoJobId : undefined, "stock-asset", { keyword: asset.keyword, sourceIndex: asset.sourceIndex, stockSource }, async () => asset);
+    results.push(retained);
+  };
+
   // ── Hero AI Image (isolated RunPod Z-Image, internal beta) ─────────────
   // This branch is intentionally separate from KIE/AutoMix. Every scene owns a
   // durable generation id + exact credit reservation and there is no provider
@@ -2278,6 +2295,7 @@ export async function POST(req: Request) {
       try {
         providerHealth = await getRunpodEndpointHealth(heroOffer.providerEndpoint);
       } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
         console.warn("[fetch-stock] Hero RunPod health preflight failed:", error);
         await recordFetchStockTelemetry("error", {
           ...heroAiTelemetry,
@@ -2389,6 +2407,7 @@ export async function POST(req: Request) {
       region: brollPreference.brollRegionPreference,
       style: brollPreference.brollVisualStyle,
     };
+    const heroScenePlan = await budgetStage(userId, videoJobId, "hero-scene-plan", heroPlanningInput, async () => {
     const heroPlannerCalls = heroImagePlannerCallCount(heroPlanningInput.scenes.length);
     let heroPlannerAllowed = Boolean(llmKey);
     if (llmKey && heroPlannerCalls > 0) {
@@ -2401,12 +2420,13 @@ export async function POST(req: Request) {
         console.warn("[fetch-stock] Hero scene planner text-call ceiling reached — using script-aware deterministic fallback");
       }
     }
-    const heroScenePlan = await planHeroImageScenes(
+    return planHeroImageScenes(
       heroPlanningInput,
       heroPlannerAllowed && llmKey
         ? (prompt, maxOutputTokens) => geminiGenerateText(llmKey!, prompt, maxOutputTokens, 0.2)
         : null,
     );
+    });
     const heroBriefByScene = new Map(
       heroScenePlan.briefs.map((brief) => [brief.sceneIndex, brief]),
     );
@@ -2458,7 +2478,7 @@ export async function POST(req: Request) {
             stockTelemetry.downloadedCount++;
             stockTelemetry.normalizeSkippedCount++;
           }
-          results.push({
+          await retainResult({
             keyword,
             sourceIndex,
             pexelsId: id,
@@ -2482,6 +2502,7 @@ export async function POST(req: Request) {
             properties: { videoJobId, sceneIndex: sourceIndex, visualBeatId: asset.beatId },
           }).catch(() => {});
         } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
           safeUnlink(imagePath);
           safeUnlink(outPath);
           safeUnlink(normalizedMarkerPath(outPath));
@@ -2561,6 +2582,7 @@ export async function POST(req: Request) {
         aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
         return { stopBatch: false };
       } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
         stockTelemetry.downloadFailCount++;
         aiTelemetry.aiGenFailedCount++;
         const code = error instanceof HeroImageGenerationError
@@ -2710,7 +2732,7 @@ export async function POST(req: Request) {
               stockTelemetry.normalizeSkippedCount++;
             }
 
-            results.push({
+            await retainResult({
               keyword,
               sourceIndex,
               pexelsId: id,
@@ -2756,6 +2778,7 @@ export async function POST(req: Request) {
               },
             }).catch(() => {});
           } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
             safeUnlink(imagePath);
             safeUnlink(outPath);
             safeUnlink(normalizedMarkerPath(outPath));
@@ -2821,7 +2844,7 @@ export async function POST(req: Request) {
               if (!isValidMp4Path(outPath)) throw new Error("covered scene Ken Burns output is invalid");
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
             }
-            results.push({
+            await retainResult({
               keyword: window.keyword,
               sourceIndex,
               pexelsId: id,
@@ -2851,6 +2874,7 @@ export async function POST(req: Request) {
               },
             }).catch(() => {});
           } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
             safeUnlink(imagePath);
             safeUnlink(outPath);
             safeUnlink(normalizedMarkerPath(outPath));
@@ -3036,7 +3060,7 @@ export async function POST(req: Request) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++; // Ken Burns output is already CFR/no-B-frames — no extra normalize pass needed
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-              results.push({
+              await retainResult({
                 keyword, sourceIndex, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
@@ -3044,6 +3068,7 @@ export async function POST(req: Request) {
               });
               success = true;
             } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
               stockTelemetry.downloadFailCount++;
               failureReason = "provider_error";
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
@@ -3056,10 +3081,11 @@ export async function POST(req: Request) {
               style: brollPreference.brollVisualStyle,
             }))), kieToken!);
             const imageUrl = await kiePollResult(imageTaskId, kieToken!);
-            results.push({ keyword, sourceIndex, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
+            await retainResult({ keyword, sourceIndex, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
             success = true;
           }
         } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
           stockTelemetry.noCandidateKeywords++;
           failureReason = "provider_error";
           console.error(`[fetch-stock] kie.ai generation failed for "${query}":`, e);
@@ -3072,6 +3098,7 @@ export async function POST(req: Request) {
               await refundImageSpend(gate);
               creditsRefunded = gate.creditsSpent;
             } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
               refundError = e;
               failureReason = "refund_error";
             }
@@ -3157,6 +3184,7 @@ export async function POST(req: Request) {
           () => searchPixabay(query, pixabayKey!, 5, perPage),
         );
       } catch (err) {
+        if (err instanceof VideoBudgetHoldError) throw err;
         noteStockProviderError(err);
       }
     }
@@ -3170,6 +3198,7 @@ export async function POST(req: Request) {
           () => searchPexels(query, pexelsKey!, 3, perPage),
         );
       } catch (err) {
+        if (err instanceof VideoBudgetHoldError) throw err;
         noteStockProviderError(err);
       }
     }
@@ -3386,6 +3415,7 @@ export async function POST(req: Request) {
         stockTelemetry.noCandidateKeywords++;
         return [];
       } catch (err) {
+        if (err instanceof VideoBudgetHoldError) throw err;
         console.error(`[fetch-stock] error for "${keyword}":`, err);
         stockTelemetry.noCandidateKeywords++;
         return [];
@@ -3435,6 +3465,7 @@ export async function POST(req: Request) {
             console.log(`[fetch-stock] VISION re-rank judged ${judged}/${keywords.length} subtitles`);
           }
         } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
           stockTelemetry.visionRankingFailed = true;
           console.warn(`[fetch-stock] vision re-rank failed — falling back to text ranking:`, e);
         }
@@ -3455,6 +3486,7 @@ export async function POST(req: Request) {
           stockTelemetry.llmRankingFailed = true;
         }
       } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
         stockTelemetry.llmRankingFailed = true;
         console.error(`[fetch-stock] LLM ranking failed, falling back to soft relevance pick:`, e);
         bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
@@ -3721,7 +3753,7 @@ export async function POST(req: Request) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-              results.push({
+              await retainResult({
                 keyword: kw, sourceIndex: ki, pexelsId: id, duration: fallback.duration, videoUrl: fallback.imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl: fallback.imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
@@ -3730,6 +3762,7 @@ export async function POST(req: Request) {
               return;
             }
           } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
             console.error(`[fetch-stock] Auto Mix ${provider} fallback failed for "${query}":`, e);
           }
         }
@@ -3757,7 +3790,7 @@ export async function POST(req: Request) {
               });
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
-              results.push({
+              await retainResult({
                 keyword: kw,
                 sourceIndex: ki,
                 pexelsId: id,
@@ -3779,6 +3812,7 @@ export async function POST(req: Request) {
                 properties: { videoJobId, sceneIndex: ki, visualBeatId: retained.beatId },
               }).catch(() => {});
             } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
               safeUnlink(imagePath);
               safeUnlink(outPath);
               safeUnlink(normalizedMarkerPath(outPath));
@@ -3853,7 +3887,7 @@ export async function POST(req: Request) {
             stockTelemetry.downloadedCount++;
             stockTelemetry.normalizeSkippedCount++;
             try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-            results.push({
+            await retainResult({
               keyword: kw, sourceIndex: ki, pexelsId: id, duration: KEN_BURNS_DURATION_SEC,
               videoUrl: generated.outputUrl,
               localPath: outPath, localUrl: `/api/stocks/${outFile}`,
@@ -3867,6 +3901,7 @@ export async function POST(req: Request) {
             });
             success = true;
           } catch (error) {
+        if (error instanceof VideoBudgetHoldError) throw error;
             safeUnlink(imagePath);
             safeUnlink(outPath);
             safeUnlink(normalizedMarkerPath(outPath));
@@ -3967,7 +4002,7 @@ export async function POST(req: Request) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-              results.push({
+              await retainResult({
                 keyword: kw, sourceIndex: ki, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
@@ -3978,6 +4013,7 @@ export async function POST(req: Request) {
               failureReason = "invalid_output";
             }
           } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
             console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
             // จับ "credit หมด" เพื่อแจ้งผู้ใช้ตอนท้าย (ไม่งั้นได้ 0 clips เงียบๆ)
             const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
@@ -3996,6 +4032,7 @@ export async function POST(req: Request) {
                 await refundImageSpend(gate);
                 creditsRefunded = gate.creditsSpent;
               } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
                 refundError = e;
                 failureReason = "refund_error";
               }
@@ -4094,7 +4131,7 @@ export async function POST(req: Request) {
           console.warn(`[fetch-stock] dropped broken cached clip after normalize failure: ${outFile}`);
           return;
         }
-        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
+        await retainResult({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
         return;
       }
       console.log(`[fetch-stock] downloading: ${outFile}`);
@@ -4123,13 +4160,14 @@ export async function POST(req: Request) {
           stockTelemetry.downloadFailCount++;
           return;
         }
-        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
+        await retainResult({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
       } catch (e) {
+        if (e instanceof VideoBudgetHoldError) throw e;
         stockTelemetry.downloadFailCount++;
         console.error(`[fetch-stock] failed to download ${outFile}:`, e);
       }
     } else {
-      results.push({ keyword, pexelsId: id, duration, videoUrl: link, ...resultMeta });
+      await retainResult({ keyword, pexelsId: id, duration, videoUrl: link, ...resultMeta });
     }
   });
   stockTelemetry.downloadPhaseMs = Date.now() - downloadPhaseStartedAt;

@@ -1,0 +1,39 @@
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=startup 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=tts 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=captions 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=keywords 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=startup 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=tts 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=captions 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=keywords 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=stock 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=config 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=32 subMode=sentence
+PASS HTTP uncertainty → retained hold → known image settlement → same-root continuation without repeated TTS/image charge
+[render] brand background — 0 customer-filled b-roll segment(s)
+[render] subtitle-overlay bgmFile: (none)
+[render] subtitle-overlay bgmFile: (none)
+PASS actual render POST service omission/mismatch and owned web derivative ceiling enforcement
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=startup 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=tts 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=captions 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=keywords 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=stock 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t step=config 0.0s
+[mcp-worker] job cmv6zba5o0008q6184ripqx7t PREVIEW TIMINGS total=0s startup=0s tts=0s captions=0s keywords=0s stock=0s config=0s render=0s scenes=32 subMode=sentence
+PASS known-completed base restart resumes retained work without new render or narration
+[mcp-worker] job cmv6zbaip0031q618f6f12mkp step=startup 0.0s
+[mcp-worker] job cmv6zbaip0031q618f6f12mkp step=burn 0.0s
+[mcp-worker] job cmv6zbaip0031q618f6f12mkp EXPORT total=0s source=cmv6zba5o0008q6184ripqx7t
+PASS ordinary USER automix FINAL export preserves quote and adds no charge
+[mcp-worker] job cmv6zbakc003eq618gm99adck step=startup 0.0s
+[mcp-worker] job cmv6zbakc003eq618gm99adck step=tts 0.0s
+[mcp-worker] job cmv6zbakc003eq618gm99adck step=captions 0.0s
+[mcp-worker] job cmv6zbakc003eq618gm99adck step=keywords 0.0s
+[mcp-worker] job cmv6zbao40044q618s32abfsb step=startup 0.0s
+[mcp-worker] job cmv6zbao40044q618s32abfsb step=tts 0.1s
+[mcp-worker] job cmv6zbao40044q618s32abfsb step=captions 0.1s
+[mcp-worker] job cmv6zbao40044q618s32abfsb step=keywords 0.0s
+PASS actual HTTP no-ID submission uncertainty retains exposure and cannot resume through approval
+PASS ordinary image cap HTTP response creates exact linked incremental approval without terminal refund
+PASS ordinary USER approved automix through real orchestrator to held preview; numeric cap propagated; authoritative funding transferred once (media/render providers stubbed)

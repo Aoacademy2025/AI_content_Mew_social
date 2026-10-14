@@ -1,3 +1,5 @@
+import { validateExternalMediaBurn } from "@/lib/external-media.server";
+import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
@@ -289,15 +291,31 @@ export async function POST(req: Request) {
     // reserved + completed). Foreign/external/fabricated sources are not found → charge.
     // This still runs before any heavy work (job cancellation / bundle / render), so the
     // PR-1 fail-fast property is preserved.
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf, projectId } = await req.json();
 
-    // parentJobId is request data, so only the server-authenticated service
-    // actor may use it to finish work that began before a deploy drain.
-    const verifiedParentJobId = typeof parentJobId === "string"
-      && parentJobId
-      && (await resolveServiceVideoJobId(userId)) === parentJobId
-      ? parentJobId
-      : undefined;
+    // Service identity is authoritative even when the body omits its parent.
+    const serviceParentJobId = await resolveServiceVideoJobId(userId);
+    if (serviceParentJobId && parentJobId != null && parentJobId !== serviceParentJobId) {
+      throw new VideoBudgetHoldError("render_parent_changed");
+    }
+    let verifiedParentJobId = serviceParentJobId ?? undefined;
+    // Browser derivatives resolve their persisted owner-scoped source/project.
+    // An ineligible free edit must retain its approval instead of becoming an
+    // unrelated, newly charged render. Historical unquoted requests stay unchanged.
+    const sourceJobId = rerenderOf && typeof rerenderOf === "object" ? rerenderOf.sourceJobId : undefined;
+    const ownedProject = typeof projectId === "string"
+      ? await prisma.editorProject.findFirst({ where: { id: projectId, userId }, select: { activeJobId: true } }) : null;
+    const ownedVideo = typeof videoId === "string"
+      ? await prisma.videoJob.findFirst({ where: { videoId, userId, budgetQuoteId: { not: null } }, select: { id: true } }) : null;
+    for (const candidate of [sourceJobId, ownedProject?.activeJobId, ownedVideo?.id, parentJobId]) {
+      if (typeof candidate !== "string") continue;
+      const source = await prisma.videoJob.findFirst({ where: { id: candidate, userId, budgetQuoteId: { not: null } }, select: { id: true, budgetQuoteId: true } });
+      if (!source) continue;
+      if (verifiedParentJobId && verifiedParentJobId !== source.id) {
+        const parent = await prisma.videoJob.findFirst({ where: { id: verifiedParentJobId, userId }, select: { budgetQuoteId: true } });
+        if (parent?.budgetQuoteId !== source.budgetQuoteId) throw new VideoBudgetHoldError("render_parent_changed");
+      } else verifiedParentJobId = source.id;
+    }
     await assertRenderEnqueueOpen(prisma, {
       parentVideoJobId: verifiedParentJobId,
       userId,
@@ -310,6 +328,11 @@ export async function POST(req: Request) {
     const isAvatarMode = !!avatarVideoUrl;
     const isShortVideo = !!shortVideoConfig;
     const isSubtitleOverlay = !!subtitleOverlayConfig;
+    if (isSubtitleOverlay) {
+      const refusal = await validateExternalMediaBurn(userId, subtitleOverlayConfig?.videoUrl);
+      if (refusal) return NextResponse.json(refusal, { status: 409 });
+    }
+
     const renderScopeId = normalizeRenderScopeId(jobScopeId);
     const renderOwnerKey = `${userId}:${renderScopeId}`;
 
@@ -402,6 +425,12 @@ export async function POST(req: Request) {
           rerenderSkipCharge = false; // fail-safe: any error → normal charging, never a free bypass
         }
       }
+    }
+
+    // Browser source/project hints constrain spending; they do not authorize
+    // consuming an original queued job's immutable execution reservation.
+    if (!serviceParentJobId && verifiedParentJobId && !burnAlreadyPaid && !rerenderSkipCharge) {
+      throw new VideoBudgetHoldError("render_execution_requires_worker");
     }
 
     // T5 (ADR 0064, G4) defence in depth: a job the MCP edit path enqueued carries
@@ -583,6 +612,10 @@ export async function POST(req: Request) {
       // createVideoJob already reserved this exact confirmed amount. Ownership
       // moved to this render; do not reserve it a second time.
     } else if (useMinuteQuota) {
+      if (verifiedParentJobId) {
+        const budgetParent = await prisma.videoJob.findFirst({ where: { id: verifiedParentJobId, userId }, select: { budgetQuoteId: true } });
+        if (budgetParent?.budgetQuoteId) throw new VideoBudgetHoldError("render_funding_transfer_required");
+      }
       // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
       // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
       // never enters the credit branch, so this is byte-identical to reserveMinutes.
@@ -1481,6 +1514,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ jobId });
   } catch (error) {
+    if (error instanceof VideoBudgetHoldError) return NextResponse.json({ error: error.code, code: error.code, message: error.message, reason: error.reason, additional: error.additional }, { status: 409 });
     if (quotaReserved && reservedUserId) {
       // Bucket-aware refund (mirrors the in-flight refundReservedClip). credit-funded →
       // refundCredits; minute-funded → refundMinutes; else clips. CREDITS_LIVE off →

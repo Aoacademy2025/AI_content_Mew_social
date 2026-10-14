@@ -1,3 +1,4 @@
+import { VideoBudgetHoldError } from "@/lib/mcp/video-budget-admission";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -358,6 +359,7 @@ export async function POST(req: Request) {
       replayed: Boolean(existingImageJob),
     });
   } catch (error) {
+    if (error instanceof VideoBudgetHoldError) return NextResponse.json({ error: error.code, code: error.code, message: error.message, next: "ขอใบยืนยันสำหรับการสร้างภาพใหม่ใน Studio ก่อนลองอีกครั้ง" }, { status: 409 });
     safeUnlink(outPath);
     safeUnlink(normalizedMarkerPath(outPath));
     if (registeredDerivativeSrc) {

@@ -80,7 +80,9 @@ export async function resolveBrollExportSource(input: {
 // a bare `..secret.mp4` can't traverse without a `/`, and the route serves flat basenames.
 const SRC_RE = /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/;
 const IMAGE_JOB_ID_RE = /^[a-z0-9_-]{8,120}$/iu;
-const MAX_EDITS = 40;
+// A 600s plan at the minimum 500ms cadence has at most 1200 windows;
+// five-second placeholder splitting adds at most 120. Keep draft and export bounds equal.
+export const MAX_BROLL_WINDOW_EDITS = 1500;
 const KEYWORD_MAX = 200;
 const MAX_CLIP_DURATION_SECONDS = 24 * 60 * 60;
 const TRANSITION_ERROR = "รูปแบบการเปลี่ยนฉาก b-roll ไม่ถูกต้อง";
@@ -88,14 +90,14 @@ const TRANSITION_ERROR = "รูปแบบการเปลี่ยนฉา
 /**
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
  * per index) or `{ error }` with a Thai message. Every item must change `src`, `enabled`, `start`,
- * `end`, `transition`, or `fit`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
+ * `end`, `transition`, or `fit`. Rejects: non-array, 0 or more than MAX_BROLL_WINDOW_EDITS edits, non-integer/negative index, a supplied `src`
  * that isn't a single flat `.mp4` under /api/renders or /api/stocks, non-boolean `enabled`, and
  * a keyword without a replacement source.
  */
 export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: string } {
   if (!Array.isArray(edits)) return { error: "รูปแบบการแก้ b-roll ไม่ถูกต้อง" };
   if (edits.length < 1) return { error: "ไม่มีการแก้ b-roll" };
-  if (edits.length > MAX_EDITS) return { error: `แก้ b-roll ได้ครั้งละไม่เกิน ${MAX_EDITS} จุด` };
+  if (edits.length > MAX_BROLL_WINDOW_EDITS) return { error: `แก้ b-roll ได้ครั้งละไม่เกิน ${MAX_BROLL_WINDOW_EDITS} จุด` };
 
   // Dedupe by index (last wins) while preserving encounter order of the survivors.
   const byIndex = new Map<number, WindowEdit>();

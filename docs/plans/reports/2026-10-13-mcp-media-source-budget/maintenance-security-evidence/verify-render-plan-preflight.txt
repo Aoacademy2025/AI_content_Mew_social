@@ -1,0 +1,42 @@
+✓ A1: ElevenLabs on FREE is refused
+✓ A2: refusal names the provider
+✓ A3: refusal carries a way out (userAction)
+✓ A4: refusal offers the free alternative by name
+✓ A5: refusal points at PRO
+✓ A6: stable machine code
+✓ A7: ElevenLabs on PRO passes
+✓ A8: ElevenLabs on BUSINESS passes
+✓ A9: Gemini on FREE passes
+✓ A10: Hero Voice on FREE is not gated here
+✓ A11: missing provider defaults to the free engine
+✓ A12: unknown provider is not invented into a paywall
+✓ B1: under the cap says nothing
+✓ B2: exactly at the cap says nothing
+✓ B3: over the cap warns
+✓ B4: warning quotes the plan's own cap
+✓ B5: warning offers trim or upgrade
+✓ B6: warning says what happens if they render anyway
+✓ B7: zero/unknown duration says nothing
+✓ B8: NaN says nothing
+✓ B9: top tier warns without an upgrade CTA
+✓ B10 (FREE): warning and post-TTS gate agree on the cap
+✓ B11 (FREE): both stay quiet under the cap
+✓ B10 (PRO): warning and post-TTS gate agree on the cap
+✓ B11 (PRO): both stay quiet under the cap
+✓ B10 (BUSINESS): warning and post-TTS gate agree on the cap
+✓ B11 (BUSINESS): both stay quiet under the cap
+✓ C1: over-cap script warns in the receipt
+✓ C2: the line is a warning, not an error
+✓ C3: disclaimer stays last
+✓ C4: no plan → receipt unchanged
+✓ C5: within cap → no line
+✓ C6: PRO is not warned about a FREE-sized script
+✓ C7: uploaded clip (exact duration) is gated in Step 1, not warned here
+✓ C8: the warning does not block the render CTA
+✓ D (web create): imports the preflight
+✓ D (web create): calls voiceProviderPlanViolation
+✓ D (MCP approved create_video_job): imports the preflight
+✓ D (MCP approved create_video_job): calls voiceProviderPlanViolation
+✓ D: RenderReceiptDialog passes the plan through
+
+ALL PASS
