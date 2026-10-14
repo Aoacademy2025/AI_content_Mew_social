@@ -124,7 +124,7 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
     const consumedRow = valid.find((row) => row.status === "consumed" && row.rootJobId);
     if (consumedRow?.rootJobId) {
       const rootJob = await prisma.videoJob.findFirst({
-        where: { id: consumedRow.rootJobId, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES, "done"] } },
+        where: { id: consumedRow.rootJobId, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
         select: { id: true },
       });
       if (rootJob) {
