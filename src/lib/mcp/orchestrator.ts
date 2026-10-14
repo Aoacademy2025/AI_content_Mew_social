@@ -181,6 +181,7 @@ import {
   planTransitionSfxCues,
   type SfxMode,
 } from "@/lib/transition-sfx";
+import { stitchPresenterVideoFiles } from "@/lib/presenter-stitch.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -287,6 +288,9 @@ interface CreateInput {
    */
   mode?: "script" | "upload" | "broll-rerender" | "export";
   clipUrl?: string;
+  /** EP5 #18: Multi-clip presenter stitch list (up to 10 normalized presenter clips). */
+  clipUrls?: string[];
+  clipImportIds?: string[];
   /**
    * Editor v2 free per-window b-roll re-render (Phase 2, previewMode-only): reuse the source
    * job's TTS/avatar, swap only the named b-roll windows, re-render the base WITHOUT charging
@@ -2104,9 +2108,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // ข้ามเสียงพากย์/อวตาร: ถอดซับจากเสียงในคลิป → b-roll windows →
     // base reel (เสียงคลิป + เพลงที่เลือก) → composite mode:"cutaway" → จบที่ preview.
     if (input.mode === "upload") {
-      if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
       let forceStockBroll = false;
       let jumpCutTimesSec: number[] = [];
+
+      if (Array.isArray(input.clipUrls) && input.clipUrls.length > 1) {
+        const stitched = await stitchPresenterVideoFiles({
+          clipUrls: input.clipUrls,
+        });
+        input.clipUrl = stitched.clipUrl;
+        jumpCutTimesSec = [...stitched.stitchCutTimesSec];
+      } else if (!input.clipUrl && Array.isArray(input.clipUrls) && input.clipUrls.length === 1) {
+        input.clipUrl = input.clipUrls[0]!;
+      }
+      if (!input.clipUrl) {
+        await failJob(jobId, "upload job missing clipUrl");
+        return;
+      }
 
       const tightenOpts = resolveTightenOptions({
         tighten: input.tighten,
@@ -2121,7 +2138,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           tightenSpeed: input.tightenSpeed,
         });
         input.clipUrl = tightened.clipUrl;
-        jumpCutTimesSec = tightened.jumpCutTimesSec;
+        const speedFactor = tightened.effectiveSpeed > 0 ? tightened.effectiveSpeed : 1;
+        jumpCutTimesSec = Array.from(
+          new Set([
+            ...jumpCutTimesSec.map((t) => Number((t / speedFactor).toFixed(3))),
+            ...tightened.jumpCutTimesSec,
+          ]),
+        ).sort((a, b) => a - b);
       }
 
       await step("captions", 20);

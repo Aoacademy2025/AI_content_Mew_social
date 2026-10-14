@@ -11,11 +11,13 @@ import { admissionRefusal } from "@/lib/mcp/media-import-copy";
 import { isReservedMcpChainIdempotencyKey } from "@/lib/mcp/chain-key";
 import { toPublicVideoJobStatus } from "@/lib/mcp/video-job-status";
 import { durationCapSecFor } from "@/lib/plan-limits";
+import { MAX_STITCH_CLIPS, MIN_STITCH_CLIPS } from "@/lib/presenter-stitch";
 
 /**
  * T14 (plan docs/plans/2026-10-03-mcp-edit-before-export.md, ADR 0065; G2, G5, G22, G28, A10):
- * `create_video_job({clipUrl | clipUploadId, cutawayLayout})` — a video made from a presenter
- * clip the customer already has (e.g. rendered in HeyGen), cut away to B-roll.
+ * `create_video_job({clipUrl | clipUploadId | clipUrls | clipUploadIds, cutawayLayout})` — a video
+ * made from a presenter clip (or up to 10 presenter clips stitched together) the customer already
+ * has (e.g. rendered in HeyGen), cut away to B-roll.
  *
  * Flow: the route validates the clip fields (parseClipJobArgs), starts or looks up the presenter
  * MediaImport (startClipImport), and creates the job parked in `waiting_import` with only the
@@ -35,7 +37,9 @@ import { durationCapSecFor } from "@/lib/plan-limits";
  */
 
 export type CutawayLayout = "auto" | "fillYourself";
-export type ClipSource = { kind: "url"; url: string } | { kind: "upload"; id: string };
+export type ClipSource =
+  | { kind: "url"; url: string; urls?: string[] }
+  | { kind: "upload"; id: string; ids?: string[] };
 export type ClipRequest = { source: ClipSource; cutawayLayout: CutawayLayout };
 
 /** G14 envelope. `importError` rides only on `import_failed`. */
@@ -45,6 +49,8 @@ type ClipArgs = {
   script?: string;
   clipUrl?: string;
   clipUploadId?: string;
+  clipUrls?: string[];
+  clipUploadIds?: string[];
   cutawayLayout?: CutawayLayout;
   avatarMode?: string;
   tighten?: boolean;
@@ -61,9 +67,14 @@ function failure(code: string, message: string, next: string): ClipJobFailure {
   return { error: code, code, message, next };
 }
 
-const NEXT_CLIP_SOURCE = "ส่ง clipUrl (ลิงก์ https สาธารณะของคลิป) หรือ clipUploadId (จาก create_upload_url ชนิด presenter หลัง PUT ไฟล์เสร็จ) อย่างใดอย่างหนึ่ง";
+const NEXT_CLIP_SOURCE = "ส่ง clipUrl / clipUrls (ลิงก์ https สาธารณะของคลิป) หรือ clipUploadId / clipUploadIds (จาก create_upload_url ชนิด presenter หลัง PUT ไฟล์เสร็จ) อย่างใดอย่างหนึ่ง";
 
-const BOTH_SOURCES = failure("invalid_input", "ส่งได้ทีละแหล่งเท่านั้น: clipUrl หรือ clipUploadId อย่างใดอย่างหนึ่ง", NEXT_CLIP_SOURCE);
+const BOTH_SOURCES = failure("invalid_input", "ส่งได้ทีละแหล่งเท่านั้น: clipUrl, clipUploadId, clipUrls หรือ clipUploadIds อย่างใดอย่างหนึ่ง", NEXT_CLIP_SOURCE);
+const BAD_CLIP_COUNT = failure(
+  "invalid_input",
+  `จำนวนคลิปพิธีกรต้องอยู่ระหว่าง ${MIN_STITCH_CLIPS}–${MAX_STITCH_CLIPS} คลิป`,
+  `ส่งรายการคลิปพิธีกรไม่เกิน ${MAX_STITCH_CLIPS} คลิปต่อหนึ่งงาน`,
+);
 const NO_CONTENT = failure(
   "invalid_input",
   "ต้องมี script หรือคลิปพิธีกร (clipUrl / clipUploadId) อย่างน้อยหนึ่งอย่าง",
@@ -110,11 +121,27 @@ export function clipFieldsRequested(args: ClipArgs): boolean {
   return (
     args.clipUrl !== undefined ||
     args.clipUploadId !== undefined ||
+    args.clipUrls !== undefined ||
+    args.clipUploadIds !== undefined ||
     args.cutawayLayout !== undefined ||
     args.tighten !== undefined ||
     args.tightenMaxGapMs !== undefined ||
     args.tightenSpeed !== undefined
   );
+}
+
+function validateSingleClipUrl(rawUrl: unknown): { ok: true; url: string } | { ok: false; failure: ClipJobFailure } {
+  const raw = String(rawUrl ?? "").trim();
+  if (!raw || raw.length > MAX_CLIP_URL_CHARS) return { ok: false, failure: BAD_CLIP_URL };
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, failure: BAD_CLIP_URL };
+  }
+  if (parsed.protocol !== "https:") return { ok: false, failure: CLIP_URL_NOT_HTTPS };
+  if (parsed.username || parsed.password) return { ok: false, failure: BAD_CLIP_URL };
+  return { ok: true, url: parsed.href };
 }
 
 /**
@@ -124,13 +151,16 @@ export function clipFieldsRequested(args: ClipArgs): boolean {
 export function parseClipJobArgs(args: ClipArgs): { ok: true; clip: ClipRequest | null } | { ok: false; failure: ClipJobFailure } {
   const hasUrl = args.clipUrl !== undefined;
   const hasUpload = args.clipUploadId !== undefined;
+  const hasUrls = args.clipUrls !== undefined;
+  const hasUploads = args.clipUploadIds !== undefined;
+  const sourceCount = [hasUrl, hasUpload, hasUrls, hasUploads].filter(Boolean).length;
   const hasTighten =
     args.tighten !== undefined ||
     args.tightenMaxGapMs !== undefined ||
     args.tightenSpeed !== undefined;
   const hasTtsPace = args.ttsSpeed !== undefined || args.targetDurationSec !== undefined;
-  if (hasUrl && hasUpload) return { ok: false, failure: BOTH_SOURCES };
-  if (!hasUrl && !hasUpload) {
+  if (sourceCount > 1) return { ok: false, failure: BOTH_SOURCES };
+  if (sourceCount === 0) {
     if (args.cutawayLayout !== undefined) return { ok: false, failure: LAYOUT_WITHOUT_CLIP };
     if (hasTighten) return { ok: false, failure: TIGHTEN_WITHOUT_CLIP };
     if (args.script === undefined) return { ok: false, failure: NO_CONTENT };
@@ -141,18 +171,52 @@ export function parseClipJobArgs(args: ClipArgs): { ok: true; clip: ClipRequest 
   const cutawayLayout: CutawayLayout = args.cutawayLayout === "fillYourself" ? "fillYourself" : "auto";
   if (hasUpload) return { ok: true, clip: { source: { kind: "upload", id: String(args.clipUploadId) }, cutawayLayout } };
 
-  const raw = String(args.clipUrl).trim();
-  if (!raw || raw.length > MAX_CLIP_URL_CHARS) return { ok: false, failure: BAD_CLIP_URL };
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return { ok: false, failure: BAD_CLIP_URL };
+  if (hasUploads) {
+    if (
+      !Array.isArray(args.clipUploadIds) ||
+      args.clipUploadIds.length < MIN_STITCH_CLIPS ||
+      args.clipUploadIds.length > MAX_STITCH_CLIPS
+    ) {
+      return { ok: false, failure: BAD_CLIP_COUNT };
+    }
+    const ids = args.clipUploadIds.map((id) => String(id ?? "").trim());
+    if (ids.some((id) => !id)) return { ok: false, failure: BAD_CLIP_COUNT };
+    return {
+      ok: true,
+      clip: {
+        source: ids.length > 1 ? { kind: "upload", id: ids[0]!, ids } : { kind: "upload", id: ids[0]! },
+        cutawayLayout,
+      },
+    };
   }
-  if (parsed.protocol !== "https:") return { ok: false, failure: CLIP_URL_NOT_HTTPS };
-  if (parsed.username || parsed.password) return { ok: false, failure: BAD_CLIP_URL };
+
+  if (hasUrls) {
+    if (
+      !Array.isArray(args.clipUrls) ||
+      args.clipUrls.length < MIN_STITCH_CLIPS ||
+      args.clipUrls.length > MAX_STITCH_CLIPS
+    ) {
+      return { ok: false, failure: BAD_CLIP_COUNT };
+    }
+    const urls: string[] = [];
+    for (const item of args.clipUrls) {
+      const checked = validateSingleClipUrl(item);
+      if (!checked.ok) return checked;
+      urls.push(checked.url);
+    }
+    return {
+      ok: true,
+      clip: {
+        source: urls.length > 1 ? { kind: "url", url: urls[0]!, urls } : { kind: "url", url: urls[0]! },
+        cutawayLayout,
+      },
+    };
+  }
+
   // T10's guarded fetch re-validates every hop and the resolved address (G23) in the lane.
-  return { ok: true, clip: { source: { kind: "url", url: parsed.href }, cutawayLayout } };
+  const checked = validateSingleClipUrl(args.clipUrl);
+  if (!checked.ok) return checked;
+  return { ok: true, clip: { source: { kind: "url", url: checked.url }, cutawayLayout } };
 }
 
 /**
@@ -177,7 +241,7 @@ export async function duplicateClipJobReply(
   return { ...failure("duplicate", "idempotencyKey นี้ถูกใช้แล้ว — งานเดิมยังอยู่", next), jobId: row.id, status: toPublicVideoJobStatus(row.status) };
 }
 
-export type StartedClipImport = { importId: string; createdHere: boolean };
+export type StartedClipImport = { importId: string; importIds?: string[]; createdHere: boolean };
 
 /**
  * Queue the presenter import for a url (G25 caps, refused with the shared admission copy), or
@@ -190,23 +254,55 @@ export async function startClipImport(
   now: Date = new Date(),
 ): Promise<{ ok: true; started: StartedClipImport } | { ok: false; failure: ClipJobFailure }> {
   if (source.kind === "url") {
-    const created = await createUrlImport(userId, source.url, now, "presenter");
-    if (!created.ok) return { ok: false, failure: admissionRefusal(created.code, "create_video_job", created.retryAfterSeconds) };
-    return { ok: true, started: { importId: created.importId, createdHere: true } };
+    const urls = source.urls && source.urls.length > 1 ? source.urls : [source.url];
+    const importIds: string[] = [];
+    for (const url of urls) {
+      const created = await createUrlImport(userId, url, now, "presenter");
+      if (!created.ok) {
+        for (const id of importIds) {
+          await failMediaImport(id, "canceled").catch(() => {});
+        }
+        return { ok: false, failure: admissionRefusal(created.code, "create_video_job", created.retryAfterSeconds) };
+      }
+      importIds.push(created.importId);
+    }
+    return {
+      ok: true,
+      started: {
+        importId: importIds[0]!,
+        ...(importIds.length > 1 ? { importIds } : {}),
+        createdHere: true,
+      },
+    };
   }
-  const owned = await findOwnedMediaImport(userId, source.id, ["presenter"]);
-  if (!owned.ok) return { ok: false, failure: CLIP_UPLOAD_NOT_FOUND };
-  if (owned.row.status === "failed") {
-    const importError = safeImportCode(owned.row.errorCode);
-    return { ok: false, failure: { ...importFailedEnvelope(importError), importError } };
+  const ids = source.ids && source.ids.length > 1 ? source.ids : [source.id];
+  const resolvedIds: string[] = [];
+  for (const id of ids) {
+    const owned = await findOwnedMediaImport(userId, id, ["presenter"]);
+    if (!owned.ok) return { ok: false, failure: CLIP_UPLOAD_NOT_FOUND };
+    if (owned.row.status === "failed") {
+      const importError = safeImportCode(owned.row.errorCode);
+      return { ok: false, failure: { ...importFailedEnvelope(importError), importError } };
+    }
+    resolvedIds.push(owned.row.id);
   }
-  return { ok: true, started: { importId: owned.row.id, createdHere: false } };
+  return {
+    ok: true,
+    started: {
+      importId: resolvedIds[0]!,
+      ...(resolvedIds.length > 1 ? { importIds: resolvedIds } : {}),
+      createdHere: false,
+    },
+  };
 }
 
 /** The job was not created after all: stop a url import this call queued (uploads are the agent's). */
 export async function abandonClipImport(started: StartedClipImport | null): Promise<void> {
   if (!started?.createdHere) return;
-  await failMediaImport(started.importId, "canceled").catch(() => {});
+  const ids = started.importIds && started.importIds.length > 0 ? started.importIds : [started.importId];
+  for (const id of ids) {
+    await failMediaImport(id, "canceled").catch(() => {});
+  }
 }
 
 function importFailedEnvelope(importError: string): ClipJobFailure {
@@ -297,21 +393,39 @@ export async function settleClipImportJob(jobId: string, userId?: string): Promi
   });
   if (!row) return "not_waiting";
   const input = parseInput(row.inputJson);
-  const importId = typeof input?.clipImportId === "string" ? input.clipImportId : null;
-  const imp = importId
-    ? await prisma.mediaImport.findFirst({
-        where: { id: importId, userId: row.userId, purpose: "presenter" },
-        select: { status: true, errorCode: true, resultSrc: true },
-      })
-    : null;
-  if (!input || !imp) return failWaitingJob(row.id, "import_missing");
-  if (imp.status === "failed") return failWaitingJob(row.id, safeImportCode(imp.errorCode));
-  if (imp.status !== "ready") return "waiting";
-  const clipUrl = allowlistedClipSrc(imp.resultSrc);
-  if (!clipUrl) return failWaitingJob(row.id, "import_failed");
+  if (!input) return failWaitingJob(row.id, "import_missing");
+
+  const rawImportIds = Array.isArray(input.clipImportIds)
+    ? input.clipImportIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+  const importId = typeof input.clipImportId === "string" ? input.clipImportId : null;
+  const targetImportIds = rawImportIds.length > 0 ? rawImportIds : importId ? [importId] : [];
+  if (targetImportIds.length === 0 || targetImportIds.length > MAX_STITCH_CLIPS) {
+    return failWaitingJob(row.id, "import_missing");
+  }
+
+  const clipUrls: string[] = [];
+  for (const id of targetImportIds) {
+    const imp = await prisma.mediaImport.findFirst({
+      where: { id, userId: row.userId, purpose: "presenter" },
+      select: { status: true, errorCode: true, resultSrc: true },
+    });
+    if (!imp) return failWaitingJob(row.id, "import_missing");
+    if (imp.status === "failed") return failWaitingJob(row.id, safeImportCode(imp.errorCode));
+    if (imp.status !== "ready") return "waiting";
+    const src = allowlistedClipSrc(imp.resultSrc);
+    if (!src) return failWaitingJob(row.id, "import_failed");
+    clipUrls.push(src);
+  }
+
+  const clipUrl = clipUrls[0]!;
+  const updatedInput =
+    clipUrls.length > 1
+      ? { ...input, clipUrl, clipUrls }
+      : { ...input, clipUrl };
   const moved = await withVideoJobSqliteRetry("settle clip import", () => prisma.videoJob.updateMany({
     where: { id: row.id, status: "waiting_import" },
-    data: { status: "queued", currentStep: null, inputJson: JSON.stringify({ ...input, clipUrl }) },
+    data: { status: "queued", currentStep: null, inputJson: JSON.stringify(updatedInput) },
   }));
   return moved.count === 1 ? "queued" : "not_waiting";
 }

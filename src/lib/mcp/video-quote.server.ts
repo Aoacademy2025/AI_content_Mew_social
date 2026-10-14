@@ -8,6 +8,7 @@ import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowan
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { estimatePacedDurationSeconds } from "@/lib/tts-pace";
 import { resolveTightenOptions } from "@/lib/presenter-tighten";
+import { computeStitchedDurationMs } from "@/lib/presenter-stitch";
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import { parseClipJobArgs } from "./clip-video-job";
 import { resolveAvatarRequest } from "./avatar-steps";
@@ -29,7 +30,7 @@ import {
   type QuoteReceipt, type QuoteFailure,
 } from "./video-quote";
 
-export type QuoteExecution = { jobInput: VideoJobInput; exportMode: "auto" | "hold"; presenterImportId: string | null; musicTitle?: string | null };
+export type QuoteExecution = { jobInput: VideoJobInput; exportMode: "auto" | "hold"; presenterImportId: string | null; presenterImportIds?: string[]; musicTitle?: string | null };
 function publicOrigin() {
   return process.env.MCP_PUBLIC_ORIGIN?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://studio.heroaiengine.com";
 }
@@ -69,14 +70,29 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   let durationSeconds = estimateClipSecV2(input.script ?? "");
   let quoteWarnings: string[] = [];
   let presenter: { id: string; resultSrc: string | null; durationMs: number | null } | null = null;
+  let presenters: Array<{ id: string; resultSrc: string | null; durationMs: number | null }> = [];
   if (clip.clip) {
     if (clip.clip.source.kind !== "upload") return importRequired();
-    presenter = await prisma.mediaImport.findFirst({ where: { id: clip.clip.source.id, userId: user.id, purpose: "presenter", status: "ready" }, select: { id: true, resultSrc: true, durationMs: true } });
-    if (!presenter?.resultSrc || !presenter.durationMs || !Number.isFinite(presenter.durationMs) || presenter.durationMs <= 0) return importRequired();
+    const uploadIds =
+      clip.clip.source.ids && clip.clip.source.ids.length > 1
+        ? clip.clip.source.ids
+        : [clip.clip.source.id];
+    for (const uploadId of uploadIds) {
+      const row = await prisma.mediaImport.findFirst({
+        where: { id: uploadId, userId: user.id, purpose: "presenter", status: "ready" },
+        select: { id: true, resultSrc: true, durationMs: true },
+      });
+      if (!row?.resultSrc || !row.durationMs || !Number.isFinite(row.durationMs) || row.durationMs <= 0) {
+        return importRequired();
+      }
+      presenters.push(row);
+    }
+    presenter = presenters[0] ?? null;
+    const stitchedPlan = computeStitchedDurationMs(presenters.map((p) => p.durationMs!));
     const tightenResolved = resolveTightenOptions(input);
     durationSeconds = tightenResolved.enabled
-      ? Math.max(1, Math.round(((presenter.durationMs / 1000) / tightenResolved.speed) * 100) / 100)
-      : presenter.durationMs / 1000;
+      ? Math.max(1, Math.round(((stitchedPlan.totalDurationMs / 1000) / tightenResolved.speed) * 100) / 100)
+      : stitchedPlan.totalDurationMs / 1000;
   } else if (durationSeconds > 0 && (input.ttsSpeed !== undefined || input.targetDurationSec !== undefined)) {
     const paced = estimatePacedDurationSeconds(durationSeconds, {
       ttsSpeed: input.ttsSpeed,
@@ -110,7 +126,7 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     voiceProvider: presenter ? undefined : voiceProvider, noAutomaticBroll, pricing,
   });
   const receipt: QuoteReceipt = quoteWarnings.length > 0 ? { ...baseReceipt, warnings: quoteWarnings } : baseReceipt;
-  const execution = await resolveQuoteExecution(user, input, presenter);
+  const execution = await resolveQuoteExecution(user, input, presenters);
   if ("error" in execution) return execution;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
   const result = await withVideoJobSqliteRetry("prepare quote", () => prisma.$transaction(async (tx) => {
@@ -129,7 +145,12 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   return result ? view(result) : quoteFailure("too_many_quotes", "มีใบยืนยันที่ยังใช้งานได้หลายรายการ", "ปฏิเสธใบยืนยันเก่าใน Studio หรือรอ 30 นาทีแล้วลองใหม่");
 }
 
-async function resolveQuoteExecution(user: User, input: ReturnType<typeof normalizeQuoteInput>, presenter: { id: string; resultSrc: string | null } | null): Promise<QuoteExecution | QuoteFailure> {
+async function resolveQuoteExecution(
+  user: User,
+  input: ReturnType<typeof normalizeQuoteInput>,
+  presenters: Array<{ id: string; resultSrc: string | null }>,
+): Promise<QuoteExecution | QuoteFailure> {
+  const presenter = presenters[0] ?? null;
   const avatar = resolveAvatarRequest(input, user);
   if (avatar.kind === "error") return quoteFailure(avatar.payload.error, avatar.payload.message);
   let brandStyle: SubtitleStylePresetConfig | null = null;
@@ -178,6 +199,12 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
           mode: "upload",
           clipImportId: presenter.id,
           clipUrl: presenter.resultSrc!,
+          ...(presenters.length > 1
+            ? {
+                clipImportIds: presenters.map((p) => p.id),
+                clipUrls: presenters.map((p) => p.resultSrc!),
+              }
+            : {}),
           cutawayLayout: input.cutawayLayout ?? "auto",
           ...(input.tighten !== undefined ? { tighten: input.tighten } : {}),
           ...(input.tightenMaxGapMs !== undefined ? { tightenMaxGapMs: input.tightenMaxGapMs } : {}),
@@ -203,7 +230,13 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
     ...(input.subtitlePosition ? { subtitlePosition: input.subtitlePosition } : {}),
     ...(source === "external" || input.cutawayLayout === "fillYourself" ? { stockSource: "none" } : mcpBrollJobFields(source)),
   };
-  return { jobInput, exportMode: source === "external" ? "hold" : input.exportMode ?? "auto", presenterImportId: presenter?.id ?? null, musicTitle: music?.title ?? null };
+  return {
+    jobInput,
+    exportMode: source === "external" ? "hold" : input.exportMode ?? "auto",
+    presenterImportId: presenter?.id ?? null,
+    ...(presenters.length > 1 ? { presenterImportIds: presenters.map((p) => p.id) } : {}),
+    musicTitle: music?.title ?? null,
+  };
 }
 
 async function resolveConsumedEditorUrl(userId: string, rootJobId: string | null): Promise<string | null> {

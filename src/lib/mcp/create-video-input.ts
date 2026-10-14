@@ -21,6 +21,7 @@ import {
   MIN_HEADLINE_HOOK_DURATION_MS,
 } from "@/lib/headline-hook";
 import { SFX_MODES } from "@/lib/transition-sfx";
+import { MAX_STITCH_CLIPS, MIN_STITCH_CLIPS } from "@/lib/presenter-stitch";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -112,6 +113,10 @@ export const createVideoJobInputShape = {
     .describe("ลิงก์ https สาธารณะของคลิปพิธีกรแนวตั้ง (mp4/mov/webm) — ระบบดาวน์โหลดเอง แล้วทำวิดีโอจากเสียงในคลิป (ไม่ต้องมี script). ส่ง clipUrl หรือ clipUploadId อย่างใดอย่างหนึ่งเท่านั้น ห้ามส่งทั้งคู่"),
   clipUploadId: z.string().max(64).optional()
     .describe("uploadId จาก create_upload_url(kind: \"presenter\") หลังจาก PUT ไฟล์คลิปพิธีกรแล้ว — ใช้เมื่อคลิปไม่มีลิงก์สาธารณะ. ส่ง clipUploadId หรือ clipUrl อย่างใดอย่างหนึ่งเท่านั้น ห้ามส่งทั้งคู่"),
+  clipUrls: z.array(z.string().max(4096)).min(MIN_STITCH_CLIPS).max(MAX_STITCH_CLIPS).optional()
+    .describe("รายการลิงก์ https สาธารณะของคลิปพิธีกรแนวตั้ง (1–10 คลิป) — ระบบนำมาต่อเรียงกัน ปรับความละเอียด 1080×1920 30fps และครอสเฟดเสียง 12 ms อัตโนมัติก่อนถอดซับ"),
+  clipUploadIds: z.array(z.string().max(64)).min(MIN_STITCH_CLIPS).max(MAX_STITCH_CLIPS).optional()
+    .describe("รายการ uploadId จาก create_upload_url(kind: \"presenter\") (1–10 คลิป) — ระบบนำมาต่อเรียงกันตามลำดับพร้อมครอสเฟดเสียง 12 ms อัตโนมัติก่อนถอดซับ"),
   cutawayLayout: z.enum(["auto", "fillYourself"]).optional()
     .describe("ใช้ได้เฉพาะเมื่อส่งคลิป: auto = ระบบสลับ B-roll เข้าบางช่วงให้ (ค่าเริ่มต้น); fillYourself = ทุกช่วงเป็นพิธีกร ไม่มี B-roll อัตโนมัติ แล้วค่อยใส่ B-roll เองทีละช่วงด้วย replace_broll_window"),
   tighten: z.boolean().optional()
