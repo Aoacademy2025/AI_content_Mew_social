@@ -40,6 +40,7 @@ import {
   type BrollTransitionEdit,
 } from "@/lib/broll-window-style";
 import { clampTailHoldMs } from "@/lib/tail-hold";
+import { effectiveSfxMode, isSfxMode, planTransitionSfxCues, type SfxMode } from "@/lib/transition-sfx";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -101,6 +102,8 @@ export type PendingEditDraft = {
   brollTransition?: BrollTransition;
   /** EP5 #4: a new project-level presenter auto punch-in zoom setting the next export re-renders with. */
   punchZoom?: boolean;
+  /** EP5 #3: transition sound effects mode ("none" | "subtle"). */
+  sfxMode?: SfxMode;
 };
 
 /** True when the next export must re-render the B-roll/base (window edits, project transition, or punchZoom). */
@@ -218,6 +221,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   if (headlineHook === null || logoOverlay === null || backgroundMusic === null) return null;
   if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
   if (input.punchZoom !== undefined && typeof input.punchZoom !== "boolean") return null;
+  if (input.sfxMode !== undefined && !isSfxMode(input.sfxMode)) return null;
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -236,6 +240,7 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     windowEdits,
     ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
     ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
+    ...(isSfxMode(input.sfxMode) ? { sfxMode: input.sfxMode } : {}),
   };
 }
 
@@ -582,10 +587,30 @@ export async function clearPendingEditDraftIfRevision(
 
 /** The export's burn config, built exactly the way the web editor builds it (`buildV2BurnConfig`). */
 export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase, "videoUrl" | "preview">) {
-  return buildV2BurnConfig(
+  const effectiveSfx = effectiveSfxMode(
+    draft.sfxMode ?? (base.preview.config as { sfxMode?: unknown } | undefined)?.sfxMode,
+  );
+  const rawBgVideos = Array.isArray((base.preview.config as { bgVideos?: unknown } | undefined)?.bgVideos)
+    ? ((base.preview.config as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
+    : [];
+  const audioDurMs = base.preview.audioDurationMs ?? 0;
+  const sfxCues = effectiveSfx === "subtle"
+    ? planTransitionSfxCues({
+        sfxMode: "subtle",
+        hasOpeningHook: Boolean(draft.headlineHook?.enabled),
+        brollStartTimesSec: rawBgVideos
+          .filter((v) => v && v.brollEnabled !== false && Boolean(v.src) && typeof v.start === "number")
+          .map((v) => v.start as number),
+        punchCueTimesSec: draft.captions
+          .filter((c) => c.tag === "hook")
+          .map((c) => c.startMs / 1000),
+        totalDurationSec: audioDurMs / 1000,
+      })
+    : undefined;
+  const burn = buildV2BurnConfig(
     base.videoUrl,
     draft.captions,
-    base.preview.audioDurationMs ?? 0,
+    audioDurMs,
     draft.subtitleConfig,
     30,
     draft.captionOverrides,
@@ -593,7 +618,9 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     undefined,
     draft.headlineHook,
     draft.tailHoldMs,
+    effectiveSfx,
   );
+  return sfxCues && sfxCues.length > 0 ? { ...burn, sfxCues } : burn;
 }
 
 /** The editor-native draft `enqueueEditorExport` turns into the export's editSnapshot. */

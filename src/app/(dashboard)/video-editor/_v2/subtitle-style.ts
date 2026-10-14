@@ -27,6 +27,7 @@ import {
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
 import { clampTailHoldMs } from "@/lib/tail-hold";
+import { effectiveSfxMode, type SfxMode } from "@/lib/transition-sfx";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -69,6 +70,8 @@ export interface V2SubConfig {
   verticalPos: number;
   /** EP5 #2: Auto-highlight 1–2 key words/numbers per caption card with accentColor */
   highlightKeywords?: boolean;
+  /** EP5 #6: Animated Infographics / Stat Cards on scenes with salient numbers/stats */
+  statCards?: boolean;
 }
 
 export const DEFAULT_V2_SUB: V2SubConfig = {
@@ -85,6 +88,7 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   outlineSize: 2,
   verticalPos: 82,
   highlightKeywords: false,
+  statCards: false,
 };
 
 export type V2FontWeight = SubtitleFontWeight;
@@ -243,6 +247,8 @@ export function buildV2BurnConfig(
    *  = today's behaviour exactly). Added to `durationInFrames` AFTER every caption/popup is
    *  clamped against the ORIGINAL (pre-hold) duration below, so subtitles never show in it. */
   tailHoldMs = 0,
+  /** EP5/S2 backlog #3: subtle transition sound effects ("none" | "subtle"). */
+  sfxMode?: SfxMode,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -276,6 +282,7 @@ export function buildV2BurnConfig(
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs, cfg.verticalPos);
   const tailHoldFrames = Math.round((clampTailHoldMs(tailHoldMs) / 1000) * fps);
+  const resolvedSfxMode = effectiveSfxMode(sfxMode);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
@@ -288,6 +295,8 @@ export function buildV2BurnConfig(
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
     ...(cfg.highlightKeywords ? { subtitleHighlightKeywords: true } : {}),
+    ...(cfg.statCards ? { subtitleStatCards: true } : {}),
+    ...(resolvedSfxMode === "subtle" ? { sfxMode: "subtle" as const } : {}),
     ...(tailHoldFrames > 0 ? { tailHoldFrames } : {}),
     ...(normalizedHeadlineHook?.enabled ? { headlineHook: normalizedHeadlineHook } : {}),
     ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),

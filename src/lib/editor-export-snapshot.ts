@@ -17,6 +17,7 @@ export type EditorExportSubtitleConfig = {
   outlineSize: number;
   verticalPos: number;
   highlightKeywords?: boolean;
+  statCards?: boolean;
 };
 
 export type EditorExportCaptionOverrides = Record<number, {
@@ -110,6 +111,7 @@ function normalizeSubtitleConfig(value: unknown): EditorExportSubtitleConfig | n
     || typeof input.outline !== "boolean"
     || (fontWeight !== undefined && !FONT_WEIGHTS.has(fontWeight))
     || (input.highlightKeywords !== undefined && typeof input.highlightKeywords !== "boolean")
+    || (input.statCards !== undefined && typeof input.statCards !== "boolean")
   ) return null;
   return {
     preset,
@@ -125,6 +127,7 @@ function normalizeSubtitleConfig(value: unknown): EditorExportSubtitleConfig | n
     outlineSize,
     verticalPos,
     ...(typeof input.highlightKeywords === "boolean" ? { highlightKeywords: input.highlightKeywords } : {}),
+    ...(typeof input.statCards === "boolean" ? { statCards: input.statCards } : {}),
   };
 }
 

@@ -192,6 +192,7 @@ async function resolveQuoteExecution(user: User, input: ReturnType<typeof normal
           ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),
         }),
     ...(input.punchZoom !== undefined ? { punchZoom: input.punchZoom } : {}),
+    ...(input.sfxMode !== undefined ? { sfxMode: input.sfxMode } : {}),
     ...(source === "external" ? { brollSource: "external" } : {}),
     avatarMode: "none",
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),

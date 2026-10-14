@@ -2,6 +2,7 @@ import type { SubtitleAudioMix } from "../lib/background-music";
 import type { LogoPosition } from "../lib/logo-overlay";
 import type { HeadlineHookConfig } from "../lib/headline-hook";
 import type { BrollFit, BrollTransition } from "../lib/broll-window-style";
+import type { SfxMode, TransitionSfxCue } from "../lib/transition-sfx";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -142,6 +143,9 @@ export interface SubtitleOverlayConfig {
   subtitleOutline?: boolean;
   subtitleOutlineSize?: number;
   subtitleHighlightKeywords?: boolean;
+  subtitleStatCards?: boolean;
+  sfxMode?: SfxMode;
+  sfxCues?: TransitionSfxCue[];
   bgmFile?: string;
   bgmVolume?: number;
   /** EP5 U7: the music was changed after creation. The base video is muted and the voice track
@@ -182,6 +186,9 @@ export interface ShortVideoConfig {
   subtitleOutline?: boolean;
   subtitleOutlineSize?: number;
   subtitleHighlightKeywords?: boolean;
+  subtitleStatCards?: boolean;
+  sfxMode?: SfxMode;
+  sfxCues?: TransitionSfxCue[];
   /** Subtle Ken Burns motion (slow zoom) on b-roll so it isn't a static slideshow.
    *  Set by generate-config from env STOCK_KEN_BURNS; default off. */
   kenBurns?: boolean;

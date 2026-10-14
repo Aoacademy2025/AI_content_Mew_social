@@ -12,6 +12,7 @@ import {
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
 import { resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
+import { planTransitionSfxCues } from "@/lib/transition-sfx";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import { isTransientDbError } from "@/lib/prisma-transient-retry";
@@ -531,6 +532,23 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
     sourcePreview.audioDurationMs,
     design.verticalPos,
   );
+  const rawBgVideos = Array.isArray((sourcePreview.config as { bgVideos?: unknown } | undefined)?.bgVideos)
+    ? ((sourcePreview.config as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
+    : [];
+  const sfxMode = previewInput.sfxMode === "subtle" ? "subtle" as const : "none" as const;
+  const sfxCues = sfxMode === "subtle"
+    ? planTransitionSfxCues({
+        sfxMode: "subtle",
+        hasOpeningHook: Boolean(initialHeadlineHook?.enabled),
+        brollStartTimesSec: rawBgVideos
+          .filter((v) => v && v.brollEnabled !== false && Boolean(v.src) && typeof v.start === "number")
+          .map((v) => v.start as number),
+        punchCueTimesSec: captions
+          .filter((c) => c.tag === "hook")
+          .map((c) => c.startMs / 1000),
+        totalDurationSec: sourcePreview.audioDurationMs / 1000,
+      })
+    : undefined;
   const subtitleOverlayConfig = buildBurnConfig(
     baseVideoUrl,
     captions,
@@ -538,6 +556,8 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
     v2SubConfigToHeroDesign(design),
     RENDER_FPS,
     initialHeadlineHook,
+    sfxMode,
+    sfxCues,
   );
   const script = typeof previewInput.script === "string" ? previewInput.script.slice(0, 20_000) : "";
   return {

@@ -47,6 +47,7 @@ export type SubtitleStylePresetConfig = {
   outlineSize: number;
   verticalPos: number;
   highlightKeywords?: boolean;
+  statCards?: boolean;
 };
 
 export type SubtitleEditorStylePreset = {
@@ -200,6 +201,7 @@ export function normalizeSubtitleStylePresetConfig(
     || !isFiniteNumberInRange(value.outlineSize, 1, 8)
     || !isFiniteNumberInRange(value.verticalPos, 10, 95)
     || (value.highlightKeywords !== undefined && typeof value.highlightKeywords !== "boolean")
+    || (value.statCards !== undefined && typeof value.statCards !== "boolean")
   ) {
     return null;
   }
@@ -220,6 +222,9 @@ export function normalizeSubtitleStylePresetConfig(
     verticalPos: value.verticalPos,
     ...(typeof value.highlightKeywords === "boolean"
       ? { highlightKeywords: value.highlightKeywords }
+      : {}),
+    ...(typeof value.statCards === "boolean"
+      ? { statCards: value.statCards }
       : {}),
   };
 }

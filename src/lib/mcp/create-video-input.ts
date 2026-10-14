@@ -20,6 +20,7 @@ import {
   MAX_HEADLINE_HOOK_DURATION_MS,
   MIN_HEADLINE_HOOK_DURATION_MS,
 } from "@/lib/headline-hook";
+import { SFX_MODES } from "@/lib/transition-sfx";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -80,6 +81,10 @@ export const createVideoJobInputShape = {
   subtitleAccentColor: z.string().regex(HEX_COLOR).optional(),
   highlightKeywords: z.boolean().optional()
     .describe("true = ไฮไลต์คำสำคัญหรือตัวเลขเด่น 1–2 คำต่อการ์ดซับอัตโนมัติด้วยสีเน้น (accentColor)"),
+  statCards: z.boolean().optional()
+    .describe("true = แสดงการ์ดอินโฟกราฟิก/สถิติตัวเลขเด่น (เช่น 300%, 10x, ฿990) อัตโนมัติบนซีนที่มีข้อมูลตัวเลข"),
+  sfxMode: z.enum(SFX_MODES).optional()
+    .describe("เอฟเฟกต์เสียงเปลี่ยนฉาก: none (ปิด ค่าเริ่มต้น) | subtle (เสียง whoosh/pop เบา ๆ -18 dB ตอนตัดสลับภาพโดยไม่กลบเสียงพากย์)"),
   headlineHook: z.string().min(1).max(200).optional()
     .describe("ข้อความพาดหัวฮุค 3 วินาทีแรกด้านบนของคลิป (ไม่เกิน 64 ตัวอักษร 2 บรรทัด — ระบบตัดให้พอดีอัตโนมัติ)"),
   headlineHookSubtext: z.string().max(200).optional()

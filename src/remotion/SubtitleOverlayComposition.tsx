@@ -3,9 +3,12 @@ import { AbsoluteFill, Audio, Freeze, Img, OffthreadVideo, Sequence, useVideoCon
 import { logoOverlayFrame } from "../lib/logo-overlay";
 import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
 import { bgmGainAt, normalizeAudioMix } from "../lib/background-music";
+import { planStatCardsForCaptions } from "../lib/stat-cards";
+import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
+import { StatCardOverlay } from "./StatCardOverlay";
 import { useWebfontGate } from "./webfont-gate";
 
 // Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — burn output must use
@@ -30,6 +33,9 @@ export function SubtitleOverlayComposition({
   subtitleOutline = false,
   subtitleOutlineSize = 2,
   subtitleHighlightKeywords = false,
+  subtitleStatCards = false,
+  sfxMode = "none",
+  sfxCues,
   bgmFile,
   bgmVolume = 0.12,
   audioMix,
@@ -56,6 +62,35 @@ export function SubtitleOverlayComposition({
   // it, so tailHoldFrames=0 (today's default) leaves every frame unfrozen — identical output.
   const baseDurationInFrames = Math.max(1, durationInFrames - tailHoldFrames);
   const lastFrame = Math.max(0, baseDurationInFrames - 1);
+
+  const plannedStatCards = subtitleStatCards
+    ? planStatCardsForCaptions(
+        keywordPopups.map((p) => ({
+          text: p.text,
+          startMs: (p.start / fps) * 1000,
+          endMs: (p.end / fps) * 1000,
+          tag: p.tag,
+        })),
+        {
+          enabled: true,
+          headlineHookEndMs: (hookEndFrame / fps) * 1000,
+          accentColor,
+        },
+      )
+    : [];
+
+  const activeSfxCues = effectiveSfxMode(sfxMode) === "subtle"
+    ? (sfxCues && sfxCues.length > 0
+      ? sfxCues
+      : planTransitionSfxCues({
+          sfxMode: "subtle",
+          hasOpeningHook: Boolean(headlineHook?.enabled && hookEndFrame > 0),
+          punchCueTimesSec: keywordPopups
+            .filter((p) => p.isHighlight)
+            .map((p) => p.start / fps),
+          totalDurationSec: baseDurationInFrames / fps,
+        }))
+    : [];
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
@@ -100,6 +135,17 @@ export function SubtitleOverlayComposition({
         bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />
       )}
 
+      {/* EP5/S2 #3: Subtle transition sound effects (-18 dB) */}
+      {activeSfxCues.map((cue, idx) => {
+        const fromFrame = Math.max(0, Math.round(cue.timeSec * fps));
+        const durFrames = Math.max(1, Math.round(cue.durationSec * fps));
+        return (
+          <Sequence key={`sfx-${idx}-${fromFrame}`} from={fromFrame} durationInFrames={durFrames} layout="none">
+            <Audio src={getTransitionSfxDataUrl(cue.kind)} volume={cue.volumeLinear} />
+          </Sequence>
+        );
+      })}
+
       {logoOverlay && (() => {
         const box = logoOverlayFrame({
           position: logoOverlay.position,
@@ -121,6 +167,10 @@ export function SubtitleOverlayComposition({
         <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
           <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
         </Sequence>
+      )}
+
+      {plannedStatCards.length > 0 && (
+        <StatCardOverlay cards={plannedStatCards} fontFamily={resolvedFont} />
       )}
 
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}

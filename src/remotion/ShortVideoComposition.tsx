@@ -20,7 +20,10 @@ import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
 import { brollCutAfter, effectiveBrollFit, type BrollFit } from "../lib/broll-window-style";
 import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
+import { planStatCardsForCaptions } from "../lib/stat-cards";
+import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
+import { StatCardOverlay } from "./StatCardOverlay";
 import { useWebfontGate } from "./webfont-gate";
 
 // Re-export for backwards compatibility with any other importers
@@ -628,6 +631,9 @@ export function ShortVideoComposition({
   subtitleOutline = false,
   subtitleOutlineSize = 2,
   subtitleHighlightKeywords = false,
+  subtitleStatCards = false,
+  sfxMode = "none",
+  sfxCues,
   kenBurns = false,
   watermark = false,
   backgroundColors,
@@ -648,6 +654,38 @@ export function ShortVideoComposition({
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
   const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
+
+  const plannedStatCards = subtitleStatCards
+    ? planStatCardsForCaptions(
+        keywordPopups.map((p) => ({
+          text: p.text,
+          startMs: (p.start / fps) * 1000,
+          endMs: (p.end / fps) * 1000,
+          tag: p.tag,
+        })),
+        {
+          enabled: true,
+          headlineHookEndMs: (hookEndFrame / fps) * 1000,
+          accentColor,
+        },
+      )
+    : [];
+
+  const activeSfxCues = effectiveSfxMode(sfxMode) === "subtle"
+    ? (sfxCues && sfxCues.length > 0
+      ? sfxCues
+      : planTransitionSfxCues({
+          sfxMode: "subtle",
+          hasOpeningHook: Boolean(headlineHook?.enabled && hookEndFrame > 0),
+          brollStartTimesSec: bgVideos
+            .filter((v) => v.brollEnabled !== false && Boolean(v.src))
+            .map((v) => v.start),
+          punchCueTimesSec: keywordPopups
+            .filter((p) => p.isHighlight)
+            .map((p) => p.start / fps),
+          totalDurationSec: durationInFrames / fps,
+        }))
+    : [];
 
   return (
     <AbsoluteFill style={{
@@ -759,10 +797,25 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
+      {/* EP5/S2 #3: Subtle transition sound effects (-18 dB) */}
+      {activeSfxCues.map((cue, idx) => {
+        const fromFrame = Math.max(0, Math.round(cue.timeSec * fps));
+        const durFrames = Math.max(1, Math.round(cue.durationSec * fps));
+        return (
+          <Sequence key={`sfx-${idx}-${fromFrame}`} from={fromFrame} durationInFrames={durFrames} layout="none">
+            <Audio src={getTransitionSfxDataUrl(cue.kind)} volume={cue.volumeLinear} />
+          </Sequence>
+        );
+      })}
+
       {headlineHook?.enabled && hookEndFrame > 0 && (
         <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
           <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
         </Sequence>
+      )}
+
+      {plannedStatCards.length > 0 && (
+        <StatCardOverlay cards={plannedStatCards} fontFamily={resolvedFont} />
       )}
 
       {/* Subtitles */}

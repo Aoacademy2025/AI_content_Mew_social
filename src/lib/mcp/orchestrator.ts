@@ -176,6 +176,11 @@ import {
   resolveInitialHeadlineHookFromJobInput,
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
+import {
+  effectiveSfxMode,
+  planTransitionSfxCues,
+  type SfxMode,
+} from "@/lib/transition-sfx";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -300,6 +305,8 @@ interface CreateInput {
   tightenSpeed?: number;
   /** EP5 #4: Presenter auto punch-in zoom (1.0x ↔ 1.15x upper-center on presenter layer). */
   punchZoom?: boolean;
+  /** EP5 #3: Subtle transition sound effects ("none" | "subtle"). */
+  sfxMode?: SfxMode;
   /** EP5 #5: First-3-second visual hook overlay config or flat create_video_job hook fields. */
   headlineHook?: HeadlineHookConfig | string;
   headlineHookSubtext?: string;
@@ -1352,6 +1359,26 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       });
 
       await step("burn", 88);
+      const avatarHook = resolveInitialHeadlineHookFromJobInput(
+        input as unknown as Record<string, unknown>,
+        checkpoint.audioDurationMs,
+        resolvedSubtitleDesign.verticalPos,
+      );
+      const avatarBgVideos = Array.isArray((checkpoint.baseConfig as { bgVideos?: unknown })?.bgVideos)
+        ? ((checkpoint.baseConfig as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
+        : [];
+      const avatarSfxMode = effectiveSfxMode(input.sfxMode);
+      const avatarSfxCues = avatarSfxMode === "subtle"
+        ? planTransitionSfxCues({
+            sfxMode: "subtle",
+            hasOpeningHook: Boolean(avatarHook?.enabled),
+            brollStartTimesSec: avatarBgVideos
+              .filter((v) => v && v.brollEnabled !== false && Boolean(v.src) && typeof v.start === "number")
+              .map((v) => v.start as number),
+            punchCueTimesSec: captions.filter((c) => c.tag === "hook").map((c) => c.startMs / 1000),
+            totalDurationSec: checkpoint.audioDurationMs / 1000,
+          })
+        : undefined;
       const render = await caller.post<{ jobId: string }>("/api/videos/render", {
         subtitleOverlayConfig: buildBurnConfig(
           compositeUrl,
@@ -1359,11 +1386,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           checkpoint.audioDurationMs,
           heroSubtitleDesign,
           RENDER_FPS,
-          resolveInitialHeadlineHookFromJobInput(
-            input as unknown as Record<string, unknown>,
-            checkpoint.audioDurationMs,
-            resolvedSubtitleDesign.verticalPos,
-          ),
+          avatarHook,
+          avatarSfxMode,
+          avatarSfxCues,
         ),
         parentJobId: jobId,
       });
@@ -2395,6 +2420,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
         ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
         ...(punchZoomCuesSec.length > 0 ? { punchZoomCuesSec } : {}),
+        ...(effectiveSfxMode(input.sfxMode) === "subtle" ? { sfxMode: "subtle" as const } : {}),
       };
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
@@ -3095,11 +3121,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await step("render", 75);
+    const resolvedSfxMode = effectiveSfxMode(input.sfxMode);
     const baseConfig = {
       ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config),
       keywordPopups: [] as unknown[],
       ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
       ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
+      ...(resolvedSfxMode === "subtle" ? { sfxMode: "subtle" as const } : {}),
     };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
@@ -3259,6 +3287,25 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await step("burn", 88);
+    const scriptHook = resolveInitialHeadlineHookFromJobInput(
+      input as unknown as Record<string, unknown>,
+      durMs,
+      resolvedSubtitleDesign.verticalPos,
+    );
+    const scriptBgVideos = Array.isArray((baseConfig as { bgVideos?: unknown })?.bgVideos)
+      ? ((baseConfig as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
+      : [];
+    const scriptSfxCues = resolvedSfxMode === "subtle"
+      ? planTransitionSfxCues({
+          sfxMode: "subtle",
+          hasOpeningHook: Boolean(scriptHook?.enabled),
+          brollStartTimesSec: scriptBgVideos
+            .filter((v) => v && v.brollEnabled !== false && Boolean(v.src) && typeof v.start === "number")
+            .map((v) => v.start as number),
+          punchCueTimesSec: captions.filter((c) => c.tag === "hook").map((c) => c.startMs / 1000),
+          totalDurationSec: durMs / 1000,
+        })
+      : undefined;
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
       subtitleOverlayConfig: buildBurnConfig(
         finalBase,
@@ -3266,11 +3313,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         durMs,
         heroSubtitleDesign,
         RENDER_FPS,
-        resolveInitialHeadlineHookFromJobInput(
-          input as unknown as Record<string, unknown>,
-          durMs,
-          resolvedSubtitleDesign.verticalPos,
-        ),
+        scriptHook,
+        resolvedSfxMode,
+        scriptSfxCues,
       ),
       parentJobId: jobId,
     });

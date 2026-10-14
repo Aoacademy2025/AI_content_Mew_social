@@ -442,6 +442,7 @@ jobs:
           npm run verify:export-audio-sync
           npm run verify:mcp-wave1-backlog
           npm run verify:mcp-wave2-backlog
+          npm run verify:mcp-wave3-backlog
 
       - name: Build
         run: npm run build
