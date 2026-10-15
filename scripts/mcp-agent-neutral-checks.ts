@@ -69,10 +69,15 @@ export function verifyAgentNeutralSchemas(tools: readonly ListedTool[], names: r
     for (const [key, property] of Object.entries(properties)) {
       const where = `${name}.${key}`;
       if (isRecord(property) && property.type === "array") {
-        arrays += 1;
         const items = property.items;
+        if (isRecord(items) && typeof items.type === "string" && PRIMITIVE_TYPES.has(items.type)) {
+          const problem = primitiveProblem(items, `${where}[]`);
+          if (problem) problems.push(problem);
+          continue;
+        }
+        arrays += 1;
         if (!isRecord(items) || items.type !== "object" || !isRecord(items.properties)) {
-          problems.push(`${where}: an array must hold flat objects`);
+          problems.push(`${where}: an array must hold flat primitives or flat objects`);
           continue;
         }
         for (const [itemKey, itemProperty] of Object.entries(items.properties)) {
@@ -84,7 +89,7 @@ export function verifyAgentNeutralSchemas(tools: readonly ListedTool[], names: r
       const problem = primitiveProblem(property, where);
       if (problem) problems.push(problem);
     }
-    if (arrays > 1) problems.push(`${name}: ${arrays} array properties (at most one allowed)`);
+    if (arrays > 1) problems.push(`${name}: ${arrays} object-array properties (at most one allowed)`);
   }
   return problems;
 }
