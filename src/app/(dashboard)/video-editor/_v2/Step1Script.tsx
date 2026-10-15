@@ -181,7 +181,7 @@ export function Step1Script({
                 </p>
               </div>
             )}
-            {p.canUploadOwnMedia && (
+            {p.canUploadOwnMedia && (p.isAdmin || p.internalAiTester) && (
               <div className="mt-1 flex w-full max-w-[420px] flex-col gap-2 rounded-xl p-3" style={{ background: "rgba(255,255,255,.03)", border: `1px solid ${color.cardBorder}` }}>
                 <label className="flex cursor-pointer items-start gap-2.5">
                   <input

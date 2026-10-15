@@ -996,7 +996,7 @@ export function PostPhaseMobile({
           })()}
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>เงา · เส้นขอบ · ไฮไลต์คำสำคัญ · การ์ดสถิติ</GroupLabel>
+            <GroupLabel>{internalAiTester ? "เงา · เส้นขอบ · ไฮไลต์คำสำคัญ · การ์ดสถิติ" : "เงา · เส้นขอบ"}</GroupLabel>
             <div className="flex flex-wrap items-center gap-4" style={{ fontSize: 13, color: color.textSecondary }}>
               <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
                 <input type="checkbox" checked={ed.cfg.shadow} onChange={(e) => ed.set("shadow", e.target.checked)} style={{ accentColor: color.primary500, width: 18, height: 18 }} /> เงา
@@ -1004,24 +1004,28 @@ export function PostPhaseMobile({
               <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
                 <input type="checkbox" checked={ed.cfg.outline} onChange={(e) => ed.set("outline", e.target.checked)} style={{ accentColor: color.primary500, width: 18, height: 18 }} /> เส้นขอบ
               </label>
-              <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(ed.cfg.highlightKeywords)}
-                  onChange={(e) => ed.set("highlightKeywords", e.target.checked)}
-                  style={{ accentColor: color.primary500, width: 18, height: 18 }}
-                />{" "}
-                ไฮไลต์คำสำคัญอัตโนมัติ
-              </label>
-              <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(ed.cfg.statCards)}
-                  onChange={(e) => ed.set("statCards", e.target.checked)}
-                  style={{ accentColor: color.primary500, width: 18, height: 18 }}
-                />{" "}
-                การ์ดสถิติอัตโนมัติ
-              </label>
+              {internalAiTester && (
+                <>
+                  <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(ed.cfg.highlightKeywords)}
+                      onChange={(e) => ed.set("highlightKeywords", e.target.checked)}
+                      style={{ accentColor: color.primary500, width: 18, height: 18 }}
+                    />{" "}
+                    ไฮไลต์คำสำคัญอัตโนมัติ
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1.5" style={{ minHeight: 30 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(ed.cfg.statCards)}
+                      onChange={(e) => ed.set("statCards", e.target.checked)}
+                      style={{ accentColor: color.primary500, width: 18, height: 18 }}
+                    />{" "}
+                    การ์ดสถิติอัตโนมัติ
+                  </label>
+                </>
+              )}
               {ed.cfg.outline && (
                 <input type="range" min={1} max={8} value={ed.cfg.outlineSize} onChange={(e) => ed.set("outlineSize", Number(e.target.value))} className="flex-1" style={{ accentColor: color.primary500, minWidth: 120 }} />
               )}
