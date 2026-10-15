@@ -1,7 +1,7 @@
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { prisma } from "@/lib/prisma";
 import {
   buildPresenterStitchFfmpegFilter,
   computeStitchedDurationMs,
@@ -11,15 +11,9 @@ import {
   probeClipInfoViaFfmpeg,
   stitchPresenterVideoFiles,
 } from "@/lib/presenter-stitch.server";
-import {
-  clipFieldsRequested,
-  parseClipJobArgs,
-  settleClipImportJob,
-  startClipImport,
-} from "@/lib/mcp/clip-video-job";
 import { createVideoJobInputSchema } from "@/lib/mcp/create-video-input";
-import { decideVideoQuote, prepareVideoQuote } from "@/lib/mcp/video-quote.server";
-import { requestVideoJob } from "@/lib/mcp/video-budget.server";
+
+const ROOT = path.resolve(__dirname, "..");
 
 let passed = 0;
 function assert(condition: unknown, message: string): asserts condition {
@@ -53,6 +47,22 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 async function main() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-wave4-backlog-"));
+  const dbPath = path.join(tmp, "wave4.db");
+  process.env.DATABASE_URL = `file:${dbPath}?connection_limit=1`;
+  process.env.MCP_PUBLIC_ORIGIN = "https://studio.test";
+  execSync("npx prisma db push --skip-generate", { cwd: ROOT, stdio: "ignore", env: process.env });
+
+  const { prisma } = await import("@/lib/prisma");
+  const {
+    clipFieldsRequested,
+    parseClipJobArgs,
+    settleClipImportJob,
+    startClipImport,
+  } = await import("@/lib/mcp/clip-video-job");
+  const { decideVideoQuote, prepareVideoQuote } = await import("@/lib/mcp/video-quote.server");
+  const { requestVideoJob } = await import("@/lib/mcp/video-budget.server");
+
   // ── 1. Pure Multi-Clip Stitch Duration & Cut-Time Planning ────────────────
   const singlePlan = computeStitchedDurationMs([4200]);
   assert(singlePlan.totalDurationMs === 4200, "single clip totalDurationMs === 4200");
