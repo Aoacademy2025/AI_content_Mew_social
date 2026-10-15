@@ -23,7 +23,11 @@ import {
   resolvedMcpSubtitleDesignFromInput,
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
-import { normalizeHeadlineHook, type HeadlineHookConfig } from "@/lib/headline-hook";
+import {
+  normalizeHeadlineHook,
+  resolveInitialHeadlineHookFromJobInput,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeBackgroundMusicEdit, type BackgroundMusicEdit } from "@/lib/background-music";
 import { MAX_EDITOR_PROJECT_DRAFT_BYTES, MAX_EDITOR_PROJECT_DRAFT_REVISION } from "@/lib/editor-projects";
@@ -36,6 +40,7 @@ import {
   type BrollTransitionEdit,
 } from "@/lib/broll-window-style";
 import { clampTailHoldMs } from "@/lib/tail-hold";
+import { effectiveSfxMode, isSfxMode, planTransitionSfxCues, type SfxMode } from "@/lib/transition-sfx";
 
 /**
  * T6 (ADR 0064, plan G10-G12): the Pending Edit Draft an MCP agent edits between tool calls.
@@ -95,11 +100,15 @@ export type PendingEditDraft = {
   windowEdits: PendingEditWindowEdit[];
   /** EP5 #11: a new project-default B-roll transition the next export re-renders with. */
   brollTransition?: BrollTransition;
+  /** EP5 #4: a new project-level presenter auto punch-in zoom setting the next export re-renders with. */
+  punchZoom?: boolean;
+  /** EP5 #3: transition sound effects mode ("none" | "subtle"). */
+  sfxMode?: SfxMode;
 };
 
-/** True when the next export must re-render the B-roll (window edits or a new project default). */
-export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition">): boolean {
-  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined;
+/** True when the next export must re-render the B-roll/base (window edits, project transition, or punchZoom). */
+export function draftHasBrollChanges(draft: Pick<PendingEditDraft, "windowEdits" | "brollTransition" | "punchZoom">): boolean {
+  return draft.windowEdits.length > 0 || draft.brollTransition !== undefined || draft.punchZoom !== undefined;
 }
 
 /** The base render an export burns onto: `project.activeJobId`'s finished preview. */
@@ -211,6 +220,8 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
   const backgroundMusic = input.backgroundMusic === undefined ? undefined : normalizeBackgroundMusicEdit(input.backgroundMusic);
   if (headlineHook === null || logoOverlay === null || backgroundMusic === null) return null;
   if (input.brollTransition !== undefined && !isBrollTransition(input.brollTransition)) return null;
+  if (input.punchZoom !== undefined && typeof input.punchZoom !== "boolean") return null;
+  if (input.sfxMode !== undefined && !isSfxMode(input.sfxMode)) return null;
   return {
     version: 1,
     rootJobId: input.rootJobId,
@@ -228,6 +239,8 @@ export function parsePendingEditDraft(raw: string | null | undefined): PendingEd
     tailHoldMs: clampTailHoldMs(editor.tailHoldMs),
     windowEdits,
     ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
+    ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
+    ...(isSfxMode(input.sfxMode) ? { sfxMode: input.sfxMode } : {}),
   };
 }
 
@@ -259,11 +272,14 @@ export function seedPendingEditDraft(input: {
   const fullText = snapshot?.preview.fullText ?? preview.fullText;
   const projectDraft = record(parseJson(input.projectDraftJson)) ?? {};
   const subtitleConfig = (snapshot?.subtitleConfig as V2SubConfig | undefined) ?? { ...design.design };
-  const headlineHook = normalizeHeadlineHook(
-    projectDraft.headlineHook,
-    draftDurationMs(preview, captions),
-    subtitleConfig.verticalPos,
-  );
+  const totalDurationMs = draftDurationMs(preview, captions);
+  const headlineHook = projectDraft.headlineHook !== undefined
+    ? normalizeHeadlineHook(projectDraft.headlineHook, totalDurationMs, subtitleConfig.verticalPos)
+    : resolveInitialHeadlineHookFromJobInput(
+        rootInput as Record<string, unknown>,
+        totalDurationMs,
+        subtitleConfig.verticalPos,
+      );
   const logoOverlay = normalizeLogoOverlayConfig(projectDraft.logoOverlay);
   const backgroundMusic = normalizeBackgroundMusicEdit(projectDraft.backgroundMusic);
   return {
@@ -539,6 +555,7 @@ export async function clearPendingEditDraftIfRevision(
         baseJobId: stored.baseJobId,
         windowEdits: stored.windowEdits,
         ...(stored.brollTransition ? { brollTransition: stored.brollTransition } : {}),
+        ...(typeof stored.punchZoom === "boolean" ? { punchZoom: stored.punchZoom } : {}),
       });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
@@ -570,10 +587,30 @@ export async function clearPendingEditDraftIfRevision(
 
 /** The export's burn config, built exactly the way the web editor builds it (`buildV2BurnConfig`). */
 export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase, "videoUrl" | "preview">) {
-  return buildV2BurnConfig(
+  const effectiveSfx = effectiveSfxMode(
+    draft.sfxMode ?? (base.preview.config as { sfxMode?: unknown } | undefined)?.sfxMode,
+  );
+  const rawBgVideos = Array.isArray((base.preview.config as { bgVideos?: unknown } | undefined)?.bgVideos)
+    ? ((base.preview.config as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
+    : [];
+  const audioDurMs = base.preview.audioDurationMs ?? 0;
+  const sfxCues = effectiveSfx === "subtle"
+    ? planTransitionSfxCues({
+        sfxMode: "subtle",
+        hasOpeningHook: Boolean(draft.headlineHook?.enabled),
+        brollStartTimesSec: rawBgVideos
+          .filter((v) => v && v.brollEnabled !== false && Boolean(v.src) && typeof v.start === "number")
+          .map((v) => v.start as number),
+        punchCueTimesSec: draft.captions
+          .filter((c) => c.tag === "hook")
+          .map((c) => c.startMs / 1000),
+        totalDurationSec: audioDurMs / 1000,
+      })
+    : undefined;
+  const burn = buildV2BurnConfig(
     base.videoUrl,
     draft.captions,
-    base.preview.audioDurationMs ?? 0,
+    audioDurMs,
     draft.subtitleConfig,
     30,
     draft.captionOverrides,
@@ -581,7 +618,9 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     undefined,
     draft.headlineHook,
     draft.tailHoldMs,
+    effectiveSfx,
   );
+  return sfxCues && sfxCues.length > 0 ? { ...burn, sfxCues } : burn;
 }
 
 /** The editor-native draft `enqueueEditorExport` turns into the export's editSnapshot. */
@@ -607,6 +646,7 @@ export type PendingEditForWeb = {
     windowMedia?: PendingWindowMedia[];
     requiredWindows?: ExternalWindowState[];
     brollTransition?: BrollTransition;
+    punchZoom?: boolean;
   };
 };
 
@@ -656,7 +696,17 @@ export async function pendingEditForWebResolved(userId: string, project: Paramet
     const window = requiredWindows.find(w => w.index === media.index);
     if (window && media.status !== "ready") { window.state = media.status; if (media.error) window.importError = media.error; }
   }
-  return { ...view, draft: { ...view.draft, windowEdits, windowMedia, requiredWindows, ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}) } };
+  return {
+    ...view,
+    draft: {
+      ...view.draft,
+      windowEdits,
+      windowMedia,
+      requiredWindows,
+      ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}),
+      ...(typeof draft.punchZoom === "boolean" ? { punchZoom: draft.punchZoom } : {}),
+    },
+  };
 }
 
 export class StaleWebApplyError extends Error {
@@ -667,12 +717,13 @@ export class StaleWebApplyError extends Error {
 }
 
 /** Completion and activation share this transaction: a newer draft must abort both. */
-export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean }) {
+export async function rebaseWebPendingMedia(tx: Prisma.TransactionClient, input: { userId: string; projectId: string; sourceJobId: string; jobId: string; revision: number; indices: number[]; transitionApplied: boolean; punchZoomApplied?: boolean }) {
   const project = await tx.editorProject.findFirst({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, select: { pendingEditJson: true } });
   const draft = parsePendingEditDraft(project?.pendingEditJson ?? null);
   if (!draft || draft.baseJobId !== input.sourceJobId) throw new StaleWebApplyError();
   const next = { ...draft, baseJobId: input.jobId, windowEdits: draft.windowEdits.filter(e => !input.indices.includes(e.index)) };
   if (input.transitionApplied) delete next.brollTransition;
+  if (input.punchZoomApplied) delete next.punchZoom;
   const updated = await tx.editorProject.updateMany({ where: { id: input.projectId, userId: input.userId, pendingEditRevision: input.revision }, data: { pendingEditJson: JSON.stringify(next), pendingEditRevision: { increment: 1 } } });
   if (updated.count !== 1) throw new StaleWebApplyError();
 }

@@ -1,4 +1,5 @@
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
+import { effectiveSfxMode, type SfxMode, type TransitionSfxCue } from "@/lib/transition-sfx";
 import type {
   SubtitleOverlayConfig,
   SubtitleStylePreset,
@@ -24,6 +25,8 @@ export type HeroSubtitleDesign = {
   shadow?: boolean;
   outline?: boolean;
   outlineSize?: number;
+  highlightKeywords?: boolean;
+  statCards?: boolean;
 };
 
 /**
@@ -38,11 +41,14 @@ export function buildHeroSubtitleOverlayConfig(input: {
   fps?: number;
   design: HeroSubtitleDesign;
   headlineHook?: HeadlineHookConfig | null;
+  sfxMode?: SfxMode;
+  sfxCues?: TransitionSfxCue[];
 }): SubtitleOverlayConfig {
   const fps = input.fps ?? 30;
   const lastEndMs = input.captions.at(-1)?.endMs ?? 0;
   const durationMs = Math.max(input.durationMs, lastEndMs);
   const design = input.design;
+  const resolvedSfxMode = effectiveSfxMode(input.sfxMode);
   return {
     videoUrl: input.baseVideoUrl,
     keywordPopups: input.captions.flatMap((caption) => {
@@ -75,5 +81,9 @@ export function buildHeroSubtitleOverlayConfig(input: {
     ...(design.shadow !== undefined ? { subtitleShadow: design.shadow } : {}),
     ...(design.outline !== undefined ? { subtitleOutline: design.outline } : {}),
     ...(design.outlineSize !== undefined ? { subtitleOutlineSize: design.outlineSize } : {}),
+    ...(design.highlightKeywords ? { subtitleHighlightKeywords: true } : {}),
+    ...(design.statCards ? { subtitleStatCards: true } : {}),
+    ...(resolvedSfxMode === "subtle" ? { sfxMode: "subtle" } : {}),
+    ...(resolvedSfxMode === "subtle" && input.sfxCues?.length ? { sfxCues: input.sfxCues } : {}),
   };
 }

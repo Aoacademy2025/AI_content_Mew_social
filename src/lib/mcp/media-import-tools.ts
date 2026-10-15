@@ -4,10 +4,11 @@ import { registerGatedTool, type GatingPrincipal } from "@/lib/mcp/tool-gating";
 import { editToolFailure, type EditToolRunner } from "@/lib/mcp/edit-tools";
 import { mcpPublicOrigin } from "@/lib/mcp/tools";
 import {
+  MAX_BATCH_UPLOAD_LINKS,
   UPLOAD_KINDS,
   UPLOAD_KIND_MAX_BYTES,
   UPLOAD_TOKEN_TTL_MS,
-  issueUploadToken,
+  issueUploadTokens,
   type UploadKind,
 } from "@/lib/media-import/imports";
 import { admissionRefusal } from "@/lib/mcp/media-import-copy";
@@ -27,6 +28,9 @@ export const MCP_MEDIA_IMPORT_TOOL_NAMES = ["create_upload_url"] as const;
 export const createUploadUrlInputShape = {
   kind: z.enum(UPLOAD_KINDS).describe(
     "ชนิดไฟล์: image = รูป B-roll (jpg/png/webp ≤ 20 MB), video = วิดีโอ B-roll (mp4/mov/webm ≤ 200 MB), presenter = คลิปพิธีกรแนวตั้ง (mp4/mov/webm ≤ 500 MB)",
+  ),
+  count: z.number().int().min(1).max(MAX_BATCH_UPLOAD_LINKS).optional().describe(
+    `จำนวนลิงก์อัปโหลดที่ต้องการในครั้งเดียว (1–${MAX_BATCH_UPLOAD_LINKS}, ค่าเริ่มต้น 1) — ใช้เมื่อต้องอัปโหลดไฟล์ B-roll หลายช่วงพร้อมกัน จะได้รายการใน uploads[]`,
   ),
 } satisfies z.ZodRawShape;
 
@@ -69,19 +73,31 @@ const UPLOAD_UNAVAILABLE = editToolFailure(
   "ส่งลิงก์สาธารณะ (https) ของไฟล์แทน หรือแจ้งทีมงานให้ตรวจการตั้งค่า",
 );
 
-export async function createUploadUrlTool(userId: string, args: { kind: UploadKind }) {
+export async function createUploadUrlTool(userId: string, args: { kind: UploadKind; count?: number }) {
   // Checked before issuing, so a misconfigured origin never mints (or counts) a link.
   const origin = uploadLinkOrigin();
   if (!origin) {
     console.error("[mcp-uploads] public origin is not https; upload links are disabled");
     return UPLOAD_UNAVAILABLE;
   }
-  const issued = await issueUploadToken(userId, args.kind);
+  if (args.count !== undefined && (!Number.isInteger(args.count) || args.count < 1 || args.count > MAX_BATCH_UPLOAD_LINKS)) {
+    return editToolFailure(
+      "invalid_input",
+      `count ต้องเป็นจำนวนเต็มตั้งแต่ 1 ถึง ${MAX_BATCH_UPLOAD_LINKS}`,
+      `เรียก create_upload_url โดยระบุ count ระหว่าง 1 ถึง ${MAX_BATCH_UPLOAD_LINKS}`,
+    );
+  }
+  const issued = await issueUploadTokens(userId, args.kind, args.count ?? 1);
   if (!issued.ok) return admissionRefusal(issued.code, undefined, issued.retryAfterSeconds);
-  const uploadUrl = new URL(`/api/mcp-uploads/${issued.token}`, origin);
+  const uploads = issued.items.map((item) => ({
+    uploadId: item.importId,
+    uploadUrl: new URL(`/api/mcp-uploads/${item.token}`, origin).toString(),
+  }));
+  const first = uploads[0];
   return {
-    uploadId: issued.importId,
-    uploadUrl: uploadUrl.toString(),
+    uploadId: first.uploadId,
+    uploadUrl: first.uploadUrl,
+    ...(args.count !== undefined ? { count: uploads.length, uploads } : {}),
     method: "PUT",
     kind: issued.kind,
     accepts: ACCEPTS[issued.kind],
@@ -103,7 +119,7 @@ export function registerMediaImportTools(server: McpServer, principal: GatingPri
     {
       title: "Create upload URL",
       description:
-        "ขอลิงก์อัปโหลดไฟล์แบบใช้ครั้งเดียว (หมดอายุใน 15 นาที) สำหรับไฟล์ที่ไม่มีลิงก์สาธารณะ: อัปโหลดด้วย HTTP PUT (body = ไบต์ของไฟล์) แล้วใช้ uploadId ที่ได้กับเครื่องมือที่รับไฟล์. ถ้ามีลิงก์ https สาธารณะอยู่แล้ว ส่งลิงก์นั้นได้เลยไม่ต้องใช้เครื่องมือนี้.",
+        "ขอลิงก์อัปโหลดไฟล์แบบใช้ครั้งเดียว (หมดอายุใน 15 นาที) สำหรับไฟล์ที่ไม่มีลิงก์สาธารณะ: อัปโหลดด้วย HTTP PUT (body = ไบต์ของไฟล์) แล้วใช้ uploadId ที่ได้กับเครื่องมือที่รับไฟล์. ส่ง count (1–20) เพื่อขอลิงก์หลายชุดในครั้งเดียวได้ใน uploads[]. ถ้ามีลิงก์ https สาธารณะอยู่แล้ว ส่งลิงก์นั้นได้เลยไม่ต้องใช้เครื่องมือนี้.",
       inputSchema: createUploadUrlInputShape,
     },
     async (args, extra) =>

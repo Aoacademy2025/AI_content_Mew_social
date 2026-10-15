@@ -21,11 +21,21 @@ export function cleanForCount(text: string): string {
 }
 
 /** ความยาวคลิป (วินาที) โดยประมาณของข้อความ 1 ก้อน (clean ก่อนนับ) */
-export function estimateClipSecV2(text: string): number {
+export function estimateClipSecV2(text: string, ttsSpeed?: number): number {
   const cleaned = cleanForCount(text);
   const thaiChars = (cleaned.match(/[฀-๿]/g) ?? []).length;
   const engWords = cleaned.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
-  return thaiChars / 11 + engWords / 2.5;
+  const baseSec = thaiChars / 11 + engWords / 2.5;
+  if (
+    typeof ttsSpeed === "number"
+    && Number.isFinite(ttsSpeed)
+    && ttsSpeed >= 0.85
+    && ttsSpeed <= 1.25
+    && ttsSpeed !== 1
+  ) {
+    return baseSec / (Math.round(ttsSpeed * 1000) / 1000);
+  }
+  return baseSec;
 }
 
 /** จำนวน "คำ" โดยประมาณ (ไทย ≈ 4 ตัวอักษร/คำ) จากข้อความที่ clean แล้ว */

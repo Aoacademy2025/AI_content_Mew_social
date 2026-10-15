@@ -1,4 +1,11 @@
-export const HEADLINE_HOOK_PRESETS = ["viral", "news", "clean"] as const;
+export const HEADLINE_HOOK_PRESETS = [
+  "viral",
+  "news",
+  "clean",
+  "banner",
+  "stat-burst",
+  "question-pill",
+] as const;
 
 export type HeadlineHookPreset = (typeof HEADLINE_HOOK_PRESETS)[number];
 
@@ -135,7 +142,7 @@ function sanitizeHeadlineHookDraftText(
   return Array.from(draft).slice(0, opts.maxChars).join("");
 }
 
-function isHeadlineHookPreset(value: unknown): value is HeadlineHookPreset {
+export function isHeadlineHookPreset(value: unknown): value is HeadlineHookPreset {
   return typeof value === "string"
     && HEADLINE_HOOK_PRESETS.some((preset) => preset === value);
 }
@@ -493,3 +500,62 @@ export function headlineHookFontSizes(
     : Math.max(42, Math.round(headlineSize * 0.62));
   return { headline: headlineSize, subheadline: resolvedSubheadlineSize };
 }
+
+export type InitialHeadlineHookJobInput = {
+  headlineHook?: HeadlineHookConfig | string | unknown;
+  headlineHookSubtext?: string | unknown;
+  headlineHookStyle?: string | unknown;
+  headlineHookDurationMs?: number | unknown;
+  visualHook?: string | unknown;
+  visualHookStyle?: string | unknown;
+};
+
+/**
+ * Resolves a first-3-second visual hook (`HeadlineHookConfig`) from either an already-structured
+ * `headlineHook` object or flat MCP job creation fields (`headlineHook` / `visualHook`,
+ * `headlineHookSubtext`, `headlineHookStyle` / `visualHookStyle`, `headlineHookDurationMs`).
+ * Defaults `durationMs` to 3000ms (0–3s hook window) when not specified on flat inputs.
+ */
+export function resolveInitialHeadlineHookFromJobInput(
+  input: InitialHeadlineHookJobInput | Record<string, unknown> | null | undefined,
+  totalDurationMs = 60_000,
+  subtitleVerticalPos?: number,
+): HeadlineHookConfig | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  if (typeof input.headlineHook === "object" && input.headlineHook !== null) {
+    return normalizeHeadlineHook(input.headlineHook, totalDurationMs, subtitleVerticalPos) ?? undefined;
+  }
+  const rawHeadline = typeof input.headlineHook === "string" && input.headlineHook.trim().length > 0
+    ? input.headlineHook
+    : typeof input.visualHook === "string" && input.visualHook.trim().length > 0
+      ? input.visualHook
+      : "";
+  if (!rawHeadline) return undefined;
+
+  const rawStyle = input.headlineHookStyle ?? input.visualHookStyle;
+  const preset: HeadlineHookPreset = isHeadlineHookPreset(rawStyle)
+    ? rawStyle
+    : typeof input.visualHook === "string" && input.visualHook.trim().length > 0
+      ? "banner"
+      : DEFAULT_HEADLINE_HOOK_PRESET;
+
+  const durationMs = typeof input.headlineHookDurationMs === "number" && Number.isFinite(input.headlineHookDurationMs)
+    ? input.headlineHookDurationMs
+    : MIN_HEADLINE_HOOK_DURATION_MS;
+
+  return normalizeHeadlineHook(
+    {
+      enabled: true,
+      headline: rawHeadline,
+      ...(typeof input.headlineHookSubtext === "string" && input.headlineHookSubtext.trim().length > 0
+        ? { subheadline: input.headlineHookSubtext }
+        : {}),
+      preset,
+      durationMs,
+      topPercent: DEFAULT_HEADLINE_HOOK_TOP_PERCENT,
+    },
+    totalDurationMs,
+    subtitleVerticalPos,
+  ) ?? undefined;
+}
+

@@ -270,6 +270,9 @@ export function buildBurnConfig(
   audioDurationMs: number,
   design: HeroSubtitleDesign,
   fps: number = RENDER_FPS,
+  headlineHook?: import("@/lib/headline-hook").HeadlineHookConfig | null,
+  sfxMode?: import("@/lib/transition-sfx").SfxMode,
+  sfxCues?: import("@/lib/transition-sfx").TransitionSfxCue[],
 ) {
   return buildHeroSubtitleOverlayConfig({
     baseVideoUrl,
@@ -277,6 +280,9 @@ export function buildBurnConfig(
     durationMs: audioDurationMs,
     fps,
     design,
+    ...(headlineHook ? { headlineHook } : {}),
+    ...(sfxMode ? { sfxMode } : {}),
+    ...(sfxCues?.length ? { sfxCues } : {}),
   });
 }
 
@@ -307,6 +313,8 @@ export function v2SubConfigToHeroDesign(cfg: V2SubConfig): HeroSubtitleDesign {
     shadow: cfg.shadow,
     outline: cfg.outline,
     outlineSize: cfg.outlineSize,
+    ...(cfg.highlightKeywords ? { highlightKeywords: true } : {}),
+    ...(cfg.statCards ? { statCards: true } : {}),
   };
 }
 
@@ -326,6 +334,8 @@ export type McpSubtitleStyleArgs = {
   subtitleAccentColor?: string;
   subtitlePosition?: "top" | "middle" | "bottom";
   subtitleMode?: SubtitleCardLen;
+  highlightKeywords?: boolean;
+  statCards?: boolean;
 };
 
 /** Resolve one job's subtitle design + card length from explicit MCP args and an
@@ -347,6 +357,8 @@ export function resolveMcpSubtitleDesign(
     ...(args.subtitleColor ? { textColor: args.subtitleColor } : {}),
     ...(args.subtitleAccentColor ? { accentColor: args.subtitleAccentColor } : {}),
     ...(args.subtitlePosition ? { verticalPos: POSITION_TOP_PERCENT[args.subtitlePosition] } : {}),
+    ...(args.highlightKeywords !== undefined ? { highlightKeywords: args.highlightKeywords } : {}),
+    ...(args.statCards !== undefined ? { statCards: args.statCards } : {}),
   };
   const cardLen: SubtitleCardLen = args.subtitleMode ?? brandStyle?.cardLen ?? "sentence";
   return { design, cardLen };

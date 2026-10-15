@@ -2,6 +2,10 @@ import React from "react";
 import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { baseGraphemeCount, maxCardCharsFor } from "../lib/card-line-budget";
 import { cardCutBoundaries } from "../lib/tts-timing";
+import {
+  mergeNumericAffixTokens,
+  selectHighlightedTokenIndices,
+} from "../lib/subtitle-keyword-highlight";
 
 /**
  * Single source of truth for subtitle rendering.
@@ -262,14 +266,16 @@ function segmentParts(s: string): TokenPart[] {
         isWordLike: isWordLike === true && segment.trim().length > 0,
       });
     }
-    if (out.length > 0) return out;
+    if (out.length > 0) return mergeNumericAffixTokens(out);
   }
 
   const pieces = s.match(/\s+|[\p{L}\p{M}\p{N}]+|[^\s\p{L}\p{M}\p{N}]+/gu) ?? [];
-  return pieces.map((part) => ({
-    text: part,
-    isWordLike: /[\p{L}\p{N}]/u.test(part),
-  }));
+  return mergeNumericAffixTokens(
+    pieces.map((part) => ({
+      text: part,
+      isWordLike: /[\p{L}\p{N}]/u.test(part),
+    })),
+  );
 }
 
 type TokenLine = { parts: TokenPart[] };
@@ -390,6 +396,8 @@ export interface SubtitleDecorationOptions {
   shadow?: boolean;
   outline?: boolean;
   outlineSize?: number;
+  /** EP5 #2: automatically highlight 1–2 key words/numbers per caption card with accentColor. */
+  highlightKeywords?: boolean;
   /**
    * The configured subtitle size on the 1080-wide render frame, before any preview scaling.
    * The display line break (T2) is budgeted from this size, never from the `size` actually
@@ -627,23 +635,62 @@ export function renderSubtitle(
   }
   void isHighlight; // legacy parameter — coloring is now driven by `color`
 
+  // EP5 #2: Auto-highlight 1–2 salient keywords/numbers per card with accentColor.
+  const renderContent = (cardTextColor = color): React.ReactNode => {
+    if (!decorations.highlightKeywords) return text;
+    const lines = tokenLines(text);
+    const allParts = lines.flatMap((line) => line.parts);
+    const highlighted = selectHighlightedTokenIndices(allParts, 2);
+    if (highlighted.size === 0) return text;
+    const resolvedAccent = cardTextColor.trim().toUpperCase() === accentColor.trim().toUpperCase()
+      ? (accentColor.trim().toUpperCase() === "#FFFFFF" ? "#FFE500" : "#FFFFFF")
+      : accentColor;
+    let tokenIdx = 0;
+    return lines.map((line, lineIdx) => (
+      <React.Fragment key={lineIdx}>
+        {line.parts.map((part, partIdx) => {
+          if (!part.isWordLike) {
+            return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+          }
+          const currentIdx = tokenIdx++;
+          if (!highlighted.has(currentIdx)) {
+            return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+          }
+          return (
+            <span
+              key={`${lineIdx}-${partIdx}`}
+              data-keyword-highlight="true"
+              style={{
+                color: resolvedAccent,
+                fontWeight: 900,
+              }}
+            >
+              {part.text}
+            </span>
+          );
+        })}
+        {lineIdx < lines.length - 1 ? "\n" : null}
+      </React.Fragment>
+    ));
+  };
+
   // bounce / quick / fade / slide / flip / glow-pulse on locked presets — fall through to preset switch
 
   switch (preset) {
     case "plain":
-      return <span style={withDecorations({ ...base })}>{text}</span>;
+      return <span style={withDecorations({ ...base })}>{renderContent(color)}</span>;
     case "shadow":
-      return <span style={withDecorations({ ...base, textShadow: "0 4px 16px rgba(0,0,0,1), 0 2px 4px rgba(0,0,0,0.9)" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, textShadow: "0 4px 16px rgba(0,0,0,1), 0 2px 4px rgba(0,0,0,0.9)" })}>{renderContent(color)}</span>;
     case "box":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>
-          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.9)" })}>{text}</span>
+          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.9)" })}>{renderContent(color)}</span>
         </div>
       );
     case "box-rounded":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>
-          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.8)" })}>{text}</span>
+          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.8)" })}>{renderContent(color)}</span>
         </div>
       );
     case "glow": {
@@ -652,7 +699,7 @@ export function renderSubtitle(
         <span style={withDecorations({
           ...base,
           textShadow: `0 0 20px rgba(${r},${g},${b},0.9), 0 0 40px rgba(${r},${g},${b},0.6), 0 2px 4px rgba(0,0,0,0.8)`,
-        })}>{text}</span>
+        })}>{renderContent(color)}</span>
       );
     }
     case "outline-only":
@@ -662,35 +709,35 @@ export function renderSubtitle(
           color: "#fff",
           WebkitTextStroke: `3px ${color}`,
           paintOrder: "stroke fill",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent("#ffffff")}</span>
       );
 
     case "neon-green":
-      return <span style={withDecorations({ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" })}>{renderContent("#00ff88")}</span>;
 
     case "neon-red":
-      return <span style={withDecorations({ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022" })}>{renderContent("#ff3344")}</span>;
 
     case "neon-blue":
-      return <span style={withDecorations({ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" })}>{renderContent("#00cfff")}</span>;
 
     case "bold-shadow":
-      return <span style={withDecorations({ ...base, fontWeight, textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, fontWeight, textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{renderContent(color)}</span>;
 
     case "karaoke-box":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>
-          <span style={withDecorations({ ...base })}>{text}</span>
+          <span style={withDecorations({ ...base })}>{renderContent(color)}</span>
         </div>
       );
 
     case "pop-outline": {
       const cInv = color === "#ffffff" || color === "#fff" ? "#000000" : "#ffffff";
-      return <span style={withDecorations({ ...base, WebkitTextStroke: `2px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties)}>{text}</span>;
+      return <span style={withDecorations({ ...base, WebkitTextStroke: `2px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties)}>{renderContent(color)}</span>;
     }
 
     case "pastel":
-      return <span style={withDecorations({ ...base, color: "#ffb3d9", textShadow: "0 2px 8px rgba(255,100,180,0.5), 0 1px 0 rgba(0,0,0,0.5)" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#ffb3d9", textShadow: "0 2px 8px rgba(255,100,180,0.5), 0 1px 0 rgba(0,0,0,0.5)" })}>{renderContent("#ffb3d9")}</span>;
 
     case "classic-yellow":
       return (
@@ -698,7 +745,7 @@ export function renderSubtitle(
           ...base, color: "#FFE500",
           textShadow: "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 4px 12px rgba(0,0,0,0.9)",
           WebkitTextStroke: "1.5px #000", paintOrder: "stroke fill",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent("#FFE500")}</span>
       );
 
     case "hormozi":
@@ -707,7 +754,7 @@ export function renderSubtitle(
           ...base, color: "#ff2244", fontStyle: "italic", fontWeight,
           textShadow: "-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff, 0 4px 16px rgba(200,0,30,0.6)",
           WebkitTextStroke: "1px #fff", paintOrder: "stroke fill",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent("#ff2244")}</span>
       );
 
     case "beast":
@@ -716,20 +763,20 @@ export function renderSubtitle(
           ...base, color: "#ffffff",
           textShadow: "-2px -2px 0 #ff8800, 2px -2px 0 #ff8800, -2px 2px 0 #ff8800, 2px 2px 0 #ff8800, 0 0 20px rgba(255,140,0,0.5)",
           WebkitTextStroke: "2px #ff8800", paintOrder: "stroke fill",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent("#ffffff")}</span>
       );
 
     case "box-white":
       return (
         <div style={{ display: "inline-block", background: "#ffffff", padding: "6px 20px 8px", borderRadius: 4 }}>
-          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{renderContent("#111111")}</span>
         </div>
       );
 
     case "box-yellow":
       return (
         <div style={{ display: "inline-block", background: "#FFE500", padding: "6px 20px 8px", borderRadius: 6 }}>
-          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{renderContent("#FFE500")}</span>
         </div>
       );
 
@@ -738,7 +785,7 @@ export function renderSubtitle(
         <span style={withDecorations({
           ...base, color: "#ff6600",
           textShadow: "2px 2px 0 #cc3300, 4px 4px 0 rgba(150,0,0,0.5), 0 6px 16px rgba(200,50,0,0.4)",
-        })}>{text}</span>
+        })}>{renderContent("#ff6600")}</span>
       );
 
     case "sharp-outline":
@@ -747,13 +794,13 @@ export function renderSubtitle(
           ...base, color: "#ffffff",
           WebkitTextStroke: `3px ${color}`, paintOrder: "stroke fill",
           textShadow: "0 3px 10px rgba(0,0,0,0.8)",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent("#ffffff")}</span>
       );
 
     case "news":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.88)", padding: "5px 18px 7px" }}>
-          <span style={withDecorations({ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" })}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" })}>{renderContent("#ffffff")}</span>
         </div>
       );
 
@@ -764,7 +811,7 @@ export function renderSubtitle(
           ...base,
           WebkitTextStroke: "2px #000",
           paintOrder: "stroke fill",
-        } as React.CSSProperties)}>{text}</span>
+        } as React.CSSProperties)}>{renderContent(color)}</span>
       );
   }
 }

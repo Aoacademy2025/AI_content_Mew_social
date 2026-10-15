@@ -247,6 +247,8 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
   const canceledSettlement = status === "canceled" && exportJob
     ? await deriveSettlementFields([preview, exportJob], chainIds)
     : null;
+  const previewOutput = row.id === preview.id ? output : parseVideoJobOutput(preview.outputJson);
+  const warnings = output?.warnings?.length ? output.warnings : previewOutput?.warnings;
   return {
     kind: "job" as const,
     jobId: preview.id,
@@ -267,6 +269,7 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: preview.id, userId }),
+    ...(warnings?.length ? { warnings } : {}),
     ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
     ...(exportHalfEnded && editorUrl ? { editorUrl } : {}),
@@ -343,6 +346,8 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     ? await deriveSettlementFields(row.id === root.id ? [root] : [root, row], chainIds)
     : null;
   const done = status === "done";
+  const rootOutput = row.id === root.id ? output : parseVideoJobOutput(root.outputJson);
+  const warnings = output?.warnings?.length ? output.warnings : rootOutput?.warnings;
   return {
     kind: "job" as const,
     jobId: root.id,
@@ -359,6 +364,7 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: root.id, userId }),
+    ...(warnings?.length ? { warnings } : {}),
     ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null } : {}),
     ...(rootDone ? { previewUrl, editorUrl } : {}),
@@ -416,6 +422,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: await getVideoJobCostReceipt({ videoJobId: job.id, userId }),
+    ...(output?.warnings?.length ? { warnings: output.warnings } : {}),
     ...(job.status === "confirmation_required" ? await retainedConfirmation(userId, job.id) : {}),
   };
 }

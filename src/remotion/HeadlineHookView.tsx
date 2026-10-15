@@ -119,6 +119,116 @@ export function HeadlineHookView({
         </p>
       )}
     </div>
+  ) : hook.preset === "banner" ? (
+    <div
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        padding: `${16 * frameScale}px ${28 * frameScale}px ${18 * frameScale}px`,
+        borderRadius: 16 * frameScale,
+        background: "linear-gradient(135deg, #F97316 0%, #EA580C 52%, #DC2626 100%)",
+        border: `${Math.max(1, 2.5 * frameScale)}px solid rgba(255, 255, 255, 0.32)`,
+        boxShadow: `0 ${12 * frameScale}px ${32 * frameScale}px rgba(0, 0, 0, 0.42)`,
+      }}
+    >
+      <p
+        style={{
+          ...commonHeadline,
+          fontSize: headlineSize * 0.88,
+          color: "#FFFFFF",
+          WebkitTextStroke: "0px transparent",
+          textShadow: `0 ${3 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.45)`,
+        }}
+      >
+        {hook.headline}
+      </p>
+      {hook.subheadline && (
+        <p
+          style={{
+            ...commonSubheadline,
+            fontSize: subheadlineSize * 0.88,
+            color: "#FEF08A",
+            WebkitTextStroke: "0px transparent",
+            textShadow: `0 ${2 * frameScale}px ${8 * frameScale}px rgba(0,0,0,.42)`,
+          }}
+        >
+          {hook.subheadline}
+        </p>
+      )}
+    </div>
+  ) : hook.preset === "stat-burst" ? (
+    <div
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        padding: `${18 * frameScale}px ${28 * frameScale}px ${20 * frameScale}px`,
+        borderRadius: 22 * frameScale,
+        background: "radial-gradient(circle at 50% 0%, rgba(250, 204, 21, 0.24), rgba(9, 10, 18, 0.94) 72%)",
+        border: `${Math.max(1, 3 * frameScale)}px solid #FACC15`,
+        boxShadow: `0 ${14 * frameScale}px ${36 * frameScale}px rgba(0, 0, 0, 0.52), 0 0 ${24 * frameScale}px rgba(250, 204, 21, 0.24)`,
+      }}
+    >
+      <p
+        style={{
+          ...commonHeadline,
+          fontSize: headlineSize * 0.94,
+          color: "#FACC15",
+          WebkitTextStroke: `${Math.max(1, 2.5 * frameScale)}px rgba(4, 4, 10, 0.92)`,
+        }}
+      >
+        {hook.headline}
+      </p>
+      {hook.subheadline && (
+        <p
+          style={{
+            ...commonSubheadline,
+            fontSize: subheadlineSize * 0.9,
+            color: "#F8FAFC",
+            WebkitTextStroke: "0px transparent",
+            textShadow: `0 ${2 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.78)`,
+          }}
+        >
+          {hook.subheadline}
+        </p>
+      )}
+    </div>
+  ) : hook.preset === "question-pill" ? (
+    <div
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        padding: `${15 * frameScale}px ${32 * frameScale}px ${18 * frameScale}px`,
+        borderRadius: 999 * frameScale,
+        background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 27, 75, 0.92) 100%)",
+        border: `${Math.max(1, 2.5 * frameScale)}px solid rgba(56, 189, 248, 0.72)`,
+        boxShadow: `0 ${10 * frameScale}px ${28 * frameScale}px rgba(0, 0, 0, 0.44)`,
+      }}
+    >
+      <p
+        style={{
+          ...commonHeadline,
+          fontSize: headlineSize * 0.85,
+          color: "#F8FAFC",
+          WebkitTextStroke: "0px transparent",
+          textShadow: `0 ${2 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.7)`,
+        }}
+      >
+        {hook.headline}
+      </p>
+      {hook.subheadline && (
+        <p
+          style={{
+            ...commonSubheadline,
+            fontSize: subheadlineSize * 0.86,
+            color: "#7DD3FC",
+            WebkitTextStroke: "0px transparent",
+            textShadow: `0 ${2 * frameScale}px ${8 * frameScale}px rgba(0,0,0,.65)`,
+          }}
+        >
+          {hook.subheadline}
+        </p>
+      )}
+    </div>
   ) : (
     <div style={{ display: "inline-block", maxWidth: "100%" }}>
       <p style={commonHeadline}>{hook.headline}</p>
@@ -129,6 +239,7 @@ export function HeadlineHookView({
   return (
     <div
       data-headline-hook-text="true"
+      data-headline-hook-preset={hook.preset}
       style={{
         width: "100%",
         textAlign: "center",

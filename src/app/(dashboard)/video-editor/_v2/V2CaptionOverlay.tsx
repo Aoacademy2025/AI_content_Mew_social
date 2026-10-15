@@ -135,6 +135,7 @@ export const V2CaptionOverlay = memo(function V2CaptionOverlay({
             cfg.preset as SubPreset, cfg.fontFamily, cfg.fontSize, resolveV2FontWeight(cfg),
             scale, cfg.effect, frame, capDurFrames,
             cfg.shadow, cfg.outline, cfg.outlineSize,
+            Boolean(cfg.highlightKeywords),
           )}
         </div>
       </div>

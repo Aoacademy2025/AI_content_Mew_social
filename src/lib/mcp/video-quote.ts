@@ -73,7 +73,7 @@ export function buildQuoteReceipt(input: {
     ],
   };
 }
-export type QuoteReceipt = ReturnType<typeof buildQuoteReceipt> & { incremental?: boolean; retainedRootJobId?: string; checkpointRevision?: number; cumulativeHeroCreditCeiling?: number };
+export type QuoteReceipt = ReturnType<typeof buildQuoteReceipt> & { incremental?: boolean; retainedRootJobId?: string; checkpointRevision?: number; cumulativeHeroCreditCeiling?: number; warnings?: string[] };
 export type VideoQuoteView = QuoteReceipt & { quoteId: string; status: string; expiresAt: string; approvedAt: string | null; rootJobId: string | null; editorUrl?: string | null; confirmationUrl: string; next: string };
 export type VideoQuoteReply = VideoQuoteView | QuoteFailure;
 

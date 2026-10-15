@@ -177,7 +177,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     () => voiceProviderPlanViolation("elevenlabs", p.plan ?? "FREE"),
     [p.plan],
   );
-  const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const scriptEstSec = useMemo(() => estimateClipSecV2(p.script, p.ttsSpeed), [p.script, p.ttsSpeed]);
   const fullAvatarDurationWarning = useMemo(
     () => avatarFullDurationViolation({
       mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
@@ -847,6 +847,27 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   {savingDefault === "voice" ? "กำลังบันทึก…" : "บันทึกเสียงนี้เป็นค่าเริ่มต้น"}
                 </button>
               </div>
+            )}
+            {(p.isAdmin || p.internalAiTester) && (
+              <label className="mt-3 flex flex-col gap-1.5">
+                <span style={{ fontSize: 12, color: color.textSecondary }}>ความเร็วเสียงพากย์</span>
+                <select
+                  value={String(p.ttsSpeed ?? 1)}
+                  onChange={(e) => p.setTtsSpeed(Number(e.target.value) || 1)}
+                  className="min-h-11 w-full max-w-[280px]"
+                  style={{
+                    padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                    background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                    color: color.text, fontFamily: font.body,
+                  }}
+                >
+                  <option value="0.9" style={{ background: color.bg1 }}>0.9x — ช้าลงเล็กน้อย</option>
+                  <option value="1" style={{ background: color.bg1 }}>1.0x — ปกติ (ค่าเริ่มต้น)</option>
+                  <option value="1.1" style={{ background: color.bg1 }}>1.1x — กระชับ</option>
+                  <option value="1.15" style={{ background: color.bg1 }}>1.15x — เร็วขึ้น</option>
+                  <option value="1.2" style={{ background: color.bg1 }}>1.2x — เร็วกระชับ</option>
+                </select>
+              </label>
             )}
           </Advanced>
         </Group>

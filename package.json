@@ -324,6 +324,10 @@
     "verify:content-preflight-beat-count": "node --conditions=react-server --import tsx scripts/verify-content-preflight-beat-count.ts",
     "verify:content-preflight-degrade": "tsx scripts/verify-content-preflight-degrade.ts",
     "verify:ai-audio-preflight": "tsx scripts/verify-ai-audio-preflight.ts",
+    "verify:mcp-wave1-backlog": "node --conditions=react-server --import tsx scripts/verify-mcp-wave1-backlog.ts",
+    "verify:mcp-wave2-backlog": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-wave2-backlog.ts",
+    "verify:mcp-wave3-backlog": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-wave3-backlog.ts",
+    "verify:mcp-wave4-backlog": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-wave4-backlog.ts",
     "verify:mcp-approved-media": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-video-quote.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget-orchestrator.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-external-media.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-spending-summary.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-external-media-policy.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-external-web-upload.ts && BUDGET_FIXTURE_SOURCE=hero-ai-image node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-budget-orchestrator.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-image-parent-boundary.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-held-chain-status.ts"
   },
   "prisma": {

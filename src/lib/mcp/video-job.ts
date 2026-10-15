@@ -488,6 +488,8 @@ export interface ParsedVideoJobOutput {
   preview?: VideoJobPreviewData | null;
   /** Latest native editor state submitted with a durable export. */
   editSnapshot?: EditorExportSnapshot;
+  /** Non-fatal Thai advisories (e.g., targetDurationSec clamped to natural TTS bounds). */
+  warnings?: string[];
 }
 
 /** Tolerant parser for VideoJob.outputJson — handles v1, v2, null, and garbage. */
@@ -510,6 +512,9 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       ? raw.subtitleEvidence as unknown as SubtitleAuditEvidence
       : null;
     const editSnapshot = parseEditorExportSnapshot(raw.editSnapshot);
+    const warnings = Array.isArray(raw.warnings)
+      ? raw.warnings.filter((w): w is string => typeof w === "string" && w.length > 0)
+      : [];
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
@@ -520,6 +525,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
       ...(editSnapshot ? { editSnapshot } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   } catch {
     return null;

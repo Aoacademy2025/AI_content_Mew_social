@@ -78,7 +78,17 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       if (outstanding >= 3) return quoteFailure("too_many_jobs", "รอให้งานที่ค้างเสร็จก่อน");
       const claimed = await tx.mcpVideoQuote.updateMany({ where: { id: quoteId, userId, status: "approved", expiresAt: { gt: new Date() } }, data: { status: "consumed", consumedAt: new Date() } });
       if (claimed.count !== 1) throw new VideoBudgetHoldError("quote_race");
-      const project = await tx.editorProject.create({ data: { userId, title: typeof execution.jobInput.title === "string" ? execution.jobInput.title : "New Project", draftJson: JSON.stringify({ createdVia: "mcp", ...(quote.source === "external" ? { brollSource: "external", stockSource: "none" } : {}) }) } });
+      const project = await tx.editorProject.create({
+        data: {
+          userId,
+          title: typeof execution.jobInput.title === "string" ? execution.jobInput.title : "New Project",
+          draftJson: JSON.stringify({
+            createdVia: "mcp",
+            ...(quote.source === "external" ? { brollSource: "external", stockSource: "none" } : {}),
+            ...(execution.jobInput.headlineHook ? { headlineHook: execution.jobInput.headlineHook } : {}),
+          }),
+        },
+      });
       const input = { ...execution.jobInput, maxAiImages: quote.imageCountCeiling, previewMode: true, ...(execution.exportMode === "hold" ? { mcpHold: true } : { mcpChainExport: true }) };
       const job = await createVideoJobInTransaction(tx, userId, input, `mcp-quote:${quote.id}`, { projectId: project.id, budgetQuoteId: quote.id, ...(receipt.pricing.minuteQuotaLive ? { funding: { meteredMinutes: receipt.renderMinutesCeiling, creditsLive: receipt.pricing.creditsLive } } : {}) });
       if ((job.fundedCreditsSpent ?? 0) > quote.renderCreditCeiling || (job.fundedCreditsSpent ?? 0) > quote.totalHeroCreditCeiling) throw new VideoBudgetHoldError("funding_changed");

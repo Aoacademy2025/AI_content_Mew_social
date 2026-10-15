@@ -393,7 +393,7 @@ export function useV2Job(p: V2Project) {
     }
     const fullAvatarDurationViolation = avatarFullDurationViolation({
       mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
-      durationSec: estimateClipSecV2(p.mode === "script" ? p.script : ""),
+      durationSec: estimateClipSecV2(p.mode === "script" ? p.script : "", p.ttsSpeed),
     });
     if (fullAvatarDurationViolation) {
       return {
@@ -410,7 +410,7 @@ export function useV2Job(p: V2Project) {
     const receiptWeights = p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
     const receiptEstSec = p.mode === "upload" && p.clipDurationSec > 0
       ? p.clipDurationSec
-      : estimateClipSecV2(p.mode === "upload" ? "" : p.script);
+      : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed);
     const quotedTargetClipCount = p.mode === "upload" && p.clipDurationSec > 0
       ? estimatedCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
       : p.targetClipCount;
@@ -460,6 +460,8 @@ export function useV2Job(p: V2Project) {
       ...(p.projectId ? { projectId: p.projectId } : {}),
       mode: "upload",
       clipUrl: p.clipUrl,
+      ...(p.tighten ? { tighten: true } : {}),
+      ...(p.punchZoom ? { punchZoom: true } : {}),
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       stockSource: apiStockSource(p.brollSource),
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
@@ -495,6 +497,8 @@ export function useV2Job(p: V2Project) {
         ...(p.brandContentPreflightId ? { contentPreflightId: p.brandContentPreflightId } : {}),
       } : {}),
       script: p.script,
+      ...(typeof p.ttsSpeed === "number" && p.ttsSpeed !== 1 ? { ttsSpeed: p.ttsSpeed } : {}),
+      ...(p.punchZoom ? { punchZoom: true } : {}),
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       voiceProvider: p.voiceEngine,
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),

@@ -188,9 +188,12 @@ export async function continueMcpRerenderChain(input: {
       baseJobId: rerender.id,
       windowEdits: loaded.state.draft.windowEdits.filter((edit) => !applied.has(JSON.stringify(edit))),
     };
-    // EP5 #11: the project default this re-render wrote into its config is no longer pending.
+    // EP5 #11 / #4: the project default transition and/or presenter punchZoom this re-render wrote into its config is no longer pending.
     if (draft.brollTransition !== undefined && draft.brollTransition === rerenderInput.brollTransition) {
       delete draft.brollTransition;
+    }
+    if (draft.punchZoom !== undefined && draft.punchZoom === rerenderInput.punchZoom) {
+      delete draft.punchZoom;
     }
     if (await savePendingEditDraft(userId, loaded.state.projectId, loaded.state.revision, draft)) {
       state = { ...loaded.state, revision: loaded.state.revision + 1, draft };

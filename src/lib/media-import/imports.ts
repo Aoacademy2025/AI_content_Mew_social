@@ -268,6 +268,8 @@ async function assertImportCapacity(
   }
 }
 
+export const MAX_BATCH_UPLOAD_LINKS = 20;
+
 export type IssuedUploadToken = {
   ok: true;
   /** The raw link token. It is never stored and never logged — it exists only in this reply. */
@@ -279,23 +281,46 @@ export type IssuedUploadToken = {
   expiresAt: Date;
 };
 
+export type IssuedUploadTokenBatch = {
+  ok: true;
+  items: IssuedUploadToken[];
+  kind: UploadKind;
+  issuedAt: Date;
+  expiresAt: Date;
+};
+
 /**
- * `create_upload_url`'s admission + issue (G25/G26). Refuses when the user already asked for
- * MAX_UPLOAD_LINKS_PER_HOUR links this hour, or when one more import would break the active /
- * hourly import caps or the global staging budget.
+ * `create_upload_url`'s admission + issue (G25/G26, EP5 #16 batch support). Refuses when the user
+ * already asked for MAX_UPLOAD_LINKS_PER_HOUR links this hour (including the requested batch), or
+ * when one more import would break the active / hourly import caps or the global staging budget.
  */
-export async function issueUploadToken(
+export async function issueUploadTokens(
   userId: string,
   kind: UploadKind,
+  count = 1,
   now: Date = new Date(),
-): Promise<IssuedUploadToken | { ok: false; code: AdmissionCode; retryAfterSeconds?: number }> {
-  const token = UPLOAD_TOKEN_PREFIX + randomBytes(32).toString("base64url");
-  const importId = randomUUID();
+): Promise<IssuedUploadTokenBatch | { ok: false; code: AdmissionCode; retryAfterSeconds?: number }> {
+  const n = Math.max(1, Math.min(MAX_BATCH_UPLOAD_LINKS, Math.trunc(count)));
+  const expiresAt = new Date(now.getTime() + UPLOAD_TOKEN_TTL_MS);
+  const items: IssuedUploadToken[] = Array.from({ length: n }, () => ({
+    ok: true as const,
+    token: UPLOAD_TOKEN_PREFIX + randomBytes(32).toString("base64url"),
+    importId: randomUUID(),
+    kind,
+    issuedAt: now,
+    expiresAt,
+  }));
   try {
     await prisma.$transaction(async (tx) => {
       // Write first: takes the writer lock (see the module comment).
-      await tx.mcpUploadToken.create({
-        data: { tokenHash: hashUploadToken(token), userId, kind, issuedAt: now, importId },
+      await tx.mcpUploadToken.createMany({
+        data: items.map((item) => ({
+          tokenHash: hashUploadToken(item.token),
+          userId,
+          kind,
+          issuedAt: now,
+          importId: item.importId,
+        })),
       });
       const linksWhere = { userId, issuedAt: { gt: new Date(now.getTime() - HOUR_MS) } };
       const linksThisHour = await tx.mcpUploadToken.count({ where: linksWhere });
@@ -311,7 +336,17 @@ export async function issueUploadToken(
     }
     throw error;
   }
-  return { ok: true, token, importId, kind, issuedAt: now, expiresAt: new Date(now.getTime() + UPLOAD_TOKEN_TTL_MS) };
+  return { ok: true, items, kind, issuedAt: now, expiresAt };
+}
+
+export async function issueUploadToken(
+  userId: string,
+  kind: UploadKind,
+  now: Date = new Date(),
+): Promise<IssuedUploadToken | { ok: false; code: AdmissionCode; retryAfterSeconds?: number }> {
+  const batch = await issueUploadTokens(userId, kind, 1, now);
+  if (!batch.ok) return batch;
+  return batch.items[0];
 }
 
 export type UrlImportAdmissionCode = Exclude<AdmissionCode, "upload_link_hourly_limit">;

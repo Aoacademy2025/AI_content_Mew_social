@@ -24,6 +24,8 @@ import {
   isBrollTransition,
   isBrollTransitionEdit,
 } from "@/lib/broll-window-style";
+import { effectivePunchZoom } from "@/lib/presenter-punch-zoom";
+import { SFX_MODES, effectiveSfxMode, isSfxMode, type SfxMode } from "@/lib/transition-sfx";
 import { createUrlImport, failMediaImport, findOwnedMediaImport } from "@/lib/media-import/imports";
 import { admissionRefusal } from "@/lib/mcp/media-import-copy";
 import { continueMcpRerenderChainSafely } from "@/lib/mcp/rerender-chain";
@@ -165,6 +167,8 @@ export const setSubtitleStyleInputShape = {
   outline: z.boolean().optional().describe("เปิด/ปิดเส้นขอบ"),
   outlineSize: z.number().int().describe("ความหนาเส้นขอบ 1-8").optional(),
   verticalPos: z.number().int().describe("ตำแหน่งแนวตั้งของซับ 10-95 (% จากขอบบน)").optional(),
+  highlightKeywords: z.boolean().optional().describe("เปิด/ปิดไฮไลต์คำสำคัญหรือตัวเลขเด่น 1–2 คำต่อการ์ดซับอัตโนมัติด้วยสีเน้น (accentColor)"),
+  statCards: z.boolean().optional().describe("เปิด/ปิดการ์ดสถิติแอนิเมชันมุมบนขวาอัตโนมัติในฉากที่มีตัวเลข/เปอร์เซ็นต์สำคัญ"),
 } satisfies z.ZodRawShape;
 
 const HEADLINE_HOOK_FONT_VALUES = HEADLINE_HOOK_FONTS.map((font) => font.value);
@@ -216,11 +220,15 @@ export const replaceBrollWindowInputShape = {
 export const setBrollStyleInputShape = {
   jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
   windowIndex: z.number().int().optional()
-    .describe("ช่วง B-roll ที่จะตั้งค่า (windows[].index จาก get_edit_state) — ไม่ส่ง = ตั้งค่าหลักของทั้งคลิป (ใช้ได้กับ transition เท่านั้น)"),
+    .describe("ช่วง B-roll ที่จะตั้งค่า (windows[].index จาก get_edit_state) — ไม่ส่ง = ตั้งค่าหลักของทั้งคลิป (ใช้ได้กับ transition, punchZoom และ sfxMode)"),
   transition: z.enum(["dissolve", "cut", "default"]).optional()
     .describe("ตอนจบของช่วง: dissolve = ภาพละลายเข้าช่วงถัดไป (ค่าเดิม), cut = ตัดชนทันที, default = ให้ช่วงนี้ตามค่าหลักของคลิป (ใช้ได้เฉพาะเมื่อส่ง windowIndex). ช่วงสุดท้าย: dissolve = จางเป็นสีดำตอนจบคลิป, cut = จบแบบไม่จาง"),
   fit: z.enum(["cover", "contain"]).optional()
     .describe("การจัดภาพของช่วง: cover = เต็มจอ ครอปขอบ (ค่าเดิม), contain = เห็นภาพครบทั้งภาพ ขอบบน-ล่างเป็นภาพเดียวกันแบบเบลอและมืดลง (ต้องส่ง windowIndex)"),
+  punchZoom: z.boolean().optional()
+    .describe("เปิด/ปิดการซูมจังหวะผู้พูด (1.0x ↔ 1.15x ช่วงที่เป็นหน้าผู้พูด ซับไตเติลไม่ขยับตาม) — ตั้งเป็นค่าหลักของทั้งคลิป (ไม่ต้องส่ง windowIndex)"),
+  sfxMode: z.enum(SFX_MODES).optional()
+    .describe("เสียงเอฟเฟกต์เปลี่ยนฉากเบาๆ (-18 dB): \"none\" = ปิด (ค่าเริ่มต้น), \"subtle\" = เปิดเสียง whoosh/pop เบาๆ ตอนตัดฉาก B-roll — ตั้งเป็นค่าหลักของทั้งคลิป (ไม่ต้องส่ง windowIndex)"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -329,10 +337,11 @@ const ALLOWED = {
   outlineSize: { min: 1, max: 8 },
   verticalPos: { min: 10, max: 95 },
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
-  // EP5 #11 / U3 (set_broll_style).
+  // EP5 #11 / U3 / #3 (set_broll_style).
   brollTransitions: [...BROLL_TRANSITIONS],
   brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
   brollFits: [...BROLL_FITS],
+  sfxModes: [...SFX_MODES],
   // headline-hook.ts's own bounds (set_headline_hook, G18).
   headlineHook: {
     headlineMaxChars: 64,
@@ -412,6 +421,8 @@ function subtitleStyleView(config: V2SubConfig) {
     outline: config.outline,
     outlineSize: config.outlineSize,
     verticalPos: config.verticalPos,
+    highlightKeywords: Boolean(config.highlightKeywords),
+    statCards: Boolean(config.statCards),
   };
 }
 
@@ -494,6 +505,16 @@ function windowEditStyle(edit: PendingEditWindowEdit): Pick<WindowEdit, "transit
 /** The project-default transition the next export renders with (pending value, else the base's). */
 function draftProjectTransition(draft: PendingEditDraft, base: PendingEditState["base"]) {
   return effectiveBrollTransition(undefined, draft.brollTransition ?? (base.preview.config as { brollTransition?: unknown }).brollTransition);
+}
+
+/** The presenter auto punch-in zoom setting the next export renders with (pending value, else the base's). */
+function draftProjectPunchZoom(draft: PendingEditDraft, base: PendingEditState["base"]): boolean {
+  return effectivePunchZoom(draft.punchZoom ?? (base.preview.config as { punchZoom?: unknown }).punchZoom);
+}
+
+/** The subtle transition SFX setting the next export renders with (pending value, else the base's). */
+function draftProjectSfxMode(draft: PendingEditDraft, base: PendingEditState["base"]): SfxMode {
+  return effectiveSfxMode(draft.sfxMode ?? (base.preview.config as { sfxMode?: unknown }).sfxMode);
 }
 
 /** A window's transition and fit after its pending edit (if any) — what the next export renders. */
@@ -610,6 +631,8 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     tailHoldMs: state.draft.tailHoldMs,
     windows: editWindows(held.root, state.draft, state.base, imports, rendered).map(w => ({ ...w, ...(externalRefusal?.windows.find(required => required.index === w.index) ?? {}) })),
     brollTransition: draftProjectTransition(state.draft, state.base),
+    punchZoom: draftProjectPunchZoom(state.draft, state.base),
+    sfxMode: draftProjectSfxMode(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
     next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
@@ -854,6 +877,8 @@ export async function setSubtitleStyleTool(userId: string, args: ShapeArgs<typeo
       outline: args.outline !== undefined ? args.outline : current.outline,
       outlineSize: args.outlineSize !== undefined ? args.outlineSize : current.outlineSize,
       verticalPos: args.verticalPos !== undefined ? args.verticalPos : current.verticalPos,
+      highlightKeywords: args.highlightKeywords !== undefined ? args.highlightKeywords : Boolean(current.highlightKeywords),
+      statCards: args.statCards !== undefined ? args.statCards : Boolean(current.statCards),
     };
     const normalized = normalizeSubtitleStylePresetConfig(candidate);
     if (!normalized) {
@@ -1254,34 +1279,53 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   };
 }
 
-// ── set_broll_style (EP5 #11 hard cut, U3 fit) ─────────────────────────────────────────────
+// ── set_broll_style (EP5 #11 hard cut, U3 fit, #4 punchZoom, #3 sfxMode) ────────────────────
 
-const NEXT_STYLE = "ส่ง transition (\"dissolve\" / \"cut\" / \"default\") และ/หรือ fit (\"cover\" / \"contain\") — ดูค่าที่ใช้ได้ที่ allowed.brollWindowTransitions / allowed.brollFits ของ get_edit_state";
-const NO_STYLE = editToolFailure("invalid_input", "ต้องส่ง transition หรือ fit อย่างน้อยหนึ่งค่า", NEXT_STYLE);
+const NEXT_STYLE = "ส่ง transition (\"dissolve\" / \"cut\" / \"default\"), fit (\"cover\" / \"contain\"), punchZoom (true / false) และ/หรือ sfxMode (\"none\" / \"subtle\") — ดูค่าที่ใช้ได้ที่ allowed.brollWindowTransitions / allowed.brollFits / allowed.sfxModes ของ get_edit_state";
+const NO_STYLE = editToolFailure("invalid_input", "ต้องส่ง transition, fit, punchZoom หรือ sfxMode อย่างน้อยหนึ่งค่า", NEXT_STYLE);
 const BAD_TRANSITION = editToolFailure("invalid_input", "รูปแบบการเปลี่ยนฉาก b-roll ไม่ถูกต้อง", NEXT_STYLE);
 const BAD_FIT = editToolFailure("invalid_input", "รูปแบบการจัดภาพ b-roll ไม่ถูกต้อง", NEXT_STYLE);
+const BAD_PUNCH_ZOOM = editToolFailure("invalid_input", "ตั้งค่า punchZoom ต้องเป็น true หรือ false", NEXT_STYLE);
+const BAD_SFX_MODE = editToolFailure("invalid_input", "ตั้งค่า sfxMode ต้องเป็น \"none\" หรือ \"subtle\"", NEXT_STYLE);
 const PROJECT_TRANSITION_ONLY = editToolFailure(
   "invalid_input",
-  "ค่าหลักของทั้งคลิปตั้งได้เฉพาะ transition เป็น \"dissolve\" หรือ \"cut\" — fit และ \"default\" ต้องระบุ windowIndex",
-  "ส่ง windowIndex (windows[].index จาก get_edit_state) เพื่อตั้งค่าทีละช่วง หรือส่งแค่ transition \"dissolve\"/\"cut\" เพื่อตั้งค่าหลัก",
+  "ค่าหลักของทั้งคลิปตั้งได้เฉพาะ transition (\"dissolve\" / \"cut\"), punchZoom (true / false) และ sfxMode (\"none\" / \"subtle\") — fit และ \"default\" ต้องระบุ windowIndex",
+  "ส่ง windowIndex (windows[].index จาก get_edit_state) เพื่อตั้งค่าทีละช่วง หรือส่ง transition (\"dissolve\"/\"cut\"), punchZoom และ/หรือ sfxMode เพื่อตั้งค่าหลัก",
+);
+const PUNCH_ZOOM_PROJECT_LEVEL_ONLY = editToolFailure(
+  "invalid_input",
+  "punchZoom เป็นการตั้งค่าหลักของทั้งคลิป — ห้ามส่งพร้อม windowIndex",
+  "เรียก set_broll_style โดยไม่ส่ง windowIndex เพื่อตั้งค่า punchZoom ของทั้งคลิป",
+);
+const SFX_MODE_PROJECT_LEVEL_ONLY = editToolFailure(
+  "invalid_input",
+  "sfxMode เป็นการตั้งค่าหลักของทั้งคลิป — ห้ามส่งพร้อม windowIndex",
+  "เรียก set_broll_style โดยไม่ส่ง windowIndex เพื่อตั้งค่า sfxMode ของทั้งคลิป",
 );
 
 /**
- * EP5 #11 / U3: how B-roll windows end (dissolve / hard cut) and fit (cover / contain), without
- * replacing media. With `windowIndex` it sets that window (last-wins, kept through a later
- * replace_broll_window); without it, the project default every window follows unless it has its
- * own transition. A value equal to the current base is a no-op that drops the pending change.
- * Recorded in the Pending Edit Draft (CAS) — the next export_video re-renders it for free.
+ * EP5 #11 / U3 / #4 / #3: how B-roll windows end (dissolve / hard cut), fit (cover / contain),
+ * presenter punch-in zoom, and subtle transition sound effects, without replacing media. With
+ * `windowIndex` it sets that window (last-wins, kept through a later replace_broll_window);
+ * without it, the project default transition, presenter punchZoom, and/or sfxMode. A value equal
+ * to the current base is a no-op that drops the pending change. Recorded in the Pending Edit Draft
+ * (CAS) — the next export_video renders it for free.
  */
 export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBrollStyleInputShape>) {
   if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
-  const { transition, fit } = args;
-  if (transition === undefined && fit === undefined) return NO_STYLE;
+  const { transition, fit, punchZoom, sfxMode } = args;
+  if (transition === undefined && fit === undefined && punchZoom === undefined && sfxMode === undefined) return NO_STYLE;
   if (transition !== undefined && !isBrollTransitionEdit(transition)) return BAD_TRANSITION;
   if (fit !== undefined && !isBrollFit(fit)) return BAD_FIT;
+  if (punchZoom !== undefined && typeof punchZoom !== "boolean") return BAD_PUNCH_ZOOM;
+  if (sfxMode !== undefined && !isSfxMode(sfxMode)) return BAD_SFX_MODE;
   const index = args.windowIndex;
   const projectLevel = index === undefined;
-  if (projectLevel && (fit !== undefined || !isBrollTransition(transition))) return PROJECT_TRANSITION_ONLY;
+  if (!projectLevel && punchZoom !== undefined) return PUNCH_ZOOM_PROJECT_LEVEL_ONLY;
+  if (!projectLevel && sfxMode !== undefined) return SFX_MODE_PROJECT_LEVEL_ONLY;
+  if (projectLevel && (fit !== undefined || (transition !== undefined && !isBrollTransition(transition)))) {
+    return PROJECT_TRANSITION_ONLY;
+  }
   if (!projectLevel && (typeof index !== "number" || !Number.isInteger(index) || index < 0)) return NO_WINDOW;
 
   const held = await resolveHeldRoot(user.id, args.jobId);
@@ -1303,10 +1347,20 @@ export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBr
 
   const refused: { failure: EditToolFailure | null } = { failure: null };
   const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
-    const baseConfig = state.base.preview.config as { brollTransition?: unknown };
+    const baseConfig = state.base.preview.config as { brollTransition?: unknown; punchZoom?: unknown; sfxMode?: unknown };
     if (projectLevel) {
-      if (transition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) delete draft.brollTransition;
-      else if (isBrollTransition(transition)) draft.brollTransition = transition;
+      if (transition !== undefined) {
+        if (transition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) delete draft.brollTransition;
+        else if (isBrollTransition(transition)) draft.brollTransition = transition;
+      }
+      if (typeof punchZoom === "boolean") {
+        if (punchZoom === effectivePunchZoom(baseConfig.punchZoom)) delete draft.punchZoom;
+        else draft.punchZoom = punchZoom;
+      }
+      if (sfxMode !== undefined) {
+        if (sfxMode === effectiveSfxMode(baseConfig.sfxMode)) delete draft.sfxMode;
+        else if (isSfxMode(sfxMode)) draft.sfxMode = sfxMode;
+      }
       return { ok: true, draft };
     }
     if (!previewWindowSpans(state.base.preview).some((span) => span.index === index)) {
@@ -1344,7 +1398,11 @@ export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBr
     ok: true,
     jobId: root.id,
     ...(projectLevel
-      ? { brollTransition: draftProjectTransition(draft, updatedBase) }
+      ? {
+          brollTransition: draftProjectTransition(draft, updatedBase),
+          punchZoom: draftProjectPunchZoom(draft, updatedBase),
+          sfxMode: draftProjectSfxMode(draft, updatedBase),
+        }
       : { windowIndex: index, ...windowStyleView(draft, updatedBase, edit, index) }),
     pending: draftHasBrollChanges(draft),
     draftRevision: updated.state.revision,
@@ -1485,8 +1543,10 @@ async function rerenderEditsFor(
   const invalid = media.find(p => p.status === "failed");
   if (invalid) return { ok: false, failure: importFailedFailure(invalid.index, invalid.error ?? "import_missing") };
   const edits = media.flatMap(p => p.edit ? [p.edit] : []);
-  // EP5 #11: only a new project default is pending — the re-render changes no window.
-  if (edits.length === 0 && state.draft.brollTransition !== undefined) return { ok: true, edits };
+  // EP5 #11 / #4: only a new project default transition or presenter punchZoom is pending — the re-render changes no window.
+  if (edits.length === 0 && (state.draft.brollTransition !== undefined || state.draft.punchZoom !== undefined)) {
+    return { ok: true, edits };
+  }
   const validated = validateWindowEdits(edits);
   const merged = "error" in validated
     ? validated
@@ -1590,6 +1650,7 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
       sourceJobId: state.base.id,
       windowEdits: checked,
       ...(state.draft.brollTransition ? { brollTransition: state.draft.brollTransition } : {}),
+      ...(typeof state.draft.punchZoom === "boolean" ? { punchZoom: state.draft.punchZoom } : {}),
       idempotencyKey,
       rootJobId: root.id,
       mcpExportAfter: { appliedDraftWindowEdits: state.draft.windowEdits },

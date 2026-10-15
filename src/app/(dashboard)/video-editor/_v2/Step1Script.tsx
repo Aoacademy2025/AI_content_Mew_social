@@ -45,7 +45,7 @@ export function Step1Script({
   }, [firstClipScriptOnly, p.mode, p.setMode]);
   const lines = useMemo(() => p.script.split("\n").filter(l => l.trim().length > 0), [p.script]);
   // นับจากข้อความที่ clean แล้ว (ตรงกับที่ TTS จะอ่านจริง) — สูตรความยาว calibrate ใน estimate.ts
-  const totalSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const totalSec = useMemo(() => estimateClipSecV2(p.script, p.ttsSpeed), [p.script, p.ttsSpeed]);
   const wordCount = useMemo(() => countWordsV2(p.script), [p.script]);
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
@@ -179,6 +179,34 @@ export function Step1Script({
                   อัปคลิปแนวตั้งที่มีเสียงพูดของคุณ — ระบบจะถอดซับไทยจากเสียง
                   แล้วแทรกบีโรลให้อัตโนมัติ (เสียงเดิมต่อเนื่องทั้งคลิป)
                 </p>
+              </div>
+            )}
+            {p.canUploadOwnMedia && (p.isAdmin || p.internalAiTester) && (
+              <div className="mt-1 flex w-full max-w-[420px] flex-col gap-2 rounded-xl p-3" style={{ background: "rgba(255,255,255,.03)", border: `1px solid ${color.cardBorder}` }}>
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(p.tighten)}
+                    onChange={(e) => p.setTighten(e.target.checked)}
+                    className="mt-0.5 accent-violet-500"
+                  />
+                  <span className="flex flex-col">
+                    <span style={{ fontSize: 12, fontWeight: 500, color: color.text }}>กระชับจังหวะอัตโนมัติ (ตัดช่วงเงียบ + เร่ง 1.1x)</span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>ตัดจังหวะเงียบเกิน 0.4 วิให้กระชับก่อนถอดซับไทย</span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(p.punchZoom)}
+                    onChange={(e) => p.setPunchZoom(e.target.checked)}
+                    className="mt-0.5 accent-violet-500"
+                  />
+                  <span className="flex flex-col">
+                    <span style={{ fontSize: 12, fontWeight: 500, color: color.text }}>ซูมสลับจังหวะคนพูดอัตโนมัติ (Punch-in Zoom 1.15x)</span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>สลับระยะกล้องเฉพาะชั้นวิดีโอคนพูดโดยซับไม่ขยับ</span>
+                  </span>
+                </label>
               </div>
             )}
           </div>

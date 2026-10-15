@@ -101,6 +101,11 @@ interface V2Draft {
   /** EP5 U7: music changed in the Post phase (or by the MCP agent's export). Absent = the
    *  rendered video's own music. Shared key with the MCP Pending Edit Draft seed. */
   backgroundMusic?: BackgroundMusicEdit;
+  /** EP5 Wave 1 (#17, #1, #4): optional TTS speaking speed (0.85..1.25, absent = 1.0),
+   *  upload presenter silence-tightening preset, and presenter auto punch-in zoom. */
+  ttsSpeed?: number;
+  tighten?: boolean;
+  punchZoom?: boolean;
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -795,6 +800,45 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  const [ttsSpeedState, setTtsSpeedFromUser, setTtsSpeedRaw] = useUserDraftState<number | undefined>(
+    typeof d.ttsSpeed === "number" && Number.isFinite(d.ttsSpeed) && d.ttsSpeed >= 0.85 && d.ttsSpeed <= 1.25 && d.ttsSpeed !== 1
+      ? d.ttsSpeed
+      : undefined,
+    "ttsSpeed",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const ttsSpeed = ttsSpeedState ?? 1;
+  const setTtsSpeed = useCallback((speed: number) => {
+    setTtsSpeedFromUser(
+      typeof speed === "number" && Number.isFinite(speed) && speed >= 0.85 && speed <= 1.25 && speed !== 1
+        ? Math.round(speed * 1000) / 1000
+        : undefined,
+    );
+  }, [setTtsSpeedFromUser]);
+  const [tightenState, setTightenFromUser, setTightenRaw] = useUserDraftState<boolean | undefined>(
+    d.tighten === true ? true : undefined,
+    "tighten",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const tighten = tightenState === true;
+  const setTighten = useCallback((enabled: boolean) => {
+    setTightenFromUser(enabled ? true : undefined);
+  }, [setTightenFromUser]);
+  const [punchZoomState, setPunchZoomFromUser, setPunchZoomRaw] = useUserDraftState<boolean | undefined>(
+    d.punchZoom === true ? true : undefined,
+    "punchZoom",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const punchZoom = punchZoomState === true;
+  const setPunchZoom = useCallback((enabled: boolean) => {
+    setPunchZoomFromUser(enabled ? true : undefined);
+  }, [setPunchZoomFromUser]);
   /** EP5 U7: the Post-phase music. `mirror` (default: `next`) is copied into the Step-2 music
    *  fields so a later re-render bakes the same track; `next = undefined` = back to the rendered
    *  video's own music (the caller passes that music as `mirror`). */
@@ -852,6 +896,9 @@ export function useV2Project() {
       logoOverlay, brandSubtitleDefault, layerVisibility,
       ...headlineHookDraftFragment(headlineHook),
       ...(backgroundMusic ? { backgroundMusic } : {}),
+      ...(ttsSpeedState !== undefined ? { ttsSpeed: ttsSpeedState } : {}),
+      ...(tightenState ? { tighten: true } : {}),
+      ...(punchZoomState ? { punchZoom: true } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -929,6 +976,13 @@ export function useV2Project() {
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(next.layerVisibility));
     setHeadlineHookRaw(normalizeHeadlineHook(next.headlineHook) ?? undefined);
     setBackgroundMusicRaw(normalizeBackgroundMusicEdit(next.backgroundMusic) ?? undefined);
+    setTtsSpeedRaw(
+      typeof next.ttsSpeed === "number" && Number.isFinite(next.ttsSpeed) && next.ttsSpeed >= 0.85 && next.ttsSpeed <= 1.25 && next.ttsSpeed !== 1
+        ? Math.round(next.ttsSpeed * 1000) / 1000
+        : undefined,
+    );
+    setTightenRaw(next.tighten === true ? true : undefined);
+    setPunchZoomRaw(next.punchZoom === true ? true : undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -2512,7 +2566,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2586,6 +2640,9 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     backgroundMusic, setBackgroundMusic,
+    ttsSpeed, setTtsSpeed,
+    tighten, setTighten,
+    punchZoom, setPunchZoom,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, logoEntitlementStalled: meRetriesExhausted, logoEntitlementRetrying: meRetryPending, retryEntitlement, accountId, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
