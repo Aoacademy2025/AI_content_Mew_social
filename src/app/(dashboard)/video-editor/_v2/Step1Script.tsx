@@ -114,7 +114,7 @@ export function Step1Script({
             onClick={() => CLIP_CUTAWAY_ON && p.setMode("upload")}
             icon={<Clapperboard size={17} strokeWidth={1.6} />}
             title="ใช้คลิปที่ถ่ายเอง"
-            desc={CLIP_CUTAWAY_ON ? "อัปคลิปแนวตั้ง → ซับ + บีโรลอัตโนมัติ" : "เร็ว ๆ นี้"}
+            desc={CLIP_CUTAWAY_ON ? "อัปคลิปแนวตั้งหรือแนวนอน → ซับ + บีโรล 9:16 อัตโนมัติ" : "เร็ว ๆ นี้"}
           />
         </div>
         )}
@@ -133,20 +133,30 @@ export function Step1Script({
                   src={p.clipUrl}
                   controls
                   playsInline
-                  className="max-h-[46vh]"
-                  style={{ borderRadius: 12, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
+                  className="max-h-[42vh]"
+                  style={{
+                    borderRadius: 12,
+                    border: `1px solid ${color.cardBorder}`,
+                    aspectRatio: "9/16",
+                    objectFit: p.presenterFit === "contain" ? "contain" : "cover",
+                    background: "#09090f",
+                  }}
                   onLoadedMetadata={(e) => {
                     const v = e.currentTarget;
-                    if (Number.isFinite(v.duration) && v.duration > 0) p.setClipDurationSec(v.duration);
-                    if (v.videoWidth > v.videoHeight) {
-                      toast.error("ต้องเป็นคลิปแนวตั้ง (9:16) — คลิปแนวนอนยังไม่รองรับ");
-                      p.setClipUrl("");
+                    if (
+                      (!Array.isArray(p.clipUrls) || p.clipUrls.length <= 1)
+                      && Number.isFinite(v.duration)
+                      && v.duration > 0
+                    ) {
+                      p.setClipDurationSec(v.duration);
                     }
                   }}
                 />
                 {uploadDurationLabel && (
                   <span style={{ fontSize: 11, color: color.textFaint }}>
-                    คลิปยาว {uploadDurationLabel} นาที
+                    {Array.isArray(p.clipUrls) && p.clipUrls.length > 1
+                      ? `รวม ${p.clipUrls.length} คลิป · ยาว ~${uploadDurationLabel} นาที (ครอสเฟดเสียง 12ms อัตโนมัติ)`
+                      : `คลิปยาว ${uploadDurationLabel} นาที`}
                   </span>
                 )}
                 {clipDurationViolation && (
@@ -158,30 +168,136 @@ export function Step1Script({
                     {clipDurationViolation.message}<br />{clipDurationViolation.userAction}
                   </div>
                 )}
-                <button onClick={() => { p.setClipUrl(""); p.setClipDurationSec(0); }} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-                  เปลี่ยนคลิป
-                </button>
+                {/* การจัดวางคลิปลงจอแนวตั้ง 9:16 (รองรับคลิปแนวนอน 16:9 / จัตุรัส) */}
+                <div
+                  className="flex w-full max-w-[420px] flex-col gap-1.5 rounded-xl p-3"
+                  style={{ background: "rgba(255,255,255,.03)", border: `1px solid ${color.cardBorder}` }}
+                >
+                  <span style={{ fontSize: 11.5, fontWeight: 500, color: color.textSecondary }}>
+                    การจัดวางลงจอแนวตั้ง 9:16 (สำหรับคลิปแนวนอน / จัตุรัส)
+                  </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => p.setPresenterFit("crop")}
+                      className="rounded-lg px-2.5 py-2 text-left transition-colors"
+                      style={{
+                        fontSize: 11.5,
+                        color: p.presenterFit !== "contain" ? color.primary300 : color.textSecondary,
+                        background: p.presenterFit !== "contain" ? color.selectedBg : "rgba(255,255,255,.03)",
+                        border: `1px solid ${p.presenterFit !== "contain" ? color.selectedBorder : color.cardBorder}`,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>ครอปกลางเต็มจอ 9:16</div>
+                      <div style={{ fontSize: 10, color: color.textFaint }}>ซูมเต็มจอแนวตั้งอัตโนมัติ</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => p.setPresenterFit("contain")}
+                      className="rounded-lg px-2.5 py-2 text-left transition-colors"
+                      style={{
+                        fontSize: 11.5,
+                        color: p.presenterFit === "contain" ? color.primary300 : color.textSecondary,
+                        background: p.presenterFit === "contain" ? color.selectedBg : "rgba(255,255,255,.03)",
+                        border: `1px solid ${p.presenterFit === "contain" ? color.selectedBorder : color.cardBorder}`,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>วางเต็มเฟรม + พื้นหลังเบลอ</div>
+                      <div style={{ fontSize: 10, color: color.textFaint }}>เห็นภาพ 16:9 ครบไม่โดนตัด</div>
+                    </button>
+                  </div>
+                </div>
+                {/* ต่อคลิปพูดหลายช่วงอัตโนมัติ (Multi-Clip Stitch สูงสุด 5 คลิป) */}
+                <div
+                  className="flex w-full max-w-[420px] flex-col gap-2 rounded-xl p-3"
+                  style={{ background: "rgba(255,255,255,.03)", border: `1px solid ${color.cardBorder}` }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span style={{ fontSize: 11.5, fontWeight: 500, color: color.textSecondary }}>
+                      คลิปที่นำมาต่อเรียงกัน ({(p.clipUrls?.length || 1)}/5 คลิป)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        p.setClipUrls([]);
+                        p.setClipUrl("");
+                        p.setClipDurationSec(0);
+                      }}
+                      style={{ fontSize: 11.5, color: color.link, background: "none", border: "none", cursor: "pointer" }}
+                    >
+                      ล้างทั้งหมด / เปลี่ยนคลิปหลัก
+                    </button>
+                  </div>
+                  {Array.isArray(p.clipUrls) && p.clipUrls.length > 1 && (
+                    <div className="flex flex-col gap-1">
+                      {p.clipUrls.map((u, idx) => (
+                        <div
+                          key={`${u}-${idx}`}
+                          className="flex items-center justify-between rounded-lg px-2.5 py-1.5"
+                          style={{ background: "rgba(255,255,255,.04)", fontSize: 11.5, color: color.text }}
+                        >
+                          <span>คลิปช่วงที่ {idx + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = p.clipUrls.filter((_, i) => i !== idx);
+                              p.setClipUrls(next);
+                            }}
+                            style={{ fontSize: 11, color: color.danger, background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            ลบ
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(!Array.isArray(p.clipUrls) || p.clipUrls.length < 5) && (
+                    <DirectAvatarUpload
+                      onUrl={(u, meta) => {
+                        const current = Array.isArray(p.clipUrls) && p.clipUrls.length > 0
+                          ? p.clipUrls
+                          : p.clipUrl
+                            ? [p.clipUrl]
+                            : [];
+                        const next = [...current, u].slice(0, 5);
+                        p.setClipUrls(next);
+                        if (meta?.durationSec && meta.durationSec > 0) {
+                          p.setClipDurationSec((p.clipDurationSec || 0) + meta.durationSec);
+                        }
+                      }}
+                      label={`+ เพิ่มคลิปพูดต่อท้าย (ช่วงที่ ${(p.clipUrls?.length || 1) + 1}/5)`}
+                      hint="อัปเพิ่มเพื่อต่อเรียงเป็นคลิปเดียวอัตโนมัติ"
+                      planRequiredMessage="อัปโหลดคลิปส่วนตัวใช้ได้เฉพาะแผน Pro ขึ้นไป"
+                      successMessage="เพิ่มคลิปช่วงถัดไปสำเร็จ"
+                    />
+                  )}
+                </div>
               </>
             ) : (
               <div className="w-full max-w-[420px]">
                 <DirectAvatarUpload
                   onUrl={(u, meta) => {
+                    p.setClipUrls([u]);
                     p.setClipUrl(u);
                     p.setClipDurationSec(meta?.durationSec ?? 0);
+                    if (meta?.width && meta?.height && meta.width > meta.height) {
+                      toast("อัปโหลดคลิปแนวนอนสำเร็จ — เลือกครอปกลาง 9:16 หรือวางเต็มเฟรมพร้อมพื้นหลังเบลอได้ด้านล่าง");
+                    }
                   }}
-                  requirePortrait
-                  label="อัปโหลดคลิปแนวตั้งของคุณ"
-                  hint="mp4 / mov / webm · มีเสียงพูดในคลิป"
+                  label="อัปโหลดคลิปของคุณ (แนวตั้ง 9:16 หรือแนวนอน 16:9)"
+                  hint="mp4 / mov / webm · มีเสียงพูดในคลิป · ต่อหลายคลิปได้"
                   planRequiredMessage="อัปโหลดคลิปส่วนตัวใช้ได้เฉพาะแผน Pro ขึ้นไป"
                   successMessage="อัปโหลดคลิปสำเร็จ"
                 />
                 <p style={{ fontSize: 11, color: color.textFaint, marginTop: 10, lineHeight: 1.7, textAlign: "center" }}>
-                  อัปคลิปแนวตั้งที่มีเสียงพูดของคุณ — ระบบจะถอดซับไทยจากเสียง
-                  แล้วแทรกบีโรลให้อัตโนมัติ (เสียงเดิมต่อเนื่องทั้งคลิป)
+                  รองรับทั้งคลิปแนวตั้ง (9:16) และแนวนอน (16:9) ที่มีเสียงพูดของคุณ — ระบบจะแปลงเป็น 9:16
+                  ถอดซับไทยจากเสียง แล้วแทรกบีโรลให้อัตโนมัติ
                 </p>
               </div>
             )}
-            {p.canUploadOwnMedia && (p.isAdmin || p.internalAiTester) && (
+            {p.canUploadOwnMedia && (
               <div className="mt-1 flex w-full max-w-[420px] flex-col gap-2 rounded-xl p-3" style={{ background: "rgba(255,255,255,.03)", border: `1px solid ${color.cardBorder}` }}>
                 <label className="flex cursor-pointer items-start gap-2.5">
                   <input

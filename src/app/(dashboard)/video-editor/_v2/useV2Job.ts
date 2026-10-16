@@ -460,6 +460,8 @@ export function useV2Job(p: V2Project) {
       ...(p.projectId ? { projectId: p.projectId } : {}),
       mode: "upload",
       clipUrl: p.clipUrl,
+      ...(Array.isArray(p.clipUrls) && p.clipUrls.length > 1 ? { clipUrls: p.clipUrls } : {}),
+      ...(p.presenterFit === "contain" ? { presenterFit: "contain" } : {}),
       ...(p.tighten ? { tighten: true } : {}),
       ...(p.punchZoom ? { punchZoom: true } : {}),
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),

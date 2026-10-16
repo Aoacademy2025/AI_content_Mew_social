@@ -291,6 +291,8 @@ interface CreateInput {
   /** EP5 #18: Multi-clip presenter stitch list (up to 10 normalized presenter clips). */
   clipUrls?: string[];
   clipImportIds?: string[];
+  /** Horizontal/square presenter fit into 9:16 frame ("crop" default | "contain" with blurred backdrop). */
+  presenterFit?: "crop" | "contain";
   /**
    * Editor v2 free per-window b-roll re-render (Phase 2, previewMode-only): reuse the source
    * job's TTS/avatar, swap only the named b-roll windows, re-render the base WITHOUT charging
@@ -2111,14 +2113,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       let forceStockBroll = false;
       let jumpCutTimesSec: number[] = [];
 
-      if (Array.isArray(input.clipUrls) && input.clipUrls.length > 1) {
+      const rawClipUrls = Array.isArray(input.clipUrls) && input.clipUrls.length > 0
+        ? input.clipUrls
+        : input.clipUrl
+          ? [input.clipUrl]
+          : [];
+      if (rawClipUrls.length > 0) {
         const stitched = await stitchPresenterVideoFiles({
-          clipUrls: input.clipUrls,
+          clipUrls: rawClipUrls,
+          presenterFit: input.presenterFit === "contain" ? "contain" : "crop",
         });
         input.clipUrl = stitched.clipUrl;
         jumpCutTimesSec = [...stitched.stitchCutTimesSec];
-      } else if (!input.clipUrl && Array.isArray(input.clipUrls) && input.clipUrls.length === 1) {
-        input.clipUrl = input.clipUrls[0]!;
       }
       if (!input.clipUrl) {
         await failJob(jobId, "upload job missing clipUrl");

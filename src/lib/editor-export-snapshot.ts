@@ -18,6 +18,7 @@ export type EditorExportSubtitleConfig = {
   verticalPos: number;
   highlightKeywords?: boolean;
   statCards?: boolean;
+  sfxMode?: "none" | "subtle";
 };
 
 export type EditorExportCaptionOverrides = Record<number, {
@@ -112,6 +113,7 @@ function normalizeSubtitleConfig(value: unknown): EditorExportSubtitleConfig | n
     || (fontWeight !== undefined && !FONT_WEIGHTS.has(fontWeight))
     || (input.highlightKeywords !== undefined && typeof input.highlightKeywords !== "boolean")
     || (input.statCards !== undefined && typeof input.statCards !== "boolean")
+    || (input.sfxMode !== undefined && input.sfxMode !== "none" && input.sfxMode !== "subtle")
   ) return null;
   return {
     preset,
@@ -128,6 +130,7 @@ function normalizeSubtitleConfig(value: unknown): EditorExportSubtitleConfig | n
     verticalPos,
     ...(typeof input.highlightKeywords === "boolean" ? { highlightKeywords: input.highlightKeywords } : {}),
     ...(typeof input.statCards === "boolean" ? { statCards: input.statCards } : {}),
+    ...(input.sfxMode === "none" || input.sfxMode === "subtle" ? { sfxMode: input.sfxMode } : {}),
   };
 }
 

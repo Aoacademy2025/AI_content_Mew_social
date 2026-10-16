@@ -72,6 +72,8 @@ export interface V2SubConfig {
   highlightKeywords?: boolean;
   /** EP5 #6: Animated Infographics / Stat Cards on scenes with salient numbers/stats */
   statCards?: boolean;
+  /** EP5 #3: Subtle transition sound effects ("none" | "subtle") */
+  sfxMode?: SfxMode;
 }
 
 export const DEFAULT_V2_SUB: V2SubConfig = {
@@ -282,7 +284,7 @@ export function buildV2BurnConfig(
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs, cfg.verticalPos);
   const tailHoldFrames = Math.round((clampTailHoldMs(tailHoldMs) / 1000) * fps);
-  const resolvedSfxMode = effectiveSfxMode(sfxMode);
+  const resolvedSfxMode = effectiveSfxMode(sfxMode ?? cfg.sfxMode);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,

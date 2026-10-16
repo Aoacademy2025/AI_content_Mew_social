@@ -1,7 +1,7 @@
 "use client";
 
 import { scriptTargetDuration } from "@/lib/narration-target";
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
@@ -106,6 +106,9 @@ interface V2Draft {
   ttsSpeed?: number;
   tighten?: boolean;
   punchZoom?: boolean;
+  /** EP5 #18 + Landscape Presenter: multi-clip stitch list and 9:16 frame fit ("crop" | "contain"). */
+  clipUrls?: string[];
+  presenterFit?: "crop" | "contain";
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -839,6 +842,34 @@ export function useV2Project() {
   const setPunchZoom = useCallback((enabled: boolean) => {
     setPunchZoomFromUser(enabled ? true : undefined);
   }, [setPunchZoomFromUser]);
+  const [clipUrlsState, setClipUrlsFromUser, setClipUrlsRaw] = useUserDraftState<string[] | undefined>(
+    Array.isArray(d.clipUrls) && d.clipUrls.length > 0 ? d.clipUrls.filter((u): u is string => typeof u === "string" && u.length > 0) : undefined,
+    "clipUrls",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const clipUrls = useMemo(
+    () => (clipUrlsState && clipUrlsState.length > 0 ? clipUrlsState : clipUrl ? [clipUrl] : []),
+    [clipUrlsState, clipUrl],
+  );
+  const setClipUrls = useCallback((urls: string[]) => {
+    const clean = urls.map((u) => u.trim()).filter(Boolean).slice(0, 10);
+    setClipUrlsFromUser(clean.length > 1 ? clean : undefined);
+    setClipUrlStateFromUser(clean[0] ?? "");
+    if (clean.length === 0) setClipDurationSecStateRaw(0);
+  }, [setClipDurationSecStateRaw, setClipUrlStateFromUser, setClipUrlsFromUser]);
+  const [presenterFitState, setPresenterFitFromUser, setPresenterFitRaw] = useUserDraftState<"crop" | "contain" | undefined>(
+    d.presenterFit === "contain" || d.presenterFit === "crop" ? d.presenterFit : undefined,
+    "presenterFit",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const presenterFit: "crop" | "contain" = presenterFitState === "contain" ? "contain" : "crop";
+  const setPresenterFit = useCallback((fit: "crop" | "contain") => {
+    setPresenterFitFromUser(fit === "contain" ? "contain" : undefined);
+  }, [setPresenterFitFromUser]);
   /** EP5 U7: the Post-phase music. `mirror` (default: `next`) is copied into the Step-2 music
    *  fields so a later re-render bakes the same track; `next = undefined` = back to the rendered
    *  video's own music (the caller passes that music as `mirror`). */
@@ -899,6 +930,8 @@ export function useV2Project() {
       ...(ttsSpeedState !== undefined ? { ttsSpeed: ttsSpeedState } : {}),
       ...(tightenState ? { tighten: true } : {}),
       ...(punchZoomState ? { punchZoom: true } : {}),
+      ...(clipUrlsState && clipUrlsState.length > 1 ? { clipUrls: clipUrlsState } : {}),
+      ...(presenterFitState === "contain" ? { presenterFit: "contain" as const } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -983,6 +1016,12 @@ export function useV2Project() {
     );
     setTightenRaw(next.tighten === true ? true : undefined);
     setPunchZoomRaw(next.punchZoom === true ? true : undefined);
+    setClipUrlsRaw(
+      Array.isArray(next.clipUrls) && next.clipUrls.length > 1
+        ? next.clipUrls.filter((u): u is string => typeof u === "string" && u.length > 0).slice(0, 10)
+        : undefined,
+    );
+    setPresenterFitRaw(next.presenterFit === "contain" ? "contain" : undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -2566,7 +2605,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, presenterFitState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2613,7 +2652,7 @@ export function useV2Project() {
     projectTitle, setProjectTitle,
     mode, setMode, narrativeSourceKind, scriptTargetDurationSec,
     script, setScript,
-    clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
+    clipUrl, setClipUrl, clipUrls, setClipUrls, presenterFit, setPresenterFit, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,

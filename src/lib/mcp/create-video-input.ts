@@ -119,6 +119,8 @@ export const createVideoJobInputShape = {
     .describe("รายการ uploadId จาก create_upload_url(kind: \"presenter\") (1–10 คลิป) — ระบบนำมาต่อเรียงกันตามลำดับพร้อมครอสเฟดเสียง 12 ms อัตโนมัติก่อนถอดซับ"),
   cutawayLayout: z.enum(["auto", "fillYourself"]).optional()
     .describe("ใช้ได้เฉพาะเมื่อส่งคลิป: auto = ระบบสลับ B-roll เข้าบางช่วงให้ (ค่าเริ่มต้น); fillYourself = ทุกช่วงเป็นพิธีกร ไม่มี B-roll อัตโนมัติ แล้วค่อยใส่ B-roll เองทีละช่วงด้วย replace_broll_window"),
+  presenterFit: z.enum(["crop", "contain"]).optional()
+    .describe("การจัดวางคลิปพิธีกรลงเฟรมแนวตั้ง 9:16: crop = ครอปกลางเต็มจอ 9:16 (ค่าเริ่มต้น); contain = วางเต็มเฟรมพร้อมพื้นหลังเบลอ (เหมาะกับคลิปแนวนอน 16:9 หรือจัตุรัส)"),
   tighten: z.boolean().optional()
     .describe("ใช้เฉพาะเมื่อส่งคลิปพิธีกร (clipUrl / clipUploadId): true = ตัดช่องว่างเงียบ > 400 ms เหลือ 100 ms พร้อมครอสเฟดเสียง 12 ms และเร่งจังหวะ 1.10x อัตโนมัติก่อนถอดซับ"),
   tightenMaxGapMs: z.number().int().min(TIGHTEN_MIN_MAX_GAP_MS).max(TIGHTEN_MAX_MAX_GAP_MS).optional()

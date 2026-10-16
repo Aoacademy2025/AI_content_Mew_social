@@ -274,11 +274,16 @@ export function usePostPhaseEditor(
   const [captions, setCaptions] = useState<V2Caption[]>(() => pendingDraft?.captions ?? preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [cfg, setCfg] = useState<V2SubConfig>(() => (
-    pendingDraft?.subtitleConfig
-    ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
-    ?? subtitleConfigFromBrandDefault(initialSubtitleConfig)
-  ));
+  const [cfg, setCfg] = useState<V2SubConfig>(() => {
+    const baseCfg = pendingDraft?.subtitleConfig
+      ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
+      ?? subtitleConfigFromBrandDefault(initialSubtitleConfig);
+    const previewSfx = (preview?.config as { sfxMode?: unknown } | undefined)?.sfxMode;
+    if (baseCfg.sfxMode === undefined && (previewSfx === "subtle" || previewSfx === "none")) {
+      return { ...baseCfg, sfxMode: previewSfx };
+    }
+    return baseCfg;
+  });
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
