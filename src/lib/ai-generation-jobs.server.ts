@@ -3,6 +3,7 @@ import "server-only";
 
 import type { AiGenerationAttempt, AiGenerationJob, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import {
   parseCreditFunding,
   refundCreditsInTransaction,
@@ -467,20 +468,21 @@ export async function recordLegacyImageJobCost(input: ReportedImageCost & {
 }): Promise<void> {
   const data = validReportedImageCost(input);
   if (!input.providerJobId || Object.keys(data).length === 0) return;
-  await prisma.$transaction(async (tx) => {
-    const job = await tx.aiGenerationJob.findFirst({
-      where: {
-        id: input.jobId,
-        userId: input.userId,
-        kind: "image",
-        provider: "runpod",
-        providerJobId: input.providerJobId,
-        attempts: { none: {} },
-      },
-    });
+  const where = {
+    id: input.jobId,
+    userId: input.userId,
+    kind: "image",
+    provider: "runpod",
+    providerJobId: input.providerJobId,
+    attempts: { none: {} },
+  };
+  const existing = await prisma.aiGenerationJob.findFirst({ where });
+  if (!existing || Object.entries(data).every(([key, value]) => existing[key as keyof typeof data] === value)) return;
+  await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+    const job = await tx.aiGenerationJob.findFirst({ where });
     if (!job || Object.entries(data).every(([key, value]) => job[key as keyof typeof data] === value)) return;
     await tx.aiGenerationJob.update({ where: { id: job.id }, data });
-  });
+  }));
 }
 
 /** Provider expense survives failed delivery and refunds; never attribute it to a retry. */
@@ -494,15 +496,16 @@ export async function recordImageAttemptCost(input: {
 }): Promise<void> {
   const data = validReportedImageCost(input);
   if (!input.providerJobId || Object.keys(data).length === 0) return;
-  await prisma.$transaction(async (tx) => {
-    const attempt = await tx.aiGenerationAttempt.findFirst({
-      where: {
-        jobId: input.jobId,
-        sequence: input.sequence,
-        providerJobId: input.providerJobId,
-        job: { userId: input.userId, kind: "image" },
-      },
-    });
+  const where = {
+    jobId: input.jobId,
+    sequence: input.sequence,
+    providerJobId: input.providerJobId,
+    job: { userId: input.userId, kind: "image" },
+  };
+  const existing = await prisma.aiGenerationAttempt.findFirst({ where });
+  if (!existing || Object.entries(data).every(([key, value]) => existing[key as keyof typeof data] === value)) return;
+  await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+    const attempt = await tx.aiGenerationAttempt.findFirst({ where });
     if (!attempt) return;
     if (Object.entries(data).every(([key, value]) => attempt[key as keyof typeof data] === value)) return;
     await tx.aiGenerationAttempt.update({ where: { id: attempt.id }, data });
@@ -517,7 +520,7 @@ export async function recordImageAttemptCost(input: {
       },
       data,
     });
-  });
+  }));
 }
 
 /**
@@ -530,19 +533,21 @@ export async function claimPlannedImageAttemptSubmission(input: {
   jobId: string;
   sequence: number;
 }): Promise<boolean> {
-  const claimed = await prisma.aiGenerationAttempt.updateMany({
-    where: {
-      jobId: input.jobId,
-      sequence: input.sequence,
-      status: "planned",
-      job: {
-        userId: input.userId,
-        chargeState: "reserved",
-        status: { in: ["queued", "in_progress"] },
+  const claimed = await withTransientSqliteRetry(() => prisma.$transaction((tx) =>
+    tx.aiGenerationAttempt.updateMany({
+      where: {
+        jobId: input.jobId,
+        sequence: input.sequence,
+        status: "planned",
+        job: {
+          userId: input.userId,
+          chargeState: "reserved",
+          status: { in: ["queued", "in_progress"] },
+        },
       },
-    },
-    data: { status: "submitting" },
-  });
+      data: { status: "submitting" },
+    }),
+  ));
   return claimed.count === 1;
 }
 
@@ -553,7 +558,7 @@ export async function markImageAttemptSubmitted(input: {
   providerJobId: string;
   inProgress: boolean;
 }): Promise<AiGenerationJob | null> {
-  return prisma.$transaction(async (tx) => {
+  return withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: input.jobId, userId: input.userId } });
     if (!job) return null;
     if (!(["queued", "in_progress"].includes(job.status)) || job.chargeState !== "reserved") {
@@ -585,7 +590,7 @@ export async function markImageAttemptSubmitted(input: {
       },
     });
     return tx.aiGenerationJob.findUnique({ where: { id: job.id } });
-  });
+  }));
 }
 
 export async function markImageAttemptProgress(input: {
@@ -595,7 +600,37 @@ export async function markImageAttemptProgress(input: {
   inProgress: boolean;
   delayTimeMs?: number;
 }): Promise<AiGenerationJob | null> {
-  return prisma.$transaction(async (tx) => {
+  const targetStatus = input.inProgress ? "in_progress" : "queued";
+  const existingJob = await prisma.aiGenerationJob.findFirst({
+    where: { id: input.jobId, userId: input.userId },
+    include: {
+      attempts: {
+        where: { sequence: input.sequence },
+        select: { status: true },
+        take: 1,
+      },
+    },
+  });
+  if (!existingJob) return null;
+  const { attempts, ...plainJob } = existingJob;
+  if (!(["queued", "in_progress"].includes(plainJob.status)) || plainJob.chargeState !== "reserved") {
+    return plainJob;
+  }
+  const existingAttempt = attempts[0];
+  const nextDelayTimeMs = input.delayTimeMs ?? plainJob.delayTimeMs;
+  const needsStartedAt = input.inProgress && plainJob.startedAt === null;
+  const attemptUpToDate = !existingAttempt
+    || !(["submitted", "submitting", "queued", "in_progress"].includes(existingAttempt.status))
+    || existingAttempt.status === targetStatus;
+  if (
+    attemptUpToDate
+    && plainJob.status === targetStatus
+    && plainJob.delayTimeMs === nextDelayTimeMs
+    && !needsStartedAt
+  ) {
+    return plainJob;
+  }
+  return withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: input.jobId, userId: input.userId } });
     if (!job) return null;
     if (!(["queued", "in_progress"].includes(job.status)) || job.chargeState !== "reserved") {
@@ -608,7 +643,7 @@ export async function markImageAttemptProgress(input: {
         sequence: input.sequence,
         status: { in: ["submitted", "submitting", "queued", "in_progress"] },
       },
-      data: { status: input.inProgress ? "in_progress" : "queued" },
+      data: { status: targetStatus },
     });
     await tx.aiGenerationJob.updateMany({
       where: {
@@ -617,13 +652,13 @@ export async function markImageAttemptProgress(input: {
         chargeState: "reserved",
       },
       data: {
-        status: input.inProgress ? "in_progress" : "queued",
+        status: targetStatus,
         startedAt: input.inProgress ? (job.startedAt ?? now) : job.startedAt,
         delayTimeMs: input.delayTimeMs ?? job.delayTimeMs,
       },
     });
     return tx.aiGenerationJob.findUnique({ where: { id: job.id } });
-  });
+  }));
 }
 
 /**
