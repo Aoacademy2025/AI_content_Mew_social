@@ -185,6 +185,73 @@ async function main() {
       `stitched output duration ~2.7s, got ${probed.durationSec}s`,
     );
 
+    // ── 3b. Horizontal 16:9 Presenter Clip -> 9:16 Vertical ("crop" and "contain") ──
+    const filterContain = buildPresenterStitchFfmpegFilter(
+      [{ durationSec: 2.0, hasAudio: true }],
+      { presenterFit: "contain" },
+    );
+    assert(
+      filterContain.includes("boxblur=24:4") &&
+        filterContain.includes("force_original_aspect_ratio=decrease") &&
+        filterContain.includes("overlay=(W-w)/2:(H-h)/2"),
+      "presenterFit='contain' generates blurred 9:16 backdrop with centered 16:9 foreground",
+    );
+
+    const landscapeName = `presenter-landscape-${Date.now()}-33333333-3333-4333-8333-333333333333.mp4`;
+    const landscapePath = path.join(rendersDir, landscapeName);
+    cleanupPaths.push(landscapePath);
+    await runFfmpeg([
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=darkred:s=1280x720:r=30:d=1.0",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=520:sample_rate=48000:duration=1.0",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      landscapePath,
+    ]);
+
+    const normalizedContain = await stitchPresenterVideoFiles({
+      clipUrls: [`/api/renders/${landscapeName}`],
+      presenterFit: "contain",
+    });
+    const normalizedContainAbs = path.join(rendersDir, path.basename(normalizedContain.clipUrl));
+    cleanupPaths.push(normalizedContainAbs);
+    assert(
+      normalizedContain.stitched === true,
+      "single 16:9 landscape clip is normalized by stitchPresenterVideoFiles",
+    );
+    const probedContain = await probeClipInfoViaFfmpeg(normalizedContainAbs);
+    assert(
+      probedContain.width === 1080 && probedContain.height === 1920,
+      `16:9 landscape clip with presenterFit='contain' normalized to 1080x1920, got ${probedContain.width}x${probedContain.height}`,
+    );
+
+    const step1Src = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/Step1Script.tsx"), "utf8");
+    const postPhaseSrc = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx"), "utf8");
+    const postPhaseMobileSrc = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx"), "utf8");
+    assert(
+      step1Src.includes("p.setPresenterFit") && step1Src.includes("p.setClipUrls"),
+      "Step1Script.tsx exposes presenterFit (crop/contain) and multi-clip stitch (setClipUrls) controls",
+    );
+    assert(
+      postPhaseSrc.includes('ed.set("sfxMode"') && postPhaseMobileSrc.includes('ed.set("sfxMode"'),
+      "PostPhase.tsx and PostPhaseMobile.tsx expose sfxMode toggle",
+    );
+
     // ── 4. MCP Input Schema & parseClipJobArgs Validation ─────────────────────
     assert(
       clipFieldsRequested({ clipUrls: ["https://example.com/a.mp4"] }) === true,

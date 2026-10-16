@@ -6,6 +6,7 @@ import {
   buildPresenterStitchFfmpegFilter,
   computeStitchedDurationMs,
   MAX_STITCH_CLIPS,
+  type PresenterFitMode,
   type PresenterStitchFilterClipSpec,
 } from "@/lib/presenter-stitch";
 
@@ -88,6 +89,7 @@ export async function probeClipInfoViaFfmpeg(
 
 export async function stitchPresenterVideoFiles(input: {
   clipUrls: readonly string[];
+  presenterFit?: PresenterFitMode;
 }): Promise<{
   clipUrl: string;
   stitched: boolean;
@@ -111,13 +113,20 @@ export async function stitchPresenterVideoFiles(input: {
     const info = local.ok
       ? await probeClipInfoViaFfmpeg(local.path)
       : { durationSec: 0, hasAudio: true, width: 0, height: 0 };
-    return {
-      clipUrl: singleUrl,
-      stitched: false,
-      clipCount: 1,
-      durationSec: info.durationSec,
-      stitchCutTimesSec: [],
-    };
+    const isNonPortrait = info.width > 0 && info.height > 0 && info.width >= info.height;
+    const needsPortraitNormalization =
+      local.ok
+      && info.durationSec > 0.1
+      && (isNonPortrait || input.presenterFit === "contain");
+    if (!needsPortraitNormalization) {
+      return {
+        clipUrl: singleUrl,
+        stitched: false,
+        clipCount: 1,
+        durationSec: info.durationSec,
+        stitchCutTimesSec: [],
+      };
+    }
   }
 
   const localPaths: string[] = [];
@@ -143,7 +152,9 @@ export async function stitchPresenterVideoFiles(input: {
   }
 
   const plan = computeStitchedDurationMs(durationsMs);
-  const filter = buildPresenterStitchFfmpegFilter(specs);
+  const filter = buildPresenterStitchFfmpegFilter(specs, {
+    presenterFit: input.presenterFit,
+  });
 
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });

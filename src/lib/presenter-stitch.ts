@@ -6,6 +6,13 @@ export const STITCH_TARGET_HEIGHT = 1920;
 export const STITCH_TARGET_FPS = 30;
 export const STITCH_TARGET_SAMPLE_RATE = 48000;
 
+export const PRESENTER_FIT_MODES = ["crop", "contain"] as const;
+export type PresenterFitMode = (typeof PRESENTER_FIT_MODES)[number];
+
+export function isPresenterFitMode(value: unknown): value is PresenterFitMode {
+  return value === "crop" || value === "contain";
+}
+
 export type StitchedDurationPlan = {
   totalDurationMs: number;
   totalDurationSec: number;
@@ -68,6 +75,7 @@ export function buildPresenterStitchFfmpegFilter(
     fps?: number;
     sampleRate?: number;
     fadeMs?: number;
+    presenterFit?: PresenterFitMode;
   },
 ): string {
   if (clips.length === 0) {
@@ -79,6 +87,7 @@ export function buildPresenterStitchFfmpegFilter(
   const fps = options?.fps ?? STITCH_TARGET_FPS;
   const sampleRate = options?.sampleRate ?? STITCH_TARGET_SAMPLE_RATE;
   const fadeMs = options?.fadeMs ?? STITCH_CROSSFADE_MS;
+  const presenterFit = options?.presenterFit ?? "crop";
   const fadeSec = Number(Math.max(0.004, fadeMs / 1000).toFixed(4));
 
   const parts: string[] = [];
@@ -91,9 +100,18 @@ export function buildPresenterStitchFfmpegFilter(
     const dur = Math.max(0.05, Number(spec.durationSec) || 0.05);
     const hasAudio = spec.hasAudio !== false;
 
-    parts.push(
-      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v${i}]`,
-    );
+    if (presenterFit === "contain") {
+      parts.push(
+        `[${i}:v]fps=${fps},setpts=PTS-STARTPTS,split=2[vsrc_bg${i}][vsrc_fg${i}]`,
+        `[vsrc_bg${i}]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=24:4,setsar=1[vbg${i}]`,
+        `[vsrc_fg${i}]scale=${width}:${height}:force_original_aspect_ratio=decrease,setsar=1[vfg${i}]`,
+        `[vbg${i}][vfg${i}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1,format=yuv420p[v${i}]`,
+      );
+    } else {
+      parts.push(
+        `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v${i}]`,
+      );
+    }
 
     const afades: string[] = [];
     if (clips.length > 1 && dur > fadeSec * 2.5) {

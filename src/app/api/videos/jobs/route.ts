@@ -127,7 +127,7 @@ import {
 // (ChargedClip once-per-video, same as today's web flow).
 
 type Body = {
-  mode?: unknown; clipUrl?: unknown;
+  mode?: unknown; clipUrl?: unknown; clipUrls?: unknown; presenterFit?: unknown;
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; geminiVoiceStyle?: unknown; omniVoiceId?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarEngine?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
@@ -411,14 +411,32 @@ export async function POST(req: Request) {
 
     // โหมดอัปคลิปเอง (cutaway) — gate ด้วย flag เดียวกับปุ่มใน UI (flip พร้อม EDITOR_V2 วัน launch)
     const uploadMode = body.mode === "upload";
-    const clipUrl = uploadMode ? str(body.clipUrl, 500) : undefined;
+    const isAllowedLocalClipUrl = (u: string) =>
+      u.startsWith("/api/") || u.startsWith("/renders/") || u.startsWith("/uploads/");
+    const rawClipUrls = uploadMode && Array.isArray(body.clipUrls)
+      ? body.clipUrls
+          .map((item) => str(item, 500))
+          .filter((item): item is string => Boolean(item))
+      : undefined;
+    const clipUrl = uploadMode
+      ? (str(body.clipUrl, 500) ?? rawClipUrls?.[0])
+      : undefined;
+    const clipUrls = uploadMode && rawClipUrls && rawClipUrls.length > 1
+      ? rawClipUrls
+      : undefined;
+    const presenterFit = uploadMode && (body.presenterFit === "crop" || body.presenterFit === "contain")
+      ? body.presenterFit
+      : undefined;
     if (uploadMode) {
       if (process.env.NEXT_PUBLIC_CLIP_CUTAWAY !== "1") {
         return NextResponse.json({ error: "not_enabled", message: "โหมดใช้คลิปที่ถ่ายเองยังไม่เปิดใช้งาน" }, { status: 403 });
       }
       // รับเฉพาะไฟล์ที่อัปโหลดเข้าระบบเราเอง (จาก /api/videos/upload-avatar) — กัน SSRF
-      if (!clipUrl || !(clipUrl.startsWith("/api/") || clipUrl.startsWith("/renders/") || clipUrl.startsWith("/uploads/"))) {
+      if (!clipUrl || !isAllowedLocalClipUrl(clipUrl)) {
         return NextResponse.json({ error: "invalid_clip", message: "อัปโหลดคลิปก่อนเรนเดอร์" }, { status: 400 });
+      }
+      if (clipUrls && (clipUrls.length > 10 || clipUrls.some((u) => !isAllowedLocalClipUrl(u)))) {
+        return NextResponse.json({ error: "invalid_clip", message: "รายการคลิปที่อัปโหลดไม่ถูกต้อง (สูงสุด 10 คลิป)" }, { status: 400 });
       }
     }
 
@@ -1004,7 +1022,14 @@ export async function POST(req: Request) {
         user.id,
         {
           script: uploadMode ? "" : script,
-          ...(uploadMode ? { mode: "upload", clipUrl } : {}),
+          ...(uploadMode
+            ? {
+                mode: "upload",
+                clipUrl,
+                ...(clipUrls ? { clipUrls } : {}),
+                ...(presenterFit ? { presenterFit } : {}),
+              }
+            : {}),
           previewMode: true,
           ...(voiceProvider ? { voiceProvider } : {}),
           ...(voiceId ? { voiceId } : {}),
