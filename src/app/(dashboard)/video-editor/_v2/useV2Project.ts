@@ -1,7 +1,7 @@
 "use client";
 
 import { scriptTargetDuration } from "@/lib/narration-target";
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
@@ -849,10 +849,7 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
-  const clipUrls = useMemo(
-    () => (clipUrlsState && clipUrlsState.length > 0 ? clipUrlsState : clipUrl ? [clipUrl] : []),
-    [clipUrlsState, clipUrl],
-  );
+  const clipUrls = clipUrlsState && clipUrlsState.length > 0 ? clipUrlsState : clipUrl ? [clipUrl] : [];
   const setClipUrls = useCallback((urls: string[]) => {
     const clean = urls.map((u) => u.trim()).filter(Boolean).slice(0, 10);
     setClipUrlsFromUser(clean.length > 1 ? clean : undefined);
