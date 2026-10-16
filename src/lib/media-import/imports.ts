@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { MediaImport, McpUploadToken, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { MAX_BROLL_IMAGE_BYTES, MAX_BROLL_VIDEO_BYTES } from "@/lib/media-import/broll-pipeline";
 import {
   ACTIVE_IMPORT_RETRY_SECONDS,
@@ -302,19 +303,19 @@ export async function issueUploadTokens(
 ): Promise<IssuedUploadTokenBatch | { ok: false; code: AdmissionCode; retryAfterSeconds?: number }> {
   const n = Math.max(1, Math.min(MAX_BATCH_UPLOAD_LINKS, Math.trunc(count)));
   const expiresAt = new Date(now.getTime() + UPLOAD_TOKEN_TTL_MS);
-  const items: IssuedUploadToken[] = Array.from({ length: n }, () => ({
-    ok: true as const,
-    token: UPLOAD_TOKEN_PREFIX + randomBytes(32).toString("base64url"),
-    importId: randomUUID(),
-    kind,
-    issuedAt: now,
-    expiresAt,
-  }));
   try {
-    await prisma.$transaction(async (tx) => {
+    const items = await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+      const batchItems: IssuedUploadToken[] = Array.from({ length: n }, () => ({
+        ok: true as const,
+        token: UPLOAD_TOKEN_PREFIX + randomBytes(32).toString("base64url"),
+        importId: randomUUID(),
+        kind,
+        issuedAt: now,
+        expiresAt,
+      }));
       // Write first: takes the writer lock (see the module comment).
       await tx.mcpUploadToken.createMany({
-        data: items.map((item) => ({
+        data: batchItems.map((item) => ({
           tokenHash: hashUploadToken(item.token),
           userId,
           kind,
@@ -329,14 +330,15 @@ export async function issueUploadTokens(
         throw new AdmissionRefused("upload_link_hourly_limit", oldest ? retryAfterSecondsFor(oldest.issuedAt, now) : undefined);
       }
       await assertImportCapacity(tx, userId, now, UPLOAD_KIND_PURPOSE[kind]);
-    });
+      return batchItems;
+    }));
+    return { ok: true, items, kind, issuedAt: now, expiresAt };
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid") {
       return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     }
     throw error;
   }
-  return { ok: true, items, kind, issuedAt: now, expiresAt };
 }
 
 export async function issueUploadToken(
@@ -369,13 +371,13 @@ export async function createUrlImport(
    *  checks); B-roll links keep the default. */
   purpose: "broll_video" | "presenter" = "broll_video",
 ): Promise<{ ok: true; importId: string } | { ok: false; code: UrlImportAdmissionCode; retryAfterSeconds?: number }> {
-  const importId = randomUUID();
   try {
-    await prisma.$transaction(async (tx) => {
+    const importId = await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+      const id = randomUUID();
       // Write first: takes the writer lock; the capacity check then excludes this row.
       await tx.mediaImport.create({
         data: {
-          id: importId,
+          id,
           userId,
           purpose,
           source: "url",
@@ -384,15 +386,16 @@ export async function createUrlImport(
           deadlineAt: new Date(now.getTime() + IMPORT_QUEUE_DEADLINE_MS),
         },
       });
-      await assertImportCapacity(tx, userId, now, purpose, { excludeId: importId });
-    });
+      await assertImportCapacity(tx, userId, now, purpose, { excludeId: id });
+      return id;
+    }));
+    return { ok: true, importId };
   } catch (error) {
     if (error instanceof AdmissionRefused && error.code !== "upload_link_invalid" && error.code !== "upload_link_hourly_limit") {
       return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     }
     throw error;
   }
-  return { ok: true, importId };
 }
 
 /** The link row behind a raw token, or null when it is malformed, unknown, used or expired. */
@@ -436,7 +439,7 @@ export async function admitUpload(
     ? declared
     : undefined;
   try {
-    await prisma.$transaction(async (tx) => {
+    await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
       // Write first (writer lock), and the conditional write IS the single-use guarantee:
       // of two racing PUTs, only one can move usedAt from null.
       const consumed = await tx.mcpUploadToken.updateMany({
@@ -456,7 +459,7 @@ export async function admitUpload(
           deadlineAt: new Date(now.getTime() + UPLOAD_RECEIVE_DEADLINE_MS),
         },
       });
-    });
+    }));
   } catch (error) {
     if (error instanceof AdmissionRefused) return { ok: false, code: error.code, retryAfterSeconds: error.retryAfterSeconds };
     throw error;
