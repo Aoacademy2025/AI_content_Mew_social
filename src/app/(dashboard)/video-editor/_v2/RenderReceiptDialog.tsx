@@ -112,16 +112,18 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
     ? estimatedCutawayPieceCount(p.targetClipCount, estSec * 1_000)
     : p.targetClipCount;
 
-  // AI usage: non-admins go by preset (ฟรีล้วน = none); admins by the raw b-roll source.
-  const selectedAiSource = p.brollSource === "kie-image" || (p.isAdmin
-    ? p.brollSource === "automix"
-    : presetUsesAi(p.mixPreset));
+  // AI usage: only "kie-image" and "automix" can spend AI image credits during render.
+  // "none" (ใส่ B-roll เอง) and "stock" never spend AI images even when a paid account's
+  // default mixPreset is still "recommended" (HERO-79).
+  const selectedAiSource = p.brollSource === "kie-image" || (p.brollSource === "automix" && (p.isAdmin
+    ? true
+    : presetUsesAi(p.mixPreset)));
   const usesAi = selectedAiSource && !(exactDuration && quotedTargetClipCount === 0);
 
   const presetWeights = useMemo(() => {
+    if (p.brollSource === "none") return { video: 0, photo: 0, ai: 0 };
     if (p.brollSource === "kie-image") return { video: 0, photo: 0, ai: 1 };
-    if (!p.isAdmin) return PRESET_WEIGHTS[p.mixPreset];
-    if (p.brollSource === "automix") return PRESET_WEIGHTS.recommended;
+    if (p.brollSource === "automix") return p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
     return { video: 1, photo: 0, ai: 0 };
   }, [p.isAdmin, p.brollSource, p.mixPreset]);
 

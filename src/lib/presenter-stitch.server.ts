@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveLocalMediaFile } from "@/lib/contained-path";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   buildPresenterStitchFfmpegFilter,
   computeStitchedDurationMs,
@@ -9,17 +10,6 @@ import {
   type PresenterFitMode,
   type PresenterStitchFilterClipSpec,
 } from "@/lib/presenter-stitch";
-
-function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(
-    process.cwd(),
-    "node_modules",
-    "@ffmpeg-installer",
-    `${process.platform}-${process.arch}`,
-    `ffmpeg${ext}`,
-  );
-}
 
 function runFfmpegCaptureStderr(
   args: string[],
@@ -194,6 +184,9 @@ export async function stitchPresenterVideoFiles(input: {
     "+faststart",
     outPath,
   ]);
+  try {
+    fs.chmodSync(outPath, 0o644);
+  } catch {}
 
   return {
     clipUrl: `/api/renders/${outName}`,

@@ -347,6 +347,32 @@ async function main() {
         && tightenFilter.includes("atempo=1.1"),
     );
 
+    const { buildTightenSelectFfmpegFilter, TIGHTEN_SINGLE_STREAM_SELECT_THRESHOLD } = await import(
+      "../src/lib/presenter-tighten.server"
+    );
+    const manySegments = Array.from({ length: 66 }, (_, idx) => ({
+      startSec: idx * 4,
+      endSec: idx * 4 + 3.2,
+    }));
+    const selectFilter = buildTightenSelectFfmpegFilter(
+      {
+        segments: manySegments,
+        jumpCutTimesSec: [],
+        trimmedSilenceMs: 42000,
+        estimatedOutputDurationSec: 200,
+      },
+      1.05,
+    );
+    check(
+      "HERO-80: buildTightenSelectFfmpegFilter uses single-stream select/aselect without N-way split/concat for >8 segments",
+      manySegments.length > TIGHTEN_SINGLE_STREAM_SELECT_THRESHOLD
+        && selectFilter.includes("[0:v]select='between(t,0,3.2)+between(t,4,7.2)")
+        && selectFilter.includes("setpts=N/(FRAME_RATE*TB)/1.05[vout]")
+        && selectFilter.includes("[0:a]aselect='between(t,0,3.2)+between(t,4,7.2)")
+        && selectFilter.includes("asetpts=N/SR/TB,atempo=1.05[aout]")
+        && !selectFilter.includes("concat="),
+    );
+
     const tightenOnScript = parseClipJobArgs({
       script: "สวัสดีครับ",
       tighten: true,

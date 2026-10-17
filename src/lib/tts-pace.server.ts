@@ -2,22 +2,12 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveLocalMediaFile } from "@/lib/contained-path";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   resolveEffectiveTtsSpeed,
   scaleTtsTiming,
   type TtsPaceResolution,
 } from "@/lib/tts-pace";
-
-function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(
-    process.cwd(),
-    "node_modules",
-    "@ffmpeg-installer",
-    `${process.platform}-${process.arch}`,
-    `ffmpeg${ext}`,
-  );
-}
 
 function runFfmpegExec(args: string[], timeoutMs = 60_000): Promise<void> {
   const ffmpeg = getFfmpegPath();
@@ -113,6 +103,9 @@ export async function applyTtsPaceToGeneratedAudio(input: {
     ...codecArgs,
     outPath,
   ]);
+  try {
+    fs.chmodSync(outPath, 0o644);
+  } catch {}
 
   const outUrl = input.voiceUrl.startsWith("/api/renders/")
     ? `/api/renders/${outName}`
