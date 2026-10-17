@@ -28,6 +28,14 @@ const upload = orch.slice(orch.indexOf('if (input.mode === "upload")'), orch.ind
 assert(/if \(upVisibleWindows\.length > 0 \|\| brollDisabled\)/.test(upload) && /windows: \(brollDisabled \? upWindows : upVisibleWindows\)/.test(upload), "the upload worker plans scenes for all windows of a fill-yourself clip");
 
 assert(/if \(!degrade && brollDisabled\) \{/.test(upload), "a failed optional plan on the upload path is logged, not fatal");
+assert(
+  /requestedSource !== "kie-image" && requestedSource !== "none" && !user\.pexelsKey && !user\.pixabayKey/.test(jobs),
+  "HERO-79: fill-it-yourself (stockSource=none) does not require Pexels/Pixabay keys",
+);
+assert(
+  /requestedSource !== "stock" && requestedSource !== "none" && \(!canUseKieImages \|\| !isAdmin\)/.test(jobs),
+  "HERO-79: fill-it-yourself (stockSource=none) is not blocked by the legacy beta_only gate for non-admin users",
+);
 
 if (failed) { console.error(`\n${failed} FAILED`); process.exit(1); }
 console.log("\nALL PASSED");

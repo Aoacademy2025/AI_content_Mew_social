@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveLocalMediaFile } from "@/lib/contained-path";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   parseFfmpegSilenceDetectIntervals,
   planTightenKeepSegments,
@@ -11,18 +12,14 @@ import {
   type TightenPlan,
 } from "@/lib/presenter-tighten";
 
-function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(
-    process.cwd(),
-    "node_modules",
-    "@ffmpeg-installer",
-    `${process.platform}-${process.arch}`,
-    `ffmpeg${ext}`,
-  );
-}
+/**
+ * Threshold above which a multi-branch `[0:v]trim` + `concat=n=N` graph
+ * clones decoded 1080p frames across too many branches (`split=N`). Above
+ * this count we switch to a single-stream `select`/`aselect` expression.
+ */
+export const TIGHTEN_SINGLE_STREAM_SELECT_THRESHOLD = 8;
 
-function runFfmpegCaptureStderr(args: string[], timeoutMs = 120_000): Promise<string> {
+function runFfmpegCaptureStderr(args: string[], timeoutMs = 180_000): Promise<string> {
   const ffmpeg = getFfmpegPath();
   return new Promise((resolve, reject) => {
     execFile(
@@ -44,7 +41,9 @@ function runFfmpegCaptureStderr(args: string[], timeoutMs = 120_000): Promise<st
   });
 }
 
-async function probeDurationViaFfmpeg(filePath: string): Promise<number> {
+async function probeDurationAndAudioViaFfmpeg(
+  filePath: string,
+): Promise<{ durationSec: number; hasAudio: boolean }> {
   const ffmpeg = getFfmpegPath();
   return new Promise((resolve) => {
     execFile(
@@ -53,16 +52,20 @@ async function probeDurationViaFfmpeg(filePath: string): Promise<number> {
       { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
       (_err, _stdout, stderr) => {
         const text = String(stderr || "");
+        const hasAudio = /Stream #\d+:\d+.*Audio:/i.test(text);
         const m = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
         if (!m) {
-          resolve(0);
+          resolve({ durationSec: 0, hasAudio });
           return;
         }
         const hours = Number(m[1]);
         const minutes = Number(m[2]);
         const seconds = Number(m[3]);
         const total = hours * 3600 + minutes * 60 + seconds;
-        resolve(Number.isFinite(total) && total > 0 ? total : 0);
+        resolve({
+          durationSec: Number.isFinite(total) && total > 0 ? total : 0,
+          hasAudio,
+        });
       },
     );
   });
@@ -130,6 +133,33 @@ export function buildTightenFfmpegFilter(
   return parts.join(";");
 }
 
+/**
+ * Single-stream `select` + `aselect` filter for presenter clips with many speech
+ * segments (> 8). Avoids FFmpeg's implicit `split=N` frame-cloning bottleneck on
+ * long 1080p videos while keeping video and audio timestamps locked.
+ */
+export function buildTightenSelectFfmpegFilter(
+  plan: TightenPlan,
+  speed: number,
+): string {
+  const expr = plan.segments
+    .map((seg) => {
+      const s = Number(seg.startSec.toFixed(4));
+      const e = Number(seg.endSec.toFixed(4));
+      return `between(t,${s},${e})`;
+    })
+    .join("+");
+  const effectiveSpeed = Number(Math.max(1, Math.min(1.25, speed)).toFixed(4));
+  const needsSpeed = Math.abs(effectiveSpeed - 1) >= 0.005;
+  const vSetpts = needsSpeed
+    ? `setpts=N/(FRAME_RATE*TB)/${effectiveSpeed}`
+    : `setpts=N/(FRAME_RATE*TB)`;
+  const aFilter = needsSpeed
+    ? `asetpts=N/SR/TB,atempo=${effectiveSpeed}`
+    : `asetpts=N/SR/TB`;
+  return `[0:v]select='${expr}',${vSetpts}[vout];[0:a]aselect='${expr}',${aFilter}[aout]`;
+}
+
 export async function tightenPresenterVideoFile(input: {
   clipUrl: string;
   tighten?: boolean | null;
@@ -164,8 +194,8 @@ export async function tightenPresenterVideoFile(input: {
     };
   }
 
-  const durationSec = await probeDurationViaFfmpeg(local.path);
-  if (durationSec <= 0.5) {
+  const { durationSec, hasAudio } = await probeDurationAndAudioViaFfmpeg(local.path);
+  if (durationSec <= 0.5 || !hasAudio) {
     return {
       clipUrl: input.clipUrl,
       tightened: false,
@@ -176,16 +206,23 @@ export async function tightenPresenterVideoFile(input: {
   }
 
   const minSilenceDetectSec = Number(Math.max(0.15, resolved.maxGapMs / 1000).toFixed(3));
-  const silenceStderr = await runFfmpegCaptureStderr([
-    "-hide_banner",
-    "-i",
-    local.path,
-    "-af",
-    `silencedetect=noise=-34dB:d=${minSilenceDetectSec}`,
-    "-f",
-    "null",
-    "-",
-  ]);
+  const silenceTimeoutMs = Math.min(180_000, Math.max(60_000, Math.ceil(durationSec * 400)));
+  const silenceStderr = await runFfmpegCaptureStderr(
+    [
+      "-hide_banner",
+      "-vn",
+      "-sn",
+      "-dn",
+      "-i",
+      local.path,
+      "-af",
+      `silencedetect=noise=-34dB:d=${minSilenceDetectSec}`,
+      "-f",
+      "null",
+      "-",
+    ],
+    silenceTimeoutMs,
+  );
 
   const silences = parseFfmpegSilenceDetectIntervals(silenceStderr, durationSec);
   const plan = planTightenKeepSegments({
@@ -218,37 +255,47 @@ export async function tightenPresenterVideoFile(input: {
   fs.mkdirSync(rendersDir, { recursive: true });
   const outName = `presenter-tight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
   const outPath = path.join(rendersDir, outName);
-  const filter = buildTightenFfmpegFilter(plan, resolved.speed, resolved.crossfadeMs);
+  const filter =
+    plan.segments.length > TIGHTEN_SINGLE_STREAM_SELECT_THRESHOLD
+      ? buildTightenSelectFfmpegFilter(plan, resolved.speed)
+      : buildTightenFfmpegFilter(plan, resolved.speed, resolved.crossfadeMs);
+  const encodeTimeoutMs = Math.min(600_000, Math.max(240_000, Math.ceil(durationSec * 2_000)));
 
-  await runFfmpegCaptureStderr([
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-y",
-    "-i",
-    local.path,
-    "-filter_complex",
-    filter,
-    "-map",
-    "[vout]",
-    "-map",
-    "[aout]",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "fast",
-    "-crf",
-    "18",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "160k",
-    "-pix_fmt",
-    "yuv420p",
-    "-movflags",
-    "+faststart",
-    outPath,
-  ]);
+  await runFfmpegCaptureStderr(
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      local.path,
+      "-filter_complex",
+      filter,
+      "-map",
+      "[vout]",
+      "-map",
+      "[aout]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "superfast",
+      "-crf",
+      "19",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      outPath,
+    ],
+    encodeTimeoutMs,
+  );
+  try {
+    fs.chmodSync(outPath, 0o644);
+  } catch {}
 
   return {
     clipUrl: `/api/renders/${outName}`,

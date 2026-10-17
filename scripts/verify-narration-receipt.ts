@@ -36,3 +36,9 @@ const allowanceHtml = renderToStaticMarkup(createElement(RenderReceiptDialog, { 
 } as unknown as V2Project }));
 assert.match(allowanceHtml, /ใช้สิทธิ์ทดลองภาพ AI ครบแล้ว/);
 assert.equal((allowanceHtml.match(/disabled=""/g) ?? []).length, 1, "exhausted image allowance blocks new generation with either credit flag");
+
+const fillYourselfHtml = renderToStaticMarkup(createElement(RenderReceiptDialog, { ...props, regeneration: false, p: {
+  ...p, mode: "upload", clipDurationSec: 47, mixPreset: "recommended", brollSource: "none", targetClipCount: 0,
+} as unknown as V2Project }));
+assert.doesNotMatch(fillYourselfHtml, /ภาพ AI:/, "HERO-79: fill-it-yourself (brollSource=none) never quotes AI image credits even when mixPreset is recommended");
+

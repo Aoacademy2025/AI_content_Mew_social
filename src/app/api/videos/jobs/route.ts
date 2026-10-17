@@ -669,7 +669,7 @@ export async function POST(req: Request) {
     // FREE, trial, PRO, BUSINESS, coupon/grant, bundle — searches on the team key
     // instead of being stopped here, so a PAID keyless account no longer 400s.
     // Only an own key (BYOK wins), a suspension, or a missing server key still refuses.
-    if (requestedSource !== "kie-image" && !user.pexelsKey && !user.pixabayKey) {
+    if (requestedSource !== "kie-image" && requestedSource !== "none" && !user.pexelsKey && !user.pixabayKey) {
       const managedStock = await resolveManagedStockAccess(user, {
         hasOwnPexelsKey: false,
         hasOwnPixabayKey: false,
@@ -754,8 +754,8 @@ export async function POST(req: Request) {
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
-    // B-roll source: "stock" remains public. AI images and AutoMix are a private
-    // team beta; the same server policy is checked again inside fetch-stock.
+    // B-roll source: "stock" and "none" (ใส่ B-roll เอง) remain public. AI images and
+    // AutoMix are gated below; the same server policy is checked again inside fetch-stock.
     const useHeroRunpodImage = requestedSource === "kie-image" && requestedImageEngine === "runpod";
     const isAdmin = user.role === "ADMIN";
     const { canUseKieImages } = resolveKieImageAccess({
@@ -845,7 +845,7 @@ export async function POST(req: Request) {
         }
         return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
       }
-    } else if (requestedSource !== "stock" && (!canUseKieImages || !isAdmin)) {
+    } else if (requestedSource !== "stock" && requestedSource !== "none" && (!canUseKieImages || !isAdmin)) {
       // Legacy kie image mode: paused for customers, admin-only (ADR 0004).
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
