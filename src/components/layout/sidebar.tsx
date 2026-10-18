@@ -248,9 +248,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
       // First-Clip Path chooses the default onboarding rail; it must not revoke
-      // the paid Hero Script entrypoint or the Trial locked preview.
+      // the paid Hero Script entrypoint, the Trial locked preview, or Brand Library (/brands).
       .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
-      .filter((item) => item.href !== "/brands" || !firstClipPath)
       // ADR 0059: the Brand Library is open to every plan, so /brands never
       // shows a PRO / รอเปิด gate badge here.
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
