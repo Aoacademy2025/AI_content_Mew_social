@@ -56,7 +56,7 @@ export async function resolveMcpToken(
   if (!row || row.revokedAt) return null;
   if (row.expiresAt && row.expiresAt.getTime() <= nowMs) return null;
   if (!row.lastUsedAt || nowMs - row.lastUsedAt.getTime() >= MCP_TOKEN_LAST_USED_THROTTLE_MS) {
-    prisma.mcpToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date(nowMs) } }).catch(() => {});
+    await prisma.mcpToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date(nowMs) } }).catch(() => {});
   }
   const loadedUser = (row as { user?: User | null }).user;
   return loadedUser !== undefined
