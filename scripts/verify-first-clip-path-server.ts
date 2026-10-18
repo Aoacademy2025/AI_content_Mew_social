@@ -25,6 +25,11 @@ async function main() {
     /item\.href !== "\/hero-script" \|\| \(!firstClipPath/,
     "First-Clip Path must not hide the paid Hero Script entrypoint",
   );
+  assert.doesNotMatch(
+    sidebar,
+    /item\.href !== "\/brands" \|\| !firstClipPath/,
+    "First-Clip Path must not hide the Brand Library (/brands) entrypoint",
+  );
   assert.match(sidebar, /ทดลอง PRO/, "Conversion Trial has an honest plan label");
   assert.match(
     sidebar,
