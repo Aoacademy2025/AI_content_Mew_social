@@ -125,11 +125,32 @@ function storedObject(json: string | null): Record<string, unknown> {
   try { return JSON.parse(json ?? "{}") ?? {}; } catch { return {}; }
 }
 
+export type BillingReceiptJobRow = {
+  id: string;
+  userId: string;
+  type: string;
+  status: string;
+  inputJson: string;
+  idempotencyKey: string | null;
+  projectId: string | null;
+  budgetQuoteId: string | null;
+  fundingState: string;
+  fundedCreditsSpent: number | null;
+  fundedMeteredMinutes: number | null;
+  reservationRefundPending: boolean;
+};
+
 /** Current money, not the cached output receipt. The legacy render receipt above remains
  * the release invariant. This owner-scoped read also works before delivery and after failure.
  * Every component is read in one database snapshot; reservations are already wallet debits. */
-export async function getVideoJobCostReceipt(input: { videoJobId: string; userId: string }) {
-  const requested = await prisma.videoJob.findFirst({ where: { id: input.videoJobId, userId: input.userId } });
+export async function getVideoJobCostReceipt(input: {
+  videoJobId: string;
+  userId: string;
+  requestedRow?: BillingReceiptJobRow | null;
+}) {
+  const requested = input.requestedRow && input.requestedRow.id === input.videoJobId && input.requestedRow.userId === input.userId
+    ? input.requestedRow
+    : await prisma.videoJob.findFirst({ where: { id: input.videoJobId, userId: input.userId } });
   if (!requested) return null;
   const requestedInput = storedObject(requested.inputJson);
   const quote = requested.budgetQuoteId
@@ -138,15 +159,26 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
   const hintedRoot = quote?.rootJobId ?? requestedInput.mcpRootJobId ??
     (requested.idempotencyKey === `mcp-chain:${requestedInput.sourceJobId}` ? requestedInput.sourceJobId : null);
   const linkedRoot = typeof hintedRoot === "string"
-    ? await prisma.videoJob.findFirst({ where: { id: hintedRoot, userId: input.userId } }) : null;
+    ? (hintedRoot === requested.id
+        ? requested
+        : await prisma.videoJob.findFirst({ where: { id: hintedRoot, userId: input.userId } }))
+    : null;
   const root = linkedRoot && (quote || requested.idempotencyKey === `mcp-chain:${linkedRoot.id}` ||
     (requested.projectId && requested.projectId === linkedRoot.projectId)) ? linkedRoot : requested;
-  const candidates = await prisma.videoJob.findMany({ where: { userId: input.userId, OR: [
-    { id: root.id },
-    ...(root.budgetQuoteId ? [{ budgetQuoteId: root.budgetQuoteId }] : []),
-    ...(root.projectId ? [{ projectId: root.projectId }] : []),
-    { idempotencyKey: `mcp-chain:${root.id}` },
-  ] } });
+  const [candidates, approvals] = await Promise.all([
+    prisma.videoJob.findMany({ where: { userId: input.userId, OR: [
+      { id: root.id },
+      ...(root.budgetQuoteId ? [{ budgetQuoteId: root.budgetQuoteId }] : []),
+      ...(root.projectId ? [{ projectId: root.projectId }] : []),
+      { idempotencyKey: `mcp-chain:${root.id}` },
+    ] } }),
+    root.budgetQuoteId
+      ? prisma.mcpVideoQuote.findMany({
+          where: { userId: input.userId, rootJobId: root.id, status: "consumed", OR: [{ id: root.budgetQuoteId }, { parentQuoteId: root.budgetQuoteId }] },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        })
+      : Promise.resolve([]),
+  ]);
   const jobs = candidates.filter(job => {
     if (job.id === root.id) return true;
     const data = storedObject(job.inputJson);
@@ -155,10 +187,6 @@ export async function getVideoJobCostReceipt(input: { videoJobId: string; userId
       (job.type === "export" && job.idempotencyKey === `mcp-chain:${root.id}` && data.sourceJobId === root.id);
   });
   const ids = jobs.map(job => job.id);
-  const approvals = root.budgetQuoteId ? await prisma.mcpVideoQuote.findMany({
-    where: { userId: input.userId, rootJobId: root.id, status: "consumed", OR: [{ id: root.budgetQuoteId }, { parentQuoteId: root.budgetQuoteId }] },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  }) : [];
   const quoteIds = approvals.map(approval => approval.id);
   const [images, renders, balance, promotional] = await Promise.all([
     prisma.aiGenerationJob.findMany({ where: { userId: input.userId, kind: "image", OR: [
