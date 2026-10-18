@@ -106,8 +106,9 @@ interface V2Draft {
   ttsSpeed?: number;
   tighten?: boolean;
   punchZoom?: boolean;
-  /** EP5 #18 + Landscape Presenter: multi-clip stitch list and 9:16 frame fit ("crop" | "contain"). */
+  /** EP5 #18 + Landscape Presenter: multi-clip stitch list, display filenames, and 9:16 frame fit ("crop" | "contain"). */
   clipUrls?: string[];
+  clipNames?: string[];
   presenterFit?: "crop" | "contain";
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
@@ -849,13 +850,30 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  const [clipNamesState, setClipNamesFromUser, setClipNamesRaw] = useUserDraftState<string[] | undefined>(
+    Array.isArray(d.clipNames) && d.clipNames.length > 0
+      ? d.clipNames.map((n) => (typeof n === "string" ? n.trim().slice(0, 200) : "")).slice(0, 10)
+      : undefined,
+    "clipNames",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const clipUrls = clipUrlsState && clipUrlsState.length > 0 ? clipUrlsState : clipUrl ? [clipUrl] : [];
+  const clipNames = clipNamesState ?? [];
+  const setClipNames = useCallback((names: string[]) => {
+    const clean = names.map((n) => (typeof n === "string" ? n.trim().slice(0, 200) : "")).slice(0, 10);
+    setClipNamesFromUser(clean.some(Boolean) ? clean : undefined);
+  }, [setClipNamesFromUser]);
   const setClipUrls = useCallback((urls: string[]) => {
     const clean = urls.map((u) => u.trim()).filter(Boolean).slice(0, 10);
     setClipUrlsFromUser(clean.length > 1 ? clean : undefined);
     setClipUrlStateFromUser(clean[0] ?? "");
-    if (clean.length === 0) setClipDurationSecStateRaw(0);
-  }, [setClipDurationSecStateRaw, setClipUrlStateFromUser, setClipUrlsFromUser]);
+    if (clean.length === 0) {
+      setClipDurationSecStateRaw(0);
+      setClipNamesFromUser(undefined);
+    }
+  }, [setClipDurationSecStateRaw, setClipNamesFromUser, setClipUrlStateFromUser, setClipUrlsFromUser]);
   const [presenterFitState, setPresenterFitFromUser, setPresenterFitRaw] = useUserDraftState<"crop" | "contain" | undefined>(
     d.presenterFit === "contain" || d.presenterFit === "crop" ? d.presenterFit : undefined,
     "presenterFit",
@@ -928,6 +946,7 @@ export function useV2Project() {
       ...(tightenState ? { tighten: true } : {}),
       ...(punchZoomState ? { punchZoom: true } : {}),
       ...(clipUrlsState && clipUrlsState.length > 1 ? { clipUrls: clipUrlsState } : {}),
+      ...(clipNamesState && clipNamesState.some(Boolean) ? { clipNames: clipNamesState } : {}),
       ...(presenterFitState === "contain" ? { presenterFit: "contain" as const } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
@@ -1016,6 +1035,11 @@ export function useV2Project() {
     setClipUrlsRaw(
       Array.isArray(next.clipUrls) && next.clipUrls.length > 1
         ? next.clipUrls.filter((u): u is string => typeof u === "string" && u.length > 0).slice(0, 10)
+        : undefined,
+    );
+    setClipNamesRaw(
+      Array.isArray(next.clipNames) && next.clipNames.length > 0
+        ? next.clipNames.map((n) => (typeof n === "string" ? n.trim().slice(0, 200) : "")).slice(0, 10)
         : undefined,
     );
     setPresenterFitRaw(next.presenterFit === "contain" ? "contain" : undefined);
@@ -2602,7 +2626,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, presenterFitState, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2649,7 +2673,7 @@ export function useV2Project() {
     projectTitle, setProjectTitle,
     mode, setMode, narrativeSourceKind, scriptTargetDurationSec,
     script, setScript,
-    clipUrl, setClipUrl, clipUrls, setClipUrls, presenterFit, setPresenterFit, clipDurationSec, setClipDurationSec,
+    clipUrl, setClipUrl, clipUrls, setClipUrls, clipNames, setClipNames, presenterFit, setPresenterFit, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,

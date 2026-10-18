@@ -241,11 +241,18 @@ async function main() {
     );
 
     const step1Src = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/Step1Script.tsx"), "utf8");
+    const directUploadSrc = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_components/DirectAvatarUpload.tsx"), "utf8");
     const postPhaseSrc = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx"), "utf8");
     const postPhaseMobileSrc = fs.readFileSync(path.join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx"), "utf8");
     assert(
       step1Src.includes("p.setPresenterFit") && step1Src.includes("p.setClipUrls"),
       "Step1Script.tsx exposes presenterFit (crop/contain) and multi-clip stitch (setClipUrls) controls",
+    );
+    assert(
+      step1Src.includes("lg:grid-cols-[240px_minmax(0,1fr)]") &&
+        step1Src.includes("p.setClipNames") &&
+        directUploadSrc.includes("fileName: file.name"),
+      "Step1Script.tsx uses side-by-side 2-column presenter layout and displays uploaded clip filenames",
     );
     assert(
       postPhaseSrc.includes('ed.set("sfxMode"') && postPhaseMobileSrc.includes('ed.set("sfxMode"'),
