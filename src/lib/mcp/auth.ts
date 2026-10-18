@@ -18,9 +18,11 @@ export type McpPrincipal = {
  * upsell instead of a bare 401 for downgraded-but-authenticated users.
  */
 export async function resolveMcpPrincipal(token: string | undefined | null): Promise<McpPrincipal | null> {
-  const resolved = await resolveMcpToken(token);
+  const resolved = await resolveMcpToken(token, { includeUser: true });
   if (!resolved) return null;
-  const user = await prisma.user.findUnique({ where: { id: resolved.userId } });
+  const user = resolved.user !== undefined
+    ? resolved.user
+    : await prisma.user.findUnique({ where: { id: resolved.userId } });
   if (!user) return null;
   return principalFromUser(user);
 }

@@ -6,6 +6,7 @@ import { prisma } from "../src/lib/prisma";
 import {
   generateMcpToken, hashMcpToken, createMcpToken,
   resolveMcpToken, revokeMcpToken, listMcpTokens, countActiveMcpTokens,
+  MCP_TOKEN_LAST_USED_THROTTLE_MS,
 } from "../src/lib/mcp/token";
 import { resolveMcpPrincipal, mcpAccessAllowed } from "../src/lib/mcp/auth";
 
@@ -29,10 +30,31 @@ async function main() {
   assert(hashMcpToken(raw) === hashMcpToken(raw), "hash is deterministic");
   assert(hashMcpToken(raw) !== raw, "hash differs from plaintext");
 
-  // create + resolve
+  // create + resolve + lastUsedAt throttle
   const pro = await mkUser({ plan: "PRO" });
   const { token } = await createMcpToken(pro.id, "MacBook");
-  assert((await resolveMcpToken(token))?.userId === pro.id, "resolveMcpToken maps a fresh token to its owner");
+  const t0 = 1_700_000_000_000;
+  const firstResolved = await resolveMcpToken(token, { includeUser: true, nowMs: t0 });
+  assert(firstResolved?.userId === pro.id, "resolveMcpToken maps a fresh token to its owner");
+  assert(firstResolved?.user?.id === pro.id, "resolveMcpToken(includeUser) joins owner row in 1 query");
+  const afterFirst = (await listMcpTokens(pro.id))[0].lastUsedAt;
+  assert(afterFirst?.getTime() === t0, "first resolveMcpToken populates lastUsedAt immediately");
+
+  await resolveMcpToken(token, { nowMs: t0 + MCP_TOKEN_LAST_USED_THROTTLE_MS - 1 });
+  const afterWithinWindow = (await listMcpTokens(pro.id))[0].lastUsedAt;
+  assert(
+    afterWithinWindow?.getTime() === t0,
+    "resolveMcpToken skips SQLite write when lastUsedAt is within 60s throttle window",
+  );
+
+  const t1 = t0 + MCP_TOKEN_LAST_USED_THROTTLE_MS;
+  await resolveMcpToken(token, { nowMs: t1 });
+  const afterWindowElapsed = (await listMcpTokens(pro.id))[0].lastUsedAt;
+  assert(
+    afterWindowElapsed?.getTime() === t1,
+    "resolveMcpToken refreshes lastUsedAt once 60s throttle window has elapsed",
+  );
+
   assert((await countActiveMcpTokens(pro.id)) === 1, "countActiveMcpTokens = 1 after first token");
   assert((await resolveMcpToken("heroai_pat_bogus")) === null, "unknown token → null");
   assert((await resolveMcpToken("not-a-pat")) === null, "non-prefixed token → null");

@@ -14,7 +14,12 @@ export function hashMcpToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-export type ResolvedToken = { tokenId: string; userId: string };
+import type { User } from "@prisma/client";
+
+export type ResolvedToken = { tokenId: string; userId: string; user?: User | null };
+
+/** Minimum interval between `lastUsedAt` DB writes for the same PAT (avoids a SQLite write on every poll). */
+export const MCP_TOKEN_LAST_USED_THROTTLE_MS = 60_000;
 
 /** Create + persist a token. Returns the PLAINTEXT token (show once) + row id. */
 export async function createMcpToken(userId: string, name?: string): Promise<{ token: string; id: string }> {
@@ -37,14 +42,26 @@ export async function countActiveMcpTokens(userId: string): Promise<number> {
   });
 }
 
-/** Resolve a bearer token to its owner. null if unknown/revoked/expired. Touches lastUsedAt. */
-export async function resolveMcpToken(token: string | undefined | null): Promise<ResolvedToken | null> {
+/** Resolve a bearer token to its owner. null if unknown/revoked/expired. Touches lastUsedAt (throttled to 60s). */
+export async function resolveMcpToken(
+  token: string | undefined | null,
+  opts?: { includeUser?: boolean; nowMs?: number },
+): Promise<ResolvedToken | null> {
   if (!token || !token.startsWith(TOKEN_PREFIX)) return null;
-  const row = await prisma.mcpToken.findUnique({ where: { tokenHash: hashMcpToken(token) } });
+  const nowMs = opts?.nowMs ?? Date.now();
+  const row = await prisma.mcpToken.findUnique({
+    where: { tokenHash: hashMcpToken(token) },
+    ...(opts?.includeUser ? { include: { user: true } } : {}),
+  });
   if (!row || row.revokedAt) return null;
-  if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return null;
-  prisma.mcpToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
-  return { tokenId: row.id, userId: row.userId };
+  if (row.expiresAt && row.expiresAt.getTime() <= nowMs) return null;
+  if (!row.lastUsedAt || nowMs - row.lastUsedAt.getTime() >= MCP_TOKEN_LAST_USED_THROTTLE_MS) {
+    prisma.mcpToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date(nowMs) } }).catch(() => {});
+  }
+  const loadedUser = (row as { user?: User | null }).user;
+  return loadedUser !== undefined
+    ? { tokenId: row.id, userId: row.userId, user: loadedUser }
+    : { tokenId: row.id, userId: row.userId };
 }
 
 /** List a user's active tokens (no secret material). */

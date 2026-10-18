@@ -170,7 +170,7 @@ export async function createMcpVideoJob(
 
 // ── chain lookup ──────────────────────────────────────────────────────────────────────────
 
-const CHAIN_ROW_SELECT = {
+export const CHAIN_ROW_SELECT = {
   id: true,
   userId: true,
   type: true,
@@ -183,6 +183,9 @@ const CHAIN_ROW_SELECT = {
   errorProvider: true,
   reservationRefundPending: true,
   fundingState: true,
+  fundedCreditsSpent: true,
+  fundedMeteredMinutes: true,
+  budgetQuoteId: true,
   inputJson: true,
   idempotencyKey: true,
   projectId: true,
@@ -207,6 +210,8 @@ export type McpHeldChain = {
   root: McpChainRow;
   /** Newest job spawned after the root (B-roll re-render or export), by createdAt. */
   latest: McpChainRow | null;
+  /** Resolved current preview row when the descendant scan already covers it. */
+  currentPreview?: McpChainRow;
   // Absent on a held chain; declared so auto-chain field reads type-check on the union.
   preview?: never;
   exportJob?: never;
@@ -225,9 +230,12 @@ function chainKeyRow(userId: string, previewJobId: string) {
 /** How many newest root-linked rows are read to find the newest strictly-linked one. */
 const HELD_DESCENDANT_SCAN = 20;
 
-/** The newest job linked to `root` by `inputJson.mcpRootJobId` (same user, same project). */
-async function latestHeldDescendant(userId: string, root: McpChainRow): Promise<McpChainRow | null> {
-  if (!root.projectId) return null;
+/** Scan the newest jobs linked to `root` by `inputJson.mcpRootJobId` (same user, same project) in one query. */
+async function scanHeldDescendants(
+  userId: string,
+  root: McpChainRow,
+): Promise<{ latest: McpChainRow | null; currentPreview?: McpChainRow }> {
+  if (!root.projectId) return { latest: null, currentPreview: root };
   const rows = await prisma.videoJob.findMany({
     where: {
       userId,
@@ -239,7 +247,12 @@ async function latestHeldDescendant(userId: string, root: McpChainRow): Promise<
     select: CHAIN_ROW_SELECT,
   });
   // The substring filter narrows; the parsed field decides.
-  return rows.find((candidate) => jobInput(candidate.inputJson)?.mcpRootJobId === root.id) ?? null;
+  const linked = rows.filter((candidate) => jobInput(candidate.inputJson)?.mcpRootJobId === root.id);
+  const latest = linked[0] ?? null;
+  const doneCreate = linked.find((candidate) => candidate.type === "create" && candidate.status === "done");
+  if (doneCreate) return { latest, currentPreview: doneCreate };
+  if (rows.length < HELD_DESCENDANT_SCAN) return { latest, currentPreview: root };
+  return { latest };
 }
 
 /**
@@ -281,12 +294,24 @@ async function heldRootOf(userId: string, row: McpChainRow): Promise<McpChainRow
  *  - `auto`: `jobId` is an MCP chain preview or that preview's chained export (ADR 0063).
  *  - `held`: `jobId` is a Held Preview or any job linked to one by `mcpRootJobId` (T5).
  */
-export async function resolveMcpChain(userId: string, jobId: string): Promise<McpChain | null> {
-  const row = await prisma.videoJob.findFirst({ where: { id: jobId, userId }, select: CHAIN_ROW_SELECT });
+export async function resolveMcpChain(
+  userId: string,
+  jobId: string,
+  preloadedRow?: McpChainRow | null,
+): Promise<McpChain | null> {
+  const row = preloadedRow !== undefined
+    ? preloadedRow
+    : await prisma.videoJob.findFirst({ where: { id: jobId, userId }, select: CHAIN_ROW_SELECT });
   if (!row) return null;
   const heldRoot = await heldRootOf(userId, row);
   if (heldRoot) {
-    return { kind: "held", root: heldRoot, latest: await latestHeldDescendant(userId, heldRoot) };
+    const { latest, currentPreview } = await scanHeldDescendants(userId, heldRoot);
+    return {
+      kind: "held",
+      root: heldRoot,
+      latest,
+      ...(currentPreview ? { currentPreview } : {}),
+    };
   }
   let preview: McpChainRow | null = null;
   if (isMcpChainPreview(row)) {

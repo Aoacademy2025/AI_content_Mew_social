@@ -6,6 +6,7 @@ import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
 import {
+  CHAIN_ROW_SELECT,
   currentHeldPreviewRow,
   enqueueMcpChainExportSafely,
   resolveMcpChain,
@@ -268,7 +269,7 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
     ...(failure ? failure : {}),
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: await getVideoJobCostReceipt({ videoJobId: preview.id, userId }),
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: preview.id, userId, requestedRow: preview }),
     ...(warnings?.length ? { warnings } : {}),
     ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null, editorUrl } : {}),
@@ -293,7 +294,7 @@ async function settleRerenderHop(userId: string, chain: McpHeldChain): Promise<{
   }
   const hop = await continueMcpRerenderChainSafely({ userId, rerenderJobId: latest.id });
   if (hop?.kind === "enqueued" || hop?.kind === "exists" || hop?.kind === "refused") {
-    const fresh = await resolveMcpChain(userId, root.id);
+    const fresh = await resolveMcpChain(userId, root.id, root);
     return { chain: fresh?.kind === "held" ? fresh : chain, exportOwed: false };
   }
   return { chain, exportOwed: hop === null || hop.kind === "deferred" };
@@ -329,9 +330,10 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     : status === "held" || status === "done" ? 100 : row.progress;
 
   const editorUrl = rootDone && root.projectId ? mcpEditorUrl(root.projectId) : null;
-  const previewOutput = rootDone
-    ? parseVideoJobOutput((await currentHeldPreviewRow(userId, root)).outputJson)
+  const previewRow = rootDone
+    ? (chain.currentPreview ?? (await currentHeldPreviewRow(userId, root)))
     : null;
+  const previewOutput = previewRow ? parseVideoJobOutput(previewRow.outputJson) : null;
   const previewUrl = publicVideoUrl(previewOutput?.videoUrl ?? null);
 
   let failure: Awaited<ReturnType<typeof deriveFailedJobFields>> | null = null;
@@ -363,7 +365,7 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     ...(failure ? failure : {}),
     ...(canceledSettlement ? canceledSettlement : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: await getVideoJobCostReceipt({ videoJobId: root.id, userId }),
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: root.id, userId, requestedRow: root }),
     ...(warnings?.length ? { warnings } : {}),
     ...(row.status === "confirmation_required" ? await retainedConfirmation(userId, row.id) : {}),
     ...(done ? { videoId: output?.videoId ?? null } : {}),
@@ -372,36 +374,33 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
 }
 
 export async function getVideoJobStatusTool(userId: string, jobId: string) {
+  let row = await prisma.videoJob.findFirst({
+    where: { id: jobId, userId },
+    select: CHAIN_ROW_SELECT,
+  });
+  if (!row) return null;
   // T14 (A10): a clip job parked in waiting_import moves on the moment its presenter import
   // has finished — the agent's poll never waits for the worker's next watchdog pass.
-  await settleClipImportJobSafely(jobId, userId);
+  if (row.status === "waiting_import") {
+    const settled = await settleClipImportJobSafely(jobId, userId);
+    if (settled === "queued" || settled === "failed") {
+      row = await prisma.videoJob.findFirst({
+        where: { id: jobId, userId },
+        select: CHAIN_ROW_SELECT,
+      });
+      if (!row) return null;
+    }
+  }
   // T8: an MCP chain (preview or its chained export) reads as one job. Owner-scoped: another
   // user's id resolves to null here AND below, so it is "not found" either way.
   // T5: a Held Preview and every job linked to it read as one job under the root id.
-  const chain = await resolveMcpChain(userId, jobId);
+  const chain = await resolveMcpChain(userId, jobId, row);
   if (chain?.kind === "held") {
     const settled = await settleRerenderHop(userId, chain);
     return heldChainStatus(userId, settled.chain, settled.exportOwed);
   }
   if (chain) return chainJobStatus(userId, chain);
-  const job = await prisma.videoJob.findFirst({
-    where: { id: jobId, userId },
-    select: {
-      id: true,
-      userId: true,
-      status: true,
-      currentStep: true,
-      progress: true,
-      outputJson: true,
-      errorMessage: true,
-      errorCode: true,
-      errorProvider: true,
-      reservationRefundPending: true,
-      fundingState: true,
-      inputJson: true,
-    },
-  });
-  if (!job) return null;
+  const job = row;
   const output = parseVideoJobOutput(job.outputJson);
   // T6: failure transparency — {errorCode, errorProvider?, message, userAction, refunded,
   // refundPending} per the plan's Global Constraints, only on a FAILED job. `error` (raw
@@ -421,7 +420,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     error: job.errorMessage ?? null,
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,
-    billingReceipt: await getVideoJobCostReceipt({ videoJobId: job.id, userId }),
+    billingReceipt: await getVideoJobCostReceipt({ videoJobId: job.id, userId, requestedRow: job }),
     ...(output?.warnings?.length ? { warnings: output.warnings } : {}),
     ...(job.status === "confirmation_required" ? await retainedConfirmation(userId, job.id) : {}),
   };
