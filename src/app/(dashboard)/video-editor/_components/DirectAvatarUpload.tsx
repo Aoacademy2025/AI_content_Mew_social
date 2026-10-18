@@ -18,6 +18,7 @@ type UploadResponse = {
 };
 
 export interface UploadedVideoMetadata {
+  fileName?: string;
   durationSec?: number;
   width?: number;
   height?: number;
@@ -103,7 +104,11 @@ export function DirectAvatarUpload({
                   : typeof data.durationSec === "number" && data.durationSec > 0
                     ? data.durationSec
                     : undefined;
-              onUrl(data.url, { ...localMetadata, ...(serverDurationSec ? { durationSec: serverDurationSec } : {}) });
+              onUrl(data.url, {
+                fileName: file.name,
+                ...localMetadata,
+                ...(serverDurationSec ? { durationSec: serverDurationSec } : {}),
+              });
               resolve();
             }
             else reject(new Error(data.error ?? "อัปโหลดไม่สำเร็จ"));
