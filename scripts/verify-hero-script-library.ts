@@ -203,13 +203,29 @@ async function main() {
     },
   });
 
-  const defaultPage = await listHeroScriptLibrary(owner.id, {
-    q: "",
-    status: "all",
-    brandProfileId: null,
-    page: 1,
-    pageSize: 20,
-  });
+  const originalTransaction = prisma.$transaction.bind(prisma);
+  let transactionCallsDuringLibraryRead = 0;
+  (prisma as { $transaction: typeof prisma.$transaction }).$transaction = ((...args: Parameters<typeof prisma.$transaction>) => {
+    transactionCallsDuringLibraryRead += 1;
+    return (originalTransaction as (...inner: Parameters<typeof prisma.$transaction>) => unknown)(...args);
+  }) as typeof prisma.$transaction;
+  let defaultPage: Awaited<ReturnType<typeof listHeroScriptLibrary>>;
+  try {
+    defaultPage = await listHeroScriptLibrary(owner.id, {
+      q: "",
+      status: "all",
+      brandProfileId: null,
+      page: 1,
+      pageSize: 20,
+    });
+  } finally {
+    (prisma as { $transaction: typeof prisma.$transaction }).$transaction = originalTransaction;
+  }
+  assert.equal(
+    transactionCallsDuringLibraryRead,
+    0,
+    "read-only listHeroScriptLibrary must not enter prisma.$transaction or wait in the write-transaction queue",
+  );
   assert.equal(
     defaultPage.items.some((item) => item.brandProfileId === "archived-brand"),
     false,

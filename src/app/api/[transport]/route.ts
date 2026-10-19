@@ -3,7 +3,7 @@ import { requestVideoJob } from "@/lib/mcp/video-budget.server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
-import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
+import { isMcpPatToken, resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError, auditErrorSummary, auditExceptionSummary } from "@/lib/mcp/audit";
@@ -246,26 +246,31 @@ function principalAuthInfo(bearerToken: string, principal: McpPrincipal, userAge
 // untrusted input — recordToolCall/sanitizeUserAgent strips control characters and caps
 // length before it is ever stored.
 const verifyToken = async (req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
+  const token = bearerToken?.trim();
+  if (!token) return undefined;
   const userAgent = req.headers.get("user-agent");
 
-  // 1. Personal Access Token
-  const patPrincipal = await resolveMcpPrincipal(bearerToken);
-  if (patPrincipal) {
-    // Hand the verified principal to the per-request server factory (request-principal.ts).
-    setRequestPrincipal(patPrincipal);
-    return principalAuthInfo(bearerToken!, patPrincipal, userAgent);
+  // 1. Personal Access Token (never fall through to Clerk OAuth on expired/revoked PATs)
+  if (isMcpPatToken(token)) {
+    const patPrincipal = await resolveMcpPrincipal(token);
+    if (patPrincipal) {
+      // Hand the verified principal to the per-request server factory (request-principal.ts).
+      setRequestPrincipal(patPrincipal);
+      return principalAuthInfo(token, patPrincipal, userAgent);
+    }
+    return undefined;
   }
 
   // 2. Clerk OAuth access token (desktop app)
   try {
     const clerkAuth = await auth({ acceptsToken: "oauth_token" });
-    const verified = await verifyClerkToken(clerkAuth, bearerToken);
+    const verified = await verifyClerkToken(clerkAuth, token);
     if (verified) {
       const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
       const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
       if (principal) {
         setRequestPrincipal(principal);
-        return principalAuthInfo(bearerToken!, principal, userAgent);
+        return principalAuthInfo(token, principal, userAgent);
       }
     }
   } catch {

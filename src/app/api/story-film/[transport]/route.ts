@@ -5,6 +5,7 @@ import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { z } from "zod";
 import {
+  isMcpPatToken,
   resolveMcpPrincipal,
   resolveMcpPrincipalByClerkId,
   type McpPrincipal,
@@ -266,19 +267,25 @@ function principalAuthInfo(bearerToken: string, principal: McpPrincipal): AuthIn
 }
 
 const verifyInternalToken = async (_request: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
-  const patPrincipal = await resolveMcpPrincipal(bearerToken);
-  if (patPrincipal && isInternalAiTester(patPrincipal.user)) {
-    return principalAuthInfo(bearerToken!, patPrincipal);
+  const token = bearerToken?.trim();
+  if (!token) return undefined;
+
+  if (isMcpPatToken(token)) {
+    const patPrincipal = await resolveMcpPrincipal(token);
+    if (patPrincipal && isInternalAiTester(patPrincipal.user)) {
+      return principalAuthInfo(token, patPrincipal);
+    }
+    return undefined;
   }
 
   try {
     const clerkAuth = await auth({ acceptsToken: "oauth_token" });
-    const verified = await verifyClerkToken(clerkAuth, bearerToken);
+    const verified = await verifyClerkToken(clerkAuth, token);
     if (verified) {
       const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
       const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
       if (principal && isInternalAiTester(principal.user)) {
-        return principalAuthInfo(bearerToken!, principal);
+        return principalAuthInfo(token, principal);
       }
     }
   } catch {
