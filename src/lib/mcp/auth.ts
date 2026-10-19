@@ -2,7 +2,9 @@ import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isPaid } from "@/lib/plan-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
-import { resolveMcpToken } from "@/lib/mcp/token";
+import { isMcpPatToken, resolveMcpToken } from "@/lib/mcp/token";
+
+export { isMcpPatToken };
 
 export type McpPrincipal = {
   userId: string;

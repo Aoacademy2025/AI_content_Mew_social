@@ -104,7 +104,9 @@ export async function listHeroScriptLibrary(
           }),
   };
   const skip = (query.page - 1) * query.pageSize;
-  const [total, rows, brandOptions] = await prisma.$transaction([
+  // Read-only queries: use Promise.all instead of prisma.$transaction so GET /api/scripts/library
+  // reads concurrently from SQLite WAL without queueing behind write transactions (HERO-10).
+  const [total, rows, brandOptions] = await Promise.all([
     prisma.script.count({ where }),
     prisma.script.findMany({
       where,

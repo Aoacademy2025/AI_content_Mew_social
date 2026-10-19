@@ -4,6 +4,11 @@ import { prisma } from "@/lib/prisma";
 const TOKEN_PREFIX = "heroai_pat_";
 const PAT_TTL_DAYS = 90; // tokens auto-expire after 90 days — bounds a leaked token's lifetime
 
+/** Whether a bearer token uses the HERO AI Personal Access Token prefix (`heroai_pat_`). */
+export function isMcpPatToken(token: string | undefined | null): boolean {
+  return typeof token === "string" && token.startsWith(TOKEN_PREFIX);
+}
+
 /** Generate a new opaque PAT (plaintext). Shown to the user exactly once. */
 export function generateMcpToken(): string {
   return TOKEN_PREFIX + crypto.randomBytes(32).toString("base64url");

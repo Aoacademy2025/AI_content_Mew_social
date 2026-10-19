@@ -2,9 +2,10 @@
 //   ROOT="$(pwd)"
 //   DATABASE_URL="file:$ROOT/prisma/test-mcp.db" npx prisma db push --skip-generate --accept-data-loss
 //   DATABASE_URL="file:$ROOT/prisma/test-mcp.db?connection_limit=1" npx tsx scripts/verify-mcp-token.ts
+import { readFileSync } from "node:fs";
 import { prisma } from "../src/lib/prisma";
 import {
-  generateMcpToken, hashMcpToken, createMcpToken,
+  generateMcpToken, hashMcpToken, createMcpToken, isMcpPatToken,
   resolveMcpToken, revokeMcpToken, listMcpTokens, countActiveMcpTokens,
   MCP_TOKEN_LAST_USED_THROTTLE_MS,
 } from "../src/lib/mcp/token";
@@ -26,6 +27,20 @@ async function main() {
   // format + hash
   const raw = generateMcpToken();
   assert(raw.startsWith("heroai_pat_"), "generateMcpToken has heroai_pat_ prefix");
+  assert(isMcpPatToken(raw) === true, "isMcpPatToken recognizes generated PAT");
+  assert(isMcpPatToken("heroai_pat_revoked") === true, "isMcpPatToken recognizes any heroai_pat_ token");
+  assert(isMcpPatToken("oat_clerk_oauth_token") === false, "isMcpPatToken rejects Clerk OAuth token");
+  assert(isMcpPatToken(undefined) === false && isMcpPatToken(null) === false && isMcpPatToken("") === false, "isMcpPatToken rejects empty/missing token");
+  const publicMcpRoute = readFileSync("src/app/api/[transport]/route.ts", "utf8");
+  const internalMcpRoute = readFileSync("src/app/api/story-film/[transport]/route.ts", "utf8");
+  assert(
+    publicMcpRoute.includes("if (!token) return undefined;") && publicMcpRoute.includes("if (isMcpPatToken(token))"),
+    "public MCP route short-circuits empty and heroai_pat_ tokens before Clerk OAuth verification",
+  );
+  assert(
+    internalMcpRoute.includes("if (!token) return undefined;") && internalMcpRoute.includes("if (isMcpPatToken(token))"),
+    "story-film MCP route short-circuits empty and heroai_pat_ tokens before Clerk OAuth verification",
+  );
   assert(raw.length > 30, "generateMcpToken is long");
   assert(hashMcpToken(raw) === hashMcpToken(raw), "hash is deterministic");
   assert(hashMcpToken(raw) !== raw, "hash differs from plaintext");
