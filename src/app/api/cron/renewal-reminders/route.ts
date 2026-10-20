@@ -4,7 +4,10 @@ import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 import { sendDueDay21ConvertReminders } from "@/lib/day21-convert-reminder.server";
 import { sendDueRenewalReminders } from "@/lib/renewal-reminders.server";
 import { sendDuePastDueFollowUps } from "@/lib/past-due-dunning.server";
-import { sendDuePaidActivationReminders } from "@/lib/dormant-payers.server";
+import {
+  sendDueLapsedPayerReminders,
+  sendDuePaidActivationReminders,
+} from "@/lib/dormant-payers.server";
 
 export const runtime = "nodejs";
 
@@ -24,6 +27,7 @@ export async function GET(req: Request) {
   const day21 = await sendDueDay21ConvertReminders(now);
   const pastDue = await sendDuePastDueFollowUps(now);
   const paidActivation = await sendDuePaidActivationReminders(now);
+  const lapsedPayer = await sendDueLapsedPayerReminders(now);
 
   writeCronHeartbeat("renewal-reminders");
   return NextResponse.json({
@@ -35,5 +39,7 @@ export async function GET(req: Request) {
     pastDueRecovered: pastDue.recovered,
     paidActivationChecked: paidActivation.checked,
     paidActivationSent: paidActivation.sent,
+    lapsedPayerChecked: lapsedPayer.checked,
+    lapsedPayerSent: lapsedPayer.sent,
   });
 }

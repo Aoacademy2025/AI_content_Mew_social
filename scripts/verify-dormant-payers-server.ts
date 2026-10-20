@@ -85,9 +85,11 @@ async function main() {
   assert.equal(never.daysSinceLastJob, null);
   assert.equal(never.jobsEver, 0);
   assert.equal(never.daysSincePay, 5);
+  assert.equal(never.dormancyReason, "never_created");
   const oldJob = list.find((p) => p.id === "dormant-old-job")!;
   assert.equal(oldJob.daysSinceLastJob, 45);
   assert.equal(oldJob.jobsEver, 1);
+  assert.equal(oldJob.dormancyReason, "lapsed_creator");
   // Never-created rows sort first.
   assert.equal(list[0].daysSinceLastJob, null);
   assert.equal(list[list.length - 1].id, "dormant-old-job");
@@ -137,8 +139,43 @@ async function main() {
   const quietLog = await prisma.paidActivationReminderLog.findUniqueOrThrow({ where: { userId: "quiet-never" } });
   assert.equal(quietLog.emailAttempted, false);
 
+  // 6. HERO-81: preview_or_draft_30d classification & Month-2+ lapsed creator nudge.
+  await payer({ id: "preview-only-payer", paidDaysAgo: 4, withJob: "recent" });
+  const listWithPreview = await dormant.listDormantPayers(NOW);
+  const previewPayer = listWithPreview.find((p) => p.id === "preview-only-payer")!;
+  assert.equal(previewPayer.dormancyReason, "preview_or_draft_30d");
+  assert.equal(previewPayer.previewsDone30d, 1);
+
+  const lapsedNotifications: Array<Record<string, unknown>> = [];
+  const lapsedEmails: Array<Record<string, unknown>> = [];
+  const lapsedDeps = {
+    createNotification: async (input: Record<string, unknown>) => {
+      lapsedNotifications.push(input);
+      return {} as never;
+    },
+    sendEmail: async (input: Record<string, unknown>) => {
+      lapsedEmails.push(input);
+      return true;
+    },
+    recordTelemetry: async () => ({} as never),
+    emailEnabled: () => true,
+  };
+
+  const lapsedRun1 = await dormant.sendDueLapsedPayerReminders(NOW, lapsedDeps as never);
+  assert.equal(lapsedRun1.sent, 1, "only dormant-old-job (45d idle, has prior job) qualifies for lapsed nudge");
+  assert.equal(lapsedNotifications.length, 1);
+  assert.equal((lapsedNotifications[0] as { userId: string }).userId, "dormant-old-job");
+  assert.equal((lapsedNotifications[0] as { link: string }).link, "/video-editor?source=lapsed_payer_d21");
+  assert.equal(lapsedEmails.length, 1);
+
+  // Idempotent on repeat run for the same silence streak.
+  const lapsedRun2 = await dormant.sendDueLapsedPayerReminders(NOW, lapsedDeps as never);
+  assert.equal(lapsedRun2.sent, 0);
+  assert.equal(lapsedRun2.duplicateClaimsSkipped, 1);
+  assert.equal(lapsedNotifications.length, 1);
+
   await prisma.$disconnect();
-  console.log("verify-dormant-payers-server: PASS dormant = payers − MAPC, never-created first, one nudge ≥3 days, skips job/internal/suspended");
+  console.log("verify-dormant-payers-server: PASS dormant = payers − MAPC, never-created first, one nudge ≥3 days, lapsed nudge ≥21 days, skips job/internal/suspended");
 }
 
 main().catch((error) => {
