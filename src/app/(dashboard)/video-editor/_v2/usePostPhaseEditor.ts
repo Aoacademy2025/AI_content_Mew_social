@@ -44,6 +44,7 @@ import {
   type EditorLayerVisibility,
 } from "@/lib/editor-layer-visibility";
 import {
+  applyHeadlineHookPatchWithFallback,
   createDefaultHeadlineHook,
   headlineHookEndMs,
   normalizeHeadlineHookDraft,
@@ -359,8 +360,14 @@ export function usePostPhaseEditor(
   const headlineSuggestionAbortRef = useRef<AbortController | null>(null);
 
   function setHeadlineHook(patch: Partial<HeadlineHookConfig>) {
+    const merged = applyHeadlineHookPatchWithFallback(
+      resolvedHeadlineHook,
+      patch,
+      headlineSourceText,
+      totalDurationMs,
+    );
     const next = normalizeHeadlineHookDraft(
-      { ...resolvedHeadlineHook, ...patch },
+      merged,
       totalDurationMs,
       cfg.verticalPos,
     );

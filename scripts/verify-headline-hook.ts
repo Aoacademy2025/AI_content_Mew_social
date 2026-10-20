@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  applyHeadlineHookPatchWithFallback,
   autoHeadlineHookDurationMs,
   clampHeadlineHookCenterPercent,
   createDefaultHeadlineHook,
@@ -104,6 +105,23 @@ const generatedDefault = createDefaultHeadlineHook(
 assert.equal(generatedDefault.enabled, true);
 assert.equal(generatedDefault.headline, "นี่คือประเด็นแรกที่ต้องรู้!");
 assert.equal(generatedDefault.durationMs, 10_000);
+
+const blankDisabledHook = normalizeHeadlineHookDraft(
+  { enabled: false, headline: "" },
+  45_000,
+)!;
+assert.equal(blankDisabledHook.enabled, false);
+const reenabledFromBlank = normalizeHeadlineHookDraft(
+  applyHeadlineHookPatchWithFallback(
+    blankDisabledHook,
+    { enabled: true },
+    "เปิดพาดหัวใหม่หลังลบข้อความ! ประโยคที่สอง",
+    45_000,
+  ),
+  45_000,
+)!;
+assert.equal(reenabledFromBlank.enabled, true);
+assert.equal(reenabledFromBlank.headline, "เปิดพาดหัวใหม่หลังลบข้อความ!");
 
 const hook = normalizeHeadlineHook({
   enabled: true,
