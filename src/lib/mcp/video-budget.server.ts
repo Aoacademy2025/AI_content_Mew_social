@@ -2,7 +2,12 @@ import { classifyEntitlement } from "@/lib/entitlements";
 import { mcpAccessAllowed } from "./auth";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "./video-job-status";
 import { reconcileVideoJobFundingInTransaction } from "./video-job-funding";
-import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
+import {
+  aiAudioCeilingRefusal,
+  managedAudioCeilingApplies,
+  voiceProviderPlanViolation,
+} from "@/lib/render-plan-preflight";
+import { aiAudioCeilingFor } from "@/lib/ai-spend-limits";
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { syncMinuteWindow } from "@/lib/minute-limits";
@@ -52,13 +57,32 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       }
       const wallet = await tx.creditBalance.findUnique({ where: { userId } });
       const promotional = await tx.promotionalCreditGrant.aggregate({ where: { userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } });
-      if ((wallet?.granted ?? 0) + (wallet?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0) < quote.totalHeroCreditCeiling) return quoteFailure("insufficient_funding", "เครดิตปัจจุบันไม่เพียงพอกับวงเงินที่ยืนยัน");
+      const totalAvailableCredits = (wallet?.granted ?? 0) + (wallet?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0);
+      if (totalAvailableCredits < quote.totalHeroCreditCeiling) return quoteFailure("insufficient_funding", "เครดิตปัจจุบันไม่เพียงพอกับวงเงินที่ยืนยัน");
       const receipt = JSON.parse(quote.receiptJson) as QuoteReceipt;
       const execution = JSON.parse(quote.executionJson) as QuoteExecution;
       if (execution.jobInput.voiceProvider === "elevenlabs") {
         const refusal = voiceProviderPlanViolation("elevenlabs", user.plan);
         if (refusal) return quoteFailure(refusal.code, refusal.message);
         if (!user.elevenlabsKey) return quoteFailure("voice_setup_required", "กรุณาตั้งค่า ElevenLabs API key ใน Studio");
+      }
+      const narrationEngine = execution.jobInput.mode === "upload"
+        ? "upload"
+        : execution.jobInput.voiceProvider === "elevenlabs"
+          ? "elevenlabs"
+          : "gemini";
+      const geminiKeyMode = user.geminiKey ? "byok" : "managed";
+      if (!quote.parentQuoteId && managedAudioCeilingApplies(narrationEngine, geminiKeyMode)) {
+        const ceiling = aiAudioCeilingFor(user.minutesLimit);
+        const used = user.aiAudioMinutesUsed;
+        const remaining = Math.max(0, ceiling - used);
+        const walletCanFundOverflow = process.env.CREDITS_LIVE === "1" && totalAvailableCredits > quote.totalHeroCreditCeiling;
+        const audioRefusal = aiAudioCeilingRefusal(
+          { allowed: used < ceiling, remaining },
+          user.plan,
+          { walletCanFundOverflow },
+        );
+        if (audioRefusal) return quoteFailure(audioRefusal.code, `${audioRefusal.message} — ${audioRefusal.userAction}`);
       }
 
       if (quote.parentQuoteId) {

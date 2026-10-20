@@ -165,7 +165,7 @@ export function Step1Script({
             onClick={() => CLIP_CUTAWAY_ON && p.setMode("upload")}
             icon={<Clapperboard size={17} strokeWidth={1.6} />}
             title="ใช้คลิปที่ถ่ายเอง"
-            desc={CLIP_CUTAWAY_ON ? "อัปคลิปแนวตั้งหรือแนวนอน → ซับ + บีโรล 9:16 อัตโนมัติ" : "เร็ว ๆ นี้"}
+            desc={CLIP_CUTAWAY_ON ? "อัปคลิป 9:16 หรือ 16:9 · ต่อสูงสุด 5 คลิป · ตัดจังหวะเงียบ + แทรกบีโรลอัตโนมัติ" : "เร็ว ๆ นี้"}
           />
         </div>
         )}
@@ -374,7 +374,29 @@ export function Step1Script({
                     planRequiredMessage="อัปโหลดคลิปส่วนตัวใช้ได้เฉพาะแผน Pro ขึ้นไป"
                     successMessage="อัปโหลดคลิปสำเร็จ"
                   />
-                  <p style={{ fontSize: 11, color: color.textFaint, marginTop: 10, lineHeight: 1.7, textAlign: "center" }}>
+                  <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                    {[
+                      "รองรับ 9:16 & 16:9 แนวนอน",
+                      "ต่อเรียงสูงสุด 5 คลิป",
+                      "ตัดจังหวะเงียบอัตโนมัติ",
+                      "ถอดซับไทย + แทรก B-roll",
+                    ].map((badge) => (
+                      <span
+                        key={badge}
+                        style={{
+                          fontSize: 10.5,
+                          padding: "2px 8px",
+                          borderRadius: radius.pill,
+                          background: "rgba(139,92,246,.10)",
+                          border: `1px solid ${color.selectedBorder}`,
+                          color: color.primary300,
+                        }}
+                      >
+                        {badge}
+                      </span>
+                    ))}
+                  </div>
+                  <p style={{ fontSize: 11, color: color.textFaint, marginTop: 8, lineHeight: 1.7, textAlign: "center" }}>
                     รองรับทั้งคลิปแนวตั้ง (9:16) และแนวนอน (16:9) ที่มีเสียงพูดของคุณ — ระบบจะแปลงเป็น 9:16
                     ถอดซับไทยจากเสียง แล้วแทรกบีโรลให้อัตโนมัติ
                   </p>
