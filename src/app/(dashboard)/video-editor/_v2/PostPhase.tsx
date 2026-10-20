@@ -203,7 +203,7 @@ export function PostPhase({
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
-          <a href="/content" onClick={emitFirstClipViewed}><BtnSecondary>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
+          <a href="/hero-script" onClick={emitFirstClipViewed}><BtnSecondary>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

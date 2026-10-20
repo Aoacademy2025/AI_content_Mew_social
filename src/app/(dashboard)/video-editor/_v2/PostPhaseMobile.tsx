@@ -346,7 +346,7 @@ export function PostPhaseMobile({
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
-          <a href="/content" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
+          <a href="/hero-script" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
