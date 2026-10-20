@@ -1428,6 +1428,9 @@ export async function sendScriptToEditor(
       const draft = revision
         ? applyBrandRevisionDefaultsToProjectDraft({ draft: { ...accountDraft }, payload: revision.payload })
         : accountDraft;
+      if (brandDefault?.config && !draft.logoOverlay) {
+        draft.logoOverlay = { ...brandDefault.config };
+      }
       const project = await createEditorProject(userId, {
         title,
         draft,

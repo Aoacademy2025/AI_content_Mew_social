@@ -408,6 +408,27 @@ export function createDefaultHeadlineHook(
   };
 }
 
+/**
+ * When a creator explicitly toggles the Headline Hook ON (`patch.enabled === true`)
+ * while the current draft headline is blank, seed the headline from the script/transcript
+ * fallback so `normalizeHeadlineHookDraft` does not silently force `enabled` back to `false`.
+ */
+export function applyHeadlineHookPatchWithFallback(
+  current: HeadlineHookConfig,
+  patch: Partial<HeadlineHookConfig>,
+  sourceText: string,
+  totalDurationMs: number,
+): HeadlineHookConfig {
+  const merged: HeadlineHookConfig = { ...current, ...patch };
+  if (patch.enabled === true && !merged.headline.trim()) {
+    const fallbackHeadline = createDefaultHeadlineHook(sourceText, totalDurationMs).headline;
+    if (fallbackHeadline) {
+      merged.headline = fallbackHeadline;
+    }
+  }
+  return merged;
+}
+
 /** Optional draft fields must be omitted because editor autosave accepts JSON values only. */
 export function headlineHookDraftFragment(
   hook: HeadlineHookConfig | null | undefined,

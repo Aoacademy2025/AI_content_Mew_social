@@ -1999,6 +1999,87 @@ async function main() {
       ok(after?.editorProjectId === sent.projectId, "sendScriptToEditor stores editorProjectId on the Script");
     }
 
+    // HERO-83: When a versioned Brand Profile has no brand-specific logo (brandMark.assetId: null),
+    // Hero Script handoff preserves the account-level default logo (BrandPreference) instead of wiping it.
+    const marklessBrand = await createBrandProfileFromPayload({
+      userId: "hs4-pro",
+      payload: {
+        schemaVersion: 1,
+        name: "Markless handoff brand",
+        niche: "creator education",
+        audience: "Thai creators",
+        script: {
+          styleId: "brand-script-style",
+          tone: "คม ชัด",
+          bannedWords: [],
+          ctaStyle: "follow",
+          language: "th",
+          analysisNotes: "กระชับ",
+          sampleText: "ตัวอย่าง",
+        },
+        voice: { provider: "gemini", voiceId: "Aoede" },
+        subtitle: {
+          presetId: "brand-subtitle",
+          config: {
+            preset: "stroke",
+            effect: "karaoke",
+            cardLen: "sentence",
+            fontFamily: "Kanit",
+            bold: true,
+            fontWeight: 900,
+            fontSize: 72,
+            textColor: "#FFFFFF",
+            accentColor: "#38BDF8",
+            shadow: true,
+            outline: true,
+            outlineSize: 3,
+            verticalPos: 78,
+          },
+        },
+        brandMark: {
+          assetId: null,
+          enabled: false,
+          position: "top-right",
+          sizePct: 18,
+          opacity: 0.9,
+        },
+        visual: {
+          primaryVisualFormatId: "simple-editorial-story",
+          languageMode: "defined",
+          palette: ["#111111", "#F8F5EE", "#38BDF8"],
+          personality: "bold raw energetic",
+          peopleAndSetting: "Thai creator contexts",
+          memorableCues: ["blue marker circle"],
+          visualNotes: "thick imperfect marker lines",
+          defaultTreatment: "clear and energetic",
+        },
+      },
+    });
+    const marklessScript = await createScript("hs4-pro", {
+      topic: "แบรนด์ไม่ตั้งโลโก้แยก",
+      durationSec: 60,
+      hookText: "เปิดเรื่อง",
+      bodyText: "เนื้อหา",
+      ctaText: "ติดตาม",
+      brandProfileId: marklessBrand.profile.id,
+    });
+    const marklessSent = await sendScriptToEditor("hs4-pro", marklessScript.id);
+    ok(marklessSent.ok === true, "sendScriptToEditor with markless Brand Revision → ok");
+    if (marklessSent.ok) {
+      const marklessProject = await getEditorProject("hs4-pro", marklessSent.projectId);
+      const marklessDraft = (marklessProject?.draft ?? {}) as Record<string, unknown>;
+      ok(
+        JSON.stringify(marklessDraft.logoOverlay) === JSON.stringify({
+          enabled: true,
+          assetId: defaultLogo.id,
+          position: "top-left",
+          sizePct: 26,
+          opacity: 0.9,
+        }),
+        "Hero Script handoff falls back to the account default logo when the Brand Revision has no brandMark",
+      );
+    }
+
     // FREE plan → EDITOR_LOCKED, and nothing is created/mutated.
     const freeScript = await createScript("hs4-free", {
       topic: "ฟรีส่งไม่ได้", durationSec: 60, hookText: "h", bodyText: "b", ctaText: "c",
