@@ -63,6 +63,7 @@ check("B2: stable machine code", exhausted?.code === "QUOTA_AI_AUDIO");
 check("B3: the refusal keeps the ceiling wording the pipeline already uses", (exhausted?.message ?? "").includes("เพดาน"));
 check("B4: the refusal carries a way out", (exhausted?.userAction ?? "").length > 0);
 check("B5: the way out names the reset, not only an upgrade", (exhausted?.userAction ?? "").includes("รอบถัดไป"));
+check("B5b: the way out names Hero credit top-up as an immediate path", (exhausted?.userAction ?? "").includes("เติมเครดิต Hero"));
 check("B6: PRO is pointed at BUSINESS", exhausted?.neededPlan === "BUSINESS");
 
 const business = aiAudioCeilingRefusal(
@@ -117,7 +118,7 @@ check(
 // createVideoJob and, behind the MCP Editor Project flag, also opens the Agent-created Project).
 for (const [label, path, createCall] of [
   ["web create", "src/app/api/videos/jobs/route.ts", "createVideoJob("],
-  ["MCP create_video_job", "src/app/api/[transport]/route.ts", "createMcpVideoJob("],
+  ["MCP create_video_job", "src/lib/mcp/video-budget.server.ts", "createVideoJobInTransaction("],
 ] as const) {
   const src = repoFile(path);
   check(`D (${label}): calls the ceiling preflight`, src.includes("managedAudioCeilingApplies("));

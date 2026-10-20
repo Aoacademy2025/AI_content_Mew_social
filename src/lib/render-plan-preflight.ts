@@ -177,7 +177,7 @@ export function aiAudioCeilingRefusal(
     message: ceiling.message ?? "ใช้เสียง AI (สร้างเสียง/ถอดเสียง) ครบเพดานรอบนี้แล้ว",
     // The editor toast renders `message` only, so the way out is appended there too;
     // `userAction` stays for structured consumers.
-    userAction: `${upgrade}เพื่อใช้เสียง AI ต่อ หรือรอรอบถัดไป — เรนเดอร์วิดีโอที่ทำไว้แล้วยังทำได้ตามปกติ`,
+    userAction: `${upgrade}หรือเติมเครดิต Hero เพื่อใช้เสียง AI ต่อ หรือรอรอบถัดไป — เรนเดอร์วิดีโอที่ทำไว้แล้วยังทำได้ตามปกติ`,
     plan,
     neededPlan,
   };

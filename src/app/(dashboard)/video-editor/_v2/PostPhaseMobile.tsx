@@ -346,6 +346,7 @@ export function PostPhaseMobile({
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
+          <a href="/content" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
@@ -568,7 +569,7 @@ export function PostPhaseMobile({
         <div className="flex items-center justify-between gap-2 px-3.5 pt-3">
           <span className="flex min-w-0 items-center gap-1.5">
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.success, flex: "none" }} />
-            <span style={{ fontSize: 12, color: color.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>เรนเดอร์เสร็จแล้ว · แก้ซับเห็นผลทันที</span>
+            <span style={{ fontSize: 12, color: color.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>พรีวิวพร้อมแต่ง · แต่งเสร็จกดส่งออกวิดีโอเพื่อบันทึกเข้า Gallery</span>
           </span>
           <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เริ่มโปรเจกต์ใหม่</button>
         </div>

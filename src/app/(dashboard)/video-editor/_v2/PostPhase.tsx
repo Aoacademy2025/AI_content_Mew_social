@@ -203,6 +203,7 @@ export function PostPhase({
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          <a href="/content" onClick={emitFirstClipViewed}><BtnSecondary>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
@@ -908,8 +909,8 @@ export function PostPhase({
       >
         <span className="flex items-center gap-2" style={{ fontSize: 12 }}>
           <CheckCircle2 size={14} color={color.success} />
-          <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
-          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
+          <span style={{ color: color.success }}>พรีวิวพร้อมแต่ง</span>
+          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที — แต่งเสร็จแล้วกด &ldquo;ส่งออกวิดีโอ&rdquo; เพื่อฝังซับความละเอียดเต็มและบันทึกเข้า Gallery</span>
         </span>
         {!ed.adjustingAvatar && (
           <div className="flex items-center gap-3">
