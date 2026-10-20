@@ -42,3 +42,84 @@ export function paidActivationCopy(plan: string): { title: string; body: string;
     emailSubject: "คลิปแรกของคุณยังรออยู่ — เริ่มได้ใน 5 นาที",
   };
 }
+
+// ─── HERO-81: Dormant payer classification & Month-2+ lapsed creator nudge ────
+
+export const LAPSED_PAYER_MIN_IDLE_DAYS = 21;
+export const LAPSED_PAYER_LINK = "/video-editor?source=lapsed_payer_d21";
+
+export type DormancyReason =
+  | "never_created"
+  | "preview_or_draft_30d"
+  | "lapsed_creator";
+
+export function classifyDormantPayer(input: {
+  jobsEver: number;
+  videosEver: number;
+  previewsDone30d: number;
+  projectsTouched30d: number;
+}): DormancyReason {
+  if (input.previewsDone30d > 0 || input.projectsTouched30d > 0) {
+    return "preview_or_draft_30d";
+  }
+  if (input.jobsEver <= 0 && input.videosEver <= 0) {
+    return "never_created";
+  }
+  return "lapsed_creator";
+}
+
+export type LapsedPayerDecision =
+  | { send: true; anchorDateKey: string }
+  | {
+      send: false;
+      reason:
+        | "internal"
+        | "suspended"
+        | "not_active_payer"
+        | "never_created"
+        | "active_in_editor_30d"
+        | "active_recently";
+    };
+
+export function lapsedPayerReminderDecision(input: {
+  isInternal: boolean;
+  suspended: boolean;
+  isActivePayer: boolean;
+  hasPriorActivity: boolean;
+  lastActivityAt: Date | null;
+  previewsDone30d: number;
+  projectsTouched30d: number;
+  now: Date;
+}): LapsedPayerDecision {
+  if (input.isInternal) return { send: false, reason: "internal" };
+  if (input.suspended) return { send: false, reason: "suspended" };
+  if (!input.isActivePayer) return { send: false, reason: "not_active_payer" };
+  if (!input.hasPriorActivity || !input.lastActivityAt) {
+    return { send: false, reason: "never_created" };
+  }
+  if (input.previewsDone30d > 0 || input.projectsTouched30d > 0) {
+    return { send: false, reason: "active_in_editor_30d" };
+  }
+  if (bangkokCalendarDaysBetween(input.lastActivityAt, input.now) < LAPSED_PAYER_MIN_IDLE_DAYS) {
+    return { send: false, reason: "active_recently" };
+  }
+  return {
+    send: true,
+    anchorDateKey: input.lastActivityAt.toISOString().slice(0, 10),
+  };
+}
+
+export function lapsedPayerCopy(plan: string): {
+  title: string;
+  body: string;
+  cta: string;
+  emailSubject: string;
+} {
+  const tier = plan === "BUSINESS" ? "BUSINESS" : "PRO";
+  return {
+    title: "โควตาสร้างคลิปของคุณพร้อมสำหรับคลิปถัดไปแล้ว",
+    body: `สิทธิ์แผน ${tier} ของคุณยังพร้อมใช้งานเต็มที่ — วางสคริปต์ใหม่ หรืออัปโหลดคลิปพูดของคุณ ระบบจัดเสียง ซับไทย และ B-roll AutoMix ให้อัตโนมัติใน 5 นาที`,
+    cta: "สร้างคลิปถัดไป",
+    emailSubject: `สิทธิ์แผน ${tier} ของคุณพร้อมอยู่ — มาสร้างคลิปถัดไปใน 5 นาที`,
+  };
+}
