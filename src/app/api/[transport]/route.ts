@@ -157,7 +157,7 @@ const handler = createMcpHandler(
       "prepare_video_job",
       {
         title: "Prepare video spending quote",
-        description: "ถามผู้ใช้ก่อนว่าจะใช้ stock, hero-ai-image, automix หรือ external แล้วประเมินวงเงินโดยไม่สร้างงานหรือหักเครดิต ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันใน Studio; agent ยืนยันแทนไม่ได้. คลิปพิธีกรต้องนำเข้าสำเร็จผ่าน create_upload_url(kind: presenter) และ PUT ก่อนส่ง clipUploadId",
+        description: "ประเมินวงเงินล่วงหน้าสำหรับ stock, hero-ai-image, automix หรือ external โดยยังไม่สร้างงานหรือหักเครดิต (ไม่บังคับเรียกก่อนหากต้องการสั่ง create_video_job ทันที). คลิปพิธีกรต้องนำเข้าสำเร็จผ่าน create_upload_url(kind: presenter) และ PUT ก่อนส่ง clipUploadId",
         inputSchema: prepareVideoJobInputShape,
       },
       async (args, extra) => runTool("prepare_video_job", extra, async (p) => prepareVideoQuote(p.user, args), { brollSource: args.brollSource, hasScript: Boolean(args.script), hasPresenter: Boolean(args.clipUrl || args.clipUploadId) }, { next: "ตรวจข้อมูลแล้วเรียก prepare_video_job ใหม่" }),
@@ -172,7 +172,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอจากงานที่เจ้าของบัญชีอนุมัติ: เรียก prepare_video_job โดยเลือก brollSource = stock | hero-ai-image | automix | external ส่ง confirmationUrl ให้เจ้าของบัญชียืนยันใน Studio แล้วเรียก create_video_job ด้วย quoteId เดิมเพื่อเริ่มงาน จากนั้น poll get_video_status. ไม่เริ่มงานหรือจองค่าใช้จ่ายก่อนอนุมัติ. คลิปพิธีกรต้องนำเข้าด้วย create_upload_url kind presenter และตรวจให้พร้อมก่อน prepare_video_job ด้วย clipUploadId; clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน. external ไม่ใช้เครดิตสร้างภาพ แต่ต้องนำเข้าสื่อให้ครบช่วงที่กำหนดก่อน export_video. แจ้ง warnings และเพดานค่าใช้จ่ายให้ผู้ใช้ทราบ.",
+        description: "สร้างวิดีโอและเริ่มเรนเดอร์ทันทีโดยไม่ต้องเปิดลิงก์ confirmationUrl บนเว็บเพื่อกดยืนยัน: ส่งพารามิเตอร์งานพร้อม brollSource = stock | hero-ai-image | automix | external ได้โดยตรง หรือเรียกหลังจาก prepare_video_job ด้วย quoteId เดิมเพื่อเริ่มงานทันที จากนั้น poll get_video_status. คลิปพิธีกรต้องนำเข้าด้วย create_upload_url kind presenter และตรวจให้พร้อมก่อนส่ง clipUploadId; clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน. external ไม่ใช้เครดิตสร้างภาพ แต่ต้องนำเข้าสื่อให้ครบช่วงที่กำหนดก่อน export_video. แจ้ง warnings และเพดานค่าใช้จ่ายให้ผู้ใช้ทราบ.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>

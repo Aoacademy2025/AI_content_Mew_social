@@ -25,6 +25,13 @@ function main() {
   );
   assert.strictEqual(
     isThirdPartyFrontendNoise({
+      message: "EmptyRanges",
+    }),
+    true,
+    "WebKit EmptyRanges DOM/media error must be noise",
+  );
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
       message: "boom",
       filenames: ["chrome-extension://abcdef/contentscript.js:1:1"],
     }),

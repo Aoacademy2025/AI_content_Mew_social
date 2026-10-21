@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { syncMinuteWindow } from "@/lib/minute-limits";
 import { resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
 import { createVideoJobInTransaction, VideoJobFundingError, withVideoJobSqliteRetry } from "./video-job";
+import { isReservedMcpChainIdempotencyKey } from "./chain-key";
 import { currentQuotePricing, normalizeQuoteInput, quoteAccountDefaultsRefusal, quoteHash, quoteExecutionRefusal, quoteFailure, type QuoteReceipt } from "./video-quote";
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import type { QuoteExecution } from "./video-quote.server";
@@ -30,11 +31,29 @@ function confirmationRequiredReply<T extends { quoteId: string; confirmationUrl:
 export async function consumeVideoQuote(userId: string, quoteId: string, changedInput?: PrepareVideoJobInput, _idempotencyKey?: string) {
   void _idempotencyKey; // Quote identity, not transport keys, owns execution idempotency.
   await syncMinuteWindow(userId);
+  const preQuote = await prisma.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
+  if (!preQuote) return quoteFailure("quote_not_found", "ไม่พบใบยืนยันนี้");
+  const preUser = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const preRefusal = quoteExecutionRefusal(preQuote, userId, changedInput, currentQuotePricing(), new Date(), preUser);
+  if (preRefusal) return preRefusal;
+  if (preQuote.status === "consumed" && preQuote.rootJobId) {
+    const root = await prisma.videoJob.findFirst({ where: { id: preQuote.rootJobId, userId }, select: { status: true, projectId: true } });
+    return root
+      ? {
+          jobId: preQuote.rootJobId,
+          status: root.status,
+          replayed: true,
+          ...(root.projectId ? { projectId: root.projectId, editorUrl: `/video-editor?projectId=${root.projectId}` } : {}),
+        }
+      : quoteFailure("quote_job_unavailable", "ไม่พบงานเดิม กรุณาติดต่อฝ่ายช่วยเหลือ");
+  }
   try {
     return await withVideoJobSqliteRetry("consume quote", () => prisma.$transaction(async tx => {
-      const quote = await tx.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } });
+      const [quote, user] = await Promise.all([
+        tx.mcpVideoQuote.findFirst({ where: { id: quoteId, userId } }),
+        tx.user.findUniqueOrThrow({ where: { id: userId } }),
+      ]);
       if (!quote) return quoteFailure("quote_not_found", "ไม่พบใบยืนยันนี้");
-      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
       const refusal = quoteExecutionRefusal(quote, userId, changedInput, currentQuotePricing(), new Date(), user);
       if (refusal) return refusal;
       if (quote.status === "consumed" && quote.rootJobId) {
@@ -55,8 +74,10 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
         const access = await resolveHeroAiImageAccess(user, tx);
         if (!access.canUse) return quoteFailure("image_access_required", "สิทธิ์สร้างภาพเปลี่ยนไป กรุณาตรวจใบยืนยันใหม่");
       }
-      const wallet = await tx.creditBalance.findUnique({ where: { userId } });
-      const promotional = await tx.promotionalCreditGrant.aggregate({ where: { userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } });
+      const [wallet, promotional] = await Promise.all([
+        tx.creditBalance.findUnique({ where: { userId } }),
+        tx.promotionalCreditGrant.aggregate({ where: { userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } }),
+      ]);
       const totalAvailableCredits = (wallet?.granted ?? 0) + (wallet?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0);
       if (totalAvailableCredits < quote.totalHeroCreditCeiling) return quoteFailure("insufficient_funding", "เครดิตปัจจุบันไม่เพียงพอกับวงเงินที่ยืนยัน");
       const receipt = JSON.parse(quote.receiptJson) as QuoteReceipt;
@@ -126,11 +147,29 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
   }
 }
 
-/** Public create gate: no preflight, generation or reservation until human approval. */
+/** Public create entrypoint: auto-approves initial MCP video quotes and starts the job immediately
+ * without requiring browser click confirmation, while preserving server-side budget ceilings,
+ * deduplication (30m quote TTL), and mid-job overrun holds (`parentQuoteId !== null`). */
 export async function requestVideoJob(user: import("@prisma/client").User, args: import("./create-video-input").CreateVideoJobInput) {
+  if (isReservedMcpChainIdempotencyKey(args.idempotencyKey)) {
+    return quoteFailure("invalid_input", "idempotencyKey นี้สงวนไว้สำหรับระบบภายใน");
+  }
   if (args.quoteId) {
     const { quoteId, idempotencyKey, ...work } = args;
-    return consumeVideoQuote(user.id, quoteId, Object.keys(work).length ? work : undefined, idempotencyKey);
+    const hasWork = Object.keys(work).length > 0;
+    const existing = await prisma.mcpVideoQuote.findFirst({
+      where: { id: quoteId, userId: user.id },
+      select: { status: true, parentQuoteId: true, inputHash: true },
+    });
+    if (existing && existing.status === "draft" && !existing.parentQuoteId) {
+      const workParsed = hasWork ? prepareVideoJobInputSchema.safeParse(work) : null;
+      const inputMatches = !hasWork || (workParsed?.success && quoteHash(normalizeQuoteInput(workParsed.data)) === existing.inputHash);
+      if (inputMatches) {
+        const { decideVideoQuote } = await import("./video-quote.server");
+        await decideVideoQuote(user.id, quoteId, "approve");
+      }
+    }
+    return consumeVideoQuote(user.id, quoteId, hasWork ? work : undefined, idempotencyKey);
   }
   const parsed = prepareVideoJobInputSchema.safeParse(args);
   if (parsed.success && !parsed.data.resumeJobId) {
@@ -151,10 +190,6 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
       take: 5,
     });
     const valid = candidates.filter((row) => !quoteAccountDefaultsRefusal(row, user));
-    const approvedRow = valid.find((row) => row.status === "approved");
-    if (approvedRow) {
-      return consumeVideoQuote(user.id, approvedRow.id, undefined, args.idempotencyKey);
-    }
     const consumedRow = valid.find((row) => row.status === "consumed" && row.rootJobId);
     if (consumedRow?.rootJobId) {
       const rootJob = await prisma.videoJob.findFirst({
@@ -165,14 +200,25 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
         return consumeVideoQuote(user.id, consumedRow.id, undefined, args.idempotencyKey);
       }
     }
+    const approvedRow = valid.find((row) => row.status === "approved");
+    if (approvedRow) {
+      return consumeVideoQuote(user.id, approvedRow.id, undefined, args.idempotencyKey);
+    }
     const existingDraft = valid.find((row) => row.status === "draft");
     if (existingDraft) {
-      const { getVideoQuote } = await import("./video-quote.server");
-      const existingView = await getVideoQuote(user.id, existingDraft.id);
-      if ("quoteId" in existingView) return confirmationRequiredReply(existingView);
+      const { decideVideoQuote } = await import("./video-quote.server");
+      const decided = await decideVideoQuote(user.id, existingDraft.id, "approve");
+      if (!("quoteId" in decided)) return decided;
+      return consumeVideoQuote(user.id, existingDraft.id, undefined, args.idempotencyKey);
     }
   }
-  const { prepareVideoQuote } = await import("./video-quote.server");
+  const { prepareVideoQuote, decideVideoQuote } = await import("./video-quote.server");
   const prepared = await prepareVideoQuote(user, args);
-  return "quoteId" in prepared ? confirmationRequiredReply(prepared) : prepared;
+  if (!("quoteId" in prepared)) return prepared;
+  if (parsed.success && parsed.data.resumeJobId) {
+    return confirmationRequiredReply(prepared);
+  }
+  const decided = await decideVideoQuote(user.id, prepared.quoteId, "approve");
+  if (!("quoteId" in decided)) return decided;
+  return consumeVideoQuote(user.id, prepared.quoteId, undefined, args.idempotencyKey);
 }

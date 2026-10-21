@@ -299,6 +299,7 @@ async function main() {
   }
   async function approvedCreate(who: { user: { id: string }; token: string }, args: Json) {
     const prepared = await callTool(who.token, "create_video_job", args);
+    if (typeof prepared.jobId === "string") return prepared;
     if (prepared.error !== "confirmation_required" || typeof prepared.quoteId !== "string") throw new Error(`fixture quote: ${JSON.stringify(prepared)}`);
     const { decideVideoQuote } = fromSrc("lib/mcp/video-quote.server") as typeof import("../src/lib/mcp/video-quote.server");
     await decideVideoQuote(who.user.id, prepared.quoteId, "approve");
@@ -388,9 +389,9 @@ async function main() {
     const jobsBefore = await prisma.videoJob.count({ where: { userId: outsider.user.id } });
     const projectsBefore = await prisma.editorProject.count({ where: { userId: outsider.user.id } });
     for (const exportMode of ["hold", "auto"]) {
-      const reply = await callTool(outsider.token, "create_video_job", { script: SCRIPT, exportMode });
-      check(`exportMode:"${exportMode}" from a non-beta account → confirmation_required`,
-        reply.error === "confirmation_required" && typeof reply.quoteId === "string", JSON.stringify(reply));
+      const reply = await callTool(outsider.token, "create_video_job", { script: SCRIPT, exportMode, idempotencyKey: `mcp-chain:forged-${exportMode}` });
+      check(`reserved key with exportMode:"${exportMode}" → invalid_input refusal`,
+        reply.error === "invalid_input" && reply.code === "invalid_input", JSON.stringify(reply));
     }
     check("the refused creates wrote no job and no project",
       await prisma.videoJob.count({ where: { userId: outsider.user.id } }) === jobsBefore
@@ -398,7 +399,7 @@ async function main() {
     const audit = await prisma.toolCallAudit.findFirst({
       where: { userId: outsider.user.id, toolName: "create_video_job" }, orderBy: { createdAt: "desc" },
     });
-    check("the approval requirement is audited as an in-band error", audit?.status === "error", JSON.stringify(audit));
+    check("the refusal is audited as an in-band error", audit?.status === "error", JSON.stringify(audit));
   });
 
   // ── C ──

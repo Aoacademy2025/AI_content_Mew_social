@@ -8,7 +8,7 @@
  */
 
 export const FOREIGN_BROWSER_API =
-  /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers)/i;
+  /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers|\bEmptyRanges\b)/i;
 
 // Ops batch 2026-10-12 (HERO-STUDIO-WEB-14, 1,563 events since 09-25): `app:///scripts/` was
 // the only triple-slash path treated as injected, so a stack with ONLY `app:///executors/
