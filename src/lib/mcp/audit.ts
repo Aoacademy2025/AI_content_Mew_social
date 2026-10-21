@@ -88,6 +88,17 @@ export function sanitizeUserAgent(raw: string | null | undefined): string | null
   return Array.from(cleaned).slice(0, MAX_USER_AGENT_LEN).join("");
 }
 
+const THROTTLED_POLL_TOOLS = new Set(["get_video_status", "get_video_quote", "get_edit_state"]);
+const POLL_AUDIT_THROTTLE_MS = 60_000;
+const AUDIT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const recentPollAuditByKey = new Map<string, number>();
+let auditWriteCounter = 0;
+
+export function resetToolCallAuditThrottleForTests(): void {
+  recentPollAuditByKey.clear();
+  auditWriteCounter = 0;
+}
+
 export async function recordToolCall(entry: {
   userId?: string | null;
   toolName: string;
@@ -99,17 +110,42 @@ export async function recordToolCall(entry: {
   userAgent?: string | null;
 }): Promise<void> {
   try {
+    const redactedRequest = entry.requestJson ? JSON.stringify(redactRequest(entry.requestJson)).slice(0, 4000) : null;
+    if (THROTTLED_POLL_TOOLS.has(entry.toolName)) {
+      const key = `${entry.userId ?? "anon"}:${entry.toolName}:${redactedRequest ?? ""}`;
+      const now = Date.now();
+      if (entry.status === "ok") {
+        const lastAt = recentPollAuditByKey.get(key);
+        if (lastAt !== undefined && now - lastAt < POLL_AUDIT_THROTTLE_MS) {
+          return;
+        }
+        if (recentPollAuditByKey.size > 2000) {
+          for (const [k, ts] of recentPollAuditByKey) {
+            if (now - ts >= POLL_AUDIT_THROTTLE_MS) recentPollAuditByKey.delete(k);
+          }
+        }
+        recentPollAuditByKey.set(key, now);
+      } else {
+        recentPollAuditByKey.delete(key);
+      }
+    }
     await prisma.toolCallAudit.create({
       data: {
         userId: entry.userId ?? null,
         toolName: entry.toolName,
         status: entry.status,
         durationMs: entry.durationMs ?? null,
-        requestJson: entry.requestJson ? JSON.stringify(redactRequest(entry.requestJson)).slice(0, 4000) : null,
+        requestJson: redactedRequest,
         responseJson: entry.responseJson ? JSON.stringify(entry.responseJson).slice(0, 500) : null,
         userAgent: sanitizeUserAgent(entry.userAgent),
       },
     });
+    auditWriteCounter += 1;
+    if (auditWriteCounter >= 500) {
+      auditWriteCounter = 0;
+      const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS);
+      void prisma.toolCallAudit.deleteMany({ where: { createdAt: { lt: cutoff } } }).catch(() => {});
+    }
   } catch {
     // audit must never break a tool call
   }

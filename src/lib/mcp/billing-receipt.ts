@@ -153,7 +153,11 @@ export async function getVideoJobCostReceipt(input: {
     : await prisma.videoJob.findFirst({ where: { id: input.videoJobId, userId: input.userId } });
   if (!requested) return null;
   const requestedInput = storedObject(requested.inputJson);
-  const quote = requested.budgetQuoteId
+  const mayBeChildJob =
+    requested.type === "export" ||
+    typeof requestedInput.mcpRootJobId === "string" ||
+    typeof requestedInput.sourceJobId === "string";
+  const quote = requested.budgetQuoteId && mayBeChildJob
     ? await prisma.mcpVideoQuote.findFirst({ where: { id: requested.budgetQuoteId, userId: input.userId, status: "consumed" } })
     : null;
   const hintedRoot = quote?.rootJobId ?? requestedInput.mcpRootJobId ??
@@ -197,11 +201,17 @@ export async function getVideoJobCostReceipt(input: {
     prisma.creditBalance.findUnique({ where: { userId: input.userId } }),
     prisma.promotionalCreditGrant.aggregate({ where: { userId: input.userId, expiresAt: { gt: new Date() }, remainingAmount: { gt: 0 } }, _sum: { remainingAmount: true } }),
   ]);
-  const refundActions = [
-    ...images.flatMap(image => [{ action: `ai-image-refund:${image.id}` }, { action: { startsWith: `ai-image-output-refund:${image.id}:` } }, { action: { startsWith: `ai-image-batch-refund:${image.id}:` } }]),
-    ...jobs.flatMap(job => [{ action: { startsWith: `video-job-refund:${job.id}:` } }, { action: `video-job-trim:${job.id}` }]),
-    ...renders.flatMap(render => [{ action: { startsWith: `render-refund:${render.id}:` } }, { action: `queue-for job ${render.id}` }, { action: `queue-superseding QUEUED job ${render.id}` }]),
-  ];
+  const needsRefundLookup =
+    images.length > 0 ||
+    renders.length > 0 ||
+    jobs.some(job => job.fundingState === "refunded" || job.reservationRefundPending || (job.fundedCreditsSpent ?? 0) > 0);
+  const refundActions = needsRefundLookup
+    ? [
+        ...images.flatMap(image => [{ action: `ai-image-refund:${image.id}` }, { action: { startsWith: `ai-image-output-refund:${image.id}:` } }, { action: { startsWith: `ai-image-batch-refund:${image.id}:` } }]),
+        ...jobs.flatMap(job => [{ action: { startsWith: `video-job-refund:${job.id}:` } }, { action: `video-job-trim:${job.id}` }]),
+        ...renders.flatMap(render => [{ action: { startsWith: `render-refund:${render.id}:` } }, { action: `queue-for job ${render.id}` }, { action: `queue-superseding QUEUED job ${render.id}` }]),
+      ]
+    : [];
   const refunds = refundActions.length
     ? await prisma.creditLedger.findMany({ where: { userId: input.userId, kind: "refund", delta: { gt: 0 }, OR: refundActions }, select: { action: true, delta: true } })
     : [];
