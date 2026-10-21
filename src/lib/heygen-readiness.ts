@@ -70,14 +70,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function quotaFrom(body: unknown): number | null {
   if (!isRecord(body)) return null;
   const data = isRecord(body.data) ? body.data : null;
-  const raw = data?.remaining_quota ?? body.remaining_quota;
+  const raw =
+    data?.remaining_quota
+    ?? data?.remaining_balance
+    ?? data?.balance
+    ?? data?.credit_balance
+    ?? data?.credits
+    ?? body.remaining_quota
+    ?? body.remaining_balance
+    ?? body.balance;
   const value = typeof raw === "number" || typeof raw === "string" ? Number(raw) : Number.NaN;
   return Number.isFinite(value) ? value : null;
 }
 
 export const heygenHttpQuotaPort: HeygenQuotaPort = {
   async getRemainingQuota({ apiKey, timeoutMs }) {
-    const response = await fetch("https://api.heygen.com/v2/user/remaining_quota", {
+    const response = await fetch("https://api.heygen.com/v3/users/me", {
       headers: { "X-Api-Key": apiKey, Accept: "application/json" },
       signal: AbortSignal.timeout(timeoutMs),
     });

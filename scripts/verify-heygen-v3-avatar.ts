@@ -55,6 +55,11 @@ assert.equal(buildHeyGenV3VideoRequest({
   engine: "avatar_iv",
   audioAssetId: "asset-iv",
 }).engine.type, "avatar_iv", "Avatar IV is explicit rather than relying on the provider default");
+assert.equal(buildHeyGenV3VideoRequest({
+  avatarId: "look-private-iii",
+  engine: "avatar_iii",
+  audioAssetId: "asset-iii",
+}).engine.type, "avatar_iii", "Avatar III is explicit on v3 /v3/videos");
 
 assert.equal(validateHeyGenV3Audio({ durationMs: 600_000, sizeBytes: 32 * 1024 * 1024 }), null);
 assert.equal(

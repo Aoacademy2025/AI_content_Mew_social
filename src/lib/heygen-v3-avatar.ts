@@ -9,7 +9,7 @@ const TOO_LONG_MESSAGE =
 const TOO_LARGE_MESSAGE =
   "ไฟล์เสียงสำหรับ Avatar ใหญ่เกินขนาดที่ HeyGen รองรับ กรุณาใช้ไฟล์เสียงที่เล็กลง";
 
-type V3Engine = Exclude<HeyGenAvatarEngine, "avatar_iii">;
+type V3Engine = HeyGenAvatarEngine;
 
 export function parseFfmpegDurationMs(stderr: string): number | null {
   const match = stderr.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
@@ -120,7 +120,12 @@ export async function uploadHeyGenV3Audio(input: {
     throw new HeyGenV3RequestError("upload", 503);
   }
   const uploadBody: unknown = await upload.json().catch(() => null);
-  const assetId = record(record(uploadBody)?.data)?.asset_id;
+  const dataRecord = record(record(uploadBody)?.data);
+  const assetId = typeof dataRecord?.asset_id === "string" && dataRecord.asset_id
+    ? dataRecord.asset_id
+    : typeof dataRecord?.id === "string" && dataRecord.id
+      ? dataRecord.id
+      : undefined;
   if (!upload.ok || typeof assetId !== "string" || !assetId) {
     throw new HeyGenV3RequestError("upload", upload.status, providerCode(uploadBody));
   }

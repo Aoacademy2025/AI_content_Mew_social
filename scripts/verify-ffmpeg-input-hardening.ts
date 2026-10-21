@@ -335,10 +335,28 @@ async function installMocks(): Promise<Array<{ restore: () => void }>> {
     namedExports: {
       ...fetchBudget,
       fetchWithBudget: async (url: string, init?: RequestInit) => {
-        if (url.startsWith("https://upload.heygen.com/")) {
-          const body = init?.body as Uint8Array | undefined;
-          state.heygenUploads.push({ url, bytes: body ? sha(Buffer.from(body)) : "" });
-          return Response.json({ data: { id: `asset-${state.heygenUploads.length}`, url: "https://files.heygen.test/a.mp4" } });
+        if (url.startsWith("https://upload.heygen.com/") || url === "https://api.heygen.com/v3/assets") {
+          const rawBody = init?.body;
+          let bytes = "";
+          if (rawBody instanceof FormData) {
+            const file = rawBody.get("file");
+            if (file instanceof Blob) {
+              bytes = sha(Buffer.from(await file.arrayBuffer()));
+            }
+          } else if (rawBody) {
+            bytes = sha(Buffer.from(rawBody as Uint8Array));
+          }
+          state.heygenUploads.push({ url, bytes });
+          return Response.json({
+            data: {
+              id: `asset-${state.heygenUploads.length}`,
+              asset_id: `asset-${state.heygenUploads.length}`,
+              url: "https://files.heygen.test/a.mp4",
+            },
+          });
+        }
+        if (url === "https://api.heygen.com/v3/videos") {
+          return Response.json({ data: { video_id: "video-v3-test" } });
         }
         throw new Error("provider call not expected in this test");
       },

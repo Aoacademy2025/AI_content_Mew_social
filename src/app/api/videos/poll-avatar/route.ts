@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import { mapHeygenPollResponse, mapHeygenV3PollResponse } from "@/lib/heygen-poll";
+import { mapHeygenV3PollResponse } from "@/lib/heygen-poll";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { decryptKey } from "@/lib/key-crypto";
 
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const videoId: string = body?.videoId ?? "";
     if (!videoId) return NextResponse.json({ error: "videoId required" }, { status: 400 });
-    const apiVersion = body?.apiVersion === "v3" ? "v3" : "v2";
+    const apiVersion = "v3" as const;
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
@@ -46,9 +46,7 @@ export async function POST(req: Request) {
     let retryAfterHeader: string | null = null;
     try {
       const res = await fetchWithBudget(
-        apiVersion === "v3"
-          ? `https://api.heygen.com/v3/videos/${encodeURIComponent(videoId)}`
-          : `https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(videoId)}`,
+        `https://api.heygen.com/v3/videos/${encodeURIComponent(videoId)}`,
         { headers: { "X-Api-Key": heygenKey } },
         { provider: "heygen", timeoutMs: 15_000, retries: 1, wallClockMs: 25_000, returnHttpErrors: true },
       );
@@ -68,9 +66,7 @@ export async function POST(req: Request) {
       console.warn("[poll-avatar] transient HeyGen failure:", e instanceof Error ? e.message : e);
     }
 
-    const payload = apiVersion === "v3"
-      ? mapHeygenV3PollResponse({ httpStatus, body: heygenBody, retryAfterHeader })
-      : mapHeygenPollResponse({ httpStatus, body: heygenBody, retryAfterHeader });
+    const payload = mapHeygenV3PollResponse({ httpStatus, body: heygenBody, retryAfterHeader });
     if (payload.status === "failed") {
       console.warn(`[poll-avatar] terminal api=${apiVersion} http=${httpStatus} code=${payload.error?.code ?? "provider"}`);
     }
