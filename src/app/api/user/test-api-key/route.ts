@@ -44,8 +44,8 @@ export async function POST(req: Request) {
 
 async function testHeyGen(apiKey: string): Promise<boolean> {
   try {
-    // HeyGen API test endpoint (adjust based on actual API)
-    const response = await fetch("https://api.heygen.com/v1/avatars", {
+    // HeyGen API v3 test endpoint
+    const response = await fetch("https://api.heygen.com/v3/avatars/looks?ownership=private&limit=1", {
       headers: {
         "X-Api-Key": apiKey,
       },

@@ -88,7 +88,7 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
 
 async function testHeyGen(key: string): Promise<{ ok: boolean; message: string }> {
   try {
-    const res = await fetch("https://api.heygen.com/v2/avatars?limit=1", { headers: { "X-Api-Key": key } });
+    const res = await fetch("https://api.heygen.com/v3/avatars/looks?ownership=private&limit=1", { headers: { "X-Api-Key": key } });
     if (res.ok) return { ok: true, message: "HeyGen key ใช้งานได้" };
     if (res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ" };
     return { ok: false, message: `Error ${res.status}` };

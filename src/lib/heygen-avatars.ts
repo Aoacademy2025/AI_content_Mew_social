@@ -35,7 +35,7 @@ export const HEYGEN_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 // the worst-case spinner; the client shows a "first load ~1 min" hint + retry button.
 const MAX_ATTEMPTS = 2;
 const PER_ATTEMPT_TIMEOUT_MS = 90_000;
-const HEYGEN_AVATARS_URL = "https://api.heygen.com/v2/avatars";
+const HEYGEN_AVATARS_URL = "https://api.heygen.com/v3/avatars/looks?ownership=private&limit=50";
 
 // ── Single-avatar lookup (preview/verify by ID) ─────────────────────────────
 // Fetch ONE avatar's details (~0.8s) instead of the whole /v2/avatars list (which is
@@ -73,6 +73,7 @@ export async function getHeyGenAvatarDetails(
   const urls = [
     `https://api.heygen.com/v2/avatar/${id}/details`,
     `https://api.heygen.com/v2/photo_avatar/${id}`,
+    `https://api.heygen.com/v3/avatars/looks/${id}`,
   ];
   for (const url of urls) {
     const r = await fetcher(url, heygenKey);
@@ -110,6 +111,17 @@ async function fetchAvatarListFromHeyGen(heygenKey: string): Promise<HeyGenAvata
       if (res.status === 401 || res.status === 403) throw new HeyGenAuthError(res.status);
       if (!res.ok) throw new Error(`HeyGen API error ${res.status}`);
       const data: any = await res.json();
+      if (Array.isArray(data?.data)) {
+        const avatars = data.data.map((item: any) => ({
+          avatar_id: item?.avatar_id ?? item?.id ?? "",
+          avatar_name: item?.avatar_name ?? item?.name ?? "Avatar",
+          preview_image_url: item?.preview_image_url ?? "",
+          preview_video_url: item?.preview_video_url ?? "",
+          gender: item?.gender ?? "unknown",
+          is_public: Boolean(item?.is_public),
+        })).filter((item: any) => Boolean(item.avatar_id));
+        return { avatars, talkingPhotos: [] };
+      }
       return { avatars: data?.data?.avatars ?? [], talkingPhotos: data?.data?.talking_photos ?? [] };
     } catch (err) {
       if (err instanceof HeyGenAuthError) throw err; // auth failures: don't retry
