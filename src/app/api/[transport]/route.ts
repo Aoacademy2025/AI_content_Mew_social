@@ -172,7 +172,7 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอและเริ่มเรนเดอร์ทันทีโดยไม่ต้องเปิดเว็บกดยืนยัน: ส่งพารามิเตอร์งานพร้อม brollSource = stock | hero-ai-image | automix | external ได้โดยตรง หรือเรียกหลังจาก prepare_video_job ด้วย quoteId เดิมเพื่อเริ่มงานทันที จากนั้น poll get_video_status. คลิปพิธีกรต้องนำเข้าด้วย create_upload_url kind presenter และตรวจให้พร้อมก่อนส่ง clipUploadId; clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน. external ไม่ใช้เครดิตสร้างภาพ แต่ต้องนำเข้าสื่อให้ครบช่วงที่กำหนดก่อน export_video. แจ้ง warnings และเพดานค่าใช้จ่ายให้ผู้ใช้ทราบ.",
+        description: "สร้างวิดีโอและเริ่มเรนเดอร์ทันทีโดยไม่ต้องเปิดลิงก์ confirmationUrl บนเว็บเพื่อกดยืนยัน: ส่งพารามิเตอร์งานพร้อม brollSource = stock | hero-ai-image | automix | external ได้โดยตรง หรือเรียกหลังจาก prepare_video_job ด้วย quoteId เดิมเพื่อเริ่มงานทันที จากนั้น poll get_video_status. คลิปพิธีกรต้องนำเข้าด้วย create_upload_url kind presenter และตรวจให้พร้อมก่อนส่ง clipUploadId; clipUrl ต้องผ่านการนำเข้าและตรวจสอบก่อนเสนอวงเงิน. external ไม่ใช้เครดิตสร้างภาพ แต่ต้องนำเข้าสื่อให้ครบช่วงที่กำหนดก่อน export_video. แจ้ง warnings และเพดานค่าใช้จ่ายให้ผู้ใช้ทราบ.",
         inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
