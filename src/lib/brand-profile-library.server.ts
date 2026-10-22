@@ -727,6 +727,82 @@ export async function resolveBrandProfileRevisionForNewProjectInTransaction(
   return { revisionId: revision.id, payload: parsedStoredPayload(revision.payloadJson) };
 }
 
+/**
+ * Read-only fast path for resolving a Brand Profile's active immutable Revision
+ * on Hero Script generation routes (`/api/scripts/*`).
+ *
+ * Like `getBrandProfileAvailabilityState`, the steady state (published profiles
+ * within the user's plan cap and none frozen) needs no database writes, so we
+ * answer it from plain reads without acquiring SQLite's single writer lock
+ * (`BEGIN IMMEDIATE`) on every script/hook/idea/regen request (HERO-10).
+ *
+ * When reconciliation is actually needed (a plan downgrade over cap, or a
+ * frozen profile that an upgrade should thaw), it falls back to the
+ * transactional path wrapped in `withTransientDbRetry`.
+ */
+export async function resolveBrandProfileRevisionForRead(input: {
+  userId: string;
+  profileId: string;
+}): Promise<{ revisionId: string; payload: BrandProfilePayload } | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { plan: true },
+  });
+  if (!user) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบบัญชีนี้");
+  const profiles = await prisma.brandProfile.findMany({
+    where: activeBrandProfileWhere(input.userId),
+    orderBy: ACTIVE_BRAND_PROFILE_ORDER,
+    select: { id: true, activeRevisionNumber: true, frozenAt: true },
+  });
+  const cap = limitsForPlan(user.plan).brandProfiles;
+  const withinCap = !Number.isFinite(cap) || profiles.length <= cap;
+  if (withinCap && !profiles.some((profile) => profile.frozenAt)) {
+    const profile = profiles.find((candidate) => candidate.id === input.profileId);
+    if (!profile) {
+      const row = await prisma.brandProfile.findFirst({
+        where: { id: input.profileId, userId: input.userId, archivedAt: null },
+        select: { id: true, activeRevisionNumber: true },
+      });
+      if (!row) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบแบรนด์นี้");
+      if (row.activeRevisionNumber <= 0) return null;
+      // Concurrent publish between findMany and findFirst: fall through to the
+      // transactional reconciliation path so cap & freeze state stay exact.
+    } else {
+      const revision = await prisma.brandProfileRevision.findUnique({
+        where: {
+          brandProfileId_version: {
+            brandProfileId: profile.id,
+            version: profile.activeRevisionNumber,
+          },
+        },
+        select: { id: true, payloadJson: true, visualRecipeJson: true },
+      });
+      if (!revision) {
+        throw new BrandProfileLibraryError("NO_REVISION", "แบรนด์นี้ยังไม่มีเวอร์ชันที่ใช้งานได้");
+      }
+      const visualRecipe = parseRevision(revision.visualRecipeJson);
+      if (!visualRecipe) {
+        throw new BrandProfileLibraryError("NO_REVISION", "ข้อมูลแนวภาพของแบรนด์นี้อ่านไม่ได้");
+      }
+      if (!isActiveVisualFormatId(visualRecipe.visualFormatId)) {
+        throw new BrandProfileLibraryError(
+          "FROZEN",
+          "แบรนด์นี้ใช้รูปแบบภาพรุ่นเดิมและใช้ได้เฉพาะโปรเจกต์ที่ยึดไว้แล้ว",
+        );
+      }
+      return { revisionId: revision.id, payload: parsedStoredPayload(revision.payloadJson) };
+    }
+  }
+
+  return withTransientDbRetry(
+    () =>
+      prisma.$transaction((tx) =>
+        resolveBrandProfileRevisionForNewProjectInTransaction(tx, input),
+      ),
+    { label: "resolveBrandProfileRevisionForRead" },
+  );
+}
+
 export type McpActiveBrandProfileSummary = { brandProfileId: string; name: string };
 
 /** "Active" for the MCP subtitle-style read (T4): published (revision > 0), not

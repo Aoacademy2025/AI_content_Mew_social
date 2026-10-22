@@ -1882,10 +1882,63 @@ async function main() {
         "versioned Hero Script reads CTA style from the immutable active Revision");
     }
 
-    // The preliminary read must not become authorization for published work.
-    // Mutate the row immediately before Prisma starts the real transaction.
+    // HERO-10: Steady-state published profiles (within plan cap, not frozen)
+    // must resolve from plain reads without opening an interactive SQLite
+    // write transaction ($transaction -> BEGIN IMMEDIATE).
+    {
+      const originalTransaction = prisma.$transaction;
+      let txCalls = 0;
+      try {
+        prisma.$transaction = (async () => {
+          txCalls += 1;
+          const err = Object.assign(
+            new Error("A commit cannot be executed on an expired transaction"),
+            { code: "P2028" },
+          );
+          throw err;
+        }) as unknown as typeof prisma.$transaction;
+        const steadyResolved = await resolveHeroScriptBrandProfile("hs4-pro", handoffBrand.profile.id);
+        ok(
+          steadyResolved.ok && txCalls === 0 && steadyResolved.profile.tone === "คม ชัด และอบอุ่น",
+          "versioned Hero Script steady-state read skips prisma.$transaction (HERO-10)",
+        );
+      } finally {
+        prisma.$transaction = originalTransaction;
+      }
+    }
+
+    // The preliminary read must not become authorization for published work:
+    // 1) In the steady-state read path, if the row is archived or transferred
+    //    after the opening snapshot read (before findMany), it returns NOT_FOUND.
+    for (const change of [{ archivedAt: new Date() }, { userId: "hs4-free" }]) {
+      const originalFindMany = prisma.brandProfile.findMany;
+      try {
+        prisma.brandProfile.findMany = new Proxy(originalFindMany, {
+          async apply(target, thisArg, args) {
+            await prisma.brandProfile.update({ where: { id: handoffBrand.profile.id }, data: change });
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        const changed = await resolveHeroScriptBrandProfile("hs4-pro", handoffBrand.profile.id);
+        ok(!changed.ok && changed.code === "NOT_FOUND",
+          `versioned Hero Script steady-state read rechecks ${"archivedAt" in change ? "archive state" : "ownership"}`);
+      } finally {
+        prisma.brandProfile.findMany = originalFindMany;
+        await prisma.brandProfile.update({
+          where: { id: handoffBrand.profile.id }, data: { userId: "hs4-pro", archivedAt: null },
+        });
+      }
+    }
+
+    // 2) When reconciliation IS needed (e.g. a frozen profile on PRO that needs
+    //    thawing inside $transaction), mutating the row right before Prisma
+    //    starts the real transaction still returns NOT_FOUND.
     for (const change of [{ archivedAt: new Date() }, { userId: "hs4-free" }]) {
       const originalTransaction = prisma.$transaction;
+      await prisma.brandProfile.update({
+        where: { id: handoffBrand.profile.id },
+        data: { frozenAt: new Date() },
+      });
       try {
         prisma.$transaction = new Proxy(originalTransaction, {
           async apply(target, thisArg, args) {
@@ -1899,7 +1952,8 @@ async function main() {
       } finally {
         prisma.$transaction = originalTransaction;
         await prisma.brandProfile.update({
-          where: { id: handoffBrand.profile.id }, data: { userId: "hs4-pro", archivedAt: null },
+          where: { id: handoffBrand.profile.id },
+          data: { userId: "hs4-pro", archivedAt: null, frozenAt: null },
         });
       }
     }
