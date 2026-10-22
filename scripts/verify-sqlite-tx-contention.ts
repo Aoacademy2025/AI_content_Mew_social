@@ -88,6 +88,7 @@ async function runChild(): Promise<void> {
 
   const { prisma } = await import("../src/lib/prisma");
   const imports = await import("../src/lib/media-import/imports");
+  const { recordTelemetryBatch } = await import("../src/lib/telemetry");
   await prisma.$queryRawUnsafe("PRAGMA journal_mode=WAL");
   await prisma.user.create({ data: { id: "burst-user", name: "burst", email: "burst@example.invalid" } });
   for (let i = 0; i < MIXED_PLAIN_WRITES; i += 1) {
@@ -199,6 +200,21 @@ async function runChild(): Promise<void> {
     queue.batch = await timed(() => prisma.$transaction([prisma.user.update(bump("plain-0"))]));
     await holderE;
     queue.batchLines = [...slowTxLines];
+
+    // (f) recordTelemetryBatch (POST /api/telemetry) uses createMany, which Prisma wraps in
+    // BEGIN IMMEDIATE ... COMMIT. It must also queue in TransactionQueue behind an active
+    // interactive transaction instead of racing inside the query engine (HERO-10).
+    slowTxLines.length = 0;
+    const holderF = prisma.$transaction(async (tx) => {
+      await tx.user.update(bump());
+      await sleep(400);
+    });
+    await sleep(30);
+    queue.telemetryBatch = await timed(() =>
+      recordTelemetryBatch("burst-user", [{ name: "click_action", category: "product", source: "client" }]),
+    );
+    await holderF;
+    queue.telemetryBatchLines = [...slowTxLines];
     report.queue = queue;
   }
 
@@ -354,6 +370,13 @@ async function main(): Promise<void> {
     "batch transactions queue behind an interactive one (kind=batch ahead=1)",
     batch?.ok === true && batch.ms >= 300 && Number(batchLine?.[4]) === 1,
     JSON.stringify({ batch, lines: q.batchLines }),
+  );
+  const telemetryBatch = q.telemetryBatch as CallResult | undefined;
+  const telemetryBatchLine = ((q.telemetryBatchLines as string[] | undefined) ?? []).map((line) => line.match(SLOW_LINE)).find((m) => m?.[2] === "batch");
+  check(
+    "recordTelemetryBatch queues behind an interactive transaction (kind=batch ahead=1, HERO-10)",
+    telemetryBatch?.ok === true && telemetryBatch.ms >= 300 && Number(telemetryBatchLine?.[4]) === 1,
+    JSON.stringify({ telemetryBatch, lines: q.telemetryBatchLines }),
   );
 
   console.log("\nE) TransactionQueue unit contract (no database)");
