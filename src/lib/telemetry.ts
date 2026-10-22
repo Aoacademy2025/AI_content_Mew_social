@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import {
   redactTelemetryString,
   TELEMETRY_MAX_PROPERTIES_BYTES,
@@ -133,42 +134,59 @@ export async function recordTelemetryEventOnce(
 ) {
   const key = dedupeKey.trim();
   if (!key || key.length > 240) throw new Error("Telemetry dedupe key is invalid");
-  return prisma.telemetryEvent.upsert({
-    where: { dedupeKey: key },
-    update: {},
-    create: {
-      dedupeKey: key,
-      userId,
-      sessionId: input.sessionId ?? null,
-      name: input.name,
-      category: input.category ?? "product",
-      source: input.source ?? "client",
-      path: input.path ?? null,
-      step: input.step ?? null,
-      status: input.status ?? null,
-      durationMs: input.durationMs ?? null,
-      value: input.value ?? null,
-      properties: serializeTelemetryProperties(input.properties),
-    },
-  });
+  // Prisma's SQLite connector wraps `upsert` in an implicit `BEGIN IMMEDIATE ... COMMIT`
+  // inside the Rust query engine. Routing it through `prisma.$transaction([...])` puts it
+  // in this process's FIFO `TransactionQueue` (HERO-70) so it takes its turn cleanly
+  // behind active interactive transactions instead of racing for the write lock (HERO-10).
+  const [row] = await withTransientSqliteRetry(() =>
+    prisma.$transaction([
+      prisma.telemetryEvent.upsert({
+        where: { dedupeKey: key },
+        update: {},
+        create: {
+          dedupeKey: key,
+          userId,
+          sessionId: input.sessionId ?? null,
+          name: input.name,
+          category: input.category ?? "product",
+          source: input.source ?? "client",
+          path: input.path ?? null,
+          step: input.step ?? null,
+          status: input.status ?? null,
+          durationMs: input.durationMs ?? null,
+          value: input.value ?? null,
+          properties: serializeTelemetryProperties(input.properties),
+        },
+      }),
+    ]),
+  );
+  return row;
 }
 
 export async function recordTelemetryBatch(userId: string | null, events: TelemetryInput[]) {
   if (events.length === 0) return { count: 0 };
-  await prisma.telemetryEvent.createMany({
-    data: events.map((event) => ({
-      userId,
-      sessionId: event.sessionId ?? null,
-      name: event.name,
-      category: event.category ?? "product",
-      source: event.source ?? "client",
-      path: event.path ?? null,
-      step: event.step ?? null,
-      status: event.status ?? null,
-      durationMs: event.durationMs ?? null,
-      value: event.value ?? null,
-      properties: serializeTelemetryProperties(event.properties),
-    })),
-  });
+  // Prisma's SQLite connector wraps `createMany` in an implicit `BEGIN IMMEDIATE ... COMMIT`
+  // inside the Rust query engine. Routing it through `prisma.$transaction([...])` puts the
+  // batch in this process's FIFO `TransactionQueue` (HERO-70) so concurrent `POST /api/telemetry`
+  // flushes cannot bypass the queue and collide with interactive `$transaction` calls (HERO-10).
+  await withTransientSqliteRetry(() =>
+    prisma.$transaction([
+      prisma.telemetryEvent.createMany({
+        data: events.map((event) => ({
+          userId,
+          sessionId: event.sessionId ?? null,
+          name: event.name,
+          category: event.category ?? "product",
+          source: event.source ?? "client",
+          path: event.path ?? null,
+          step: event.step ?? null,
+          status: event.status ?? null,
+          durationMs: event.durationMs ?? null,
+          value: event.value ?? null,
+          properties: serializeTelemetryProperties(event.properties),
+        })),
+      }),
+    ]),
+  );
   return { count: events.length };
 }
