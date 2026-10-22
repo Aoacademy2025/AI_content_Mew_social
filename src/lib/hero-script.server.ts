@@ -43,6 +43,7 @@ import {
   applyBrandRevisionDefaultsToProjectDraft,
   BrandProfileLibraryError,
   resolveBrandProfileRevisionForNewProjectInTransaction,
+  resolveBrandProfileRevisionForRead,
 } from "@/lib/brand-profile-library.server";
 import { brandLookIdentityKey, VISUAL_FORMATS } from "@/lib/brand-visual-system";
 import { resolveOwnerPinAdmission } from "@/lib/brand-visual-pin-admission.server";
@@ -184,44 +185,44 @@ export async function resolveHeroScriptBrandProfile(
       return resolveLegacyScriptBrandProfile(snapshot);
     }
 
-    // Published profiles reconcile plan availability (writes) and resolve the
-    // immutable Revision atomically. Re-read ownership/archive/revision here;
-    // the preliminary snapshot must not authorize this transaction's work.
-    return await prisma.$transaction(async (tx) => {
-      const row = await tx.brandProfile.findFirst({
+    // Steady-state published profiles (within plan cap and nothing frozen)
+    // resolve from plain reads without opening a SQLite write transaction;
+    // only accounts needing freeze/thaw reconciliation enter $transaction (HERO-10).
+    const resolved = await resolveBrandProfileRevisionForRead({
+      userId,
+      profileId: snapshot.id,
+    });
+    if (!resolved) {
+      const row = await prisma.brandProfile.findFirst({
         where: { id: brandProfileId, userId, archivedAt: null },
       });
       if (!row) {
-        return { ok: false as const, code: "NOT_FOUND" as const, message: "ไม่พบโปรไฟล์แบรนด์" };
+        return { ok: false, code: "NOT_FOUND", message: "ไม่พบโปรไฟล์แบรนด์" };
       }
       if (row.activeRevisionNumber <= 0) {
         return resolveLegacyScriptBrandProfile(row);
       }
-
-      const resolved = await resolveBrandProfileRevisionForNewProjectInTransaction(tx, {
-        userId,
-        profileId: row.id,
-      });
-      if (!resolved) {
-        return { ok: false as const, code: "UNAVAILABLE" as const, message: "แบรนด์นี้ยังไม่พร้อมใช้งาน" };
-      }
-      const scriptDefaults = resolved.payload.script;
-      const bannedWords = [...scriptDefaults.bannedWords];
-      return {
-        ok: true as const,
-        profile: {
-          niche: resolved.payload.niche,
-          audience: resolved.payload.audience,
-          tone: scriptDefaults.tone,
-          bannedWords,
-          analysisNotes: scriptDefaults.analysisNotes ?? null,
-        },
+      return { ok: false, code: "UNAVAILABLE", message: "แบรนด์นี้ยังไม่พร้อมใช้งาน" };
+    }
+    const scriptDefaults = resolved.payload.script;
+    const bannedWords = [...scriptDefaults.bannedWords];
+    return {
+      ok: true,
+      profile: {
+        niche: resolved.payload.niche,
+        audience: resolved.payload.audience,
+        tone: scriptDefaults.tone,
         bannedWords,
-        ctaStyle: scriptDefaults.ctaStyle || "follow",
-      };
-    });
+        analysisNotes: scriptDefaults.analysisNotes ?? null,
+      },
+      bannedWords,
+      ctaStyle: scriptDefaults.ctaStyle || "follow",
+    };
   } catch (error) {
     if (error instanceof BrandProfileLibraryError) {
+      if (error.code === "NOT_FOUND") {
+        return { ok: false, code: "NOT_FOUND", message: "ไม่พบโปรไฟล์แบรนด์" };
+      }
       return { ok: false, code: "UNAVAILABLE", message: error.message };
     }
     throw error;

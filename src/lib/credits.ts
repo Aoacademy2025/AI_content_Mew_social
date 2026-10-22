@@ -631,7 +631,7 @@ export async function resetMonthlyGranted(
   // can never diverge the balance from its audit ledger (MON-4). Reading the prior
   // value inside the transaction also makes the recorded delta consistent with the
   // value we overwrite.
-  await prisma.$transaction(async (tx) => {
+  await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     // Read prior granted so we can record the true delta (upsert with granted:0 so a
     // brand-new user's reset logs the full grant as the delta — matches getBalance).
     const prior = await tx.creditBalance.upsert({
@@ -677,7 +677,7 @@ export async function resetMonthlyGranted(
         balanceAfter,
       },
     });
-  });
+  }));
 }
 
 // ── Lazy monthly grant ────────────────────────────────────────────────────────
