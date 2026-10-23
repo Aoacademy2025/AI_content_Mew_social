@@ -383,6 +383,9 @@ jobs:
       - name: Verify third-party frontend noise is dropped at capture and insights
         run: npm run verify:frontend-error-noise
 
+      - name: Verify telemetry tolerates browser storage access denial (HERO-86)
+        run: npm run verify:client-telemetry
+
       - name: Verify the dashboard stats fetch never becomes an unhandled rejection
         run: npm run verify:dashboard-stats-fetch-catch
 

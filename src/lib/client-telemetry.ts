@@ -40,9 +40,10 @@ function createSessionId() {
 }
 
 export function getTelemetrySessionId() {
-  const storage = browserStorage();
-  if (!storage) return null;
   try {
+    // Accessing the localStorage getter itself can throw when storage is denied.
+    const storage = browserStorage();
+    if (!storage) return null;
     const existing = storage.getItem(SESSION_KEY);
     if (existing) return existing;
     const next = createSessionId();
