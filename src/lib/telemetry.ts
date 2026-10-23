@@ -1,3 +1,4 @@
+import { withPrismaOperation } from "@/lib/prisma-operation";
 import { prisma } from "@/lib/prisma";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import {
@@ -138,7 +139,7 @@ export async function recordTelemetryEventOnce(
   // inside the Rust query engine. Routing it through `prisma.$transaction([...])` puts it
   // in this process's FIFO `TransactionQueue` (HERO-70) so it takes its turn cleanly
   // behind active interactive transactions instead of racing for the write lock (HERO-10).
-  const [row] = await withTransientSqliteRetry(() =>
+  const [row] = await withPrismaOperation("telemetry.recordOnce", () => withTransientSqliteRetry(() =>
     prisma.$transaction([
       prisma.telemetryEvent.upsert({
         where: { dedupeKey: key },
@@ -159,7 +160,7 @@ export async function recordTelemetryEventOnce(
         },
       }),
     ]),
-  );
+  ));
   return row;
 }
 
@@ -169,7 +170,7 @@ export async function recordTelemetryBatch(userId: string | null, events: Teleme
   // inside the Rust query engine. Routing it through `prisma.$transaction([...])` puts the
   // batch in this process's FIFO `TransactionQueue` (HERO-70) so concurrent `POST /api/telemetry`
   // flushes cannot bypass the queue and collide with interactive `$transaction` calls (HERO-10).
-  await withTransientSqliteRetry(() =>
+  await withPrismaOperation("telemetry.recordBatch", () => withTransientSqliteRetry(() =>
     prisma.$transaction([
       prisma.telemetryEvent.createMany({
         data: events.map((event) => ({
@@ -187,6 +188,6 @@ export async function recordTelemetryBatch(userId: string | null, events: Teleme
         })),
       }),
     ]),
-  );
+  ));
   return { count: events.length };
 }

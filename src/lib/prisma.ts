@@ -1,4 +1,5 @@
 import { availableParallelism } from "node:os";
+import { currentPrismaOperation } from "@/lib/prisma-operation";
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
   slowQueryThresholdMsFromEnv,
@@ -189,6 +190,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
   ) => {
     const id = (sequence += 1);
     const source = slowTransactionMs > 0 ? slowTransactionSource(wrappedTransaction) : "";
+    const operation = slowTransactionMs > 0 ? currentPrismaOperation() : undefined;
     const startedAt = Date.now();
     const callback = typeof args[0] === "function"
       ? args[0] as TransactionCallback
@@ -240,7 +242,7 @@ if (isNewClient && (slowTransactionMs > 0 || serializeTransactions)) {
           ? `kind=interactive ${queued} beforeCallbackMs=${(callbackStartedAt ?? endedAt) - engineStartedAt} callbackMs=${callbackMs} callbackEntered=${callbackStartedAt === undefined ? 0 : 1}`
           : `kind=batch ${queued}`;
         try {
-          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms proc=${processLabel()} pid=${process.pid} source=${source} ${phases}`);
+          console.warn(`[prisma-slow-tx] #${id} elapsed ${elapsedMs}ms proc=${processLabel()} pid=${process.pid} source=${source} ${phases}${operation ? ` operation=${operation}` : ""}`);
         } catch {
           // Diagnostics must never change transaction results or exceptions.
         }

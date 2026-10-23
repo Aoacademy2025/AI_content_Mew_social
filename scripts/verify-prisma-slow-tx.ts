@@ -32,6 +32,7 @@ type SlowTransactionDiagnostic = {
   callbackEntered?: 0 | 1;
   totalMs: number;
   source: string;
+  operation?: string;
   /** Ops batch 2026-10-12: which process logged this (PM2 app name / process.title) and its pid. */
   proc: string;
   pid: number;
@@ -43,11 +44,14 @@ type BundledPhaseFindings = {
 };
 
 function parseDiagnostic(line: string): SlowTransactionDiagnostic {
+  const operation = line.match(/ operation=(\S+)$/)?.[1];
+  line = line.replace(/ operation=\S+$/, "");
   const interactive = line.match(
     /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=(\S+) pid=(\d+) source=(\S+) kind=interactive queueMs=(\d+) ahead=(\d+) beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01])$/,
   );
   if (interactive) {
     return {
+      operation,
       kind: "interactive",
       totalMs: Number(interactive[1]),
       proc: interactive[2],
@@ -66,6 +70,7 @@ function parseDiagnostic(line: string): SlowTransactionDiagnostic {
   );
   assert(batch, `unexpected diagnostic shape: ${line}`);
   return {
+    operation,
     kind: "batch",
     totalMs: Number(batch[1]),
     proc: batch[2],
@@ -103,6 +108,7 @@ async function verifyBundledCallerPhases(
 
   const common = {
     bundle: true,
+    minify: true,
     format: "cjs" as const,
     packages: "external" as const,
     platform: "node" as const,
@@ -176,6 +182,8 @@ async function verifyBundledCallerPhases(
       [0, 1],
       `the second bundled caller must report the first one ahead of it: ${JSON.stringify(diagnostics)}`,
     );
+    assert(diagnostics.every((diagnostic) => diagnostic.operation === "credits.materializeBalance"),
+      "stable operation survives separately bundled callers and a shared Prisma singleton");
     const sources = diagnostics.map((diagnostic) => diagnostic.source).sort();
     assert.match(sources[0] ?? "", /^app\/api\/fixture-balance-a\/route\.js:\d+:\d+$/);
     assert.match(sources[1] ?? "", /^app\/api\/fixture-balance-b\/route\.js:\d+:\d+$/);
@@ -197,6 +205,7 @@ async function verifyBundledCallerPhases(
     assert.equal(warnings.length, 1, "the slow bundled callback must log once");
     const callbackWork = parseDiagnostic(warnings[0]);
     assert.equal(callbackWork.kind, "interactive");
+    assert.equal(callbackWork.operation, undefined, "a later unlabeled call has no stale operation");
     assert(callbackWork.callbackMs! >= heldMs);
     assert(callbackWork.beforeCallbackMs! < THRESHOLD_MS);
     await installer.prisma.$disconnect();
@@ -234,6 +243,26 @@ async function main() {
 
   try {
     const { prisma, slowTransactionSourceFromStack } = await import("../src/lib/prisma");
+    const { currentPrismaOperation, withPrismaOperation } = await import("../src/lib/prisma-operation");
+    const operations = ["credits.materializeBalance", "telemetry.recordBatch"] as const;
+    await Promise.all(operations.map((operation) => withPrismaOperation(operation, async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(currentPrismaOperation(), operation, "concurrent contexts stay isolated");
+      withPrismaOperation("entitlements.activateCouponTerm", () => {
+        assert.equal(currentPrismaOperation(), "entitlements.activateCouponTerm");
+      });
+      assert.equal(currentPrismaOperation(), operation, "nested scope restores its parent");
+    })));
+    assert.equal(currentPrismaOperation(), undefined, "no context leaks to the caller");
+    const failure = new Error("operation fixture error");
+    await assert.rejects(withPrismaOperation("credits.materializeBalance", async () => {
+      throw failure;
+    }), (error: unknown) => error === failure);
+    assert.equal(currentPrismaOperation(), undefined);
+    // Untyped inputs cannot turn labels into a data or log-injection channel.
+    withPrismaOperation("private-user@example.invalid\nforged=1" as typeof operations[number], () => {
+      assert.equal(currentPrismaOperation(), undefined);
+    });
 
     // Next production stack frames point into the release's `.next/server/app`
     // bundle. Keep that route-relative location while discarding its absolute
@@ -416,19 +445,20 @@ async function main() {
     arrayLock.stdin.write("PRAGMA journal_mode=WAL;\nPRAGMA busy_timeout=1000;\nBEGIN IMMEDIATE;\n.print LOCKED\n");
     await waitForLock(arrayLock);
     warnings.length = 0;
-    const slowBatch = prisma.$transaction([
+    const slowBatch = withPrismaOperation("telemetry.recordBatch", () => prisma.$transaction([
       prisma.siteConfig.upsert({
         where: { key: "slow-tx-array-sentinel" },
         create: { key: "slow-tx-array-sentinel", value: "private-fixture-value" },
         update: { value: "private-fixture-value" },
       }),
-    ]);
+    ]));
     await new Promise((resolve) => setTimeout(resolve, heldMs));
     arrayLock.stdin.end("ROLLBACK;\n.quit\n");
     assert.equal((await slowBatch)[0].value, "private-fixture-value");
     assert.equal(warnings.length, 1, "a slow array transaction must log once");
     const batchDiagnostic = parseDiagnostic(warnings[0]);
     assert.equal(batchDiagnostic.kind, "batch");
+    assert.equal(batchDiagnostic.operation, "telemetry.recordBatch");
     assert(batchDiagnostic.totalMs >= heldMs);
 
     await prisma.$disconnect();

@@ -56,6 +56,22 @@ business operation. Generated Prisma caller provenance belongs to the waiting
 or completing call and must not be assigned to the holder without separate,
 independently correlated in-flight evidence.
 
+### Stable transaction operation labels (HERO-10)
+
+Selected slow transaction lines append an optional `operation=<static-name>`:
+`credits.materializeBalance`, `credits.resetMonthlyGranted`,
+`entitlements.activateCouponTerm`, `telemetry.recordOnce`, or
+`telemetry.recordBatch`. These names survive minification and separately bundled
+callers. They identify the scoped transaction operation, not the HTTP route or
+the SQLite lock holder. Unlabeled transactions retain the original log format.
+
+The generated `source=app/.../route.js:line:column` can point into a generic
+retry helper bundled with that route. Do not infer the business operation from
+the route filename alone. Correlate operation, PID, and UTC log timestamps with
+a bounded lock capture during the same slow interval. A capture without an
+incident does not rule out contention. Labels are allowlisted constants; never
+add user identifiers, request values, or SQL to them.
+
 ## Disposable verification
 
 The parser/privacy/fail-closed fixture runs on any development host. The second

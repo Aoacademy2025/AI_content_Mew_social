@@ -1,3 +1,4 @@
+import { withPrismaOperation } from "@/lib/prisma-operation";
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
@@ -271,7 +272,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         || user.planExpiresAt?.getTime() !== paidEquivalent.expiresAt?.getTime()
       );
     if (couponTermTransition) {
-      materialized = await prisma.$transaction(async (tx) => {
+      materialized = await withPrismaOperation("entitlements.activateCouponTerm", () => prisma.$transaction(async (tx) => {
         const updated = await tx.user.update({
           where: { id: userId },
           data: {
@@ -309,7 +310,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
           });
         }
         return updated;
-      });
+      }));
       changed = true;
     } else if (user.plan !== paidEquivalent.effectivePlan) {
       materialized = await prisma.user.update({
