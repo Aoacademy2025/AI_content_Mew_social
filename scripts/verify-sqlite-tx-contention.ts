@@ -298,7 +298,7 @@ function assertNoStall(label: string, bursts: Burst[] | undefined): void {
 
 // ops batch 2026-10-12: [prisma-slow-tx] now carries `proc=... pid=...` right after
 // `elapsed Xms` (cross-process correlation, src/lib/prisma.ts) — not captured, just skipped.
-const SLOW_LINE = /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=\S+ pid=\d+ source=\S+ kind=(interactive|batch) queueMs=(\d+) ahead=(\d+)(?: beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01]))?$/;
+const SLOW_LINE = /^\[prisma-slow-tx\] #\d+ elapsed (\d+)ms proc=\S+ pid=\d+ source=\S+ kind=(interactive|batch) queueMs=(\d+) ahead=(\d+)(?: beforeCallbackMs=(\d+) callbackMs=(\d+) callbackEntered=([01]))?(?: operation=([a-zA-Z.]+))?$/;
 
 async function main(): Promise<void> {
   if (process.argv[2] === CHILD_FLAG) return runChild();
@@ -375,7 +375,7 @@ async function main(): Promise<void> {
   const telemetryBatchLine = ((q.telemetryBatchLines as string[] | undefined) ?? []).map((line) => line.match(SLOW_LINE)).find((m) => m?.[2] === "batch");
   check(
     "recordTelemetryBatch queues behind an interactive transaction (kind=batch ahead=1, HERO-10)",
-    telemetryBatch?.ok === true && telemetryBatch.ms >= 300 && Number(telemetryBatchLine?.[4]) === 1,
+    telemetryBatch?.ok === true && telemetryBatch.ms >= 300 && Number(telemetryBatchLine?.[4]) === 1 && telemetryBatchLine?.[8] === "telemetry.recordBatch",
     JSON.stringify({ telemetryBatch, lines: q.telemetryBatchLines }),
   );
 

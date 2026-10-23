@@ -12,6 +12,7 @@
  * - if `count !== 1` → lost race / insufficient → re-read and return error
  */
 
+import { withPrismaOperation } from "@/lib/prisma-operation";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
@@ -259,7 +260,7 @@ export async function getBalance(
     };
   }
 
-  return withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+  return withPrismaOperation("credits.materializeBalance", () => withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     await materializeExpiredPromotionalCredits(tx, userId, now);
     const row = await tx.creditBalance.upsert({
       where: { userId },
@@ -273,7 +274,7 @@ export async function getBalance(
       purchased: row.purchased,
       total: row.granted + promotional + row.purchased,
     };
-  }));
+  })));
 }
 
 /**
@@ -631,7 +632,7 @@ export async function resetMonthlyGranted(
   // can never diverge the balance from its audit ledger (MON-4). Reading the prior
   // value inside the transaction also makes the recorded delta consistent with the
   // value we overwrite.
-  await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+  await withPrismaOperation("credits.resetMonthlyGranted", () => withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     // Read prior granted so we can record the true delta (upsert with granted:0 so a
     // brand-new user's reset logs the full grant as the delta — matches getBalance).
     const prior = await tx.creditBalance.upsert({
@@ -677,7 +678,7 @@ export async function resetMonthlyGranted(
         balanceAfter,
       },
     });
-  }));
+  })));
 }
 
 // ── Lazy monthly grant ────────────────────────────────────────────────────────

@@ -1,14 +1,15 @@
 import { prisma } from "../../src/lib/prisma";
+import { withPrismaOperation } from "../../src/lib/prisma-operation";
 
 export async function materializeWallet(userId: string) {
-  return prisma.$transaction(async (tx) => {
+  return withPrismaOperation("credits.materializeBalance", () => prisma.$transaction(async (tx) => {
     const wallet = await tx.creditBalance.upsert({
       where: { userId },
       create: { userId },
       update: {},
     });
     return { total: wallet.granted + wallet.purchased };
-  });
+  }));
 }
 
 export async function runSlowCallback<T>(delayMs: number, result: T): Promise<T> {
