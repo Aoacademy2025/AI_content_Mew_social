@@ -430,16 +430,12 @@ export async function quarantineMediaCleanupPlan(
   const quarantineRoot = path.join(cwd, ".media-quarantine");
   const runDir = path.join(quarantineRoot, runId);
   await assertSafeDirectory(quarantineRoot, cwd);
-  try {
-    await fsp.mkdir(runDir, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error("quarantine run already exists");
-    }
-    throw error;
+  if (safeLstat(runDir)) {
+    throw new Error("quarantine run already exists");
   }
   const report = reportForPlan(plan, runId);
   const moved: MovedRecord[] = [];
+  let runDirCreated = false;
 
   try {
     for (const batch of batches(plan.candidates, options.batchSize)) {
@@ -480,6 +476,17 @@ export async function quarantineMediaCleanupPlan(
           continue;
         }
 
+        if (!runDirCreated) {
+          try {
+            await fsp.mkdir(runDir, { mode: 0o700 });
+            runDirCreated = true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+              throw new Error("quarantine run already exists");
+            }
+            throw error;
+          }
+        }
         const areaDir = path.join(runDir, canonical.area);
         await assertSafeDirectory(areaDir, cwd);
         const quarantinePath = path.join(areaDir, canonical.filename);
@@ -509,14 +516,16 @@ export async function quarantineMediaCleanupPlan(
         manifestPath,
         manifest,
       );
-    } else {
+    } else if (runDirCreated) {
       await fsp.rmdir(runDir);
     }
     return report;
   } catch (error) {
     const fullyRestored = await rollbackMoves(moved, report, options.beforeRollbackMove);
     if (fullyRestored) {
-      await fsp.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+      if (runDirCreated) {
+        await fsp.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     } else {
       const records = moved
         .filter((move) => safeLstat(move.quarantinePath))

@@ -189,8 +189,12 @@ async function main() {
 
   // ---- context strip: secondary errors, North Star, queue, tickets, disk ----------------------
   await reset();
-  await prisma.notification.create({
-    data: { userId: OWNER, type: "ERROR_SYSTEM", title: "t", body: "b", createdAt: MID_DAY_09 },
+  await prisma.notification.createMany({
+    data: [
+      { userId: OWNER, type: "ERROR_SYSTEM", title: "t", body: "b", createdAt: MID_DAY_09 },
+      { userId: OWNER, type: "ERROR_SYSTEM", title: "เพิ่มคำตัดซับใหม่ 3 คำ (auto)", body: "b", createdAt: MID_DAY_09 },
+      { userId: OWNER, type: "ERROR_SYSTEM", title: "คำประสมรอตรวจ 5 คำ", body: "b", createdAt: MID_DAY_09 },
+    ],
   });
   await prisma.telemetryEvent.create({
     data: { name: "frontend_error", category: "error", source: "client", createdAt: MID_DAY_09 },

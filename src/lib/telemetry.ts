@@ -110,21 +110,29 @@ export function normalizeTelemetryBatch(payload: unknown): TelemetryInput[] {
 }
 
 export async function recordTelemetryEvent(userId: string | null, input: TelemetryInput) {
-  return prisma.telemetryEvent.create({
-    data: {
-      userId,
-      sessionId: input.sessionId ?? null,
-      name: input.name,
-      category: input.category ?? "product",
-      source: input.source ?? "client",
-      path: input.path ?? null,
-      step: input.step ?? null,
-      status: input.status ?? null,
-      durationMs: input.durationMs ?? null,
-      value: input.value ?? null,
-      properties: serializeTelemetryProperties(input.properties),
-    },
-  });
+  // Route single telemetry writes through prisma.$transaction([...]) so they join this
+  // process's FIFO TransactionQueue (HERO-70) alongside recordTelemetryEventOnce and
+  // recordTelemetryBatch instead of racing interactive transactions (HERO-10).
+  const [row] = await withPrismaOperation("telemetry.recordEvent", () => withTransientSqliteRetry(() =>
+    prisma.$transaction([
+      prisma.telemetryEvent.create({
+        data: {
+          userId,
+          sessionId: input.sessionId ?? null,
+          name: input.name,
+          category: input.category ?? "product",
+          source: input.source ?? "client",
+          path: input.path ?? null,
+          step: input.step ?? null,
+          status: input.status ?? null,
+          durationMs: input.durationMs ?? null,
+          value: input.value ?? null,
+          properties: serializeTelemetryProperties(input.properties),
+        },
+      }),
+    ]),
+  ));
+  return row;
 }
 
 /** Record a server-owned event exactly once across concurrent workers. */

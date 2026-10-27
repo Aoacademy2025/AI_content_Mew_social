@@ -11,6 +11,7 @@ User=root
 Group=root
 WorkingDirectory=/var/www/ai-content
 Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=2560
 Environment=DOTENV_CONFIG_PATH=/var/www/ai-content/.env.r2.production
 Environment=MEDIA_LOCAL_EVICTION=1
 Environment=MEDIA_R2_DELETE=1
@@ -21,7 +22,7 @@ ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.
 Nice=15
 CPUWeight=10
 IOWeight=10
-MemoryMax=2G
+MemoryMax=4G
 TimeoutStartSec=infinity
 UMask=0077
 
