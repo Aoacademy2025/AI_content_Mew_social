@@ -88,7 +88,8 @@ async function runChild(): Promise<void> {
 
   const { prisma } = await import("../src/lib/prisma");
   const imports = await import("../src/lib/media-import/imports");
-  const { recordTelemetryBatch } = await import("../src/lib/telemetry");
+  const { recordTelemetryBatch, recordTelemetryEvent } = await import("../src/lib/telemetry");
+  const { recordToolCall } = await import("../src/lib/mcp/audit");
   await prisma.$queryRawUnsafe("PRAGMA journal_mode=WAL");
   await prisma.user.create({ data: { id: "burst-user", name: "burst", email: "burst@example.invalid" } });
   for (let i = 0; i < MIXED_PLAIN_WRITES; i += 1) {
@@ -215,6 +216,32 @@ async function runChild(): Promise<void> {
     );
     await holderF;
     queue.telemetryBatchLines = [...slowTxLines];
+
+    // (g) recordTelemetryEvent and recordToolCall also route through prisma.$transaction([...])
+    // so standalone telemetry/audit writes queue in TransactionQueue behind interactive transactions (HERO-10).
+    slowTxLines.length = 0;
+    const holderG = prisma.$transaction(async (tx) => {
+      await tx.user.update(bump());
+      await sleep(400);
+    });
+    await sleep(30);
+    queue.telemetrySingle = await timed(() =>
+      recordTelemetryEvent("burst-user", { name: "pipeline_step", category: "pipeline", source: "server" }),
+    );
+    await holderG;
+    queue.telemetrySingleLines = [...slowTxLines];
+
+    slowTxLines.length = 0;
+    const holderH = prisma.$transaction(async (tx) => {
+      await tx.user.update(bump());
+      await sleep(400);
+    });
+    await sleep(30);
+    queue.toolCallAudit = await timed(() =>
+      recordToolCall({ userId: "burst-user", toolName: "list_videos", status: "ok" }),
+    );
+    await holderH;
+    queue.toolCallAuditLines = [...slowTxLines];
     report.queue = queue;
   }
 
@@ -377,6 +404,20 @@ async function main(): Promise<void> {
     "recordTelemetryBatch queues behind an interactive transaction (kind=batch ahead=1, HERO-10)",
     telemetryBatch?.ok === true && telemetryBatch.ms >= 300 && Number(telemetryBatchLine?.[4]) === 1 && telemetryBatchLine?.[8] === "telemetry.recordBatch",
     JSON.stringify({ telemetryBatch, lines: q.telemetryBatchLines }),
+  );
+  const telemetrySingle = q.telemetrySingle as CallResult | undefined;
+  const telemetrySingleLine = ((q.telemetrySingleLines as string[] | undefined) ?? []).map((line) => line.match(SLOW_LINE)).find((m) => m?.[2] === "batch");
+  check(
+    "recordTelemetryEvent queues behind an interactive transaction (kind=batch ahead=1, HERO-10)",
+    telemetrySingle?.ok === true && telemetrySingle.ms >= 300 && Number(telemetrySingleLine?.[4]) === 1 && telemetrySingleLine?.[8] === "telemetry.recordEvent",
+    JSON.stringify({ telemetrySingle, lines: q.telemetrySingleLines }),
+  );
+  const toolCallAudit = q.toolCallAudit as CallResult | undefined;
+  const toolCallAuditLine = ((q.toolCallAuditLines as string[] | undefined) ?? []).map((line) => line.match(SLOW_LINE)).find((m) => m?.[2] === "batch");
+  check(
+    "recordToolCall queues behind an interactive transaction (kind=batch ahead=1, HERO-10)",
+    toolCallAudit?.ok === true && toolCallAudit.ms >= 300 && Number(toolCallAuditLine?.[4]) === 1 && toolCallAuditLine?.[8] === "mcp.recordToolCall",
+    JSON.stringify({ toolCallAudit, lines: q.toolCallAuditLines }),
   );
 
   console.log("\nE) TransactionQueue unit contract (no database)");

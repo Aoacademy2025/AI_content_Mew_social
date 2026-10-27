@@ -5,8 +5,11 @@ const OPERATIONS = [
   "credits.materializeBalance",
   "credits.resetMonthlyGranted",
   "entitlements.activateCouponTerm",
+  "telemetry.recordEvent",
   "telemetry.recordOnce",
   "telemetry.recordBatch",
+  "mcp.recordToolCall",
+  "mcp.pruneToolCallAudit",
 ] as const;
 export type PrismaOperation = typeof OPERATIONS[number];
 

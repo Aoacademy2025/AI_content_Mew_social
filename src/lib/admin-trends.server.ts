@@ -166,7 +166,18 @@ export async function getAdminTrends(days: 14 | 30, now: Date = new Date()): Pro
       WHERE "status" = 'PAID' AND "amount" > 0 AND "paidAt" >= ${previousStart}
       GROUP BY d
     `),
-    prisma.notification.count({ where: { type: "ERROR_SYSTEM", createdAt: { gte: currentStart } } }),
+    // Exclude daily mine-loanwords dictionary digest notifications (broadcast to every ADMIN
+    // row with type ERROR_SYSTEM) so the /admin error counter reflects real system errors.
+    prisma.notification.count({
+      where: {
+        type: "ERROR_SYSTEM",
+        createdAt: { gte: currentStart },
+        NOT: [
+          { title: { startsWith: "เพิ่มคำตัดซับใหม่" } },
+          { title: { startsWith: "คำประสมรอตรวจ" } },
+        ],
+      },
+    }),
     prisma.telemetryEvent.count({ where: { name: "frontend_error", createdAt: { gte: currentStart } } }),
     prisma.renderJob.count({ where: { status: "QUEUED" } }),
     prisma.videoJob.count({ where: { status: "queued" } }),

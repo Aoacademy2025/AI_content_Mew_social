@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   utimesSync,
   writeFileSync,
@@ -486,6 +487,33 @@ async function main(): Promise<void> {
       MEDIA_R2_DELETE: "0",
     },
   });
+  // HERO-76: quarantineMediaCleanupPlan must not mkdir(runDir) before buildMediaReferenceGraph
+  // finishes, so an OOM/SIGABRT during graph rebuild cannot leave an empty manifestless runDir
+  // that poisons subsequent buildQuarantinedMediaIndex scans.
+  const { quarantineMediaCleanupPlan, buildQuarantinedMediaIndex } = await import("../src/lib/media-quarantine");
+  let dirsDuringGraphRebuild = -1;
+  const skipFile = writeOldRender("skip-after-graph.mp4", "skip-bytes");
+  const skipPlan = await getMediaCleanupPlan({ cwd: root, now, includeStocks: true });
+  const skipCandidate = skipPlan.candidates.find((c) => c.key === "renders/skip-after-graph.mp4");
+  assert.ok(skipCandidate);
+  // Touch mtime so candidate is skipped after graph rebuild, and inspect .media-quarantine during onGraphRebuild.
+  utimesSync(skipFile.absolutePath, now, now);
+  const { manifestSha256ForRecords } = await import("../src/lib/media-quarantine");
+  const oneSkipPlan = {
+    ...skipPlan,
+    candidates: [skipCandidate],
+    manifestSha256: manifestSha256ForRecords([skipCandidate]),
+  };
+  await quarantineMediaCleanupPlan(oneSkipPlan, oneSkipPlan.manifestSha256, {
+    batchSize: 1,
+    onGraphRebuild: () => {
+      const qRoot = path.join(root, ".media-quarantine");
+      dirsDuringGraphRebuild = existsSync(qRoot) ? readdirSync(qRoot).length : 0;
+    },
+  });
+  assert.equal(dirsDuringGraphRebuild, 0, "runDir must not exist on disk while buildMediaReferenceGraph is running");
+  await assert.doesNotReject(buildQuarantinedMediaIndex(root));
+
   assert.equal(applied.evicted.count, 1);
   assert.equal(applied.errors, 0);
   assert.deepEqual(applied.applyCosts, {

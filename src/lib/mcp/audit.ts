@@ -1,4 +1,6 @@
+import { withPrismaOperation } from "@/lib/prisma-operation";
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 
 // Does a tool result represent a real in-band error?
 // A success payload may legitimately carry an `error` KEY whose value is null
@@ -129,22 +131,33 @@ export async function recordToolCall(entry: {
         recentPollAuditByKey.delete(key);
       }
     }
-    await prisma.toolCallAudit.create({
-      data: {
-        userId: entry.userId ?? null,
-        toolName: entry.toolName,
-        status: entry.status,
-        durationMs: entry.durationMs ?? null,
-        requestJson: redactedRequest,
-        responseJson: entry.responseJson ? JSON.stringify(entry.responseJson).slice(0, 500) : null,
-        userAgent: sanitizeUserAgent(entry.userAgent),
-      },
-    });
+    // Route audit writes through prisma.$transaction([...]) so they join this process's
+    // FIFO TransactionQueue (HERO-70) instead of racing interactive transactions for
+    // SQLite's writer lock (HERO-10).
+    await withPrismaOperation("mcp.recordToolCall", () => withTransientSqliteRetry(() =>
+      prisma.$transaction([
+        prisma.toolCallAudit.create({
+          data: {
+            userId: entry.userId ?? null,
+            toolName: entry.toolName,
+            status: entry.status,
+            durationMs: entry.durationMs ?? null,
+            requestJson: redactedRequest,
+            responseJson: entry.responseJson ? JSON.stringify(entry.responseJson).slice(0, 500) : null,
+            userAgent: sanitizeUserAgent(entry.userAgent),
+          },
+        }),
+      ]),
+    ));
     auditWriteCounter += 1;
     if (auditWriteCounter >= 500) {
       auditWriteCounter = 0;
       const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS);
-      void prisma.toolCallAudit.deleteMany({ where: { createdAt: { lt: cutoff } } }).catch(() => {});
+      void withPrismaOperation("mcp.pruneToolCallAudit", () => withTransientSqliteRetry(() =>
+        prisma.$transaction([
+          prisma.toolCallAudit.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+        ]),
+      )).catch(() => {});
     }
   } catch {
     // audit must never break a tool call
