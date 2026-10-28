@@ -2606,7 +2606,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // authoritative backstop for direct callers.
       const durationViolation = audioDurationLimitViolation(candidateDurationMs, user.plan);
       if (durationViolation) {
-        throw new Error(`${durationViolation.message} — ${durationViolation.userAction}`);
+        // Coded so the job carries `duration_exceeded`, not `tts_unknown` (HERO-87).
+        throw new PipelineApiError(durationViolation.code, `${durationViolation.message} — ${durationViolation.userAction}`);
       }
 
       // The calibrated script estimate rejects known-unsupported requests before
@@ -2617,7 +2618,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         durationSec: candidateDurationMs / 1_000,
       });
       if (fullAvatarDurationViolation) {
-        throw new Error(`${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`);
+        throw new PipelineApiError(fullAvatarDurationViolation.code, `${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`);
       }
 
       // Web parity + provider-spend guard: a split intro/outro must leave a real

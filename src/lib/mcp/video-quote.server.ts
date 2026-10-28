@@ -7,6 +7,7 @@ import { resolveHeroAiImageAccess, isInternalAiBetaEnabledFor } from "@/lib/inte
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { estimatePacedDurationSeconds } from "@/lib/tts-pace";
+import { estimatedDurationPlanWarning } from "@/lib/render-plan-preflight";
 import { resolveTightenOptions } from "@/lib/presenter-tighten";
 import { computeStitchedDurationMs } from "@/lib/presenter-stitch";
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
@@ -102,6 +103,9 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     if (paced.warning) quoteWarnings = [paced.warning];
   }
   if (!(durationSeconds > 0) || !Number.isFinite(durationSeconds)) return quoteFailure("invalid_input", "ไม่พบเนื้อหาที่ใช้สร้างวิดีโอ", "ส่ง script ที่มีคำพูด หรือคลิปพิธีกรที่นำเข้าสำเร็จแล้ว");
+  // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
+  const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);
+  if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];
   const source = input.brollSource ?? "stock";
   const noAutomaticBroll = source === "external" || clip.clip?.cutawayLayout === "fillYourself";
   const usesImages = !noAutomaticBroll && (source === "hero-ai-image" || source === "automix");

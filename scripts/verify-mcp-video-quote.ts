@@ -65,6 +65,13 @@ async function main() {
     assert.equal(presenter.durationSeconds, 61);
     assert.equal(presenter.exactDuration, true);
     assert.equal(presenter.includedRenderMinutes, 1);
+    // HERO-87: a script that LOOKS longer than the plan's per-clip cap warns at quote time
+    // (advisory — the exact post-TTS gate still decides), so the agent can shorten it first.
+    assert.equal(quote.warnings, undefined, "a short script carries no plan-length warning");
+    const overPlan = await service.prepareVideoQuote(owner, { script: "ก".repeat(4_400), brollSource: "stock" });
+    assert.equal(overPlan.status, "draft", "the estimate never blocks");
+    assert.ok(overPlan.warnings?.some((w: string) => /เกินเพดานแผน Pro/.test(w)), "over-cap estimate returns duration_estimate_over_plan copy");
+    assert.ok(!presenter.warnings?.some((w: string) => /เกินเพดานแผน/.test(w)), "exact presenter duration is not an estimate");
     const after = { jobs: await prisma.videoJob.count(), ledger: await prisma.creditLedger.count(), images: await prisma.aiGenerationJob.count(), renders: await prisma.renderJob.count(), imports: (await prisma.mediaImport.count()) - 1 };
     assert.deepEqual(after, before, "prepare/read/approval never create generation/render/import or billing records");
     assert.equal((await prisma.creditBalance.findUniqueOrThrow({ where: { userId: owner.id } })).purchased, 100);

@@ -178,9 +178,60 @@ async function main() {
     ["/api/videos/tts-gemini"],
     "exact duration backstop must stop an underestimated full-avatar job before captions, render, or HeyGen",
   );
+  assert.equal(
+    rejectedUnderestimate.errorCode,
+    "full_avatar_duration_unsupported",
+    "the exact-duration backstop must carry its own code, not tts_unknown (HERO-87)",
+  );
+
+  // HERO-87: the plan per-clip cap is only known exactly after TTS. A script the estimator
+  // underestimated must still stop right after TTS — with a machine code an agent can act on.
+  const overPlanJob = await prisma.videoJob.create({
+    data: {
+      id: "plan-cap-exact-backstop-job",
+      userId: user.id,
+      status: "processing",
+      inputJson: JSON.stringify({
+        script: "เริ่มต้นให้ชัดเจน แล้วลงมือทำทันที นี่คือบททดสอบ MCP",
+        voiceProvider: "gemini",
+      }),
+    },
+  });
+  const overPlanCalls: string[] = [];
+  await runOrchestrator(overPlanJob.id, user.id, {
+    caller: {
+      post: async (path: string) => {
+        overPlanCalls.push(path.split("?")[0]);
+        if (path === "/api/videos/tts-gemini") {
+          return {
+            voiceUrl: "/api/renders/over-plan.wav",
+            audioDurationMs: 601_000,
+            timing: {
+              provider: "gemini",
+              segments: [{ text: "เริ่มต้นให้ชัดเจน แล้วลงมือทำทันที นี่คือบททดสอบ MCP", startMs: 0, durationMs: 601_000 }],
+              chars: null,
+            },
+          } as never;
+        }
+        throw new Error(`unexpected downstream call: ${path}`);
+      },
+      patch: async () => ({} as never),
+      get: async (path: string) => { throw new Error(`unexpected downstream call: ${path}`); },
+    } as never,
+    sleep: async () => {},
+  });
+  const rejectedOverPlan = await prisma.videoJob.findUniqueOrThrow({ where: { id: overPlanJob.id } });
+  assert.equal(rejectedOverPlan.status, "failed");
+  assert.equal(rejectedOverPlan.errorCode, "duration_exceeded", "plan cap refusal must not be labelled tts_unknown");
+  assert.match(rejectedOverPlan.errorMessage ?? "", /10 นาที/);
+  assert.deepEqual(
+    overPlanCalls,
+    ["/api/videos/tts-gemini"],
+    "plan cap backstop must stop after exact TTS duration, before captions, stock, render, or HeyGen",
+  );
 
   await prisma.$disconnect();
-  console.log("✅ MCP avatar duration admission guards passed");
+  console.log("✅ MCP avatar + plan duration admission guards passed");
 }
 
 main().catch((error) => {
