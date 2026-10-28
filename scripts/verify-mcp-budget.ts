@@ -53,6 +53,16 @@ async function main() {
     assert.ok("jobId" in twoStepCreated && twoStepCreated.jobId, "create_video_job({ quoteId }) auto-approves draft quote and starts immediately");
     await prisma.videoJob.deleteMany({ where: { id: twoStepCreated.jobId } });
     await prisma.editorProject.deleteMany({ where: { userId: owner.id } });
+    // HERO-87: direct create_video_job relays the quote's advisory plan-length warning.
+    assert.ok(!("warnings" in directCreated), "a short script starts without warnings");
+    const overPlanCreated = await requestVideoJob(owner, { script: "ก".repeat(4_400) });
+    assert.ok("jobId" in overPlanCreated && overPlanCreated.jobId, "an over-cap estimate still starts (advisory only)");
+    assert.ok(
+      "warnings" in overPlanCreated && overPlanCreated.warnings?.some((w: string) => /เกินเพดานแผน Pro/.test(w)),
+      "create_video_job returns the duration_estimate_over_plan warning",
+    );
+    await prisma.videoJob.deleteMany({ where: { id: overPlanCreated.jobId } });
+    await prisma.editorProject.deleteMany({ where: { userId: owner.id } });
     assert.equal(await prisma.videoJob.count(), 0);
     assert.equal(await prisma.renderJob.count(), 0);
     assert.equal(await prisma.aiGenerationJob.count(), 0);

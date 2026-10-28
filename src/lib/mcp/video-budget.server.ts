@@ -139,7 +139,7 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       if ((job.fundedCreditsSpent ?? 0) > quote.renderCreditCeiling || (job.fundedCreditsSpent ?? 0) > quote.totalHeroCreditCeiling) throw new VideoBudgetHoldError("funding_changed");
       await tx.mcpVideoQuote.update({ where: { id: quote.id }, data: { rootJobId: job.id } });
       await tx.editorProject.update({ where: { id: project.id }, data: { activeJobId: job.id, status: "rendering", lastOpenedAt: new Date() } });
-      return { jobId: job.id, status: job.status, projectId: project.id, editorUrl: `/video-editor?projectId=${project.id}` };
+      return { jobId: job.id, status: job.status, projectId: project.id, editorUrl: `/video-editor?projectId=${project.id}`, ...(receipt.warnings?.length ? { warnings: receipt.warnings } : {}) };
     }));
   } catch (error) {
     if (error instanceof VideoBudgetHoldError || error instanceof VideoJobFundingError) return quoteFailure("confirmation_required", error.message);
