@@ -58,10 +58,12 @@ async function fetchAvatarDetail(url: string, heygenKey: string): Promise<Detail
 }
 
 /**
- * Look up a single avatar's preview/name by ID via `/v2/avatar/{id}/details`, falling back to
- * `/v2/photo_avatar/{id}` for photo avatars. Returns null when the ID isn't found in either (the
- * caller degrades to "unverified — can still render", NEVER a hard block). Throws HeyGenAuthError
- * on 401/403 so a bad/expired key surfaces. `opts.fetcher` is the test injection point.
+ * Look up a single avatar's preview/name by ID via `/v3/avatars/looks/{id}` (HeyGen v1/v2 sunset
+ * 2026-10-31), falling back to the legacy `/v2/avatar/{id}/details` and `/v2/photo_avatar/{id}`
+ * for IDs v3 doesn't know. Returns null when the ID isn't found anywhere (the caller degrades to
+ * "unverified — can still render", NEVER a hard block). Throws HeyGenAuthError on a 401/403 from
+ * v3 so a bad/expired key surfaces; once v3 has accepted the key, a 401/403 from a retired v2
+ * endpoint is just "not here". `opts.fetcher` is the test injection point.
  */
 export async function getHeyGenAvatarDetails(
   avatarId: string,
@@ -71,13 +73,16 @@ export async function getHeyGenAvatarDetails(
   const fetcher = opts.fetcher ?? fetchAvatarDetail;
   const id = encodeURIComponent(avatarId);
   const urls = [
+    `https://api.heygen.com/v3/avatars/looks/${id}`,
     `https://api.heygen.com/v2/avatar/${id}/details`,
     `https://api.heygen.com/v2/photo_avatar/${id}`,
-    `https://api.heygen.com/v3/avatars/looks/${id}`,
   ];
-  for (const url of urls) {
+  for (const [index, url] of urls.entries()) {
     const r = await fetcher(url, heygenKey);
-    if (r.status === 401 || r.status === 403) throw new HeyGenAuthError(r.status);
+    if (r.status === 401 || r.status === 403) {
+      if (index === 0) throw new HeyGenAuthError(r.status);
+      continue; // v3 already accepted this key — a retired v2 endpoint refusing it is not a bad key
+    }
     if (r.status === 404) continue; // not this kind — try the next endpoint
     const d = r.data;
     if (r.ok && d && (d.preview_image_url || d.preview_video_url || d.name || d.avatar_name || d.talking_photo_name)) {
