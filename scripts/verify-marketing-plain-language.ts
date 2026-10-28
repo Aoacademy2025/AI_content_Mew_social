@@ -6,8 +6,8 @@ import { PLAN_CONFIG_DEFAULTS } from "../src/lib/plan-config";
 
 const marketingSources = [
   "src/app/page.tsx",
-  "src/components/marketing/studio-workbench.tsx",
-  "src/components/marketing/product-feature-visual.tsx",
+  "src/components/marketing/sale-v3/editor-demo.tsx",
+  "src/components/marketing/sale-v3/page-behaviors.tsx",
   "src/components/marketing/pricing-toggle.tsx",
 ];
 
