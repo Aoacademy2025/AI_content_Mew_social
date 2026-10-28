@@ -1,38 +1,21 @@
 import Image from "next/image";
 import Link from "next/link";
 import Script from "next/script";
-import {
-  ArrowRight,
-  Check,
-  ChevronRight,
-  CirclePlay,
-  FileText,
-  Flame,
-  Images,
-  Layers3,
-  Plus,
-  Sparkles,
-  SwatchBook,
-  WandSparkles,
-} from "lucide-react";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
-import { ShowcaseClip } from "@/components/marketing/showcase-clip";
-import { SaleBackground } from "@/components/marketing/marketing-fx";
-import { ContainerScroll, Reveal, SpotlightCard } from "@/components/marketing/motion-fx";
-import { StudioWorkbench } from "@/components/marketing/studio-workbench";
-import { ProductFeatureVisual } from "@/components/marketing/product-feature-visual";
-import { MobileStickyCta } from "@/components/marketing/mobile-sticky-cta";
+import { EditorDemo } from "@/components/marketing/sale-v3/editor-demo";
+import { PageBehaviors } from "@/components/marketing/sale-v3/page-behaviors";
 import { getFoundingCoupon } from "@/lib/founding";
 import { getPlanConfig } from "@/lib/plan-config";
 import { promptpayMonthlyOffered } from "@/lib/promptpay-monthly";
+import "./sale-v3.css";
 
 export const metadata = {
-  title: "HERO AI Creator Studio — จากไอเดีย ถึงคลิปพร้อมโพสต์",
+  title: "HERO AI Creator Studio — สคริปต์เดียว ได้คลิปสั้นพร้อมซับไทย",
   description:
-    "ทีมคอนเทนต์ AI ในระบบเดียว ช่วยคิดประโยคเปิด เขียนสคริปต์ สร้างภาพให้ตรงแบรนด์ พากย์เสียง ใส่ภาพประกอบ ซับไทย และตัดต่อคลิปพร้อมโพสต์",
+    "เสียงพากย์ ซับไทยตรงเสียง ภาพประกอบเปลี่ยนตามเนื้อหา และเพลง ครบในคลิปเดียว ทำบนเว็บก็ได้ หรือสั่งจากแชท AI ที่คุณใช้อยู่ เช่น Claude",
   openGraph: {
-    title: "HERO AI Creator Studio — จากไอเดีย ถึงคลิปพร้อมโพสต์",
-    description: "คิดสคริปต์ คุมภาพตามแบรนด์ สร้างเสียง และตัดต่อคลิป สำหรับครีเอเตอร์ไทยในระบบเดียว",
+    title: "HERO AI Creator Studio — สคริปต์เดียว ได้คลิปสั้นพร้อมซับไทย",
+    description: "ทำคลิปสั้นพร้อมเสียงพากย์ ซับไทย ภาพประกอบ และเพลง บนเว็บ หรือสั่งจากแชท AI ที่คุณใช้อยู่",
     url: "https://studio.heroaiengine.com",
     type: "website",
   },
@@ -40,9 +23,11 @@ export const metadata = {
 
 export const revalidate = 60;
 
-const ACCENT = "linear-gradient(135deg,#9D7BFF 0%,#7857F6 55%,#6844EF 100%)";
-const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
-const BODY = { fontFamily: "'IBM Plex Sans Thai', sans-serif" } as const;
+// Display fonts only this page uses (the caption faces in the demo and the mono timecodes).
+const PAGE_FONTS =
+  "https://fonts.googleapis.com/css2?family=Kanit:wght@500;800;900&family=Prompt:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap";
+const MCP_URL = "https://studio.heroaiengine.com/api/mcp";
+const TRY = "ทดลอง PRO ฟรี 7 วัน";
 
 async function getFounding() {
   try {
@@ -63,95 +48,89 @@ async function getFounding() {
 const MANAGED = process.env.MANAGED_GEMINI === "1";
 const MINUTE_QUOTA = process.env.MINUTE_QUOTA === "1";
 
-const PRODUCT_PILLARS = [
-  {
-    id: "script",
-    eyebrow: "01 · ช่วยคิดและเขียนสคริปต์",
-    title: "เริ่มได้ตั้งแต่ยังมีแค่หัวข้อ",
-    desc: "แตกไอเดียเป็นหลายมุม เลือกประโยคเปิดที่ดึงความสนใจ และเขียนสคริปต์ภาษาไทยให้ครบ พร้อมส่งต่อไปยังหน้าตัดต่อทันที",
-    icon: FileText,
-    chips: ["ประโยคเปิดหลายมุม", "สคริปต์ไทยธรรมชาติ", "จำข้อมูลแบรนด์"],
-    signal: "หัวข้อ → ประโยคเปิด → สคริปต์",
-  },
-  {
-    id: "visual",
-    eyebrow: "02 · คุมภาพให้ตรงแบรนด์",
-    title: "ทุกซีนพูดภาษาภาพของแบรนด์เดียวกัน",
-    desc: "เลือกแนวภาพครั้งเดียว ระบบจะรักษาสี อารมณ์ และสไตล์ให้ต่อเนื่องทั้งคลิป พร้อมเปลี่ยนหรือสร้างภาพใหม่เฉพาะฉากได้",
-    icon: SwatchBook,
-    chips: ["แนวภาพ 5 รูปแบบ", "ภาพต่อเนื่องทั้งเรื่อง", "สร้างใหม่เฉพาะฉาก"],
-    signal: "แบรนด์ → ฉาก → ภาพที่เป็นชุดเดียวกัน",
-  },
-  {
-    id: "editor",
-    eyebrow: "03 · ตัดต่อครบในที่เดียว",
-    title: "ระบบลงแรงให้ก่อน คุณคุมจังหวะสุดท้าย",
-    desc: "ระบบใส่ซับไทย ภาพประกอบ พิธีกร AI ข้อความเปิดเรื่อง และเพลงให้ก่อน คุณยังปรับภาพ คำ และจังหวะได้ก่อนส่งออก",
-    icon: WandSparkles,
-    chips: ["ซับตรงเสียง", "เลือกภาพประกอบอัตโนมัติ", "กลับมาแก้ได้"],
-    signal: "ประกอบคลิป → ปรับจังหวะ → ส่งออก",
-  },
-  {
-    id: "studio",
-    eyebrow: "04 · สร้างภาพและเสียง",
-    title: "ภาพและเสียงพร้อมใช้ ไม่ต้องสลับหลายแอป",
-    desc: "สร้างภาพประกอบและเสียงพากย์จากที่เดียว แล้วนำกลับมาใช้ในคลิปได้ทันที ไม่ต้องดาวน์โหลดหรือย้ายไฟล์ไปมาหลายแอป",
-    icon: Images,
-    chips: ["สร้างภาพด้วย AI", "สร้างเสียงพากย์", "พร้อมใช้ในคลิป"],
-    signal: "ภาพ + เสียง → คลิปของคุณ",
-  },
+const OUTPUTS = [
+  { k: "avatar", src: "", title: "พิธีกร AI หน้าของมิวเอง", desc: "พิธีกรพูดตลอดคลิป ภาพประกอบเปลี่ยนด้านหลังทุกไม่กี่วินาที ซับไทยตามเสียง" },
+  { k: "brownie", src: "สั่งจากแชท", title: "ขายของ: กล่องบราวนี่", desc: "พาดหัวเปิดคลิป ภาพสินค้าจาก Hero AI Image ซับเด้ง ปิดด้วยราคาและช่องทางสั่ง" },
+  { k: "locked", src: "ทำบนเว็บ", title: "ข่าว + พิธีกร", desc: "อัปคลิปพิธีกร ระบบใส่ซับไฮไลต์และภาพประกอบสลับให้" },
+  { k: "digital", src: "ทำบนเว็บ", title: "สอนใช้งาน", desc: "ภาพวิดีโอจริงจากคลัง เลือกให้ตรงกับแต่ละประโยค" },
+  { k: "pixza", src: "ทำบนเว็บ", title: "มาสคอตแบรนด์", desc: "ใช้ภาพของแบรนด์เอง ซับกล่องเรียบ เพลงซีเนมาติก" },
 ] as const;
 
-const VISUAL_FORMATS = [
-  { src: "/brand-visual-formats/cinematic-realism.webp", name: "สมจริงแบบภาพยนตร์", note: "สมจริง · มีมิติ" },
-  { src: "/brand-visual-formats/simple-editorial-story.webp", name: "เรียบง่ายแบบบทความ", note: "เรียบ · เล่าเรื่องชัด" },
-  { src: "/brand-visual-formats/dramatic-comic.webp", name: "การ์ตูนเข้มข้น", note: "พลังสูง · สะดุดตา" },
-  { src: "/brand-visual-formats/clear-infographic.webp", name: "อินโฟกราฟิกชัดเจน", note: "ความรู้ · เข้าใจง่าย" },
-  { src: "/brand-visual-formats/retro-story.webp", name: "ย้อนยุคอบอุ่น", note: "อบอุ่น · มีคาแรกเตอร์" },
-] as const;
-
-const SHOWCASE = [
-  { src: "/showcase/showcase-1.mp4", poster: "/showcase/showcase-1.jpg", tag: "เล่าเรื่องสร้างเพจ", detail: "พิธีกร AI · ซับคำเด้ง" },
-  { src: "/showcase/showcase-3.mp4", poster: "/showcase/showcase-3.jpg", tag: "แรงบันดาลใจ", detail: "ไม่ต้องออกกล้อง · ภาพประกอบแบบภาพยนตร์" },
-  { src: "/showcase/showcase-2.mp4", poster: "/showcase/showcase-2.jpg", tag: "ไลฟ์สไตล์", detail: "ไม่ต้องออกกล้อง · ซับตรงเสียง" },
+const STYLES = [
+  { c: "s-viral", title: "เด้งไวรัล", desc: "ขอบดำ เด้งเข้าทีละการ์ด" },
+  { c: "s-shadow", title: "เงาเข้ม", desc: "เงานุ่ม อ่านง่ายบนทุกภาพ" },
+  { c: "s-outline", title: "ขอบหนา", desc: "ตัวหนังสือคม เห็นชัดจากไกล" },
+  { c: "s-clean", title: "มินิมอล", desc: "กล่องเรียบ เหมาะกับงานแบรนด์" },
 ] as const;
 
 const STEPS = [
-  { n: "01", title: "ใส่หัวข้อหรือสคริปต์", desc: "เริ่มจากประโยคเดียว หรือใช้สคริปต์ที่มีอยู่แล้วก็ได้" },
-  { n: "02", title: "เลือกตัวตนของคลิป", desc: "ตั้งภาพ เสียง พิธีกร AI ซับ และจังหวะให้ตรงแบรนด์" },
-  { n: "03", title: "สร้าง ปรับ แล้วโพสต์", desc: "ระบบประกอบให้ก่อน คุณแก้รายซีนและส่งออกเมื่อพร้อม" },
-] as const;
+  { t: "0:00", title: "พิมพ์สั่ง", desc: "บอกสคริปต์ เสียง และสไตล์ที่อยากได้" },
+  { t: "0:05", title: "AI เช็กโควตาให้", desc: "ทุกงานมีเพดานโควตา ถ้าต้องใช้เกิน ระบบหยุดรอให้คุณยืนยันบนเว็บก่อน" },
+  { t: "0:08", title: "HERO สร้างคลิป", desc: "ปกติ 3–6 นาที ถ้ามีพิธีกร AI ประมาณ 15–25 นาที" },
+  { t: "4:20", title: "ดูภาพตัวอย่าง", desc: "ขอดูภาพวินาทีไหนก็ได้" },
+  { t: "4:40", title: "สั่งแก้", desc: "แก้กี่รอบก็ได้ ไม่เสียเพิ่ม", free: true },
+  { t: "5:30", title: "ส่งออก", desc: "ได้ไฟล์พร้อมโพสต์ และลิงก์เปิดแก้ต่อบนเว็บ" },
+];
 
-const FAQS = [
+const PROMPTS = [
+  { q: "ทำคลิป 60 วิจากสคริปต์นี้ ซับตัวใหญ่เน้นคำ เพลงสนุก แล้วขอดูภาพที่วินาทีที่ 5 ก่อนส่งออก", tag: "คลิปแรก" },
+  { q: "เขียนสคริปต์รีวิวร้านกาแฟนี้ยาว 45 วิ แล้วทำเป็นคลิปเสียงผู้หญิง โทนอบอุ่น", tag: "ให้ AI เขียนให้ด้วย" },
+  { q: "ทำคลิปจากสคริปต์นี้ ใส่พิธีกรเปิด 5 วิกับปิด 5 วิ", tag: "มีพิธีกร AI" },
+  { q: "คลิปล่าสุด การ์ดซับที่ 2 กับ 3 รวมเป็นการ์ดเดียว แล้วเปลี่ยนพาดหัวเป็น “เงินเดือนออกปุ๊บ หายปั๊บ?”", tag: "แก้คลิปเดิม" },
+  { q: "ช่วงวินาทีที่ 10 ถึง 15 ใช้รูปสินค้าที่ฉันแนบไป แทนภาพเดิม", tag: "ใส่ภาพของคุณ" },
+  { q: "ทำ 3 คลิปจาก 3 สคริปต์นี้ ใช้สไตล์ซับเดียวกันทุกคลิป เสร็จแล้วส่งลิงก์ดาวน์โหลดมาทีเดียว", tag: "ทำทีละหลายคลิป" },
+];
+
+const TOOLS: { title: string; tag?: string; desc: string }[] = [
+  { title: "ชุดสไตล์สำเร็จรูป 8 แบบ", desc: "เลือกครั้งเดียว ได้ทั้งโทนภาพ ฟอนต์ และสีซับที่เข้ากัน" },
+  { title: "ซับไทย 17 สไตล์", desc: "เน้นคำสำคัญ ใส่การ์ดตัวเลข แก้ข้อความทีละการ์ด" },
+  { title: "เสียงพากย์ 15 แบบ", desc: "หรือใช้เสียงโคลนของคุณผ่านบัญชี ElevenLabs" },
+  { title: "พิธีกร AI", tag: "ค่าใช้จ่ายแยก", desc: "ใช้บัญชี HeyGen ของคุณ เปิดคลิป ปิดคลิป หรือทั้งคลิป" },
+  { title: "อัปคลิปของคุณเอง", desc: "ระบบตัดช่วงเงียบ ใส่ซับ และภาพประกอบให้" },
+  { title: "เพลง เสียงประกอบ และโลโก้", desc: "คลังเพลงพร้อมใช้ ใส่โลโก้แบรนด์มุมคลิป" },
+  { title: "เขียนสคริปต์ด้วย AI", tag: "แผน PRO ขึ้นไป", desc: "ใส่หัวข้อ ได้สคริปต์ภาษาไทยพร้อมทำคลิป" },
+  { title: "ใส่ภาพเองทีละช่วง", desc: "ลากภาพหรือคลิปของคุณไปวางแทนช่วงไหนก็ได้" },
+];
+
+const FAQ_AGENT = [
+  { q: "ต้องเขียนโค้ดเป็นไหม", a: "ไม่ต้อง ถ้าใช้ Claude แค่วางลิงก์ในหน้า Connectors แล้วล็อกอิน ใช้เวลาประมาณ 2 นาที" },
+  { q: "AI ตัวไหนใช้ได้บ้าง", a: "AI ที่รองรับตัวเชื่อมต่อ (Connector) ใช้ได้ทั้งหมด ตัวที่ลูกค้าใช้งานจริงแล้วจะมีจุดสีเขียวในส่วนวิธีเชื่อม" },
+  { q: "เสียเงินเพิ่มไหม", a: "ไม่เสีย AI ของคุณใช้โควตาเดียวกับแผนที่คุณจ่ายอยู่ ยกเว้นพิธีกร AI ที่ใช้บัญชี HeyGen ของคุณเอง" },
+  { q: "ปลอดภัยไหม AI จะเห็นอะไรบ้าง", a: "AI เห็นเฉพาะงานคลิปในบัญชีคุณ ไม่เห็นรหัสผ่านหรือข้อมูลการจ่ายเงิน และลบตัวเชื่อมต่อออกได้ทุกเมื่อ" },
+  { q: "แก้คลิปก่อนส่งออกได้ไหม", a: "ได้ สั่งแก้ซับ เพลง ภาพ หรือขอดูภาพตัวอย่างได้เรื่อย ๆ แก้กี่รอบก็ไม่ตัดโควตาเพิ่ม" },
+  { q: "เชื่อมไม่ติดทำอย่างไร", a: "ตรวจว่าล็อกอินบัญชี HERO แผน PRO ขึ้นไปหรืออยู่ในช่วงทดลอง แล้วลองลบตัวเชื่อมต่อและเพิ่มใหม่ ถ้ายังไม่ได้ แจ้งทีมงานจากปุ่มช่วยเหลือในแอป" },
+  { q: "คลิปที่ได้ไปอยู่ที่ไหน", a: "อยู่ในบัญชี HERO ของคุณ AI ส่งลิงก์ดาวน์โหลดให้ในแชท และเปิดแก้ต่อบนเว็บได้" },
+];
+
+const FAQ_GENERAL = [
   {
-    q: "ต้องมีสคริปต์ก่อนหรือเปล่า?",
-    a: "ไม่ต้อง เริ่มจากหัวข้อหรือไอเดียสั้นๆ ได้ ระบบจะช่วยคิดประโยคเปิดและร่างสคริปต์ให้ หรือจะนำสคริปต์เดิมมาใช้ก็ได้",
+    q: "ทดลองฟรีต้องใช้บัตรไหม ครบ 7 วันแล้วเกิดอะไรขึ้น",
+    a: `ไม่ต้องใช้บัตร ได้ฟีเจอร์ PRO ครบ 7 วัน รวมการสั่งผ่าน AI${MINUTE_QUOTA ? " (โควตาเรนเดอร์รวม 15 นาที)" : ""} ครบแล้วระบบกลับเป็นแผน Free ให้เอง ไม่มีการตัดเงิน คลิปที่ทำไว้ยังอยู่ครบ`,
   },
   {
-    q: "ทำคลิปโดยไม่ออกกล้องได้ไหม?",
-    a: "ได้ คุณทำคลิปแบบไม่ต้องออกกล้อง ใช้พิธีกร AI หรือผสมภาพของคุณกับพิธีกร AI ในคลิปเดียวกันได้",
-  },
-  {
-    q: "สร้างเสร็จแล้ว ยังกลับมาแก้ได้ไหม?",
-    a: "ได้ คุณกลับมาแก้ข้อความ ซับ ภาพประกอบ เพลง จังหวะ และสร้างภาพใหม่เฉพาะฉากได้ โดยไม่ต้องเริ่มคลิปใหม่",
-  },
-  {
-    q: "ต้องตั้งค่าระบบ AI เองไหม?",
+    q: "ต้องตั้งค่าระบบ AI เองไหม",
     a: MANAGED
-      ? "ไม่ต้อง ระบบเตรียม AI หลักให้พร้อมใช้ ไม่ต้องสมัครหรือใส่รหัสเชื่อมต่อเอง ส่วนพิธีกร AI และการสร้างเสียงจากตัวอย่างเสียงของคุณ สามารถเชื่อมบัญชีเพิ่มภายหลังได้"
-      : "ระบบมีคู่มือพาสมัครและเชื่อมบริการ AI ฟรีทีละขั้น ส่วนพิธีกร AI และการสร้างเสียงจากตัวอย่างเสียงของคุณสามารถเชื่อมเพิ่มภายหลังได้",
+      ? "ไม่ต้อง ระบบเตรียม AI หลักให้พร้อมใช้ ไม่ต้องสมัครหรือใส่รหัสเชื่อมต่อเอง ส่วนพิธีกร AI และเสียงโคลน เชื่อมบัญชีเพิ่มภายหลังได้"
+      : "ระบบมีคู่มือพาสมัครและเชื่อมบริการ AI ฟรีทีละขั้น ส่วนพิธีกร AI และเสียงโคลน เชื่อมบัญชีเพิ่มภายหลังได้",
   },
+  { q: "ยกเลิกแผนรายเดือนได้ไหม", a: "ได้ทุกเมื่อจากหน้าตั้งค่า ใช้ต่อได้จนครบรอบที่จ่ายไว้" },
   {
-    q: "ทดลองใช้ฟรี 7 วัน ได้โควต้าเท่าไร?",
-    a: MINUTE_QUOTA
-      ? "ทดลองฟีเจอร์ Pro ได้ 7 วัน โดยมีโควต้าเรนเดอร์รวม 15 นาที ไม่ต้องใช้บัตร หลังหมดทดลองระบบจะกลับเป็นแผน Free โดยอัตโนมัติ"
-      : "ทดลองฟีเจอร์ Pro ได้ 7 วันโดยไม่ต้องใช้บัตร หลังหมดทดลองระบบจะกลับเป็นแผน Free โดยอัตโนมัติ",
+    q: "แพ็กรายปีตัดเงินอัตโนมัติไหม",
+    a: "ขึ้นอยู่กับวิธีชำระ PromptPay รายปีเป็นการจ่ายครั้งเดียวและไม่ต่ออัตโนมัติ ส่วนบัตรรายปีจะต่อสมาชิกอัตโนมัติ และยกเลิกได้จากหน้าตั้งค่าการชำระเงิน",
   },
-  {
-    q: "แพ็กรายปีตัดเงินอัตโนมัติไหม?",
-    a: "ขึ้นอยู่กับวิธีชำระ: PromptPay รายปีเป็นการจ่ายครั้งเดียวและไม่ต่ออัตโนมัติ ส่วนบัตรรายปีจะต่อสมาชิกอัตโนมัติ และยกเลิกได้จากหน้าตั้งค่าการชำระเงิน",
-  },
-] as const;
+  { q: "ซับภาษาไทยตรงเสียงแค่ไหน", a: "ซับตั้งเวลาตามเสียงพากย์จริง แก้ข้อความได้ทุกการ์ดก่อนส่งออก" },
+  { q: "ใช้เสียงตัวเองได้ไหม", a: "ได้ อัปคลิปที่คุณพูดเอง หรือใช้เสียงโคลนผ่านบัญชี ElevenLabs ของคุณ" },
+];
+
+function Steps({ items }: { items: string[][] }) {
+  return (
+    <ol>
+      {items.map(([b, p]) => (
+        <li key={b}><div><b>{b}</b>{p && <p>{p}</p>}</div></li>
+      ))}
+    </ol>
+  );
+}
 
 export default async function Home() {
   // ADR 0066 — promptpayMonthlyOffered() short-circuits to `false` before any config/DB
@@ -162,245 +141,237 @@ export default async function Home() {
     promptpayMonthlyOffered("PRO"),
     promptpayMonthlyOffered("BUSINESS"),
   ]);
-  const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
-    <div
-      className="sale-v2 relative min-h-screen overflow-x-hidden bg-[#08070c] text-[#f7f4ff] selection:bg-violet-400/30 selection:text-white"
-      style={BODY}
-    >
-      <SaleBackground />
+    <div className="sv3">
+      <link rel="stylesheet" href={PAGE_FONTS} precedence="default" />
 
       {founding?.active && (
-        <div className="founder-glow sticky top-0 z-50 border-b border-violet-300/15 bg-[#0d0a14]/92 backdrop-blur-xl">
-          <div className="mx-auto flex min-h-10 max-w-[1200px] items-center justify-center gap-2.5 px-4 py-1.5 text-[12px] sm:text-[13px]">
-            <Flame className="h-3.5 w-3.5 shrink-0 text-amber-300" strokeWidth={2.4} aria-hidden />
-            <span className="font-semibold text-white">ราคาพิเศษ 100 คนแรก</span>
-            <span className="hidden text-white/48 sm:inline">·</span>
-            <span className="hidden text-white/62 sm:inline">สิทธิ์ราคาผู้ก่อตั้ง {founding.total} คนแรก</span>
-            <span className="hidden h-1.5 w-24 overflow-hidden rounded-full bg-white/10 md:block">
-              <span className="founder-bar-shimmer relative block h-full rounded-full bg-violet-400" style={{ width: `${filled}%` }} />
-            </span>
-            <b className="text-violet-200">เหลือ {founding.remaining}/{founding.total}</b>
-            <Link href="/register" className="ml-1 inline-flex min-h-11 items-center gap-1 font-semibold text-white underline decoration-violet-400 underline-offset-4 focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">
-              รับสิทธิ์ <ArrowRight className="h-3 w-3" aria-hidden />
-            </Link>
-          </div>
+        <div className="bar">
+          สิทธิ์ราคาผู้ก่อตั้ง {founding.total} คนแรก ลด {founding.percentOff}% เมื่อจ่ายรายปี เหลืออีก <b>{founding.remaining}</b> ที่
+          <a href="#pricing">รับสิทธิ์</a>
         </div>
       )}
 
-      <nav className="relative z-20 mx-auto flex max-w-[1200px] items-center justify-between px-5 py-5 lg:px-7">
-        <Link href="/" className="flex min-h-11 items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300" aria-label="HERO AI Creator Studio หน้าแรก">
-          <Image src="/logo.svg" alt="" width={38} height={38} className="rounded-[11px] shadow-[0_0_28px_-5px_rgba(139,92,246,.8)]" />
-          <span className="text-[13px] font-bold tracking-[.04em] text-white" style={HEAD}>
-            HERO AI <span className="hidden font-medium text-white/44 sm:inline">CREATOR STUDIO</span>
-          </span>
-        </Link>
-        <div className="hidden items-center gap-7 text-[13px] text-white/56 md:flex">
-          <Link href="#product" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ระบบ</Link>
-          <Link href="#outputs" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ผลงาน</Link>
-          <Link href="#pricing" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ราคา</Link>
-        </div>
-        <div className="flex items-center gap-2 sm:gap-3">
-          <Link href="/login" className="hidden min-h-11 items-center text-[13px] font-medium text-white/60 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white sm:inline-flex">เข้าสู่ระบบ</Link>
-          <Link href="/register" className="sale-v2-cta inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3.5 text-[13px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08070c] sm:px-4" style={{ background: ACCENT }}>
-            สร้างคลิปฟรี <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+      <nav className="top" aria-label="เมนูหลัก">
+        <div className="wrap">
+          <Link className="logo" href="/" aria-label="HERO AI Creator Studio หน้าแรก">
+            <Image src="/logo.svg" alt="" width={26} height={26} priority />HERO AI <small>Creator Studio</small>
           </Link>
+          <ul>
+            <li><a href="#demo">ลองสั่ง</a></li>
+            <li><a href="#connect">วิธีเชื่อม AI</a></li>
+            <li><a href="#outputs">ผลงาน</a></li>
+            <li><a href="#pricing">ราคา</a></li>
+            <li><a href="#faq">คำถามที่พบบ่อย</a></li>
+          </ul>
+          <div className="end">
+            <Link className="btn btn-line" href="/login">เข้าสู่ระบบ</Link>
+            <Link className="btn btn-main" href="/register">{TRY}</Link>
+          </div>
         </div>
       </nav>
 
-      <main className="relative z-10">
-        <header className="px-5 pb-20 pt-8 sm:pb-24 sm:pt-20 lg:px-7 lg:pb-32 lg:pt-24">
-          <div className="mx-auto grid max-w-[1200px] items-center gap-14 lg:grid-cols-[.83fr_1.17fr] lg:gap-12">
-            <Reveal y={16}>
-              <div className="max-w-[560px]">
-                <div className="mb-7 inline-flex items-center gap-2 border-l-2 border-violet-400 pl-3 text-[11px] font-semibold uppercase tracking-[.16em] text-violet-200/80">
-                  <Sparkles className="h-3.5 w-3.5" aria-hidden /> ระบบทำคลิปครบทุกขั้น · เพื่อครีเอเตอร์ไทย
-                </div>
-                <h1 className="text-[43px] font-bold leading-[1.04] tracking-[-.035em] text-white sm:text-[58px] lg:text-[64px]" style={HEAD}>
-                  จากไอเดีย<br />หนึ่งบรรทัด<br />ถึงคลิป
-                  <span className="sale-v2-gradient-text">พร้อมโพสต์</span>
-                </h1>
-                <p className="mt-7 max-w-[52ch] text-[16px] leading-7 text-[#b6afc3] sm:text-[17px]">
-                  ทีมคอนเทนต์ AI ของคุณในระบบเดียว—ช่วยคิดประโยคเปิด เขียนสคริปต์ สร้างภาพให้ตรงแบรนด์ พากย์เสียง ใส่ภาพประกอบ ซับไทย และตัดต่อจนจบ
-                </p>
-                <div className="mt-8 flex flex-wrap items-center gap-3">
-                  <Link href="/register" className="sale-v2-cta inline-flex min-h-13 items-center gap-2 rounded-[14px] px-6 text-[15px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08070c]" style={{ ...HEAD, background: ACCENT }}>
-                    สร้างคลิปแรกฟรี <ArrowRight className="h-4 w-4" aria-hidden />
-                  </Link>
-                  <Link href="#outputs" className="inline-flex min-h-13 items-center gap-2 rounded-[14px] border border-white/12 bg-white/[0.025] px-5 text-[15px] font-medium text-white/78 transition-colors hover:border-white/25 hover:bg-white/[0.055] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">
-                    <CirclePlay className="h-4 w-4 text-violet-300" aria-hidden /> ดูผลงานจริง
-                  </Link>
-                </div>
-                <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[12.5px] text-white/48">
-                  {[MINUTE_QUOTA ? "PRO ฟรี 7 วัน · 15 นาที" : "PRO ฟรี 7 วัน", "ไม่ใช้บัตร", MANAGED ? "AI หลักระบบดูแลให้" : "มีคู่มือตั้งค่าทีละขั้น"].map((item) => (
-                    <span key={item} className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-300/80" strokeWidth={2.5} aria-hidden /> {item}</span>
-                  ))}
-                </div>
-              </div>
-            </Reveal>
-            <Reveal delay={0.12} y={24}>
-              <ContainerScroll className="sale-v2-workbench-frame">
-                <StudioWorkbench />
-              </ContainerScroll>
-            </Reveal>
-          </div>
-
-          <div className="sale-v2-flowband relative mx-auto mt-20 max-w-[1200px] overflow-hidden border-y border-white/[0.075] py-5 sm:mt-24">
-            <span className="sale-v2-flowpulse absolute inset-y-0 left-0 w-40" aria-hidden />
-            <div className="relative grid grid-cols-2 gap-y-5 text-center sm:grid-cols-4">
-              {["คิดและเขียนสคริปต์", "คุมภาพตามแบรนด์", "ตัดต่อคลิป", "สร้างภาพและเสียง"].map((item, index) => (
-                <div key={item} className="group flex items-center justify-center gap-2.5 text-[11px] font-semibold uppercase tracking-[.12em] text-white/52 sm:border-r sm:border-white/[0.07] sm:last:border-r-0">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-violet-300/25 bg-violet-400/[0.08] font-mono text-[8px] text-violet-200">0{index + 1}</span>
-                  <span className="transition-colors group-hover:text-white">{item}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+      <main>
+        <header className="wrap h3head">
+          <h1><span>สคริปต์เดียว</span> <span>ได้คลิปสั้นพร้อมซับไทย</span></h1>
+          <p className="lede">
+            เสียงพากย์ ซับไทยตรงเสียง ภาพประกอบเปลี่ยนตามเนื้อหา และเพลง ครบในคลิปเดียว <span className="nb">ทำบนเว็บก็ได้</span>{" "}
+            <span className="nb">หรือสั่งจากแชท AI ที่คุณใช้อยู่</span>
+          </p>
+          <div className="cta-row"><Link className="btn btn-main" href="/register">{TRY}</Link></div>
+          <p className="nocard"><b>ไม่ต้องใช้บัตร</b> ครบ 7 วันระบบกลับเป็นแผน Free ให้เอง ไม่มีการตัดเงิน</p>
+          <div className="proof"><i /><span>ลูกค้าสั่งทำคลิปผ่านแชทสำเร็จ <b>205 คลิป</b> ช่วง 14–28 ต.ค. 2569</span></div>
         </header>
 
-        <section className="border-y border-white/[0.06] bg-[#0b0910]/72 px-5 py-20 sm:py-32 lg:px-7">
-          <Reveal>
-            <div className="mx-auto grid max-w-[1200px] gap-7 lg:grid-cols-[.48fr_1fr] lg:items-end">
-              <p className="sale-v2-eyebrow">ไม่ใช่แค่ AI ตัดคลิป</p>
-              <h2 className="max-w-[820px] text-3xl font-semibold leading-[1.22] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>แต่คือระบบที่ส่งต่อความคิดและตัวตนของแบรนด์ไปถึงทุกฉาก</h2>
-            </div>
-          </Reveal>
-        </section>
+        <EditorDemo ctaHref="/register" />
 
-        <section id="product" className="relative scroll-mt-10 overflow-hidden px-5 py-20 sm:py-32 lg:px-7">
-          <div aria-hidden className="absolute left-1/2 top-44 h-[520px] w-[900px] -translate-x-1/2 rounded-full bg-violet-700/[0.07] blur-[130px]" />
-          <div className="relative mx-auto max-w-[1200px]">
-            <Reveal>
-              <div className="grid gap-8 border-b border-white/10 pb-12 md:grid-cols-[.72fr_1fr] md:items-end">
-                <div>
-                  <p className="sale-v2-eyebrow">ระบบเดียวจบทุกขั้น</p>
-                  <h2 className="mt-4 text-3xl font-semibold leading-[1.12] tracking-[-.025em] text-white sm:text-[48px]" style={HEAD}>เห็นงานไหลต่อกัน<br className="hidden md:block" /> ไม่ใช่แค่เห็นรายการฟีเจอร์</h2>
-                </div>
-                <p className="max-w-[560px] text-[16px] leading-8 text-[#b9b1c5] md:justify-self-end">ไอเดีย สคริปต์ ภาพ เสียง และจังหวะตัดต่ออยู่ในบริบทเดียวกัน คุณจึงเห็นทั้งกระบวนการ ไม่ต้องเดาว่าแต่ละระบบเชื่อมกันอย่างไร</p>
-              </div>
-            </Reveal>
-
-            <div className="mt-16 space-y-20 sm:mt-24 sm:space-y-32">
-              {PRODUCT_PILLARS.map(({ id, eyebrow, title, desc, icon: Icon, chips, signal }, index) => (
-                <article key={id} className={`grid items-center gap-10 lg:gap-16 ${index % 2 ? "lg:grid-cols-[1.22fr_.78fr]" : "lg:grid-cols-[.78fr_1.22fr]"}`}>
-                  <Reveal y={22} className={index % 2 ? "lg:order-2 lg:pl-4" : undefined}>
-                    <div className="relative max-w-[470px]">
-                      <span aria-hidden className="absolute -top-12 right-0 select-none font-mono text-[84px] font-semibold leading-none text-violet-300/[0.055] sm:text-[112px]">0{index + 1}</span>
-                      <div className="relative flex items-center gap-3">
-                        <span className="flex h-11 w-11 items-center justify-center rounded-[13px] border border-violet-300/20 bg-violet-400/[0.09] text-violet-100 shadow-[0_0_30px_-14px_rgba(139,92,246,.8)]">
-                          <Icon className="h-5 w-5" strokeWidth={1.8} aria-hidden />
-                        </span>
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[.14em] text-violet-200/80">{eyebrow}</p>
-                          <p className="mt-1 font-mono text-[9px] tracking-[.1em] text-white/28">{signal}</p>
-                        </div>
-                      </div>
-                      <h3 className="relative mt-7 text-[29px] font-semibold leading-[1.24] tracking-[-.025em] text-white sm:text-[37px]" style={HEAD}>{title}</h3>
-                      <p className="mt-5 text-[16px] leading-8 text-[#b9b1c5]">{desc}</p>
-                      <div className="mt-7 flex flex-wrap gap-2">
-                        {chips.map((chip) => <span key={chip} className="rounded-full border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[12px] text-white/66 transition-colors hover:border-violet-300/25 hover:text-white">{chip}</span>)}
-                      </div>
-                    </div>
-                  </Reveal>
-                  <Reveal delay={0.08} y={28} className={index % 2 ? "lg:order-1" : undefined}>
-                    <SpotlightCard className="sale-v2-scene-shell rounded-[26px] border border-white/10 bg-[#0e0c14] p-2 shadow-[0_34px_90px_-44px_rgba(139,92,246,.72)]">
-                      <ProductFeatureVisual id={id} />
-                    </SpotlightCard>
-                  </Reveal>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="overflow-hidden border-y border-white/[0.06] bg-[#0d0b12] px-5 py-20 sm:py-32 lg:px-7">
-          <div className="mx-auto max-w-[1200px]">
-            <Reveal>
-              <div className="grid gap-8 md:grid-cols-[.72fr_1fr] md:items-end">
-                <div>
-                  <p className="sale-v2-eyebrow">ภาพที่จำแบรนด์ของคุณได้</p>
-                  <h2 className="mt-4 max-w-[620px] text-3xl font-semibold leading-[1.18] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เรื่องเดียวกัน<br />เล่าได้ในภาษาภาพของคุณ</h2>
-                </div>
-                <p className="max-w-[560px] text-[15px] leading-7 text-[#aaa3b6] md:justify-self-end">เลือกแนวภาพให้เข้ากับแบรนด์และเนื้อหา ระบบจะรักษาสี อารมณ์ และสไตล์ตลอดทั้งคลิป พร้อมให้เปลี่ยนหรือสร้างใหม่เป็นรายฉาก</p>
-              </div>
-            </Reveal>
-            <div className="sale-v2-format-grid mt-12 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
-              {VISUAL_FORMATS.map(({ src, name, note }, index) => (
-                <Reveal key={src} delay={index * 0.06} className={index === 4 ? "col-span-2 sm:col-span-1" : undefined}>
-                  <figure className="group">
-                    <div className={`relative overflow-hidden rounded-[18px] border border-white/10 bg-[#16131c] ${index === 4 ? "mx-auto aspect-[9/13] max-w-[240px] sm:aspect-[9/16] sm:max-w-none" : "aspect-[9/16]"}`}>
-                      <Image src={src} alt={`ตัวอย่างแนวภาพ ${name}`} fill sizes="(max-width: 640px) 50vw, 20vw" className="object-cover transition duration-700 group-hover:scale-[1.025]" />
-                      <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/10" aria-hidden />
-                      <span className="absolute left-3 top-3 font-mono text-[9px] text-white/52">0{index + 1}</span>
-                      <figcaption className="absolute inset-x-3 bottom-3">
-                        <p className="text-[12px] font-semibold text-white sm:text-[13px]" style={HEAD}>{name}</p>
-                        <p className="mt-0.5 text-[10px] text-white/55">{note}</p>
-                      </figcaption>
-                    </div>
-                  </figure>
-                </Reveal>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="outputs" className="scroll-mt-10 px-5 py-20 sm:py-32 lg:px-7">
-          <div className="mx-auto max-w-[1100px]">
-            <Reveal>
-              <div className="text-center">
-                <p className="sale-v2-eyebrow justify-center">คลิปที่สร้างด้วย HERO AI</p>
-                <h2 className="mx-auto mt-4 max-w-[680px] text-3xl font-semibold leading-[1.18] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>ดูคลิปที่ออกจากระบบจริง</h2>
-                <p className="mx-auto mt-4 max-w-[580px] text-[15px] leading-7 text-[#aaa3b6]">สามแนวคอนเทนต์ สามวิธีเล่าเรื่อง—สร้างและตัดต่อด้วย HERO AI Creator Studio</p>
-              </div>
-            </Reveal>
-            <div className="mx-auto mt-12 grid max-w-[860px] gap-7 sm:grid-cols-3">
-              {SHOWCASE.map(({ src, poster, tag, detail }, index) => (
-                <Reveal key={src} delay={index * 0.08}>
-                  <ShowcaseClip src={src} poster={poster} title={`${tag} · ${detail}`} />
-                  <div className="mt-4 border-l border-violet-300/35 pl-3">
-                    <p className="text-[14px] font-semibold text-white" style={HEAD}>{tag}</p>
-                    <p className="mt-0.5 text-[11px] text-white/42">{detail}</p>
+        <section id="outputs">
+          <div className="wrap">
+            <h2>คลิปจริงที่ทีมเราทำด้วย HERO</h2>
+            <p className="lede">ไฟล์ที่ส่งออกจริง ไม่ได้แต่งเพิ่ม เลื่อนมาถึงแล้วเล่นเอง แตะคลิปเพื่อหยุด</p>
+            <div className="outs outs4">
+              {OUTPUTS.map((o) => (
+                <figure className="out" key={o.k}>
+                  <div className="frame">
+                    <video muted playsInline loop preload="none" poster={`/sale/${o.k}-final.jpg`} data-src={`/sale/${o.k}-final.mp4`} />
+                    {o.src && <span className="src"><i />{o.src}</span>}
                   </div>
-                </Reveal>
+                  <h3>{o.title}</h3>
+                  <p>{o.desc}</p>
+                </figure>
               ))}
+            </div>
+
+            <h3 className="sub-h">คลิปเดียวกัน เปลี่ยนแค่ซับ</h3>
+            <p className="lede">4 สไตล์ที่กดเลือกได้ทันที หรือพิมพ์บอก AI ว่า “เปลี่ยนซับเป็นแบบมินิมอล”</p>
+            <div className="styles" id="styles">
+              {STYLES.map((s) => (
+                <figure className={`sty ${s.c}`} key={s.c}>
+                  <div className="frame">
+                    <video muted playsInline loop preload="none" data-src="/sale/brownie-clean.mp4" poster="/sale/brownie-poster.jpg" />
+                    <div className="sc" />
+                  </div>
+                  <h3>{s.title}</h3>
+                  <p>{s.desc}</p>
+                </figure>
+              ))}
+            </div>
+            <div className="midcta">
+              <Link className="btn btn-main" href="/register">{TRY}</Link>
+              <span><b>ไม่ต้องใช้บัตร</b> ลองทำคลิปของคุณเองได้ภายในวันนี้</span>
             </div>
           </div>
         </section>
 
-        <section className="border-y border-white/[0.06] bg-[#0b0910]/75 px-5 py-20 sm:py-32 lg:px-7">
-          <div className="mx-auto max-w-[1200px]">
-            <Reveal>
-              <div className="grid gap-7 md:grid-cols-[.58fr_1fr] md:items-end">
-                <div>
-                  <p className="sale-v2-eyebrow">3 ขั้นตอนสู่คลิปพร้อมโพสต์</p>
-                  <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มง่าย จบงานได้จริง</h2>
-                </div>
-                <p className="max-w-[550px] text-[15px] leading-7 text-[#aaa3b6] md:justify-self-end">ระบบจัดการงานซ้ำๆ ให้ แต่ยังเปิดพื้นที่ให้คุณตัดสินใจในจุดที่ทำให้คอนเทนต์เป็นของคุณ</p>
+        <section className="sec-tight">
+          <div className="wrap">
+            <h2>ตั้งแต่พิมพ์สั่ง จนได้คลิปพร้อมโพสต์</h2>
+            <div className="rsteps" id="rsteps">
+              <div className="rs-track" aria-hidden="true">
+                <div className="base" /><div className="fill" />
+                <div className="brk"><svg viewBox="0 0 20 16"><path d="M4 14 9 2M11 14 16 2" stroke="#6f6a7d" strokeWidth="1.5" /></svg></div>
+                <div className="head2" />
               </div>
-            </Reveal>
-            <div className="mt-14 grid gap-px overflow-hidden rounded-[22px] border border-white/[0.08] bg-white/[0.08] md:grid-cols-3">
-              {STEPS.map(({ n, title, desc }, index) => (
-                <Reveal key={n} delay={index * 0.08} className="h-full">
-                  <article className="relative h-full bg-[#0d0b12] p-7 sm:p-8">
-                    <span className="font-mono text-[11px] tracking-[.15em] text-violet-300/70">ขั้นที่ {n}</span>
-                    <h3 className="mt-12 text-[21px] font-semibold text-white" style={HEAD}>{title}</h3>
-                    <p className="mt-2 text-[14px] leading-6 text-white/50">{desc}</p>
-                    {index < STEPS.length - 1 && <ChevronRight className="absolute right-5 top-7 hidden h-4 w-4 text-white/18 md:block" aria-hidden />}
-                  </article>
-                </Reveal>
+              <ol>
+                {STEPS.map((s) => (
+                  <li key={s.t}>
+                    <time>{s.t}</time>
+                    <h3>{s.title}</h3>
+                    <p className={s.free ? "free" : undefined}>{s.desc}</p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <p className="rs-note">เวลาโดยประมาณของคลิปยาวราว 30 วินาที</p>
+          </div>
+        </section>
+
+        <section id="connect">
+          <div className="wrap">
+            <h2>เชื่อม AI ของคุณกับ HERO <span className="nb">ใน 3 ขั้น</span></h2>
+            <p className="lede">ทำครั้งเดียว แล้วสั่งได้ทุกแชท ไม่ต้องวางรหัสหรือคีย์ใด ๆ ลงในแชท</p>
+            <div className="connect">
+              <div>
+                <div className="plug" aria-hidden="true">
+                  <span className="node">AI ของคุณ</span>
+                  <svg viewBox="0 0 100 24" preserveAspectRatio="none"><path d="M0 12 H100" /></svg>
+                  <span className="node h">HERO</span>
+                </div>
+                <div className="url">
+                  <span className="label" id="mcp-url-label">ลิงก์ตัวเชื่อมต่อของ HERO</span>
+                  <div className="row2">
+                    <code id="mcp-url" aria-labelledby="mcp-url-label">{MCP_URL}</code>
+                    <button className="btn btn-main" type="button" data-copy="mcp-url">คัดลอก</button>
+                  </div>
+                </div>
+                <div className="legend">
+                  <span><i />ใช้ได้เลย ลูกค้าใช้งานจริงแล้ว</span>
+                  <span><i className="w" />กำลังทดสอบ</span>
+                  <span><i className="s" />สายเทคนิค ตั้งค่าเองด้วยคำสั่ง</span>
+                </div>
+              </div>
+              <div>
+                <div className="tabs" role="tablist" aria-label="เลือก AI ที่คุณใช้">
+                  <button type="button" role="tab" aria-selected="true" aria-controls="p-claude" id="t-claude"><i />Claude</button>
+                  <button type="button" role="tab" aria-selected="false" aria-controls="p-gpt" id="t-gpt" tabIndex={-1}><i className="w" />ChatGPT</button>
+                  <button type="button" role="tab" aria-selected="false" aria-controls="p-grok" id="t-grok" tabIndex={-1}><i className="w" />Grok</button>
+                  <button type="button" role="tab" aria-selected="false" aria-controls="p-dev" id="t-dev" tabIndex={-1}><i className="s" />สายเทคนิค</button>
+                </div>
+                <div className="panel" role="tabpanel" id="p-claude" aria-labelledby="t-claude">
+                  <Steps items={[
+                    ["คัดลอกลิงก์ด้านซ้าย", "ลิงก์เดียวใช้ได้ทุกบัญชี"],
+                    ["เปิด Claude ไปที่ Settings แล้วเลือก Connectors", "กด Add custom connector วางลิงก์ แล้วตั้งชื่อว่า HERO"],
+                    ["กด Connect แล้วล็อกอินบัญชี HERO", "ล็อกอินบนหน้าเว็บ HERO เท่านั้น จากนั้นพิมพ์สั่งทำคลิปได้เลย"],
+                  ]} />
+                  <p className="tested">ลูกค้าใช้งานจริงผ่าน Claude แล้ว</p>
+                </div>
+                <div className="panel" role="tabpanel" id="p-gpt" aria-labelledby="t-gpt" hidden>
+                  <Steps items={[
+                    ["คัดลอกลิงก์ด้านซ้าย", "ลิงก์เดียวใช้ได้ทุกบัญชี"],
+                    ["เปิด ChatGPT ไปที่ Settings แล้วเลือก Apps & Connectors", "เปิด Developer mode แล้วสร้างตัวเชื่อมต่อใหม่ด้วยลิงก์นี้"],
+                    ["ล็อกอินบัญชี HERO แล้วเลือก HERO ในแชท", "จากนั้นพิมพ์สั่งทำคลิปได้เลย"],
+                  ]} />
+                  <p className="tested">กำลังทดสอบกับ ChatGPT ถ้าใช้ Codex อยู่แล้ว ดูแท็บสายเทคนิคได้เลย</p>
+                </div>
+                <div className="panel" role="tabpanel" id="p-grok" aria-labelledby="t-grok" hidden>
+                  <Steps items={[
+                    ["คัดลอกลิงก์ด้านซ้าย", "ลิงก์เดียวใช้ได้ทุกบัญชี"],
+                    ["เพิ่มตัวเชื่อมต่อใน Grok", "ขั้นตอนละเอียดจะใส่หลังทดสอบกับบัญชีจริง"],
+                    ["ล็อกอินบัญชี HERO", "จากนั้นพิมพ์สั่งทำคลิปได้เลย"],
+                  ]} />
+                  <p className="tested">กำลังทดสอบ</p>
+                </div>
+                <div className="panel" role="tabpanel" id="p-dev" aria-labelledby="t-dev" hidden>
+                  <ol>
+                    <li><div><b>สร้างโทเค็นส่วนตัว</b><p>ในแอปไปที่ Settings แท็บ AI Agent (MCP) กดสร้างโทเค็น และเพิกถอนได้ทุกเมื่อจากหน้าเดียวกัน</p></div></li>
+                    <li><div><b>Claude Code</b><pre className="cmd">{`claude mcp add --transport http heroai ${MCP_URL} \\\n  --header "Authorization: Bearer <โทเค็นของคุณ>"`}</pre></div></li>
+                    <li><div><b>Codex</b><pre className="cmd">{`export HEROAI_TOKEN="<โทเค็นของคุณ>"\ncodex mcp add heroai --url ${MCP_URL} \\\n  --bearer-token-env-var HEROAI_TOKEN`}</pre></div></li>
+                    <li><div><b>OpenClaw, Hermes และตัวอื่น ๆ</b><p>หน้า Settings แท็บเดียวกันมีคำสั่งพร้อมโทเค็นของคุณให้คัดลอก</p></div></li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="sec-tight">
+          <div className="wrap">
+            <h2>ลองสั่งแบบนี้</h2>
+            <p className="lede">คัดลอกไปวางในแชท แล้วเปลี่ยนเนื้อหาเป็นของคุณ</p>
+            <div className="bubbles">
+              {PROMPTS.map((p) => (
+                <figure className="bub" key={p.tag}>
+                  <blockquote>{p.q}</blockquote>
+                  <figcaption><span>{p.tag}</span><button className="copy" type="button" data-copy="prev">คัดลอก</button></figcaption>
+                </figure>
               ))}
             </div>
           </div>
         </section>
 
-        <section id="pricing" className="scroll-mt-8 px-5 py-20 sm:py-32 lg:px-7">
-          <div className="mx-auto max-w-[1200px] text-center">
-            <Reveal>
-              <p className="sale-v2-eyebrow justify-center">แพ็กเกจและราคา</p>
-              <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มฟรี แล้วค่อยโตตามงาน</h2>
-              <p className="mx-auto mt-4 max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">ลองทำคลิปจริงก่อนตัดสินใจ ทุกแพ็กแสดงสิทธิ์และโควต้าล่าสุดจากระบบ</p>
-            </Reveal>
+        <section className="sec-tight">
+          <div className="wrap">
+            <h2>อยากลงมือเองบนเว็บ ก็มีครบ</h2>
+            <div className="tools">
+              {TOOLS.map((t) => (
+                <div key={t.title}><h3>{t.title}</h3>{t.tag && <em>{t.tag}</em>}<p>{t.desc}</p></div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="trust">
+          <div className="wrap">
+            <div>
+              <h2><span className="nb">AI ทำงานแทน</span> <span className="nb">แต่คุณคุมทุกบาท</span></h2>
+              <p className="lede">ตั้งใจออกแบบให้ AI สั่งงานได้เร็ว โดยไม่มีอะไรเกิดขึ้นลับหลังคุณ</p>
+            </div>
+            <ul>
+              <li>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="8" width="14" height="10" rx="2" stroke="#c4b5fd" strokeWidth="1.6" /><path d="M6.5 8V6a3.5 3.5 0 0 1 7 0v2" stroke="#c4b5fd" strokeWidth="1.6" /></svg>
+                <div><b>ล็อกอินบนหน้า HERO เท่านั้น</b><span>ไม่ต้องวางรหัสผ่านหรือคีย์ใด ๆ ลงในแชท และลบตัวเชื่อมต่อออกได้ทุกเมื่อ</span></div>
+              </li>
+              <li>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 3h12v14l-2-1.5L12 17l-2-1.5L8 17l-2-1.5L4 17V3Z" stroke="#c4b5fd" strokeWidth="1.6" strokeLinejoin="round" /><path d="M7 7.5h6M7 10.5h4" stroke="#c4b5fd" strokeWidth="1.6" strokeLinecap="round" /></svg>
+                <div><b>ทุกงานมีเพดานโควตา</b><span>ถ้างานไหนต้องใช้เกินที่ประเมินไว้ ระบบหยุดรอให้คุณยืนยันบนเว็บก่อน หรือขอให้ AI ประเมินค่าใช้จ่ายก่อนเริ่มก็ได้</span></div>
+              </li>
+              <li>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M13.5 3.5l3 3L7 16H4v-3l9.5-9.5Z" stroke="#c4b5fd" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+                <div><b>แก้กี่รอบก็ไม่ตัดโควตาเพิ่ม</b><span>แก้ซับ เพลง ภาพ กี่รอบก็ได้ และส่งออกซ้ำก็ไม่ตัดโควตาเพิ่ม</span></div>
+              </li>
+              <li>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2" stroke="#c4b5fd" strokeWidth="1.6" /><path d="M3 8h14" stroke="#c4b5fd" strokeWidth="1.6" /></svg>
+                <div><b>ทุกคลิปอยู่ในบัญชีคุณ</b><span>คลิปที่ AI สั่งทำ เปิดดูและแก้ต่อบนเว็บได้เหมือนคลิปที่คุณทำเอง</span></div>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="pricing" className="pricing">
+          <div className="wrap">
+            <h2>เลือกแผนที่เหมาะกับจำนวนคลิปของคุณ</h2>
+            <p className="lede">AI ของคุณใช้โควตาเดียวกับแผน ไม่มีค่าเชื่อมต่อแยก ส่วนแผน Free ทำบนเว็บได้ แต่สั่งผ่าน AI ไม่ได้</p>
             <PricingToggle
               plans={plans}
               founding={founding}
@@ -410,59 +381,59 @@ export default async function Home() {
           </div>
         </section>
 
-        <section className="border-t border-white/[0.06] px-5 py-20 sm:py-32 lg:px-7">
-          <div className="mx-auto grid max-w-[1040px] gap-12 md:grid-cols-[.52fr_1fr]">
-            <Reveal>
-              <div className="md:sticky md:top-10">
-                <p className="sale-v2-eyebrow">คำถามที่พบบ่อย</p>
-                <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[42px]" style={HEAD}>คำถามก่อนเริ่ม</h2>
-                <p className="mt-4 max-w-[330px] text-[14px] leading-6 text-white/46">สิ่งที่ครีเอเตอร์มักอยากรู้ ก่อนทำคลิปแรกกับ HERO AI</p>
+        <section id="faq" className="sec-tight">
+          <div className="wrap faq">
+            <div><h2>คำถามที่พบบ่อย</h2></div>
+            <div>
+              <div className="tabs" role="tablist" aria-label="หมวดคำถาม">
+                <button type="button" role="tab" aria-selected="true" aria-controls="f-general" id="ft-general">ทดลองและราคา</button>
+                <button type="button" role="tab" aria-selected="false" aria-controls="f-agent" id="ft-agent" tabIndex={-1}>สั่งผ่าน AI</button>
               </div>
-            </Reveal>
-            <div className="border-t border-white/10">
-              {FAQS.map(({ q, a }, index) => (
-                <Reveal key={q} delay={index * 0.04}>
-                  <details className="group border-b border-white/[0.08]">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-5 py-6 text-left text-[16px] font-semibold text-white/88 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-violet-200 [&::-webkit-details-marker]:hidden" style={HEAD}>
-                      {q}<Plus className="h-4 w-4 shrink-0 text-violet-300 transition-transform duration-200 group-open:rotate-45" strokeWidth={2} aria-hidden />
-                    </summary>
-                    <p className="max-w-[650px] pb-6 pr-8 text-[14px] leading-7 text-[#aaa3b6]">{a}</p>
-                  </details>
-                </Reveal>
-              ))}
+              <div className="panel" role="tabpanel" id="f-general" aria-labelledby="ft-general">
+                {FAQ_GENERAL.map((f, i) => (
+                  <details key={f.q} open={i === 0}><summary>{f.q}</summary><p>{f.a}</p></details>
+                ))}
+              </div>
+              <div className="panel" role="tabpanel" id="f-agent" aria-labelledby="ft-agent" hidden>
+                {FAQ_AGENT.map((f) => (
+                  <details key={f.q}><summary>{f.q}</summary><p>{f.a}</p></details>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="final">
+          <div className="wrap">
+            <div className="box">
+              <h2><span className="nb">คลิปถัดไปของคุณ</span> <span className="nb">เริ่มจากสคริปต์เดียว</span></h2>
+              <div>
+                <div className="cta-row"><Link className="btn btn-main" href="/register">{TRY}</Link></div>
+                <p className="under">
+                  <b>ไม่ต้องใช้บัตร</b> ครบ 7 วันกลับเป็น Free เอง
+                  {founding?.active ? ` ราคาผู้ก่อตั้งเหลือ ${founding.remaining} ที่` : ""}
+                </p>
+              </div>
+              <svg className="fwave" viewBox="0 0 255 40" preserveAspectRatio="none" aria-hidden="true"><path id="fwave" /></svg>
             </div>
           </div>
         </section>
       </main>
 
-      <footer className="relative z-10 border-t border-white/[0.07] bg-[#0b0910] px-5 pb-28 pt-20 text-center sm:pb-14 sm:pt-28 lg:px-7">
-        <Reveal>
-          <div className="mx-auto max-w-[860px]">
-            <div className="mx-auto mb-7 flex h-12 w-12 items-center justify-center rounded-[15px] border border-violet-300/18 bg-violet-400/[0.08] text-violet-200"><Layers3 className="h-5 w-5" strokeWidth={1.8} aria-hidden /></div>
-            <p className="sale-v2-eyebrow justify-center">เริ่มคอนเทนต์ชิ้นต่อไปตรงนี้</p>
-            <h2 className="mt-5 text-[36px] font-semibold leading-[1.12] tracking-[-.03em] text-white sm:text-[54px]" style={HEAD}>ไอเดียต่อไปของคุณ<br />ไม่ควรจบอยู่ในโน้ต</h2>
-            {founding?.active ? (
-              <p className="mx-auto mt-5 max-w-[560px] text-[15px] text-[#aaa3b6]">สิทธิ์ราคาผู้ก่อตั้งเหลือ {founding.remaining}/{founding.total} ที่</p>
-            ) : (
-              <p className="mx-auto mt-5 max-w-[560px] text-[15px] text-[#aaa3b6]">เริ่มจากหัวข้อเดียว แล้วให้ HERO AI พาไปจนถึงคลิปพร้อมโพสต์</p>
-            )}
-            <Link href="/register" className="sale-v2-cta mt-8 inline-flex min-h-14 items-center gap-2 rounded-[15px] px-8 text-[16px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b0910]" style={{ ...HEAD, background: ACCENT }}>
-              สร้างคลิปแรกฟรี <ArrowRight className="h-4 w-4" aria-hidden />
-            </Link>
-            <p className="mt-4 text-[12.5px] text-white/38">PRO ฟรี 7 วัน · ไม่ใช้บัตร · เริ่มได้ทันที</p>
-            <a href="https://affiliate.heroaiengine.com/affiliate-program" className="mt-6 inline-flex min-h-11 items-center text-[12px] text-white/36 underline-offset-4 transition-colors hover:text-white/70 hover:underline focus-visible:outline-none focus-visible:text-white sm:mt-8">ร่วมแนะนำ HERO AI — รับค่าตอบแทน 25% ทุกเดือน</a>
-          </div>
-        </Reveal>
-        <div className="mx-auto mt-20 flex max-w-[1200px] flex-col items-center justify-between gap-4 border-t border-white/[0.07] pt-7 text-[11px] text-white/28 sm:flex-row">
-          <div className="flex items-center gap-2">
-            <Image src="/logo.svg" alt="" width={24} height={24} className="rounded-[7px] opacity-75" />
-            <span className="font-semibold tracking-[.08em] text-white/42" style={HEAD}>HERO AI CREATOR STUDIO</span>
-          </div>
-          <p>© 2026 HERO AI Creator Studio</p>
+      <footer>
+        <div className="wrap">
+          <span>© 2026 HERO AI Creator Studio</span>
+          <a href="https://affiliate.heroaiengine.com/affiliate-program">ร่วมแนะนำ HERO AI รับค่าตอบแทน 25% ทุกเดือน</a>
+          <Link href="/login">เข้าสู่ระบบ</Link>
         </div>
       </footer>
 
-      <MobileStickyCta />
+      <div className="mcta">
+        <small>ไม่ต้อง<br />ใช้บัตร</small>
+        <Link className="btn btn-main" href="/register">{TRY}</Link>
+      </div>
+
+      <PageBehaviors />
       <Script src="https://affiliate.heroaiengine.com/scripts/affiliate-tracking.js" strategy="afterInteractive" />
     </div>
   );
