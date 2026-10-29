@@ -170,6 +170,12 @@ async function main() {
     const descendant = await createVideoJob(shared.id, { mode: "export", sourceJobId: racing[0].jobId }, "descendant", { type: "export" });
     assert.equal(descendant.budgetQuoteId, raceQuote.quoteId);
     await assert.rejects(createReservedImageJob({ ...imageInput(0), userId: shared.id, inputJson: JSON.stringify({ videoJobId: descendant.id }), idempotencyKey: `broll-window:${descendant.id}:reroll` }), VideoBudgetHoldError);
+    await prisma.creditBalance.update({ where: { userId: shared.id }, data: { purchased: currentQuotePricing().perImageCredits } });
+    const sceneReroll = await createReservedImageJob({ ...imageInput(0), userId: shared.id, inputJson: JSON.stringify({ videoJobId: descendant.id }), idempotencyKey: `broll-window:${descendant.id}:scene-reroll`, productSurface: "scene_reroll" });
+    assert.equal(sceneReroll.ok && sceneReroll.job.budgetQuoteId, null);
+    await prisma.creditBalance.update({ where: { userId: shared.id }, data: { purchased: currentQuotePricing().perImageCredits } });
+    const sceneReroll = await createReservedImageJob({ ...imageInput(0), userId: shared.id, inputJson: JSON.stringify({ videoJobId: descendant.id }), idempotencyKey: `broll-window:${descendant.id}:scene-reroll`, productSurface: "scene_reroll" });
+    assert.equal(sceneReroll.ok && sceneReroll.job.budgetQuoteId, null);
     const trial = await prisma.user.create({ data: { name: "Trial", email: "budget-trial@example.test", role: "USER", plan: "PRO", minutesLimit: 5, usagePeriodStartedAt: new Date(), trialStartedAt: new Date(), trialEndsAt: new Date(Date.now() + 86400000) } });
     const trialQuote = await quotes.prepareVideoQuote(trial, { script: "A short trial narration.", brollSource: "hero-ai-image" });
     assert.equal(trialQuote.imageCreditCeiling, 0);
