@@ -139,7 +139,39 @@ function main() {
     "WEB-13: our own Step1Script.tsx frames must be kept",
   );
 
-  console.log("verify-frontend-error-noise: 15/15 passed");
+  // HERO-89: routine browser AbortError teardown (stopPolling / useEffect cleanup) must be treated as noise.
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "AbortError",
+      message: "signal is aborted without reason",
+      filenames: [
+        "app:///_next/static/chunks/1209-6d7f73c8c1bcd531.js",
+        "./src/app/(dashboard)/video-editor/_v2/useV2Job.ts",
+      ],
+    }),
+    true,
+    "HERO-89: AbortError signal is aborted without reason must be noise",
+  );
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "Error",
+      message: "AbortError: The user aborted a request.",
+      filenames: ["./src/app/(dashboard)/video-editor/_v2/useV2Job.ts"],
+    }),
+    true,
+    "HERO-89: AbortError The user aborted a request must be noise",
+  );
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "AbortError",
+      message: "video_job_poll_500",
+      filenames: ["./src/app/(dashboard)/video-editor/_v2/useV2Job.ts"],
+    }),
+    false,
+    "HERO-89: non-routine error messages must never be dropped even if type is AbortError",
+  );
+
+  console.log("verify-frontend-error-noise: 18/18 passed");
 }
 
 main();

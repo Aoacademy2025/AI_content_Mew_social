@@ -49,11 +49,11 @@ export function TelemetryProvider() {
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
       const message = event.message || "Window error";
+      const errorName = event.error instanceof Error ? event.error.name : "ErrorEvent";
       const stack = stackSnippet(event.error);
-      if (isThirdPartyFrontendNoise({ message, stack, filenames: event.filename ? [event.filename] : [] })) {
+      if (isThirdPartyFrontendNoise({ type: errorName, message, stack, filenames: event.filename ? [event.filename] : [] })) {
         return;
       }
-      const errorName = event.error instanceof Error ? event.error.name : "ErrorEvent";
       trackEvent("frontend_error", {
         category: "error",
         status: "error",
@@ -77,7 +77,7 @@ export function TelemetryProvider() {
       const errorName = event.reason instanceof Error ? event.reason.name : "UnhandledRejection";
       const stack = stackSnippet(event.reason);
       const message = reason || "Unhandled promise rejection";
-      if (isThirdPartyFrontendNoise({ message, stack })) {
+      if (isThirdPartyFrontendNoise({ type: errorName, message, stack })) {
         return;
       }
       trackEvent("frontend_error", {

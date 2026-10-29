@@ -53,8 +53,13 @@ export function SaveProjectLookPrompt({
         setPreflightId(exactPreflightId);
         setSource(visualSource);
       })
-      .catch((error) => { if ((error as Error).name !== "AbortError") setSource("error"); });
-    return () => controller.abort();
+      .catch((error) => {
+        if (controller.signal.aborted || (error as { name?: string } | null)?.name === "AbortError") return;
+        setSource("error");
+      });
+    return () => {
+      try { controller.abort(); } catch {}
+    };
   }, [brandLibraryAllowed, projectId, videoJobId]);
 
   if (!brandLibraryAllowed || !projectId || !videoJobId || source === "brand-revision" || source === "error") return null;

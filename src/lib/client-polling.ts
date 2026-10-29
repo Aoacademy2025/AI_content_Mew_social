@@ -15,7 +15,7 @@ export type ClientPoller = {
 };
 
 type ClientPollerOptions = {
-  task(signal: AbortSignal): Promise<void>;
+  task(signal: AbortSignal, complete: () => void): Promise<void>;
   isActive(): boolean;
   isVisible(): boolean;
   nextDelayMs(context: ClientPollContext): number | null;
@@ -45,6 +45,17 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
     timer = null;
   };
 
+  const abortInFlight = () => {
+    const active = controller;
+    controller = null;
+    if (!active || active.signal.aborted) return;
+    try {
+      active.abort();
+    } catch {
+      // Ignore synchronous abort listener errors during teardown.
+    }
+  };
+
   const arm = (delayMs: number) => {
     if (stopped || timer !== null || controller !== null) return;
     timer = schedule(() => {
@@ -57,8 +68,7 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
     stopped = true;
     wakeAfterRun = false;
     clearScheduled();
-    controller?.abort();
-    controller = null;
+    abortInFlight();
   };
 
   const run = async () => {
@@ -71,10 +81,13 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
 
     const currentController = new AbortController();
     controller = currentController;
+    const markComplete = () => {
+      if (controller === currentController) controller = null;
+    };
     try {
-      await options.task(currentController.signal);
+      await options.task(currentController.signal, markComplete);
       if (!currentController.signal.aborted) failures = 0;
-    } catch (error) {
+    } catch {
       if (!currentController.signal.aborted) failures += 1;
     } finally {
       if (controller === currentController) controller = null;
@@ -110,8 +123,7 @@ export function createClientPoller(options: ClientPollerOptions): ClientPoller {
       stopped = true;
       wakeAfterRun = false;
       clearScheduled();
-      controller?.abort();
-      controller = null;
+      abortInFlight();
     },
     wake() {
       if (stopped) return;

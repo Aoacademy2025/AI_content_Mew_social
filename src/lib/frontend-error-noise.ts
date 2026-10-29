@@ -1,7 +1,7 @@
 /**
- * Third-party browser noise shared by Sentry `beforeSend` and first-party
- * `frontend_error` telemetry. One rule, two capture points — so insights cannot
- * keep writing rows that Sentry already drops.
+ * Third-party browser noise and routine client AbortController teardown shared
+ * by Sentry `beforeSend` and first-party `frontend_error` telemetry. One rule,
+ * two capture points — so insights cannot keep writing rows that Sentry already drops.
  *
  * Never treat Clerk SDK-load or sign-in/sign-up failures as noise. Those leave
  * the visitor without auth and must stay visible.
@@ -9,6 +9,13 @@
 
 export const FOREIGN_BROWSER_API =
   /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers|\bEmptyRanges\b)/i;
+
+// HERO-89 (HERO-STUDIO-WEB-20/21/1Z/1V/1W/1T/1S): routine browser AbortController.abort()
+// during job poll completion (`stopPolling()`), autosave timeout/cancelation, or React
+// `useEffect` unmount cleanup surfaces in some browsers as an unhandled rejection with
+// the standard DOMException AbortError message.
+export const ROUTINE_BROWSER_ABORT_ERROR =
+  /(?:^|\bAbortError:\s*)(?:signal is aborted without reason|The user aborted a request\.?|The operation was aborted\.?|Fetch is aborted\.?)(?:\s*$)/i;
 
 // Ops batch 2026-10-12 (HERO-STUDIO-WEB-14, 1,563 events since 09-25): `app:///scripts/` was
 // the only triple-slash path treated as injected, so a stack with ONLY `app:///executors/
@@ -33,6 +40,20 @@ export function isProtectedFrontendAuthError(text: string): boolean {
   return PROTECTED_AUTH_FAILURE.test(text);
 }
 
+export function isRoutineBrowserAbortNoise(input: {
+  message?: string | null;
+  type?: string | null;
+}): boolean {
+  const message = String(input.message ?? "").trim();
+  const type = String(input.type ?? "").trim();
+  const combined = type ? `${type}: ${message}` : message;
+  if (isProtectedFrontendAuthError(combined)) return false;
+  return (
+    ROUTINE_BROWSER_ABORT_ERROR.test(message) ||
+    ROUTINE_BROWSER_ABORT_ERROR.test(combined)
+  );
+}
+
 function filenamesFromStack(stack: string | null | undefined): string[] {
   if (!stack) return [];
   const names: string[] = [];
@@ -47,11 +68,13 @@ function filenamesFromStack(stack: string | null | undefined): string[] {
 
 export function isThirdPartyFrontendNoise(input: {
   message?: string | null;
+  type?: string | null;
   stack?: string | null;
   filenames?: readonly string[] | null;
 }): boolean {
   const message = String(input.message ?? "");
   if (isProtectedFrontendAuthError(message)) return false;
+  if (isRoutineBrowserAbortNoise({ message, type: input.type })) return true;
   if (FOREIGN_BROWSER_API.test(message)) return true;
 
   const filenames = [

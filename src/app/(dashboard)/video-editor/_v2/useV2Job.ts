@@ -275,6 +275,7 @@ export function useV2Job(p: V2Project) {
     generation: number,
     requestId: number,
     signal: AbortSignal,
+    completePollRequest?: () => void,
   ) => {
     try {
       const res = await authenticatedFetch(`/api/videos/jobs/${encodeURIComponent(jobId)}`, { signal });
@@ -288,6 +289,7 @@ export function useV2Job(p: V2Project) {
       })) return;
       if (res.status === 404) {
         lastAppliedPollRequestRef.current = requestId;
+        completePollRequest?.();
         stopPolling();
         try { browserStorage()?.removeItem(storageKey(p.projectId)); } catch {}
         setJob(IDLE);
@@ -304,9 +306,10 @@ export function useV2Job(p: V2Project) {
         lastAppliedRequestId: lastAppliedPollRequestRef.current,
       })) return;
       lastAppliedPollRequestRef.current = requestId;
+      completePollRequest?.();
       applyStatus(d);
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return;
       throw error;
     }
   }, [applyStatus, p.projectId, stopPolling]);
@@ -316,9 +319,9 @@ export function useV2Job(p: V2Project) {
     jobIdRef.current = jobId;
     const generation = pollGenerationRef.current;
     const poller = createClientPoller({
-      task: (signal) => {
+      task: (signal, complete) => {
         const requestId = ++pollRequestSequenceRef.current;
-        return pollOnce(jobId, generation, requestId, signal);
+        return pollOnce(jobId, generation, requestId, signal, complete);
       },
       isActive: () => (
         generation === pollGenerationRef.current

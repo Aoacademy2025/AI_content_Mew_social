@@ -59,13 +59,15 @@ export function useEditorStylePresets(input: {
         const values = Array.isArray(data?.presets) ? data.presets : [];
         setPresets(values.map(parseEditorStylePreset).filter((preset): preset is EditorStylePreset => Boolean(preset)));
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (controller.signal.aborted || (error as { name?: string } | null)?.name === "AbortError") return;
         toast.error(error instanceof Error ? error.message : "โหลดพรีเซ็ตไม่สำเร็จ");
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
     })();
-    return () => controller.abort();
+    return () => {
+      try { controller.abort(); } catch {}
+    };
   }, []);
 
   const subtitle = useMemo(
