@@ -1338,6 +1338,106 @@ async function main() {
     check("broll-asset-lib normalize + Ken Burns pass -an", (assetLib.match(/"-an"/g) ?? []).length >= 2);
   });
 
+  // ── HERO-65: replace_broll_window with source:"hero-ai-image", treatment, and prompt ──
+  await section("HERO-65) replace_broll_window(source: hero-ai-image) with optional treatment and prompt", async () => {
+    const heroRoot = await heldRootVia(styler);
+    const editState = await callTool(styler.token, "get_edit_state", { jobId: heroRoot.root.id });
+    const allowed = (editState.allowed ?? {}) as Json;
+    check(
+      "get_edit_state.allowed.brollImageTreatments lists all 8 treatment presets",
+      Array.isArray(allowed.brollImageTreatments) && (allowed.brollImageTreatments as unknown[]).length === 8,
+      JSON.stringify(allowed.brollImageTreatments),
+    );
+    const badPromptWithoutHero = await callTool(styler.token, NEW_TOOL, {
+      jobId: heroRoot.root.id,
+      windowIndex: 1,
+      source: "original",
+      prompt: "barista pouring coffee",
+    });
+    check("prompt with source!=hero-ai-image → invalid_input", badPromptWithoutHero.error === "invalid_input", JSON.stringify(badPromptWithoutHero));
+
+    const badTreatment = await callTool(styler.token, NEW_TOOL, {
+      jobId: heroRoot.root.id,
+      windowIndex: 1,
+      source: "hero-ai-image",
+      treatment: "not-a-valid-treatment",
+    });
+    check("invalid treatment → invalid_input", badTreatment.error === "invalid_input", JSON.stringify(badTreatment));
+
+    const tooLongPrompt = await callTool(styler.token, NEW_TOOL, {
+      jobId: heroRoot.root.id,
+      windowIndex: 1,
+      source: "hero-ai-image",
+      prompt: "x".repeat(501),
+    });
+    check("prompt > 500 chars → invalid_input", tooLongPrompt.error === "invalid_input", JSON.stringify(tooLongPrompt));
+
+    const brollGenMod = fromSrc("lib/broll-window-generate.server") as typeof import("../src/lib/broll-window-generate.server");
+    const seenHeroCalls: Array<{ sceneIndex: number; treatment?: string; prompt?: string }> = [];
+    brollGenMod.setMcpHeroBrollWindowGeneratorForTests(async (input) => {
+      seenHeroCalls.push({ sceneIndex: input.sceneIndex, treatment: input.treatment, prompt: input.prompt });
+      const imageJob = await prisma.aiGenerationJob.create({
+        data: {
+          userId: input.user.id,
+          kind: "image",
+          provider: "runpod",
+          model: "z-image-turbo",
+          status: "completed",
+          chargeState: "settled",
+          productSurface: "scene_reroll",
+          creditCost: 2,
+          fundingSource: "credits",
+          outputUrl: "/api/renders/mcp-hero-test.webp",
+          inputJson: JSON.stringify({ videoJobId: input.sourceVideoJobId, sceneIndex: input.sceneIndex }),
+        },
+      });
+      const outFile = `broll-ai-mcp-test-${imageJob.id}.mp4`;
+      const outPath = path.join(stocksDir, outFile);
+      fs.copyFileSync(fixture("with-audio.mp4"), outPath);
+      const src = `/api/stocks/${outFile}`;
+      await prisma.sceneRerollDerivative.create({
+        data: {
+          userId: input.user.id,
+          imageJobId: imageJob.id,
+          sourceVideoJobId: input.sourceVideoJobId,
+          sceneIndex: input.sceneIndex,
+          src,
+        },
+      });
+      return {
+        ok: true,
+        src,
+        imageJobId: imageJob.id,
+        clipDuration: 5,
+        creditsSpent: 2,
+      };
+    });
+    try {
+      const heroReply = await callTool(styler.token, NEW_TOOL, {
+        jobId: heroRoot.root.id,
+        windowIndex: 1,
+        source: "hero-ai-image",
+        treatment: "premium-product-lifestyle",
+        prompt: "A warm morning coffee pour on a wooden bar counter",
+      });
+      check("replace_broll_window(source: hero-ai-image) succeeds", heroReply.ok === true && heroReply.source === "hero-ai-image" && typeof heroReply.imageJobId === "string", JSON.stringify(heroReply));
+      check("generator received treatment + prompt", seenHeroCalls.length === 1 && seenHeroCalls[0]?.treatment === "premium-product-lifestyle" && seenHeroCalls[0]?.prompt === "A warm morning coffee pour on a wooden bar counter", JSON.stringify(seenHeroCalls));
+
+      const draftAfterHero = await storedDraft(heroRoot.projectId);
+      const aiEdit = draftAfterHero?.windowEdits.find((e) => e.index === 1);
+      check("pending draft stores replacementKind=ai and imageJobId", aiEdit?.replacementKind === "ai" && aiEdit?.imageJobId === heroReply.imageJobId, JSON.stringify(aiEdit));
+
+      const exportHero = await callTool(styler.token, "export_video", { jobId: heroRoot.root.id });
+      check("export_video with hero-ai-image window starts rerendering", exportHero.status === "rerendering" && typeof exportHero.rerenderJobId === "string", JSON.stringify(exportHero));
+      const rrDone = await runJob(String(exportHero.rerenderJobId), styler.user.id);
+      check("rerender with hero-ai-image window completes and consumes derivative", rrDone.status === "done", JSON.stringify({ status: rrDone.status, error: rrDone.errorMessage }));
+      const derivativeRow = await prisma.sceneRerollDerivative.findFirst({ where: { imageJobId: String(heroReply.imageJobId) } });
+      check("SceneRerollDerivative marked applied after rerender", derivativeRow?.status === "applied" && derivativeRow?.appliedVideoJobId === rrDone.id, JSON.stringify(derivativeRow));
+    } finally {
+      brollGenMod.setMcpHeroBrollWindowGeneratorForTests(null);
+    }
+  });
+
   // ── L ──
   await section("L) wiring + G14 envelopes", async () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> };

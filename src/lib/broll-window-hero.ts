@@ -1,5 +1,10 @@
 import type { AiImageStyle } from "@/lib/ai-image-policy";
 import {
+  isTreatmentPresetId,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import { MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH } from "@/lib/brand-visual-system";
+import {
   normalizeBrollVisualStyle,
   type BrollVisualStyle,
 } from "@/lib/broll-preferences";
@@ -7,6 +12,8 @@ import { planHeroAiWindowGeneration } from "@/lib/hero-ai-broll";
 
 const VIDEO_JOB_ID = /^[A-Za-z0-9_-]{8,120}$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export type HeroBrollCustomPrompt = string;
+
 export type HeroBrollWindowRequest = {
   requestId: string;
   videoJobId: string;
@@ -14,6 +21,8 @@ export type HeroBrollWindowRequest = {
   durationSec: number;
   kenBurnsDurationSec: number;
   idempotencyKey: string;
+  treatment?: TreatmentPresetId;
+  prompt?: HeroBrollCustomPrompt;
 };
 
 export type HeroBrollWindowRequestResult =
@@ -62,6 +71,30 @@ export function parseHeroBrollWindowRequest(body: unknown): HeroBrollWindowReque
   if (typeof raw.durationSec !== "number" || !Number.isFinite(raw.durationSec) || raw.durationSec <= 0) {
     return { ok: false, error: "invalid_duration", message: "ระยะเวลา B-roll ไม่ถูกต้อง" };
   }
+  let treatment: TreatmentPresetId | undefined;
+  if (raw.treatment !== undefined && raw.treatment !== null && raw.treatment !== "") {
+    if (!isTreatmentPresetId(raw.treatment)) {
+      return { ok: false, error: "invalid_treatment", message: "สไตล์ภาพที่เลือกไม่ถูกต้อง" };
+    }
+    treatment = raw.treatment;
+  }
+  let prompt: HeroBrollCustomPrompt | undefined;
+  if (raw.prompt !== undefined && raw.prompt !== null) {
+    if (typeof raw.prompt !== "string") {
+      return { ok: false, error: "invalid_prompt", message: "คำอธิบายฉากไม่ถูกต้อง" };
+    }
+    const trimmedPrompt = raw.prompt.trim();
+    if (trimmedPrompt.length > MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH) {
+      return {
+        ok: false,
+        error: "prompt_too_long",
+        message: `คำอธิบายฉากยาวเกินไป (สูงสุด ${MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH} ตัวอักษร)`,
+      };
+    }
+    if (trimmedPrompt.length > 0) {
+      prompt = trimmedPrompt;
+    }
+  }
   const sceneIndex = Number(raw.sceneIndex);
   const durationSec = Math.min(600, raw.durationSec);
   const kenBurnsDurationSec = planHeroAiWindowGeneration(
@@ -77,6 +110,8 @@ export function parseHeroBrollWindowRequest(body: unknown): HeroBrollWindowReque
       durationSec,
       kenBurnsDurationSec,
       idempotencyKey: `broll-window:${raw.videoJobId}:scene:${sceneIndex}:request:${raw.requestId}`,
+      ...(treatment ? { treatment } : {}),
+      ...(prompt ? { prompt } : {}),
     },
   };
 }

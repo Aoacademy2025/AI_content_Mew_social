@@ -88,7 +88,7 @@ export type NormalizeResult = { status: "skipped" | "normalized" | "failed"; dur
  * resolveSafeInputDemuxer) is passed by callers that hand us user-uploaded bytes, and
  * pins the demuxer so a playlist disguised as media is never opened as one.
  */
-export type FfmpegInputOptions = { inputFormat?: SafeInputDemuxer };
+export type FfmpegInputOptions = { inputFormat?: SafeInputDemuxer; aspectRatio?: "9:16" | "16:9" | "1:1" | "4:5" };
 
 function ffmpegInputArgs({ inputFormat }: FfmpegInputOptions): string[] {
   return inputFormat ? safeInputArgs(inputFormat) : ["-protocol_whitelist", "file"];
@@ -332,7 +332,14 @@ export async function applyKenBurns(
   // Measured effect on a real export: ~12 levels darker with crushed blacks (backlog #10).
   // `out_range=tv` does a REAL numeric rescale here (not just a tag), converging the still
   // onto the same tv/bt709 domain as everything else it gets composited with.
-  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase:out_range=tv,crop=1350:2400,zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
+  const kbDimensions = options.aspectRatio === "16:9"
+    ? { outW: 1920, outH: 1080, scaleW: 2400, scaleH: 1350 }
+    : options.aspectRatio === "1:1"
+      ? { outW: 1080, outH: 1080, scaleW: 1350, scaleH: 1350 }
+      : options.aspectRatio === "4:5"
+        ? { outW: 1080, outH: 1350, scaleW: 1350, scaleH: 1688 }
+        : { outW: KEN_BURNS_WIDTH, outH: KEN_BURNS_HEIGHT, scaleW: 1350, scaleH: 2400 };
+  const zoompan = `scale=${kbDimensions.scaleW}:${kbDimensions.scaleH}:force_original_aspect_ratio=increase:out_range=tv,crop=${kbDimensions.scaleW}:${kbDimensions.scaleH},zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${kbDimensions.outW}x${kbDimensions.outH}:fps=${TARGET_FPS}`;
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [

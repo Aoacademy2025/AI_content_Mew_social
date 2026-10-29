@@ -21,6 +21,7 @@ import {
   brandLookIdentityKey,
   brandVisualIdentityKey,
   compileBrandVisualPrompt,
+  visualBeatFromCustomPrompt,
   type ActiveVisualFormatId,
   type BrandVisualLanguage,
   type CompiledBrandVisualPrompt,
@@ -992,6 +993,8 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
   videoJobId: string;
   sceneIndex: number;
   sceneRenderingDirection?: SceneRenderingDirection;
+  treatmentPresetId?: TreatmentPresetId;
+  customPrompt?: string;
 }): Promise<ResolvedProjectVisualPrompt | null> {
   const job = await prisma.videoJob.findFirst({
     where: { id: input.videoJobId, userId: input.userId },
@@ -1151,6 +1154,14 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
   const phase: VisualBeat["phase"] = beat.sequence === beats[0].sequence
     ? "hook"
     : beat.sequence === beats[beats.length - 1].sequence ? "close" : "explain";
+  const overrideTreatmentPin = input.treatmentPresetId
+    ? createCatalogTreatmentPin(input.treatmentPresetId, "creator")
+    : undefined;
+  const effectiveTreatmentPin = overrideTreatmentPin ?? context.treatmentPin;
+  const trimmedCustomPrompt = input.customPrompt?.trim() ?? "";
+  const customVisualBeat = trimmedCustomPrompt.length > 0
+    ? visualBeatFromCustomPrompt(trimmedCustomPrompt, phase)
+    : undefined;
   return {
     projectId: job.projectId,
     visualBeatId: beat.id,
@@ -1161,14 +1172,16 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       visualFormatId: context.visualFormatId,
       recipeVersion: context.recipeVersion,
       contentDomain: preflight.contentDomain,
-      treatment: context.treatmentPin
-        ? treatmentPromptDirection(context.treatmentPin)
+      treatment: effectiveTreatmentPin
+        ? treatmentPromptDirection(effectiveTreatmentPin)
         : context.treatment,
-      ...(context.treatmentPin ? { treatmentPin: context.treatmentPin } : {}),
+      ...(effectiveTreatmentPin ? { treatmentPin: effectiveTreatmentPin } : {}),
       brandVisualLanguage: context.brandVisualLanguage,
-      visualBeat: { ...beatValue, entityRenderingDescriptions, phase },
+      visualBeat: customVisualBeat ?? { ...beatValue, entityRenderingDescriptions, phase },
       sceneRenderingDirection: input.sceneRenderingDirection,
-      sceneShotScale: shotScaleAmong(beats, beat.id, beatValue.action),
+      sceneShotScale: customVisualBeat
+        ? shotScaleForAction(customVisualBeat.subject)
+        : shotScaleAmong(beats, beat.id, beatValue.action),
     }),
   };
 }

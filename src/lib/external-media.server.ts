@@ -67,8 +67,11 @@ export async function validateExternalMediaExport(input: { userId: string; sourc
   // MediaImport identity authorizes URL, upload-link and native web uploads.
   const effectiveWindows = mediaWindows(effective);
   const sources = windows.filter(w => w.required && w.state === "ready").map(w => String(effectiveWindows[w.index]?.src ?? ""));
-  const owned = sources.length ? await prisma.mediaImport.findMany({ where: { userId: input.userId, resultSrc: { in: sources }, purpose: { in: ["broll_image", "broll_video"] }, status: "ready" }, select: { resultSrc: true } }) : [];
-  const readySources = new Set(owned.map(row => row.resultSrc));
+  const [owned, ownedDerivatives] = sources.length ? await Promise.all([
+    prisma.mediaImport.findMany({ where: { userId: input.userId, resultSrc: { in: sources }, purpose: { in: ["broll_image", "broll_video"] }, status: "ready" }, select: { resultSrc: true } }),
+    prisma.sceneRerollDerivative.findMany({ where: { userId: input.userId, src: { in: sources }, status: { in: ["ready", "applied"] } }, select: { src: true } }),
+  ]) : [[], []];
+  const readySources = new Set([...owned.map(row => row.resultSrc), ...ownedDerivatives.map(row => row.src)]);
   for (const window of windows) {
     if (window.required && window.state === "ready" && !readySources.has(String(effectiveWindows[window.index]?.src))) {
       window.state = "failed"; window.importError = "import_missing";
@@ -94,8 +97,11 @@ export async function validateExternalWindowEdits(userId: string, sourceJobId: s
     && isPresenterHookWindow(context.preview!, JSON.parse(context.root.inputJson).cutawayLayout, e.index));
   if (hook) return { error: "window_locked_presenter_hook", code: "window_locked_presenter_hook", message: "ช่วงเปิดคลิปเป็นคนพูด เลือกช่วง B-roll อื่น", next: "เรียก get_edit_state แล้วเลือกช่วง B-roll ที่ต้องใส่สื่อ", windowIndices: [hook.index], windows: [] };
   const sources = edits.flatMap(e => e.src ? [e.src] : []);
-  const rows = sources.length ? await prisma.mediaImport.findMany({ where: { userId, status: "ready", purpose: { in: ["broll_image", "broll_video"] }, resultSrc: { in: sources } }, select: { resultSrc: true } }) : [];
-  const owned = new Set(rows.map(r => r.resultSrc));
+  const [rows, derivativeRows] = sources.length ? await Promise.all([
+    prisma.mediaImport.findMany({ where: { userId, status: "ready", purpose: { in: ["broll_image", "broll_video"] }, resultSrc: { in: sources } }, select: { resultSrc: true } }),
+    prisma.sceneRerollDerivative.findMany({ where: { userId, src: { in: sources }, status: { in: ["ready", "applied"] } }, select: { src: true } }),
+  ]) : [[], []];
+  const owned = new Set([...rows.map(r => r.resultSrc), ...derivativeRows.map(r => r.src)]);
   const missing = edits.filter(e => e.src && !owned.has(e.src)).map(e => ({ index: e.index, required: true, owner: "broll" as const, state: "failed" as const, importError: "import_missing" }));
   return missing.length ? requiredMediaFailure(missing) : null;
 }

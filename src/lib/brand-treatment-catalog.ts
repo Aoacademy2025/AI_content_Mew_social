@@ -111,6 +111,10 @@ export const treatmentPinSchema = z.object({
 
 export type TreatmentPin = z.infer<typeof treatmentPinSchema>;
 
+export function isTreatmentPresetId(value: unknown): value is TreatmentPresetId {
+  return typeof value === "string" && (TREATMENT_PRESET_IDS as readonly string[]).includes(value);
+}
+
 export function treatmentPreset(id: TreatmentPresetId): TreatmentPreset {
   const preset = presetById.get(id);
   if (!preset) throw new Error("Unsupported Treatment Preset");

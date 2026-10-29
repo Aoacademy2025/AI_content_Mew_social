@@ -63,7 +63,9 @@ export type PendingEditWindowEdit = {
   index: number;
   src: string | null;
   importId?: string;
-  /** "upload" / "original", or "style" = only `transition`/`fit` change (src stays null). */
+  imageJobId?: string;
+  clipDuration?: number;
+  /** "upload" / "original" / "ai", or "style" = only `transition`/`fit` change (src stays null). */
   replacementKind: string;
   /** EP5 #11: how this window ends ("default" = drop its own value, follow the project default). */
   transition?: BrollTransitionEdit;
@@ -186,6 +188,8 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       || (item.index as number) < 0
       || (item.src !== null && typeof item.src !== "string")
       || (item.importId !== undefined && typeof item.importId !== "string")
+      || (item.imageJobId !== undefined && typeof item.imageJobId !== "string")
+      || (item.clipDuration !== undefined && (typeof item.clipDuration !== "number" || !Number.isFinite(item.clipDuration) || item.clipDuration <= 0))
       || typeof item.replacementKind !== "string"
       || (item.transition !== undefined && !isBrollTransitionEdit(item.transition))
       || (item.fit !== undefined && !isBrollFit(item.fit))
@@ -194,6 +198,10 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       index: item.index as number,
       src: item.src as string | null,
       ...(typeof item.importId === "string" ? { importId: item.importId } : {}),
+      ...(typeof item.imageJobId === "string" ? { imageJobId: item.imageJobId } : {}),
+      ...(typeof item.clipDuration === "number" && Number.isFinite(item.clipDuration) && item.clipDuration > 0
+        ? { clipDuration: item.clipDuration }
+        : {}),
       replacementKind: item.replacementKind,
       ...(isBrollTransitionEdit(item.transition) ? { transition: item.transition } : {}),
       ...(isBrollFit(item.fit) ? { fit: item.fit } : {}),

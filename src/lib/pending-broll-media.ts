@@ -16,6 +16,30 @@ export function resolvePendingWindowMedia(rootPreview: VideoJobPreviewData | nul
       return { index: edit.index, status: "ready", edit: { index: edit.index, src: row.resultSrc, enabled: true, replacementKind: "upload", ...(row.purpose === "broll_image" ? { stillImage: true } : {}), ...(row.durationMs && row.durationMs > 0 ? { clipDuration: row.durationMs / 1000 } : {}), ...style } };
     }
     if (edit.replacementKind === "style") return { index: edit.index, status: "ready", edit: { index: edit.index, ...style } };
+    if (edit.replacementKind === "ai") {
+      if (
+        typeof edit.src !== "string"
+        || !/^\/api\/stocks\/[\w.-]+\.mp4$/.test(edit.src)
+        || typeof edit.imageJobId !== "string"
+        || !edit.imageJobId
+      ) {
+        return { index: edit.index, status: "failed", error: "import_missing" };
+      }
+      return {
+        index: edit.index,
+        status: "ready",
+        edit: {
+          index: edit.index,
+          src: edit.src,
+          enabled: true,
+          replacementKind: "ai",
+          imageJobId: edit.imageJobId,
+          stillImage: true,
+          ...(typeof edit.clipDuration === "number" && edit.clipDuration > 0 ? { clipDuration: edit.clipDuration } : {}),
+          ...style,
+        },
+      };
+    }
     const original = mediaWindows(rootPreview?.config)[edit.index];
     if (edit.replacementKind !== "original" || !rootPreview || !original) return { index: edit.index, status: "failed", error: "original_unavailable" };
     // Resetting an empty external original hides the slot; the immutable requirement remains.

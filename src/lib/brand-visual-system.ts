@@ -128,6 +128,23 @@ export type HardSceneFacts = {
 
 export type SceneSafetyBoundary = "none" | "medical-illustration" | "real-person-context-only";
 
+export const MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH = 500;
+
+export function visualBeatFromCustomPrompt(
+  customPrompt: string,
+  phase: VisualBeatPhase = "explain",
+): VisualBeat {
+  const sanitized = v3PositiveArtDirectionValue(customPrompt, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH);
+  return {
+    phase,
+    subject: sanitized || "one coherent subject acting in a clear setting",
+    action: "",
+    setting: "",
+    emotion: "",
+    emphasis: "",
+  };
+}
+
 export type VisualBeat = {
   phase: VisualBeatPhase;
   subject: string;
@@ -1210,7 +1227,7 @@ function compileBrandVisualPromptV3(input: {
   }
 
   const beat = input.visualBeat;
-  const safeSubject = v3PositiveArtDirectionValue(beat.subject);
+  const safeSubject = v3PositiveArtDirectionValue(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH);
   const safeAction = v3PositiveArtDirectionValue(beat.action);
   const safeSetting = v3PositiveArtDirectionValue(beat.setting);
   const safeEmotion = v3PositiveArtDirectionValue(beat.emotion);
@@ -1493,7 +1510,7 @@ function countSafeFlexibleSceneDirectionV8(beat: VisualBeat): string {
     ].filter(Boolean).join(", ");
   }
   return [
-    letteringSafeVisualValueV8(beat.subject),
+    letteringSafeVisualValueV8(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     letteringSafeVisualValueV8(beat.action),
     beat.setting ? `set in ${letteringSafeVisualValueV8(beat.setting)}` : "",
     beat.emotion ? `the mood feels ${letteringSafeVisualValueV8(beat.emotion)}` : "",
@@ -1587,7 +1604,7 @@ function positiveOnlyVisualBeatV9(beat: VisualBeat): VisualBeat {
   const facts = beat.hardSceneFacts;
   return {
     ...beat,
-    subject: positiveOnlyVisualValueV9(beat.subject),
+    subject: positiveOnlyVisualValueV9(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     action: positiveOnlyVisualValueV9(beat.action),
     setting: positiveOnlyVisualValueV9(beat.setting),
     emotion: positiveOnlyVisualValueV9(beat.emotion),
@@ -1624,7 +1641,7 @@ function completedResultVisualBeatV10(beat: VisualBeat): VisualBeat {
   const facts = beat.hardSceneFacts;
   return {
     ...beat,
-    subject: completedResultVisualValueV10(beat.subject),
+    subject: completedResultVisualValueV10(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     action: completedResultVisualValueV10(beat.action),
     setting: completedResultVisualValueV10(beat.setting),
     emotion: completedResultVisualValueV10(beat.emotion),
@@ -1665,7 +1682,7 @@ function compileBrandVisualPromptV4(input: {
 
   const beat = input.visualBeat;
   const scene = [
-    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     v3PositiveArtDirectionValue(beat.action),
     beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
     beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
@@ -1732,7 +1749,7 @@ function compileBrandVisualPromptV5(input: {
 
   const beat = input.visualBeat;
   const scene = [
-    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     v3PositiveArtDirectionValue(beat.action),
     beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
     beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
@@ -1800,7 +1817,7 @@ function compileBrandVisualPromptV6(input: {
 
   const beat = input.visualBeat;
   const scene = [
-    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.subject, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH),
     v3PositiveArtDirectionValue(beat.action),
     beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
     beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
