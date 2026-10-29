@@ -122,6 +122,30 @@ async function main() {
   assert.doesNotMatch(badgeSource, /setInterval/);
   assert.match(badgeSource, /hasRunningJob \? 15_000 : 60_000/);
 
+  // HERO-89: calling stop() inside task after complete() is invoked (e.g. when a video job
+  // reaches status="done" and applyStatus(d) calls stopPolling()) must not abort the already
+  // settled request signal or emit a spurious AbortError.
+  let taskSignalAbortedWhenStoppedInsideTask = false;
+  const selfStoppingPoller = createClientPoller({
+    task: async (signal, complete) => {
+      complete();
+      selfStoppingPoller.stop();
+      taskSignalAbortedWhenStoppedInsideTask = signal.aborted;
+    },
+    isActive: () => true,
+    isVisible: () => true,
+    nextDelayMs: () => 5_000,
+    schedule,
+    cancel,
+  });
+  selfStoppingPoller.start();
+  await advance(0);
+  assert.equal(
+    taskSignalAbortedWhenStoppedInsideTask,
+    false,
+    "HERO-89: complete() before stop() inside task must not abort the completed poll signal",
+  );
+
   console.log("client polling verification passed");
 }
 

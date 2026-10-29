@@ -305,7 +305,67 @@ function main() {
   });
   assert(errorWithGetter, "an error event carrying a getter-only property must not be dropped");
 
-  console.log("verify-sentry-config: 42/42 passed");
+  // HERO-89 (WEB-20/21/1Z/1V/1W/1T/1S): routine browser AbortController teardown
+  // must be dropped before leaving the browser, while real errors on the same files stay reported.
+  assert.strictEqual(
+    beforeSendSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "AbortError",
+            value: "signal is aborted without reason",
+            stacktrace: {
+              frames: [
+                { filename: "app:///_next/static/chunks/1209-6d7f73c8c1bcd531.js" },
+                { filename: "./src/app/(dashboard)/video-editor/_v2/useV2Job.ts" },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+    null,
+    "HERO-89: WEB-20/21 AbortError signal is aborted without reason must be dropped",
+  );
+  assert.strictEqual(
+    beforeSendSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "AbortError: The user aborted a request.",
+            stacktrace: {
+              frames: [
+                { filename: "./src/app/(dashboard)/video-editor/_v2/useV2Job.ts" },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+    null,
+    "HERO-89: WEB-1W AbortError The user aborted a request must be dropped",
+  );
+  assert(
+    beforeSendSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "video_job_poll_500",
+            stacktrace: {
+              frames: [
+                { filename: "./src/app/(dashboard)/video-editor/_v2/useV2Job.ts" },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+    "HERO-89: a real poll failure on useV2Job.ts must still be reported",
+  );
+
+  console.log("verify-sentry-config: 45/45 passed");
 }
 
 main();

@@ -155,17 +155,28 @@ function frameOrigin(frame: { filename?: string; abs_path?: string }): string {
   return (frame.filename ?? frame.abs_path ?? "").trim();
 }
 
-// Errors thrown by extensions and in-app WebView bridges inside a visitor's
-// browser. They are not this application's code and nobody can act on them,
-// but each new host variant opens a fresh Sentry group and a fresh alert.
+// Errors thrown by extensions, in-app WebView bridges, or routine browser
+// AbortController teardown inside a visitor's browser.
 function isThirdPartyBrowserNoise(event: ErrorEvent): boolean {
   const frames = (event.exception?.values ?? []).flatMap(
     (exception) => exception.stacktrace?.frames ?? [],
   );
-  return isThirdPartyFrontendNoise({
-    message: errorText(event),
-    filenames: frames.map(frameOrigin),
-  });
+  const filenames = frames.map(frameOrigin);
+  if (
+    isThirdPartyFrontendNoise({
+      message: errorText(event),
+      filenames,
+    })
+  ) {
+    return true;
+  }
+  return (event.exception?.values ?? []).some((exception) =>
+    isThirdPartyFrontendNoise({
+      type: exception.type,
+      message: exception.value,
+      filenames,
+    }),
+  );
 }
 
 // Clerk's browser SDK reports a failed request to its own hosted API as a
