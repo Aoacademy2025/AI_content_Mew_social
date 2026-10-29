@@ -33,6 +33,8 @@ import { useIsMobile } from "./useIsMobile";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { canMoveBrollBoundaryExactly } from "@/lib/broll-timeline-boundary";
 import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
+import { TREATMENT_PRESETS, type TreatmentPresetId } from "@/lib/brand-treatment-catalog";
+import { MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH } from "@/lib/brand-visual-system";
 import type { BrollRegionPreference } from "@/lib/broll-preferences";
 import type { ProjectStylePack } from "./project-style-pack";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
@@ -311,6 +313,9 @@ export function BrollWindowInspector({
 
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [selectedTreatment, setSelectedTreatment] = useState<TreatmentPresetId | "">("");
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [showCustomPrompt, setShowCustomPrompt] = useState(false);
   const [aiInsufficient, setAiInsufficient] = useState<
     | { kind: "allowance" }
     | { kind: "credits"; need: number; balance: number }
@@ -335,6 +340,9 @@ export function BrollWindowInspector({
     setAiBusy(false);
     setAiError(null);
     setAiInsufficient(null);
+    setSelectedTreatment("");
+    setCustomPrompt("");
+    setShowCustomPrompt(false);
     setSearchKeyword(seedSearchKeyword(rawEntry?.keyword));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullBrollEditEnabled, index]);
@@ -632,6 +640,8 @@ export function BrollWindowInspector({
           videoJobId,
           sceneIndex: index!,
           durationSec: windowDurationSec,
+          ...(selectedTreatment ? { treatment: selectedTreatment } : {}),
+          ...(customPrompt.trim() ? { prompt: customPrompt.trim() } : {}),
         }),
       });
       const d = await res.json().catch(() => null);
@@ -1053,10 +1063,94 @@ export function BrollWindowInspector({
                   {isStockToAi ? "สร้างภาพ AI แทนสต็อก" : "ลองภาพนี้ใหม่"}
                 </span>
                 <span style={{ fontSize: 11.5, color: color.textSecondary, lineHeight: 1.6 }}>
-                  ระบบคงแนวภาพของแบรนด์และเนื้อหาฉากนี้ไว้ แล้วเปลี่ยนเฉพาะภาพ
+                  เลือกสไตล์เล่าเรื่องหรือระบุรายละเอียดฉากเฉพาะช่วงนี้ได้ โดยยังคุมโทนภาพของโปรเจกต์
                 </span>
               </div>
-              <Chip selected>แนวภาพเดิม</Chip>
+              <Chip selected={!selectedTreatment}>
+                {selectedTreatment
+                  ? TREATMENT_PRESETS.find((preset) => preset.id === selectedTreatment)?.thaiLabel ?? "สไตล์เฉพาะฉาก"
+                  : "แนวภาพเดิม"}
+              </Chip>
+            </div>
+            <div className="flex flex-col gap-1.5 pt-1">
+              <label style={{ fontSize: 11, color: color.textSecondary, fontWeight: 500 }}>
+                สไตล์การเล่าเรื่องของฉากนี้
+              </label>
+              <select
+                aria-label="สไตล์การเล่าเรื่องของฉากนี้"
+                value={selectedTreatment}
+                onChange={(e) => setSelectedTreatment(e.target.value as TreatmentPresetId | "")}
+                disabled={aiBusy}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: radius.control,
+                  background: "rgba(10,10,18,.65)",
+                  border: `1px solid ${color.cardBorder}`,
+                  color: color.text,
+                  fontSize: 12,
+                  fontFamily: font.body,
+                  outline: "none",
+                }}
+              >
+                <option value="">แนวแบรนด์ของโปรเจกต์ (ค่าเริ่มต้น)</option>
+                {TREATMENT_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.thaiLabel}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setShowCustomPrompt((prev) => !prev)}
+                style={{
+                  alignSelf: "flex-start",
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  color: color.primary300,
+                  fontSize: 11.5,
+                  cursor: "pointer",
+                  fontWeight: 500,
+                }}
+              >
+                {showCustomPrompt ? "ซ่อนการเขียนคำอธิบายฉากเอง" : "ขั้นสูง: เขียนคำอธิบายฉากเอง (ไม่บังคับ)"}
+              </button>
+              {showCustomPrompt && (
+                <div className="flex flex-col gap-1">
+                  <textarea
+                    aria-label="คำอธิบายฉากสำหรับสร้างภาพ AI"
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value.slice(0, MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH))}
+                    maxLength={MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH}
+                    rows={3}
+                    disabled={aiBusy}
+                    placeholder="อธิบายฉากที่ต้องการเห็น เช่น บาริสต้าเทลาเต้อาร์ตบนเคาน์เตอร์ไม้แสงเช้าอบอุ่น (เขียนไทยหรืออังกฤษได้)"
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: radius.control,
+                      background: "rgba(10,10,18,.65)",
+                      border: `1px solid ${color.cardBorder}`,
+                      color: color.text,
+                      fontSize: 12,
+                      fontFamily: font.body,
+                      lineHeight: 1.5,
+                      resize: "vertical",
+                      outline: "none",
+                    }}
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.4 }}>
+                      อธิบายฉากเป็นภาษาไทยหรืออังกฤษได้ · ตัวอักษรที่ปรากฏในภาพรองรับเฉพาะภาษาอังกฤษ
+                    </span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint, fontVariantNumeric: "tabular-nums" }}>
+                      {customPrompt.length}/{MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
             <span style={{ fontSize: 11, color: color.textFaint }}>{fundingLabel}</span>
           </div>

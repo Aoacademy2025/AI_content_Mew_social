@@ -7,7 +7,9 @@ import {
   AI_IMAGE_MODELS,
   buildArtworkOnlyPrompt,
   dimensionsForAspectRatio,
+  isAiImageAspectRatio,
   previewGenerationInput,
+  type AiImageAspectRatio,
   type AiImageStyle,
 } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant } from "@/lib/credits";
@@ -151,6 +153,7 @@ export type HeroImageGenerationInput = {
   videoJobId: string;
   sceneIndex: number;
   sceneTitle?: string;
+  aspectRatio?: AiImageAspectRatio;
   style?: AiImageStyle;
   sceneRenderingDirection?: SceneRenderingDirection;
   /** Recorded on the job for observability only. It no longer shapes the prompt:
@@ -182,6 +185,76 @@ export type HeroImageGenerationInput = {
   productSurface?: "hero_video" | "automix" | "scene_reroll" | "brand_visual_preview";
 };
 
+function extractAspectRatioFromJsonRecord(rawJson: string | null | undefined): AiImageAspectRatio | null {
+  if (!rawJson) return null;
+  try {
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    const candidates: Array<Record<string, unknown> | null> = [
+      parsed,
+      parsed.preview && typeof parsed.preview === "object"
+        ? (parsed.preview as Record<string, unknown>)
+        : null,
+      parsed.preview && typeof parsed.preview === "object" && (parsed.preview as Record<string, unknown>).config && typeof (parsed.preview as Record<string, unknown>).config === "object"
+        ? ((parsed.preview as Record<string, unknown>).config as Record<string, unknown>)
+        : null,
+      parsed.config && typeof parsed.config === "object"
+        ? (parsed.config as Record<string, unknown>)
+        : null,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      if (isAiImageAspectRatio(candidate.aspectRatio)) {
+        return candidate.aspectRatio;
+      }
+      const width = Number(candidate.width);
+      const height = Number(candidate.height);
+      if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+        if (width > height) return "16:9";
+        if (width === height) return "1:1";
+        return "9:16";
+      }
+    }
+  } catch {
+    // ignore malformed json
+  }
+  return null;
+}
+
+export async function resolveVideoHeroAspectRatio(input: {
+  userId: string;
+  videoJobId: string;
+  aspectRatio?: AiImageAspectRatio;
+}): Promise<AiImageAspectRatio> {
+  if (isAiImageAspectRatio(input.aspectRatio)) {
+    return input.aspectRatio;
+  }
+  const job = await prisma.videoJob.findFirst({
+    where: { id: input.videoJobId, userId: input.userId },
+    select: {
+      inputJson: true,
+      outputJson: true,
+      project: { select: { draftJson: true } },
+    },
+  });
+  if (job) {
+    const fromProject = extractAspectRatioFromJsonRecord(job.project?.draftJson);
+    if (fromProject) return fromProject;
+    const fromInput = extractAspectRatioFromJsonRecord(job.inputJson);
+    if (fromInput) return fromInput;
+    const fromOutput = extractAspectRatioFromJsonRecord(job.outputJson);
+    if (fromOutput) return fromOutput;
+    return "9:16";
+  }
+  const storyFilm = await prisma.storyFilmProject.findFirst({
+    where: { id: input.videoJobId, userId: input.userId },
+    select: { aspectRatio: true },
+  });
+  if (storyFilm && isAiImageAspectRatio(storyFilm.aspectRatio)) {
+    return storyFilm.aspectRatio;
+  }
+  return "9:16";
+}
+
 async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
   // The verified private BF16 image needs about ten minutes for a completely
   // fresh 28 GB pull, while FlashBoot revivals complete in seconds. Keep the
@@ -192,7 +265,11 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
   const orphanQueueMs = Number.isFinite(configuredOrphanQueueMs)
     ? Math.max(30_000, Math.min(timeoutMs, Math.floor(configuredOrphanQueueMs)))
     : DEFAULT_HERO_RUNPOD_ORPHAN_QUEUE_MS;
-  const aspectRatio = "9:16" as const;
+  const aspectRatio = await resolveVideoHeroAspectRatio({
+    userId: input.userId,
+    videoJobId: input.videoJobId,
+    aspectRatio: input.aspectRatio,
+  });
   const style = input.style ?? "photoreal";
   const { width, height } = dimensionsForAspectRatio(aspectRatio);
   const projectVisual = input.brandVisualPrompt ?? await resolveProjectVisualPromptForVideoScene({
@@ -755,4 +832,10 @@ export async function generateHeroImageForVideo(
       providerFailure,
     );
   }
+}
+
+export async function generateHeroImageForBrollWindow(
+  input: HeroImageGenerationInput,
+): Promise<HeroImageGenerationResult> {
+  return generateHeroImageForVideo(input);
 }

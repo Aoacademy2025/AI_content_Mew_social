@@ -1,6 +1,13 @@
 import { externalWindowStates, externalMediaPlan, previewWindowOwner, isPresenterHookWindow } from "@/lib/external-media";
 import { validateExternalMediaExport, ownedDraftImports } from "@/lib/external-media.server";
 import { resolvePendingWindowMedia } from "@/lib/pending-broll-media";
+import {
+  TREATMENT_PRESET_IDS,
+  isTreatmentPresetId,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import { MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH } from "@/lib/brand-visual-system";
+import { generateMcpBrollWindowHeroClip } from "@/lib/broll-window-generate.server";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -214,7 +221,9 @@ export const replaceBrollWindowInputShape = {
   windowIndex: z.number().int().describe("ช่วง B-roll ที่จะเปลี่ยน (windows[].index จาก get_edit_state)"),
   url: z.string().optional().describe("ลิงก์สาธารณะ https ของรูปหรือวิดีโอ (ระบบดาวน์โหลดเอง) — ส่งอย่างใดอย่างหนึ่งจาก url / uploadId / source"),
   uploadId: z.string().optional().describe("uploadId จาก create_upload_url ที่ PUT ไฟล์เสร็จแล้ว"),
-  source: z.enum(["original"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง"),
+  source: z.enum(["original", "hero-ai-image"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง, \"hero-ai-image\" = สร้างภาพ Hero AI Image ใหม่ให้ช่วงนี้ (2 เครดิตต่อภาพ)"),
+  prompt: z.string().optional().describe("คำอธิบายฉากเมื่อใช้ source \"hero-ai-image\" (ไม่เกิน 500 ตัวอักษร เขียนไทยหรืออังกฤษได้ แทนที่ฉากเดิมของช่วงนี้ แต่ตัวอักษรในภาพรองรับเฉพาะภาษาอังกฤษ)"),
+  treatment: z.string().optional().describe("สไตล์การเล่าเรื่องของภาพเมื่อใช้ source \"hero-ai-image\" (ดูค่าที่เลือกได้จาก get_edit_state.allowed.brollImageTreatments; ไม่ส่ง = ใช้แนวแบรนด์ของโปรเจกต์)"),
 } satisfies z.ZodRawShape;
 
 export const setBrollStyleInputShape = {
@@ -341,6 +350,7 @@ const ALLOWED = {
   brollTransitions: [...BROLL_TRANSITIONS],
   brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
   brollFits: [...BROLL_FITS],
+  brollImageTreatments: [...TREATMENT_PRESET_IDS],
   sfxModes: [...SFX_MODES],
   // headline-hook.ts's own bounds (set_headline_hook, G18).
   headlineHook: {
@@ -1067,8 +1077,8 @@ const NEXT_MEDIA = "ส่งลิงก์ https สาธารณะขอ�
 
 const ONE_SOURCE = editToolFailure(
   "invalid_input",
-  "ต้องส่งอย่างใดอย่างหนึ่งเท่านั้น: url หรือ uploadId หรือ source \"original\"",
-  `${NEXT_MEDIA} หรือ source "original" เพื่อคืนภาพเดิม (อย่างใดอย่างหนึ่ง)`,
+  "ต้องส่งอย่างใดอย่างหนึ่งเท่านั้น: url หรือ uploadId หรือ source (\"original\" / \"hero-ai-image\")",
+  `${NEXT_MEDIA} หรือ source "original" / "hero-ai-image" (อย่างใดอย่างหนึ่ง)`,
 );
 const BAD_URL = editToolFailure(
   "invalid_input",
@@ -1183,6 +1193,44 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
   const sources = [args.url, args.uploadId, args.source].filter((value) => value !== undefined).length;
   if (sources !== 1) return ONE_SOURCE;
+  if (args.source !== undefined && args.source !== "original" && args.source !== "hero-ai-image") {
+    return ONE_SOURCE;
+  }
+  if ((args.prompt !== undefined || args.treatment !== undefined) && args.source !== "hero-ai-image") {
+    return editToolFailure(
+      "invalid_input",
+      "ส่ง prompt หรือ treatment ได้เฉพาะเมื่อระบุ source เป็น \"hero-ai-image\" เท่านั้น",
+      "ระบุ source: \"hero-ai-image\" หรือลบ prompt และ treatment ออก",
+    );
+  }
+  let treatmentPreset: TreatmentPresetId | undefined;
+  if (args.treatment !== undefined) {
+    if (!isTreatmentPresetId(args.treatment)) {
+      return editToolFailure(
+        "invalid_input",
+        `treatment ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${TREATMENT_PRESET_IDS.join(", ")}`,
+        "ดูค่าที่เลือกได้จาก get_edit_state.allowed.brollImageTreatments",
+      );
+    }
+    treatmentPreset = args.treatment;
+  }
+  let customPrompt: string | undefined;
+  if (args.prompt !== undefined) {
+    if (typeof args.prompt !== "string") {
+      return editToolFailure("invalid_input", "prompt ต้องเป็นข้อความ", "ส่ง prompt เป็นข้อความไม่เกิน 500 ตัวอักษร");
+    }
+    const trimmedPrompt = args.prompt.trim();
+    if (trimmedPrompt.length > MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH) {
+      return editToolFailure(
+        "invalid_input",
+        `prompt ต้องมีความยาวไม่เกิน ${MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH} ตัวอักษร`,
+        "ย่อคำอธิบายฉากให้สั้นลงแล้วลองใหม่",
+      );
+    }
+    if (trimmedPrompt.length > 0) {
+      customPrompt = trimmedPrompt;
+    }
+  }
   const index = args.windowIndex;
   if (typeof index !== "number" || !Number.isInteger(index) || index < 0) return NO_WINDOW;
   let url: string | null = null;
@@ -1198,7 +1246,9 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   const loaded = await loadState(user.id, root);
   if (!loaded.ok) return loaded.failure;
   const { base } = loaded.state;
-  if (!previewWindowSpans(base.preview).some((span) => span.index === index)) return NO_WINDOW;
+  const spans = previewWindowSpans(base.preview);
+  const targetSpan = spans.find((span) => span.index === index);
+  if (!targetSpan) return NO_WINDOW;
   const baseRow = await prisma.videoJob.findFirst({
     where: { id: base.id, userId: user.id },
     select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
@@ -1206,9 +1256,10 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
   if (presenterHookLocked(root, base.preview, index)) return WINDOW_LOCKED;
 
-  let source: "url" | "upload" | "original";
+  let source: "url" | "upload" | "original" | "hero-ai-image";
   let importId: string | null = null;
   let importStatus: string | null = null;
+  let generatedHero: { src: string; imageJobId: string; clipDuration: number; creditsSpent: number } | null = null;
   if (args.uploadId !== undefined) {
     const owned = await findOwnedMediaImport(user.id, args.uploadId, BROLL_IMPORT_PURPOSES);
     if (!owned.ok) return owned.failure;
@@ -1222,6 +1273,29 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     source = "url";
     importId = created.importId;
     importStatus = "pending";
+  } else if (args.source === "hero-ai-image") {
+    if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return ORIGINAL_DURING_RERENDER;
+    const windowDurationSec = Math.max(1, (targetSpan.endMs - targetSpan.startMs) / 1_000);
+    const fallbackSceneText = loaded.state.draft.captions
+      .filter((c) => c.endMs > targetSpan.startMs && c.startMs < targetSpan.endMs)
+      .map((c) => c.text)
+      .join(" ")
+      .trim() || loaded.state.draft.captions[index]?.text || `B-roll scene ${index + 1}`;
+    const genResult = await generateMcpBrollWindowHeroClip({
+      user,
+      sourceVideoJobId: base.id,
+      sceneIndex: index,
+      durationSec: windowDurationSec,
+      fallbackSceneText,
+      treatment: treatmentPreset,
+      prompt: customPrompt,
+    });
+    if (!genResult.ok) {
+      return editToolFailure(genResult.code, genResult.message, genResult.next);
+    }
+    source = "hero-ai-image";
+    importStatus = "ready";
+    generatedHero = genResult;
   } else {
     // A1: while a re-render of this root runs, the base it is replacing is about to change, so a
     // restore decided against the current base could be lost when the re-render lands. Refuse
@@ -1236,6 +1310,14 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     let edit: PendingEditWindowEdit | null;
     if (importId) {
       edit = { index, src: null, importId, replacementKind: "upload" };
+    } else if (generatedHero) {
+      edit = {
+        index,
+        src: generatedHero.src,
+        imageJobId: generatedHero.imageJobId,
+        clipDuration: generatedHero.clipDuration,
+        replacementKind: "ai",
+      };
     } else {
       const original = originalWindowEdit(root, state.base, index);
       if (!original.ok) {
@@ -1269,13 +1351,22 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     windowIndex: index,
     source,
     ...(importId ? { importId } : {}),
+    ...(generatedHero
+      ? {
+          imageJobId: generatedHero.imageJobId,
+          creditsSpent: generatedHero.creditsSpent,
+          ...(treatmentPreset ? { treatment: treatmentPreset } : {}),
+        }
+      : {}),
     importStatus,
     draftRevision: updated.state.revision,
     next: source === "original"
       ? "ช่วงนี้จะกลับเป็นภาพเดิมตอนส่งออก — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
-      : importStatus === "ready"
-        ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
-        : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
+      : source === "hero-ai-image"
+        ? "สร้างภาพ Hero AI Image สำหรับช่วงนี้เสร็จแล้ว — แก้ส่วนอื่นต่อได้ หรือเรียก export_video(jobId) เพื่อเรนเดอร์และส่งออก (การส่งออกไม่ตัดโควต้าเพิ่ม)"
+        : importStatus === "ready"
+          ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
+          : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
   };
 }
 

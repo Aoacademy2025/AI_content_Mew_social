@@ -43,6 +43,7 @@ import {
   describeHeroImageOffer,
   generateHeroImageForVideo,
   HeroImageGenerationError,
+  resolveVideoHeroAspectRatio,
   type HeroImageGenerationResult,
 } from "@/lib/video-hero-image.server";
 import { refundSettledVideoImageJob } from "@/lib/video-image-batch-settlement";
@@ -149,6 +150,8 @@ export async function POST(req: Request) {
       userId: user.id,
       videoJobId: input.videoJobId,
       sceneIndex: visualBeatSequence,
+      treatmentPresetId: input.treatment,
+      customPrompt: input.prompt,
     });
   } catch (error) {
     const unavailable = sceneRerollUnavailablePayload(error);
@@ -285,8 +288,12 @@ export async function POST(req: Request) {
           ...(acceptance ? { brandVisualAcceptance: acceptance } : {}),
           productSurface: "scene_reroll",
         });
+    const aspectRatio = await resolveVideoHeroAspectRatio({
+      userId: user.id,
+      videoJobId: input.videoJobId,
+    });
     await copyOwnedHeroImage(generated.outputUrl, tmpImagePath);
-    await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);
+    await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec, { aspectRatio });
     if (!isValidMp4Path(outPath)) throw new Error("Hero Ken Burns produced no usable output");
     try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
     const derivativeSrc = `/api/stocks/${outFile}`;

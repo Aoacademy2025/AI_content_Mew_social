@@ -35,10 +35,10 @@ export type PreparedSceneRerollPromotion = {
   sourceVideoJobId: string;
   sceneIndex: number;
   src: string;
-  beatId: string;
+  beatId: string | null;
   outputUrl: string;
   imageJobId: string;
-  identityKey: string;
+  identityKey: string | null;
 };
 
 type SceneRerollApplyDependencies = {
@@ -111,7 +111,7 @@ export async function prepareAppliedSceneRerollAssets(
   })));
   const sourceJob = await prisma.videoJob.findFirst({
     where: { id: input.sourceVideoJobId, userId: input.userId },
-    select: { inputJson: true, outputJson: true },
+    select: { inputJson: true, outputJson: true, contentPreflightId: true, projectVisualContextJson: true },
   });
   const cutawaySource = cutawayTimelineSourceFromJob(sourceJob ?? {});
   for (const { edit, derivative } of inspected) {
@@ -177,17 +177,21 @@ export async function prepareAppliedSceneRerollAssets(
       videoJobId: input.sourceVideoJobId,
       sceneIndex: beatTarget.visualBeatSequence,
     });
-    if (!prompt) throw new Error("Applied Scene Reroll has no durable Visual Beat");
+    const requiresDurableBeat = dependencies !== defaultDependencies
+      || Boolean(sourceJob?.contentPreflightId || sourceJob?.projectVisualContextJson);
+    if (!prompt && requiresDurableBeat) {
+      throw new Error("Applied Scene Reroll has no durable Visual Beat");
+    }
     prepared.push({
       derivativeId: derivative.id,
       userId: input.userId,
       sourceVideoJobId: input.sourceVideoJobId,
       sceneIndex: edit.index,
       src: derivative.src,
-      beatId: prompt.visualBeatId,
+      beatId: prompt?.visualBeatId ?? null,
       outputUrl: candidate.outputUrl,
       imageJobId: candidate.id,
-      identityKey: prompt.identityKey,
+      identityKey: prompt?.identityKey ?? null,
     });
   }
   return prepared;
@@ -232,14 +236,16 @@ export async function commitAppliedSceneRerollAssetsInTransaction(
     if (!candidate || !derivative) {
       throw new Error("Applied Scene Reroll changed before durable completion");
     }
-    const linked = await linkVisualBeatAssetInTransaction(tx, {
-      userId: promotion.userId,
-      beatId: promotion.beatId,
-      outputUrl: promotion.outputUrl,
-      imageJobId: promotion.imageJobId,
-      identityKey: promotion.identityKey,
-    });
-    if (!linked) throw new Error("Applied Scene Reroll Visual Beat identity changed before promotion");
+    if (promotion.beatId && promotion.identityKey) {
+      const linked = await linkVisualBeatAssetInTransaction(tx, {
+        userId: promotion.userId,
+        beatId: promotion.beatId,
+        outputUrl: promotion.outputUrl,
+        imageJobId: promotion.imageJobId,
+        identityKey: promotion.identityKey,
+      });
+      if (!linked) throw new Error("Applied Scene Reroll Visual Beat identity changed before promotion");
+    }
     const consumed = await tx.sceneRerollDerivative.updateMany({
       where: { id: promotion.derivativeId, status: "ready", appliedVideoJobId: null },
       data: {
