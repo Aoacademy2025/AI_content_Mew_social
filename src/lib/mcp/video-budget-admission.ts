@@ -37,7 +37,8 @@ export async function budgetExposure(tx: Prisma.TransactionClient, userId: strin
   return { images: images.length, imageCredits: images.reduce((n, j) => n + (j.fundingSource === "starter_allowance" ? 0 : j.creditCost), 0), renderCredits: jobs.reduce((n, j) => n + (j.fundedCreditsSpent ?? 0), 0) };
 }
 
-export async function admitBudgetImage(tx: Prisma.TransactionClient, input: { userId: string; idempotencyKey: string; inputJson: string; creditCost: number; provider: string; model: string }, fundingSource: string) {
+export async function admitBudgetImage(tx: Prisma.TransactionClient, input: { userId: string; idempotencyKey: string; inputJson: string; creditCost: number; provider: string; model: string; productSurface?: string }, fundingSource: string) {
+  if (input.productSurface === "scene_reroll") return null;
   const linked = /^video:([^:]+):/.exec(input.idempotencyKey)?.[1];
   const data = JSON.parse(input.inputJson) as { videoJobId?: string };
   const jobId = data.videoJobId ?? linked;
