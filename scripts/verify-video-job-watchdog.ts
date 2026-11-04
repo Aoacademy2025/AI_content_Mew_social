@@ -282,6 +282,98 @@ async function main() {
   const bareAfterSweep = await prisma.videoJob.findUniqueOrThrow({ where: { id: bare.id } });
   ok(bareAfterSweep.providerNextPollAt === null, "checkpoint-less wait keeps a NULL poll time");
 
+  // HERO-90: abandoned confirmation_required jobs with an expired incremental approval quote
+  // are canceled and refunded after VIDEO_JOB_STALE_MS, while live approval holds and uncertain
+  // provider exposure holds (without hold.quoteId) remain untouched.
+  await prisma.videoJob.deleteMany({});
+  await prisma.user.update({ where: { id: user.id }, data: { minutesLimit: 80, minutesUsed: 15 } });
+  const rootQuote = await prisma.mcpVideoQuote.create({
+    data: {
+      userId: user.id,
+      status: "consumed",
+      consumedAt: minutesAgo(60),
+      inputJson: "{}",
+      inputHash: "h1",
+      executionJson: "{}",
+      executionHash: "e1",
+      pricingJson: "{}",
+      pricingHash: "p1",
+      receiptJson: "{}",
+      source: "stock",
+      imageCountCeiling: 0,
+      imageCreditCeiling: 0,
+      renderCreditCeiling: 0,
+      includedRenderMinutes: 5,
+      totalHeroCreditCeiling: 0,
+      expiresAt: minutesAgo(45),
+    },
+  });
+  const expiredChildQuote = await prisma.mcpVideoQuote.create({
+    data: {
+      userId: user.id,
+      parentQuoteId: rootQuote.id,
+      status: "draft",
+      inputJson: "{}",
+      inputHash: "h1",
+      executionJson: "{}",
+      executionHash: "e1",
+      pricingJson: "{}",
+      pricingHash: "p1",
+      receiptJson: "{}",
+      source: "stock",
+      imageCountCeiling: 0,
+      imageCreditCeiling: 0,
+      renderCreditCeiling: 2,
+      includedRenderMinutes: 0,
+      totalHeroCreditCeiling: 2,
+      expiresAt: minutesAgo(35),
+    },
+  });
+  const heldExpiredJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "confirmation_required",
+      currentStep: "tts",
+      fundingState: "reserved",
+      fundedMeteredMinutes: 5,
+      budgetQuoteId: rootQuote.id,
+      budgetCheckpointJson: JSON.stringify({
+        version: 1,
+        calls: {},
+        hold: { reason: "render_ceiling", quoteId: expiredChildQuote.id },
+      }),
+      updatedAt: minutesAgo(50),
+    },
+  });
+  const heldUncertainJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "confirmation_required",
+      currentStep: "stock",
+      fundingState: "reserved",
+      fundedMeteredMinutes: 5,
+      budgetQuoteId: rootQuote.id,
+      budgetCheckpointJson: JSON.stringify({
+        version: 1,
+        calls: {},
+        hold: { reason: "image_poll_unknown" },
+      }),
+      updatedAt: minutesAgo(50),
+    },
+  });
+  const fourth = await watchdog.sweepStalledVideoJobs(now);
+  ok(
+    fourth.canceledExpiredHolds.length === 1 && fourth.canceledExpiredHolds[0] === heldExpiredJob.id,
+    `sweep cancels expired approval hold only (got ${JSON.stringify(fourth.canceledExpiredHolds)})`,
+  );
+  const afterHeldExpired = await prisma.videoJob.findUniqueOrThrow({ where: { id: heldExpiredJob.id } });
+  ok(afterHeldExpired.status === "canceled", "expired confirmation_required hold moves to canceled");
+  ok(afterHeldExpired.fundingState === "refunded", "expired confirmation_required hold refunds reserved minutes");
+  const afterHeldUncertain = await prisma.videoJob.findUniqueOrThrow({ where: { id: heldUncertainJob.id } });
+  ok(afterHeldUncertain.status === "confirmation_required", "uncertain provider exposure hold stays parked");
+
   // wiring: the sweep only protects customers if the worker actually runs it and CI guards it.
   const workerSrc = readFileSync("scripts/mcp-video-worker.ts", "utf8");
   ok(workerSrc.includes("sweepStalledVideoJobs"), "worker loop calls sweepStalledVideoJobs");

@@ -3,6 +3,7 @@ import { failJob, withVideoJobSqliteRetry } from "@/lib/mcp/video-job";
 import { recoverLostMcpChainExports } from "@/lib/mcp/chain-export";
 import { recoverLostMcpRerenderExports } from "@/lib/mcp/rerender-chain";
 import { settleWaitingClipImportJobs } from "@/lib/mcp/clip-video-job";
+import { cancelVideoJobCore } from "@/lib/mcp/video-job-cancel-core";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 /**
@@ -89,7 +90,7 @@ export function stalledVideoJobMessage(staleMs: number = VIDEO_JOB_STALE_MS): st
  */
 export async function sweepStalledVideoJobs(
   now: Date = new Date(),
-): Promise<{ failed: string[]; repairedPoll: string[]; recoveredChainExports: string[]; settledImportJobs: string[] }> {
+): Promise<{ failed: string[]; repairedPoll: string[]; recoveredChainExports: string[]; settledImportJobs: string[]; canceledExpiredHolds: string[] }> {
   // Read at the SHORTEST deadline, then apply each row's own deadline in JS. One query, and
   // adding a longer-deadline step can never accidentally widen what the query returns.
   const candidates = await withVideoJobSqliteRetry("watchdog scan stalled", () => prisma.videoJob.findMany({
@@ -204,5 +205,55 @@ export async function sweepStalledVideoJobs(
     console.error("[video-job-watchdog] clip import settle failed:", error instanceof Error ? error.name : "unknown");
   }
 
-  return { failed, repairedPoll, recoveredChainExports, settledImportJobs };
+  // HERO-90: sweep abandoned confirmation_required jobs whose incremental approval quote has
+  // expired without user action (and has not been renewed). Uncertain provider exposure holds
+  // (where hold.quoteId is absent) are never canceled here.
+  const canceledExpiredHolds: string[] = [];
+  try {
+    const heldCandidates = await withVideoJobSqliteRetry("watchdog scan held", () => prisma.videoJob.findMany({
+      where: {
+        status: "confirmation_required",
+        updatedAt: { lt: new Date(now.getTime() - VIDEO_JOB_STALE_MS) },
+        budgetQuoteId: { not: null },
+        budgetCheckpointJson: { not: null },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: SWEEP_BATCH,
+      select: { id: true, userId: true, budgetQuoteId: true, budgetCheckpointJson: true },
+    }));
+    for (const held of heldCandidates) {
+      let quoteId: string | undefined;
+      try {
+        const parsed = JSON.parse(held.budgetCheckpointJson ?? "{}") as { hold?: { quoteId?: unknown } };
+        if (typeof parsed.hold?.quoteId === "string" && parsed.hold.quoteId.length > 0) {
+          quoteId = parsed.hold.quoteId;
+        }
+      } catch {
+        continue;
+      }
+      if (!quoteId || !held.budgetQuoteId) continue;
+
+      const childQuotes = await withVideoJobSqliteRetry("watchdog check held quotes", () => prisma.mcpVideoQuote.findMany({
+        where: { userId: held.userId, parentQuoteId: held.budgetQuoteId! },
+        select: { id: true, status: true, expiresAt: true },
+      }));
+      const targetQuote = childQuotes.find((q) => q.id === quoteId);
+      if (!targetQuote || targetQuote.status === "consumed" || targetQuote.expiresAt.getTime() > now.getTime()) {
+        continue;
+      }
+      const hasLiveOrConsumedSibling = childQuotes.some(
+        (q) => q.status === "consumed" || ((q.status === "draft" || q.status === "approved") && q.expiresAt.getTime() > now.getTime()),
+      );
+      if (hasLiveOrConsumedSibling) continue;
+
+      const canceled = await cancelVideoJobCore(held.userId, held.id, "[video-job-watchdog]");
+      if (canceled.kind === "canceled") {
+        canceledExpiredHolds.push(held.id);
+      }
+    }
+  } catch (error) {
+    console.error("[video-job-watchdog] expired confirmation hold sweep failed:", error instanceof Error ? error.name : "unknown");
+  }
+
+  return { failed, repairedPoll, recoveredChainExports, settledImportJobs, canceledExpiredHolds };
 }

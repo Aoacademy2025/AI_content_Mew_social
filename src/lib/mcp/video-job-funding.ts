@@ -189,7 +189,13 @@ export async function reconcileVideoJobFundingInTransaction(tx: Prisma.Transacti
       const extra = actualMeteredMinutes - job.fundedMeteredMinutes;
       const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { minutesLimit: true, minutesUsed: true } });
       const extraCreditsEstimate = Math.max(0, extra - Math.max(0, current.minutesLimit - current.minutesUsed)) * creditCostFor("minute");
-      await admitBudgetRender(tx, userId, videoJobId, extraCreditsEstimate, actualMeteredMinutes);
+      await admitBudgetRender(
+        tx,
+        userId,
+        videoJobId,
+        extraCreditsEstimate,
+        extraCreditsEstimate === 0 ? job.fundedMeteredMinutes : actualMeteredMinutes,
+      );
       const topUp = await reserveMinutesOrCreditsInTransaction(tx, userId, extra, {
         creditsLive: process.env.CREDITS_LIVE === "1",
         ref: `duration-extend:${videoJobId}`,

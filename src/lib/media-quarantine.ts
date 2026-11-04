@@ -40,6 +40,7 @@ export type ApplyMediaCleanupOptions = {
   writeManifest?: (manifestPath: string, manifest: QuarantineManifest) => Promise<void>;
   monotonicNow?: () => number;
   onGraphRebuild?: (elapsedMs: number) => void;
+  prebuiltGraph?: MediaGraph;
 };
 
 export type QuarantineManifest = {
@@ -439,24 +440,29 @@ export async function quarantineMediaCleanupPlan(
 
   try {
     for (const batch of batches(plan.candidates, options.batchSize)) {
-      const { buildMediaReferenceGraph } = await import("./media-reference-graph");
-      const graphStartedAt = monotonicNow();
-      const graph = await buildMediaReferenceGraph(now, {
-          workspaceRoot: cwd,
-          ignoreQuarantineRunIds: new Set([runId]),
-          inFlightQuarantinedMedia: new Map(moved.map(({ record }) => [
-            record.key,
-            { mtimeMs: record.mtimeMs },
-          ])),
-        })
-        .finally(() => {
-          const elapsedMs = monotonicNow() - graphStartedAt;
-          try {
-            options.onGraphRebuild?.(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : 0);
-          } catch {
-            // Diagnostics must never change cleanup or rollback behavior.
-          }
-        });
+      let graph: MediaGraph;
+      if (options.prebuiltGraph && moved.length === 0) {
+        graph = options.prebuiltGraph;
+      } else {
+        const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+        const graphStartedAt = monotonicNow();
+        graph = await buildMediaReferenceGraph(now, {
+            workspaceRoot: cwd,
+            ignoreQuarantineRunIds: new Set([runId]),
+            inFlightQuarantinedMedia: new Map(moved.map(({ record }) => [
+              record.key,
+              { mtimeMs: record.mtimeMs },
+            ])),
+          })
+          .finally(() => {
+            const elapsedMs = monotonicNow() - graphStartedAt;
+            try {
+              options.onGraphRebuild?.(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : 0);
+            } catch {
+              // Diagnostics must never change cleanup or rollback behavior.
+            }
+          });
+      }
       assertGraphComplete(graph);
 
       for (const record of batch) {

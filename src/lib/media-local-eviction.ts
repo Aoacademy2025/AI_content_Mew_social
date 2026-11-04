@@ -16,6 +16,10 @@ import {
   restoreQuarantineRun,
 } from "@/lib/media-quarantine";
 import {
+  buildMediaReferenceGraph,
+  type MediaGraph,
+} from "@/lib/media-reference-graph";
+import {
   contentAddressedMediaIdentity,
   type MediaIdentity,
 } from "@/lib/media-storage";
@@ -216,6 +220,11 @@ function boundedInteger(
     : fallback;
 }
 
+function optionsNowFromPlan(plan: MediaCleanupPlan): Date {
+  const parsed = new Date(plan.generatedAt);
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
 function singleRecordPlan(
   plan: MediaCleanupPlan,
   record: MediaManifestRecord,
@@ -293,6 +302,7 @@ async function evictOne(
   costs: LocalEvictionApplyCosts,
   monotonicNow: () => number,
   unlinkFile: (filePath: string) => Promise<void>,
+  getApplyGraph: () => Promise<MediaGraph>,
 ): Promise<{ status: "evicted" | LocalEvictionSkipReason; error: boolean }> {
   const applyStartedAt = monotonicNow();
   const knownStartedAt = knownApplyMs(costs);
@@ -318,10 +328,13 @@ async function evictOne(
     return finish({ status: "changed", error: false });
   }
 
+  const prebuiltGraph = await getApplyGraph();
   const one = singleRecordPlan(plan, replica.record);
   const quarantined = await quarantineMediaCleanupPlan(one, one.manifestSha256, {
     batchSize: 1,
+    now: optionsNowFromPlan(plan),
     monotonicNow,
+    prebuiltGraph,
     onGraphRebuild: (totalMs) => {
       costs.graphRebuild.count++;
       costs.graphRebuild.totalMs += totalMs;
@@ -551,6 +564,18 @@ export async function runLocalMediaEviction(
 
   if (mode === "dry-run" || report.errors > 0) return report;
 
+  let cachedApplyGraph: MediaGraph | null = null;
+  const applyNow = options.now ?? optionsNowFromPlan(plan);
+  const getApplyGraph = async (): Promise<MediaGraph> => {
+    if (cachedApplyGraph) return cachedApplyGraph;
+    cachedApplyGraph = await measureApplyCost(
+      report.applyCosts.graphRebuild,
+      monotonicNow,
+      () => buildMediaReferenceGraph(applyNow, { workspaceRoot: plan.workspaceRoot }),
+    );
+    return cachedApplyGraph;
+  };
+
   for (const replica of selected) {
     const applyYield = await shouldYield({ force: true });
     if (applyYield) {
@@ -565,6 +590,7 @@ export async function runLocalMediaEviction(
       report.applyCosts,
       monotonicNow,
       options.unlinkFile ?? unlink,
+      getApplyGraph,
     );
     if (result.status === "evicted") {
       report.evicted.count++;
