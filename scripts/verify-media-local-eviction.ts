@@ -788,6 +788,31 @@ async function main(): Promise<void> {
     "a clean no-op run is not a failure",
   );
 
+  // HERO-90: evicting multiple verified replicas in one apply pass must rebuild the
+  // media reference graph ONCE across the pass, not once per file.
+  const multiRoot = mkdtempSync(path.join(tmpdir(), "media-local-eviction-multi-"));
+  const multiNames = ["multi-a.mp4", "multi-b.mp4", "multi-c.mp4"];
+  for (const name of multiNames) {
+    const file = writeOldRender(name, `multi-${name}`, multiRoot);
+    await catalogRender(prisma, name, file);
+  }
+  const multiPlan = await getMediaCleanupPlan({ cwd: multiRoot, now, includeStocks: true });
+  const multiReport = await runLocalMediaEviction(multiPlan, {
+    mode: "apply",
+    now,
+    catalog,
+    remote: new FakeVerifier(),
+    maxObjects: 10,
+    maxBytes: 1024 * 1024,
+    env: yieldEnv,
+  });
+  assert.equal(multiReport.evicted.count, 3);
+  assert.equal(
+    multiReport.applyCosts.graphRebuild.count,
+    1,
+    "multi-object apply pass builds the media reference graph once",
+  );
+
   await prisma.$disconnect();
   console.log("PASS verified local media eviction, rollback, busy-yield and exit code");
 }

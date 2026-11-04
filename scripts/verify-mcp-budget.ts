@@ -201,6 +201,18 @@ async function main() {
     await quotes.decideVideoQuote(mixed.id, mixedRow.id, "approve");
     const mixedRoot = await consumeVideoQuote(mixed.id, mixedRow.id);
     const { reconcileVideoJobFunding } = await import("../src/lib/mcp/video-job-funding");
+    // HERO-90: when included plan minutes cover a duration extension (0 extra credits),
+    // reconcileVideoJobFunding must top up from plan minutes without a render_ceiling hold.
+    const planTopUpUser = await prisma.user.create({ data: { name: "Plan top-up", email: "plan-topup@example.test", role: "USER", plan: "PRO", minutesLimit: 80, minutesUsed: 0, usagePeriodStartedAt: new Date(), planExpiresAt: new Date(Date.now() + 86400000) } });
+    await prisma.payment.create({ data: { userId: planTopUpUser.id, stripeSessionId: "plan-topup-paid", plan: "PRO", amount: 100, status: "PAID", paidAt: new Date() } });
+    const planTopUpQuote = await quotes.prepareVideoQuote(planTopUpUser, { script: "Short quote that speaks longer.", brollSource: "stock" });
+    await quotes.decideVideoQuote(planTopUpUser.id, planTopUpQuote.quoteId, "approve");
+    const planTopUpRoot = await consumeVideoQuote(planTopUpUser.id, planTopUpQuote.quoteId);
+    const { reconcileVideoJobFunding: reconcilePlanTopUp } = await import("../src/lib/mcp/video-job-funding");
+    await reconcilePlanTopUp(planTopUpRoot.jobId, planTopUpUser.id, 3);
+    assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: planTopUpRoot.jobId } })).fundedMeteredMinutes, 3);
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: planTopUpUser.id } })).minutesUsed, 3);
+
     await reconcileVideoJobFunding(mixedRoot.jobId, mixed.id, 1);
     const mixedUser = await prisma.user.findUniqueOrThrow({ where: { id: mixed.id } });
     await prisma.user.update({ where: { id: mixed.id }, data: { minutesUsed: mixedUser.minutesLimit } });
