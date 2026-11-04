@@ -495,13 +495,16 @@ export async function runLocalMediaEviction(
     deadlineAt: options.yieldDeadlineAt,
   });
 
+  const orderedCandidates = [...plan.candidates].sort(
+    (a, b) => (b.sizeBytes - a.sizeBytes) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+  );
   const selected: VerifiedLocalReplica[] = [];
   for (
     let offset = 0;
-    offset < plan.candidates.length;
+    offset < orderedCandidates.length;
     offset += LOCAL_EVICTION_CATALOG_BATCH_SIZE
   ) {
-    const batch = plan.candidates.slice(
+    const batch = orderedCandidates.slice(
       offset,
       offset + LOCAL_EVICTION_CATALOG_BATCH_SIZE,
     );
