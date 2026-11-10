@@ -9,7 +9,10 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04 (ffmpeg 8.0) in Nov 2026 and the G24
+    # "normalized frames equal the auto-detect path" checks fail there. 24.04 ships
+    # ffmpeg 6.1, the version these checks were written against.
+    runs-on: ubuntu-24.04
     env:
       # Build-time only — no real secrets needed. Stripe/AI keys are looked up at runtime,
       # and prisma generate doesn't connect to the DB (a dummy URL is enough).
