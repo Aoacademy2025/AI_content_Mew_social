@@ -59,6 +59,9 @@ export const CLERK_APPEARANCE = {
   layout: { socialButtonsPlacement: "top" as const },
 };
 
+/** Studio shares the Content Engine terms, which name Creator Studio (hero-ai PR #337). */
+export const TERMS_URL = "https://app.heroaiengine.com/terms";
+
 function Logo({ size }: { size: number }) {
   return (
     <Link href="/" className="flex w-fit items-center gap-2.5" aria-label="HERO AI Creator Studio หน้าแรก">
@@ -160,6 +163,14 @@ export function AuthShell({
                 <>ยังไม่มีบัญชี? <Link href="/register" className="font-medium text-[#c4b5fd] hover:text-white">สมัครฟรี ได้ PRO 7 วัน</Link> ไม่ต้องใช้บัตร</>
               )}
             </p>
+            {isRegister && (
+              <p className="mt-3 text-center text-[12.5px] text-[#6f6a7d]">
+                การสมัครถือว่ายอมรับ{" "}
+                <a href={TERMS_URL} target="_blank" rel="noopener noreferrer" className="text-[#a39db3] underline hover:text-white">
+                  ข้อกำหนดการใช้บริการ
+                </a>
+              </p>
+            )}
           </div>
         </div>
       </div>
