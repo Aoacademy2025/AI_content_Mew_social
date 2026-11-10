@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import Script from "next/script";
+import { TERMS_URL } from "@/components/marketing/auth-shell";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { EditorDemo } from "@/components/marketing/sale-v3/editor-demo";
 import { PageBehaviors } from "@/components/marketing/sale-v3/page-behaviors";
@@ -424,6 +425,7 @@ export default async function Home() {
         <div className="wrap">
           <span>© 2026 HERO AI Creator Studio</span>
           <a href="https://affiliate.heroaiengine.com/affiliate-program">ร่วมแนะนำ HERO AI รับค่าตอบแทน 25% ทุกเดือน</a>
+          <a href={TERMS_URL}>ข้อกำหนดการใช้บริการ</a>
           <Link href="/login">เข้าสู่ระบบ</Link>
         </div>
       </footer>
