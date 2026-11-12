@@ -3,11 +3,20 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import { runAcousticSubtitleWorker, resolveAcousticAudioFile, acousticSubtitleMode } from "../src/lib/acoustic-subtitle-worker";
+import { runAcousticSubtitleWorker, resolveAcousticAudioFile, acousticSubtitleMode, acousticBudgetMs, ACOUSTIC_BUDGET_CEILING_MS } from "../src/lib/acoustic-subtitle-worker";
 import { selectAcousticSubtitleClock } from "../src/lib/acoustic-subtitle-selection";
 import { ACOUSTIC_CLOCK_VERSION, ACOUSTIC_MODEL_REVISION } from "../src/lib/acoustic-subtitle-clock";
 
 async function main() {
+  // HERO-51: prod CTC emissions cost ~0.35–0.4 s per audio second, so a flat 60 s budget timed
+  // out every narration longer than ~140 s. The budget must scale with the audio length.
+  assert.equal(acousticBudgetMs(30_000, 60_000, 170_000), 60_000, "short narration keeps the configured base");
+  assert.equal(acousticBudgetMs(240_000, 60_000, 170_000), 113_000, "a 4-minute narration gets 5 s + 0.45 x audio");
+  assert.equal(acousticBudgetMs(360_000, 60_000, 170_000), 167_000, "a 6-minute narration fits under the ceiling");
+  assert.equal(acousticBudgetMs(600_000, 60_000, 170_000), 170_000, "very long audio is clamped to the ceiling");
+  assert.equal(acousticBudgetMs(240_000, 60_000, 50_000), 50_000, "never exceeds a smaller verification window");
+  assert.equal(acousticBudgetMs(Number.NaN, 60_000, 170_000), 60_000, "an unknown duration falls back to the base");
+  assert(ACOUSTIC_BUDGET_CEILING_MS >= 167_000, "the worker hard cap must admit a 6-minute narration");
   const originalCwd = process.cwd();
   const originalEnv = { ...process.env };
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hero-acoustic-worker-test-"));
