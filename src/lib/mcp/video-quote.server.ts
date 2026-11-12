@@ -43,7 +43,10 @@ function view(row: McpVideoQuote, editorUrl?: string | null): VideoQuoteView {
     rootJobId: row.rootJobId,
     ...(editorUrl ? { editorUrl } : {}),
     confirmationUrl: new URL(`/mcp/confirm/${encodeURIComponent(row.id)}`, publicOrigin()).toString(),
-    next: status === "draft" ? "ส่ง confirmationUrl ให้เจ้าของบัญชีเปิดและยืนยันใน Studio (ต้องแสดงลิงก์ confirmationUrl ให้ผู้ใช้คลิกเปิดในเบราว์เซอร์เพื่อกดปุ่มเริ่มงาน การพิมพ์ตอบตกลงในแชทเริ่มงานไม่ได้) แล้วเรียก get_video_quote หรือ create_video_job"
+    // A root draft is approved by create_video_job({quoteId}) itself (HERO-85); only an incremental
+    // (parentQuoteId) draft for a held job still needs the owner to approve it in the browser.
+    next: status === "draft" && !row.parentQuoteId ? "สรุปใบประเมินวงเงินนี้ให้ผู้ใช้ เมื่อผู้ใช้ตกลงในแชทแล้วให้เรียก create_video_job({quoteId}) ได้ทันที ไม่ต้องเปิด confirmationUrl ในเบราว์เซอร์ (confirmationUrl ใช้เฉพาะเมื่อผู้ใช้อยากตรวจในเว็บเอง)"
+      : status === "draft" ? "ส่ง confirmationUrl ให้เจ้าของบัญชีเปิดและยืนยันใน Studio (ต้องแสดงลิงก์ confirmationUrl ให้ผู้ใช้คลิกเปิดในเบราว์เซอร์เพื่อกดปุ่มเริ่มงาน การพิมพ์ตอบตกลงในแชทเริ่มงานไม่ได้) แล้วเรียก get_video_quote หรือ create_video_job"
       : status === "approved" ? "เรียก create_video_job ด้วย quoteId นี้ โดยใช้ข้อมูลงานเดิม"
       : status === "consumed" ? "เรียก get_video_status ด้วย rootJobId — อย่าสร้างงานซ้ำ"
       : row.parentQuoteId ? `เรียก prepare_video_job พร้อม resumeJobId: ${row.rootJobId} เพื่อยืนยันงานที่บันทึกไว้` : "เรียก prepare_video_job เพื่อเริ่มใบยืนยันใหม่",

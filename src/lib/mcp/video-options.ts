@@ -151,7 +151,7 @@ export async function getVideoOptions(
     broll: {
       default: "stock" as const,
       howToChoose: MEDIA_SOURCE_QUESTION,
-      next: "เลือกแหล่ง → prepare_video_job → ส่ง confirmationUrl ให้ผู้ใช้ยืนยันใน Studio → get_video_quote → create_video_job({quoteId})",
+      next: "เลือกแหล่ง → create_video_job ได้ทันที (หรือ prepare_video_job เพื่อดูใบประเมินวงเงินก่อน → ผู้ใช้ตกลงในแชท → create_video_job({quoteId}) ไม่ต้องเปิดเบราว์เซอร์)",
       pricing: currentQuotePricing(),
       renderDisclosure: "ทุกแหล่งยังใช้นาทีเรนเดอร์ตามแผนหรือ Hero credits ส่วนเกิน ดูวงเงินจริงในใบยืนยัน",
       unavailableTools: MEDIA_TOOL_UNAVAILABLE,
