@@ -41,7 +41,7 @@ async function main() {
   const o = await getVideoOptions(mock({ requestedPaths }), u);
   assert(o.broll.options.map(item => item.value).join(",") === "stock,hero-ai-image,automix,external", "all four media source options");
   assert(o.broll.default === "stock", "omitted source remains stock compatibility default");
-  assert(o.broll.next.includes("prepare_video_job") && o.broll.next.includes("confirmationUrl") && o.broll.next.includes("get_video_quote") && o.broll.next.includes("create_video_job({quoteId})"), "source selection routes to authenticated approval before creation");
+  assert(o.broll.next.includes("prepare_video_job") && o.broll.next.includes("create_video_job({quoteId})") && !o.broll.next.includes("ส่ง confirmationUrl ให้ผู้ใช้ยืนยัน"), "source selection routes to create without a browser round-trip (HERO-85)");
   assert(o.broll.unavailableTools.includes("ยังสร้างหรือค้นหาสื่อนี้ไม่ได้"), "unavailable external capabilities are disclosed");
   assert(o.broll.renderDisclosure.includes("นาทีเรนเดอร์") && o.broll.options[0].detail.includes("เครดิตส่วนเกิน"), "stock still discloses render usage");
   assert(o.broll.options[3].detail.includes("เครื่องมือภายนอกของคุณอาจมีค่าใช้จ่าย"), "external tools can have separate charges");

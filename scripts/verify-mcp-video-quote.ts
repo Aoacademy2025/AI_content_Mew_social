@@ -25,6 +25,10 @@ async function main() {
     const before = { jobs: await prisma.videoJob.count(), ledger: await prisma.creditLedger.count(), images: await prisma.aiGenerationJob.count(), renders: await prisma.renderJob.count(), imports: await prisma.mediaImport.count() };
     const quote = await service.prepareVideoQuote(owner, { ...input, confirmed: true } as typeof input);
     assert.equal(quote.status, "draft");
+    // Since HERO-85 create_video_job({quoteId}) approves a root draft itself; `next` must not send the
+    // customer to the browser or claim a chat "yes" cannot start the job (support ticket cmwagufih).
+    assert.ok(quote.next.includes("create_video_job"), "root draft next routes to create_video_job");
+    assert.ok(!quote.next.includes("ต้องแสดงลิงก์") && !quote.next.includes("เริ่มงานไม่ได้"), "root draft next does not require the browser");
     const preparedWork = await service.getVideoQuoteReview(owner.id, quote.quoteId);
     assert.equal(preparedWork!.execution.jobInput.geminiVoiceName, "Aoede");
     await prisma.user.update({ where: { id: owner.id }, data: { geminiVoiceName: "Kore", ttsProvider: "elevenlabs" } });
