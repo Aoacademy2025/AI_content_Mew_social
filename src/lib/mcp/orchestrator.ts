@@ -4,7 +4,7 @@ import { authorExternalMediaPlan } from "@/lib/external-media";
 import { checkpointedBudgetCaller, holdVideoBudget } from "./video-budget-checkpoint";
 import { VideoBudgetHoldError } from "./video-budget-admission";
 import type { User } from "@prisma/client";
-import { acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-subtitle-worker";
+import { ACOUSTIC_BUDGET_CEILING_MS, acousticBudgetMs, acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-subtitle-worker";
 import { SUBTITLE_MIN_CARD_MS } from "@/lib/mcp/subtitle-quality";
 import { selectAcousticSubtitleClock } from "@/lib/acoustic-subtitle-selection";
 import { mergeUncertainCaptionCards, mergeShortAcousticCards } from "@/lib/acoustic-subtitle-clock";
@@ -2715,7 +2715,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const acousticAttempt = acousticMode !== "off"
       ? (deps.acousticWorker ?? runAcousticSubtitleWorker)({ audioUrl: tts.voiceUrl, text: narrationText,
           audioDurationMs, mode: acousticMode,
-          budgetMs: Math.min(subtitleVerifyBudgetMs(), Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS) || 45_000) })
+          budgetMs: acousticBudgetMs(audioDurationMs, Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS) || 45_000,
+            Math.min(subtitleVerifyBudgetMs(), ACOUSTIC_BUDGET_CEILING_MS)) })
       : null;
     let verification: SubtitleAlignmentAttempt = { status: "skipped", durationMs: 0, ttsCaptions };
     if (provider !== "elevenlabs") {

@@ -97,6 +97,18 @@ export async function resolveAcousticAudioFile(audioUrl: string, root = process.
   } catch { return null; }
 }
 
+/** Hard cap for one local CTC run. It runs alongside the remote verify inside the 180 s
+ * subtitle verification window, so it stays below that window. */
+export const ACOUSTIC_BUDGET_CEILING_MS = 170_000;
+
+/** HERO-51: the CTC forward pass costs ~0.35–0.4 s per second of audio on prod (2 threads),
+ * so a flat budget timed out every long narration. Give it 5 s + 0.45 x audio, never less
+ * than the configured base and never more than `ceilingMs`. */
+export function acousticBudgetMs(audioDurationMs: number, baseMs: number, ceilingMs: number): number {
+  const audio = Number.isFinite(audioDurationMs) && audioDurationMs > 0 ? audioDurationMs : 0;
+  return Math.round(Math.min(ceilingMs, Math.max(baseMs, 5_000 + 0.45 * audio)));
+}
+
 /** A single killable local process. No provider retry or runtime download.
  * The Python flock bounds concurrency across worker processes; timeout includes
  * waiting for that lock and cold model load. Errors are fixed codes only. */
@@ -119,7 +131,7 @@ export async function runAcousticSubtitleWorker(args: {
     const python = process.env.SUBTITLE_ACOUSTIC_PYTHON;
     if (!python || !path.isAbsolute(python) || !args.text.trim() || args.text.length > 12_000) return finish();
     const configured = Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS ?? 45_000);
-    const budgetMs = Math.min(90_000, Math.max(1, args.budgetMs ?? (Number.isFinite(configured) ? configured : 45_000)));
+    const budgetMs = Math.min(ACOUSTIC_BUDGET_CEILING_MS, Math.max(1, args.budgetMs ?? (Number.isFinite(configured) ? configured : 45_000)));
     const file = await resolveAcousticAudioFile(args.audioUrl);
     if (!file) return finish();
     const audioHash = hash(await fs.readFile(file));
