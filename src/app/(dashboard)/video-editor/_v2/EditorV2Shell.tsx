@@ -489,6 +489,8 @@ export function EditorV2Shell() {
     // retired legacy style is deliberately NOT threaded: no surface can show or
     // change it any more, so no surface may keep searching with it either.
     projectStylePack: p.projectStylePack,
+    initialTemplateId: p.templateId,
+    onTemplateSelect: p.setTemplateId,
     // T8 (ADR 0064, G21): the agent's unexported draft for this project's current base job, if any.
     pendingEdit,
     onReloadPendingEdit: reloadPendingEdit,

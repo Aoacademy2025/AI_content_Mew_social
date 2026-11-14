@@ -75,6 +75,7 @@ import {
 } from "@/lib/headline-hook";
 import { parseVideoJobOutput, type VideoJobPreviewData } from "@/lib/mcp/video-job";
 import { clampTailHoldMs, TAIL_HOLD_MS_MAX, TAIL_HOLD_MS_MIN } from "@/lib/tail-hold";
+import { resolveTemplatePostEdit } from "@/lib/video-template-apply";
 import {
   DEFAULT_BGM_VOLUME,
   normalizeBackgroundMusicEdit,
@@ -99,6 +100,13 @@ import {
   type PendingEditState,
   type PendingEditWindowEdit,
 } from "@/lib/mcp/pending-edit-draft";
+import {
+  ACTIVE_STYLE_PACK_IDS,
+  isActiveStylePackId,
+  stylePack,
+  stylePackSubtitlePreset,
+} from "@/lib/style-pack-catalog";
+import { resolveMusicMoodTrack } from "@/lib/mcp/bgm-resolve";
 
 /**
  * T6 (ADR 0064): the tracer-bullet MCP edit tools — `get_edit_state`, `set_caption_text`,
@@ -120,6 +128,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "discard_edits",
   "replace_broll_window",
   "set_broll_style",
+  "apply_video_template",
   "export_video",
 ] as const;
 
@@ -238,6 +247,14 @@ export const setBrollStyleInputShape = {
     .describe("เปิด/ปิดการซูมจังหวะผู้พูด (1.0x ↔ 1.15x ช่วงที่เป็นหน้าผู้พูด ซับไตเติลไม่ขยับตาม) — ตั้งเป็นค่าหลักของทั้งคลิป (ไม่ต้องส่ง windowIndex)"),
   sfxMode: z.enum(SFX_MODES).optional()
     .describe("เสียงเอฟเฟกต์เปลี่ยนฉากเบาๆ (-18 dB): \"none\" = ปิด (ค่าเริ่มต้น), \"subtle\" = เปิดเสียง whoosh/pop เบาๆ ตอนตัดฉาก B-roll — ตั้งเป็นค่าหลักของทั้งคลิป (ไม่ต้องส่ง windowIndex)"),
+} satisfies z.ZodRawShape;
+
+export const applyVideoTemplateInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  templateId: z.enum(nonEmptyEnum(ACTIVE_STYLE_PACK_IDS))
+    .describe("รหัสสไตล์เทมเพลตวิดีโอสำเร็จรูป (ดูรายการจาก get_video_options.templates หรือ get_edit_state.allowed.templates)"),
+  includeMusic: z.boolean().optional()
+    .describe("true = เลือกเพลงประกอบจากคลังตามอารมณ์เพลงของเทมเพลต (musicMood) พร้อมเปิด ducking อัตโนมัติ; false/ไม่ส่ง = คงเพลงเดิมไว้"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -360,7 +377,8 @@ const ALLOWED = {
   outlineSize: { min: 1, max: 8 },
   verticalPos: { min: 10, max: 95 },
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
-  // EP5 #11 / U3 / #3 (set_broll_style).
+  // EP5 #11 / U3 / #3 (set_broll_style) + HERO-94 (apply_video_template).
+  templates: [...ACTIVE_STYLE_PACK_IDS],
   brollTransitions: [...BROLL_TRANSITIONS],
   brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
   brollFits: [...BROLL_FITS],
@@ -659,7 +677,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     sfxMode: draftProjectSfxMode(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้ได้หลายครั้งด้วย apply_video_template / set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -1515,6 +1533,161 @@ export async function setBrollStyleTool(user: User, args: ShapeArgs<typeof setBr
   };
 }
 
+// ── apply_video_template (HERO-94) ────────────────────────────────────────────────────────
+
+const BAD_TEMPLATE_ID = editToolFailure(
+  "invalid_input",
+  `templateId ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${ACTIVE_STYLE_PACK_IDS.join(", ")}`,
+  "เรียก get_video_options เพื่อดู templates ที่เปิดใช้งาน",
+);
+const BAD_INCLUDE_MUSIC = editToolFailure(
+  "invalid_input",
+  "ตั้งค่า includeMusic ต้องเป็น true หรือ false",
+  "ส่ง includeMusic: true หรือ false",
+);
+
+/**
+ * HERO-94: 1-click full-recipe video template transformation on a Held Preview's Pending Edit Draft.
+ * Applies the StylePack's subtitle config (`V2SubConfig` + `highlightKeywords` + `statCards` + `cardLen`),
+ * headline hook preset (preserving existing hook text/enabled state when present), `sfxMode`,
+ * `brollTransition` across windows + `punchZoom` (when B-roll window edits are enabled for the job),
+ * and optionally picks a BGM track matching `musicMood` when `includeMusic: true`.
+ */
+export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof applyVideoTemplateInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+  if (!isActiveStylePackId(args.templateId)) return BAD_TEMPLATE_ID;
+  if (args.includeMusic !== undefined && typeof args.includeMusic !== "boolean") return BAD_INCLUDE_MUSIC;
+
+  const held = await resolveHeldRoot(user.id, args.jobId);
+  if (!held.ok) return held.failure;
+  const { root } = held;
+  const loaded = await loadState(user.id, root);
+  if (!loaded.ok) return loaded.failure;
+  const { base } = loaded.state;
+  if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return STYLE_DURING_RERENDER;
+
+  const baseRow = await prisma.videoJob.findFirst({
+    where: { id: base.id, userId: user.id },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
+  });
+  const canRerenderBroll = Boolean(baseRow && brollWindowEditEnabled(user, baseRow));
+
+  const pack = stylePack(args.templateId);
+  let matchedMusicTrack: { track: string; title: string; trackId: string } | null = null;
+  if (args.includeMusic === true) {
+    const tracks = await listBackgroundMusicTracks(user.id);
+    const resolved = resolveMusicMoodTrack(
+      pack.musicMood,
+      tracks.map((t) => ({ title: t.title, bgmFile: t.track, mood: t.mood })),
+    );
+    const matched = resolved ? tracks.find((t) => t.track === resolved.bgmFile) ?? null : null;
+    if (matched) matchedMusicTrack = { track: matched.track, title: matched.title, trackId: matched.trackId };
+  }
+
+  const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
+    const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
+    const sourceText = draft.fullText?.trim()
+      || draft.captions.map((c) => c.text).join(" ").trim();
+    const resolved = resolveTemplatePostEdit({
+      templateId: args.templateId as typeof pack.id & string as Parameters<typeof resolveTemplatePostEdit>[0]["templateId"],
+      currentHeadlineHook: draft.headlineHook ?? null,
+      headlineSourceText: sourceText,
+      totalDurationMs,
+    });
+    const canonicalFont = canonicalizeFontFamily(resolved.subtitleConfig.fontFamily) ?? resolved.subtitleConfig.fontFamily;
+    draft.subtitleConfig = {
+      ...(resolved.subtitleConfig as V2SubConfig),
+      fontFamily: canonicalFont,
+    };
+    if (draft.cardLen !== resolved.cardLen) {
+      draft.captions = regroupCaptions(
+        draft.originalCaptions,
+        resolved.cardLen,
+        draft.words,
+        draft.fullText,
+        draft.subtitleConfig.fontSize,
+      );
+      draft.cardLen = resolved.cardLen;
+      draft.captionOverrides = {};
+    }
+
+    if (resolved.headlineHook) {
+      draft.headlineHook = resolved.headlineHook;
+    }
+
+    const baseConfig = state.base.preview.config as {
+      brollTransition?: unknown;
+      punchZoom?: unknown;
+      sfxMode?: unknown;
+    };
+    if (pack.sfxMode === effectiveSfxMode(baseConfig.sfxMode)) delete draft.sfxMode;
+    else draft.sfxMode = pack.sfxMode;
+
+    if (canRerenderBroll) {
+      if (pack.brollTransition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) {
+        delete draft.brollTransition;
+      } else {
+        draft.brollTransition = pack.brollTransition;
+      }
+      if (pack.punchZoom === effectivePunchZoom(baseConfig.punchZoom)) {
+        delete draft.punchZoom;
+      } else {
+        draft.punchZoom = pack.punchZoom;
+      }
+      // Reset per-window transition overrides so the template's transition applies across all windows,
+      // while preserving any media replacements and per-window fit.
+      draft.windowEdits = draft.windowEdits.flatMap((edit) => {
+        const baseWindow = bgVideoAt(state.base.preview.config, edit.index);
+        const baseHasOwnTransition = isBrollTransition(baseWindow?.transition);
+        const nextEdit: PendingEditWindowEdit = { ...edit };
+        if (baseHasOwnTransition) nextEdit.transition = BROLL_TRANSITION_FOLLOW_DEFAULT;
+        else delete nextEdit.transition;
+        if (
+          nextEdit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+          && nextEdit.transition === undefined
+          && nextEdit.fit === undefined
+        ) {
+          return [];
+        }
+        return [nextEdit];
+      });
+    }
+
+    if (args.includeMusic === true && matchedMusicTrack) {
+      const currentMusic = effectiveBackgroundMusic(draft, state.base.preview);
+      const nextMusic = normalizeBackgroundMusicEdit({
+        track: matchedMusicTrack.track,
+        volume: currentMusic.volume || DEFAULT_BGM_VOLUME,
+        ducking: true,
+      });
+      if (nextMusic) draft.backgroundMusic = nextMusic;
+    }
+
+    return { ok: true, draft };
+  });
+  if (!updated.ok) return mapUpdateFailure(updated.code, updated.message, NEXT_RELOAD);
+
+  const { draft: nextDraft, base: updatedBase } = updated.state;
+  return {
+    ok: true,
+    jobId: root.id,
+    templateId: pack.id,
+    thaiLabel: pack.thaiLabel,
+    cardLen: nextDraft.cardLen,
+    cardCount: nextDraft.captions.length,
+    subtitleStyle: subtitleStyleView(nextDraft.subtitleConfig),
+    headlineHook: nextDraft.headlineHook ?? null,
+    sfxMode: draftProjectSfxMode(nextDraft, updatedBase),
+    brollTransition: draftProjectTransition(nextDraft, updatedBase),
+    punchZoom: draftProjectPunchZoom(nextDraft, updatedBase),
+    backgroundMusic: await backgroundMusicView(user.id, nextDraft, updatedBase.preview),
+    musicApplied: Boolean(args.includeMusic === true && matchedMusicTrack),
+    pending: draftHasBrollChanges(nextDraft),
+    draftRevision: updated.state.revision,
+    next: "ใช้สไตล์เทมเพลตแล้ว (ยังไม่เรนเดอร์) — แก้ข้อความซับหรือพาดหัวต่อได้ หรือเรียก export_video(jobId) เมื่อพร้อมส่งออก (ไม่ตัดโควต้าเพิ่ม)",
+  };
+}
+
 // ── export_video ──────────────────────────────────────────────────────────────────────────
 
 const EXPORT_NEXT = "เรียก get_video_status({id: jobId}) ทุก ~60–90 วินาที จนได้ status \"done\" พร้อม videoUrl";
@@ -2063,6 +2236,19 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("set_broll_style", extra, (p) => setBrollStyleTool(p.user, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "apply_video_template",
+    {
+      title: "Apply video template",
+      description: "สวมสไตล์เทมเพลตวิดีโอสำเร็จรูป (templateId จาก get_video_options.templates) ทั้งชุดลงบนดราฟต์ของวิดีโอ exportMode \"hold\" ในคำสั่งเดียว: ปรับสไตล์ซับ + ความยาวคำต่อการ์ด + ไฮไลต์คำสำคัญ + การ์ดสถิติ, สไตล์การ์ดพาดหัวเปิดคลิป (คงข้อความพาดหัวเดิมไว้ถ้ามี), เสียงเอฟเฟกต์เปลี่ยนฉาก (sfxMode), การเปลี่ยนฉาก B-roll (brollTransition) + ซูมจังหวะผู้พูด (punchZoom) และเลือกเพลงประกอบตามอารมณ์เทมเพลตเมื่อส่ง includeMusic:true. ยังไม่เรนเดอร์ — เรียก export_video เมื่อแก้ครบ (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: applyVideoTemplateInputShape,
+    },
+    async (args, extra) =>
+      runTool("apply_video_template", extra, (p) => applyVideoTemplateTool(p.user, args), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(

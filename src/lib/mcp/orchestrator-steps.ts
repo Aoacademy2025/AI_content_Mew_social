@@ -69,28 +69,45 @@ export function createStylePackRenderResolver(
   load: {
     projectVisualContextJson: () => Promise<string | null>;
     brandRevisionRecipeJson: () => Promise<string | null>;
+    templateSnapshotJson?: () => Promise<string | null>;
   },
   options?: {
     onPinned?: (detail: StylePackPinnedDetail) => void;
   },
 ): StylePackRenderResolver {
-  let resolution: Promise<{ projectVisualContextJson: string | null; brandRevisionRecipeJson: string | null }> | null = null;
+  let resolution: Promise<{
+    projectVisualContextJson: string | null;
+    brandRevisionRecipeJson: string | null;
+    templateSnapshotJson: string | null;
+  }> | null = null;
   const resolveJson = () => {
     resolution ??= (async () => {
-      const [projectVisualContextJson, brandRevisionRecipeJson] = await Promise.all([
+      const [projectVisualContextJson, brandRevisionRecipeJson, templateSnapshotJson] = await Promise.all([
         load.projectVisualContextJson(),
         load.brandRevisionRecipeJson(),
+        load.templateSnapshotJson ? load.templateSnapshotJson() : Promise.resolve(null),
       ]);
-      return { projectVisualContextJson, brandRevisionRecipeJson };
+      return { projectVisualContextJson, brandRevisionRecipeJson, templateSnapshotJson };
     })();
     return resolution;
+  };
+  const effectiveFacetInput = async () => {
+    const { projectVisualContextJson, brandRevisionRecipeJson, templateSnapshotJson } = await resolveJson();
+    // An explicit job-level templateSnapshot overrides the passive brand default while yielding to
+    // a per-clip pinned Style Pack snapshot when projectVisualContextJson carries one.
+    const projectHasPack = stylePackSnapshotFromJson(projectVisualContextJson) !== null;
+    return {
+      projectVisualContextJson: projectHasPack ? projectVisualContextJson : (templateSnapshotJson ?? projectVisualContextJson),
+      brandRevisionRecipeJson,
+    };
   };
   let pinnedNotified = false;
   const notifyPinnedOnce = async () => {
     if (pinnedNotified || !options?.onPinned) return;
     try {
-      const { projectVisualContextJson, brandRevisionRecipeJson } = await resolveJson();
-      const projectSnapshot = stylePackSnapshotFromJson(projectVisualContextJson);
+      const { projectVisualContextJson, brandRevisionRecipeJson, templateSnapshotJson } = await resolveJson();
+      const projectSnapshot = stylePackSnapshotFromJson(projectVisualContextJson)
+        ?? stylePackSnapshotFromJson(templateSnapshotJson);
       const detail: StylePackPinnedDetail | null = projectSnapshot
         ? { packId: projectSnapshot.id, version: projectSnapshot.version, source: "project" }
         : (() => {
@@ -109,7 +126,7 @@ export function createStylePackRenderResolver(
   return {
     resolveStockMood: async () => {
       try {
-        const mood = stockMoodForProject(await resolveJson());
+        const mood = stockMoodForProject(await effectiveFacetInput());
         await notifyPinnedOnce();
         return mood;
       } catch {
@@ -118,7 +135,7 @@ export function createStylePackRenderResolver(
     },
     resolvePacing: async () => {
       try {
-        const pacing = pacingForProject(await resolveJson());
+        const pacing = pacingForProject(await effectiveFacetInput());
         await notifyPinnedOnce();
         return pacing;
       } catch {

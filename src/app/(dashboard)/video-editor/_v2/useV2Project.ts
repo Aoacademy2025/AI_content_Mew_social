@@ -7,7 +7,10 @@ import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageMod
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
-import type { MusicMood } from "@/lib/style-pack-catalog";
+import { isActiveStylePackId, type ActiveStylePackId, type MusicMood } from "@/lib/style-pack-catalog";
+import { isBrollTransition, type BrollTransition } from "@/lib/broll-window-style";
+import { isSfxMode, type SfxMode } from "@/lib/transition-sfx";
+import { resolveStep1TemplateDefaults } from "@/lib/video-template-apply";
 import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectStylePack } from "./project-style-pack";
@@ -110,6 +113,10 @@ interface V2Draft {
   clipUrls?: string[];
   clipNames?: string[];
   presenterFit?: "crop" | "contain";
+  /** HERO-94: active Styled Video Template (`StylePack` V2) selected in Step 1 or Post-Render. */
+  templateId?: ActiveStylePackId;
+  sfxMode?: SfxMode;
+  brollTransition?: BrollTransition;
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -885,6 +892,89 @@ export function useV2Project() {
   const setPresenterFit = useCallback((fit: "crop" | "contain") => {
     setPresenterFitFromUser(fit === "contain" ? "contain" : undefined);
   }, [setPresenterFitFromUser]);
+  const [templateIdState, setTemplateIdFromUser, setTemplateIdRaw] = useUserDraftState<ActiveStylePackId | undefined>(
+    isActiveStylePackId(d.templateId) ? d.templateId : undefined,
+    "templateId",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [sfxModeState, setSfxModeFromUser, setSfxModeRaw] = useUserDraftState<SfxMode | undefined>(
+    isSfxMode(d.sfxMode) ? d.sfxMode : undefined,
+    "sfxMode",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [brollTransitionState, setBrollTransitionFromUser, setBrollTransitionRaw] = useUserDraftState<BrollTransition | undefined>(
+    isBrollTransition(d.brollTransition) ? d.brollTransition : undefined,
+    "brollTransition",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const templatePickedMusicRef = useRef<string | null>(null);
+  const selectVideoTemplate = useCallback((nextId: ActiveStylePackId | null) => {
+    if (!canAcceptUserMutation()) return;
+    if (!nextId) {
+      setSfxModeRaw(undefined);
+      setBrollTransitionRaw(undefined);
+      setBrandSubtitleDefaultRaw(undefined);
+      setTemplateIdFromUser(undefined);
+      return;
+    }
+    const defaults = resolveStep1TemplateDefaults(nextId, {
+      currentHeadlineHook: headlineHook,
+      scriptText: script,
+    });
+    setBrandSubtitleDefaultRaw(defaults.subtitleDefault);
+    if (defaults.headlineHook) {
+      setHeadlineHookRaw(defaults.headlineHook);
+    }
+    setSfxModeRaw(defaults.sfxMode);
+    setBrollTransitionRaw(defaults.brollTransition);
+    setPunchZoomRaw(defaults.punchZoom ? true : undefined);
+    setTtsSpeedRaw(defaults.ttsSpeed !== 1 ? defaults.ttsSpeed : undefined);
+    setGeminiVoiceStyleRaw(defaults.geminiVoiceStyle);
+    const currentTrack = effectiveDraftRef.current.musicTrack;
+    const canAutoPickMusic = currentTrack === undefined
+      || currentTrack === ""
+      || (templatePickedMusicRef.current !== null && currentTrack === templatePickedMusicRef.current);
+    if (canAutoPickMusic) {
+      if (musicMoodTracksRef.current) {
+        const picked = pickDefaultMusicTrack(musicMoodTracksRef.current, defaults.musicMood);
+        if (picked) {
+          templatePickedMusicRef.current = picked;
+          setMusicTrackRaw(picked);
+          setMusicTrackKindRaw("system");
+          setMusicMoodDefaultHintRaw(null);
+          pendingMusicMoodDefaultRef.current = null;
+        } else {
+          setMusicMoodDefaultHintRaw(defaults.musicMood);
+          pendingMusicMoodDefaultRef.current = defaults.musicMood;
+        }
+      } else {
+        setMusicMoodDefaultHintRaw(defaults.musicMood);
+        pendingMusicMoodDefaultRef.current = defaults.musicMood;
+      }
+    }
+    setTemplateIdFromUser(nextId);
+  }, [
+    canAcceptUserMutation,
+    headlineHook,
+    script,
+    setBrandSubtitleDefaultRaw,
+    setBrollTransitionRaw,
+    setGeminiVoiceStyleRaw,
+    setHeadlineHookRaw,
+    setMusicMoodDefaultHintRaw,
+    setMusicTrackKindRaw,
+    setMusicTrackRaw,
+    setPunchZoomRaw,
+    setSfxModeRaw,
+    setTemplateIdFromUser,
+    setTtsSpeedRaw,
+  ]);
   /** EP5 U7: the Post-phase music. `mirror` (default: `next`) is copied into the Step-2 music
    *  fields so a later re-render bakes the same track; `next = undefined` = back to the rendered
    *  video's own music (the caller passes that music as `mirror`). */
@@ -948,6 +1038,9 @@ export function useV2Project() {
       ...(clipUrlsState && clipUrlsState.length > 1 ? { clipUrls: clipUrlsState } : {}),
       ...(clipNamesState && clipNamesState.some(Boolean) ? { clipNames: clipNamesState } : {}),
       ...(presenterFitState === "contain" ? { presenterFit: "contain" as const } : {}),
+      ...(templateIdState ? { templateId: templateIdState } : {}),
+      ...(sfxModeState ? { sfxMode: sfxModeState } : {}),
+      ...(brollTransitionState ? { brollTransition: brollTransitionState } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -1043,6 +1136,9 @@ export function useV2Project() {
         : undefined,
     );
     setPresenterFitRaw(next.presenterFit === "contain" ? "contain" : undefined);
+    setTemplateIdRaw(isActiveStylePackId(next.templateId) ? next.templateId : undefined);
+    setSfxModeRaw(isSfxMode(next.sfxMode) ? next.sfxMode : undefined);
+    setBrollTransitionRaw(isBrollTransition(next.brollTransition) ? next.brollTransition : undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -1629,6 +1725,10 @@ export function useV2Project() {
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(nextDraft.layerVisibility));
     setHeadlineHookRaw(undefined);
     setBackgroundMusicRaw(undefined);
+    setTemplateIdRaw(undefined);
+    setSfxModeRaw(undefined);
+    setBrollTransitionRaw(undefined);
+    templatePickedMusicRef.current = null;
     // Fix round 1 (PR-B whole-branch review, B3): createdVia has no setXRaw of its own
     // (T9 — it is never a user edit), so it is not touched by any of the setXRaw calls
     // above and would otherwise survive this reset from an open Agent-created Project
@@ -2626,7 +2726,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, templateIdState, sfxModeState, brollTransitionState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2674,6 +2774,9 @@ export function useV2Project() {
     mode, setMode, narrativeSourceKind, scriptTargetDurationSec,
     script, setScript,
     clipUrl, setClipUrl, clipUrls, setClipUrls, clipNames, setClipNames, presenterFit, setPresenterFit, clipDurationSec, setClipDurationSec,
+    templateId: templateIdState ?? null, selectVideoTemplate, setTemplateId: setTemplateIdFromUser,
+    sfxMode: sfxModeState, setSfxMode: setSfxModeFromUser,
+    brollTransition: brollTransitionState, setBrollTransition: setBrollTransitionFromUser,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,

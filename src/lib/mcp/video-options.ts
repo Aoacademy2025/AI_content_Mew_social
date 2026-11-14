@@ -5,6 +5,8 @@ import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
 import { HEYGEN_EXTERNAL_COST_DISCLOSURE, HEYGEN_ENGINE_LABELS, type HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { McpActiveBrandProfileSummary } from "@/lib/brand-profile-library.server";
+import { isManagedStockConfiguredFromEnv } from "@/lib/managed-stock";
+import { activeStylePacks } from "@/lib/style-pack-catalog";
 
 export const MEDIA_SOURCE_QUESTION = "อยากใช้ภาพประกอบแบบไหน: สต็อก, Hero AI Image, AutoMix หรือให้ AI ที่คุณคุยอยู่สร้าง/หาภาพและวิดีโอแล้วนำเข้าให้?";
 export const MEDIA_TOOL_UNAVAILABLE = "เครื่องมือที่เชื่อมต่ออยู่ยังสร้างหรือค้นหาสื่อนี้ไม่ได้ คุณส่งไฟล์/ลิงก์ให้ผม หรือเลือกแหล่งสื่ออื่นได้";
@@ -64,6 +66,7 @@ export async function getVideoOptions(
   // them through so get_video_options stays easy to unit test without a database.
   subtitleBrands: McpActiveBrandProfileSummary[] = [],
 ) {
+  const managedStock = isManagedStockConfiguredFromEnv();
   // Fetch the (slow, external) sources concurrently so the wizard isn't blocked ~30s+ serially.
   const [music, avatars, elevenlabs] = await Promise.all([
     safe(async () => {
@@ -116,6 +119,21 @@ export async function getVideoOptions(
     ? compactAvatarCatalog(avatars, user.heygenAvatarId)
     : null;
 
+  const templates = activeStylePacks().map((pack) => ({
+    id: pack.id,
+    thaiLabel: pack.thaiLabel,
+    tagline: pack.tagline,
+    pacing: pack.pacing,
+    musicMood: pack.musicMood,
+    subtitlePreset: pack.subtitle.preset,
+    headlineHookStyle: pack.headlineHookPreset,
+    highlightKeywords: pack.highlightKeywords,
+    statCards: pack.statCards,
+    sfxMode: pack.sfxMode,
+    punchZoom: pack.punchZoom,
+    brollTransition: pack.brollTransition,
+  }));
+
   return {
     music,
     avatars: compactAvatars?.options ?? avatars,
@@ -138,28 +156,56 @@ export async function getVideoOptions(
       savedGemini: user.geminiVoiceName ?? "Aoede",
       savedElevenlabs: user.elevenlabsVoiceId ?? null,
     },
+    templates,
+    templatesHowToChoose:
+      "ถ้าผู้ใช้เลือกหรือบอกแนวเทมเพลตวิดีโอ ให้ส่ง templateId ตอน create_video_job หรือ prepare_video_job — ระบบจะตั้งค่าซับ พาดหัว จังหวะตัดภาพ เสียงเอฟเฟกต์ ซูมจังหวะ โทนสต็อก และเพลงประกอบตามอารมณ์เทมเพลตให้อัตโนมัติโดยไม่ต้องไล่ถามสไตล์ย่อยซ้ำ (ค่าที่ระบุแยกเองจะทับเทมเพลตเสมอ; งานที่ hold ไว้ใช้ apply_video_template เปลี่ยนเทมเพลตทั้งชุดได้)",
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
-    // T4: resolution order is explicit args → Brand Subtitle Style → default below.
+    // Resolution order: explicit args → templateId defaults → Brand Subtitle Style → default below.
     subtitle: {
       sizeRange: [30, 160] as const,
       default: DEFAULT_V2_SUB.fontSize,
       styles: V2_QUICK_STYLES.map((style) => ({ id: style.key, label: style.label, desc: style.desc })),
-      howToChoose: "ไม่ต้องระบุ subtitleSize/subtitleStyle/subtitleColor/subtitleAccentColor ก็ได้ — ใช้สไตล์ของแบรนด์ (ถ้ามี) หรือค่าเริ่มต้น",
+      howToChoose: "ไม่ต้องระบุ subtitleSize/subtitleStyle/subtitleColor/subtitleAccentColor ก็ได้ — ใช้ค่าจาก templateId (ถ้าเลือก) หรือสไตล์ของแบรนด์ (ถ้ามี) หรือค่าเริ่มต้น",
       brands: subtitleBrands,
     },
     broll: {
       default: "stock" as const,
+      managedStock,
       howToChoose: MEDIA_SOURCE_QUESTION,
-      next: "เลือกแหล่ง → create_video_job ได้ทันที (หรือ prepare_video_job เพื่อดูใบประเมินวงเงินก่อน → ผู้ใช้ตกลงในแชท → create_video_job({quoteId}) ไม่ต้องเปิดเบราว์เซอร์)",
+      next: "เลือกแหล่ง → เรียก create_video_job เพื่อเริ่มงานอัตโนมัติได้ทันทีโดยไม่ต้องยืนยันในเบราว์เซอร์ (หรือเรียก prepare_video_job เพื่อดูใบประเมินวงเงินก่อน → ผู้ใช้ตกลงในแชท → create_video_job({quoteId}) ได้ทันทีโดยไม่ต้องเปิด confirmationUrl)",
       pricing: currentQuotePricing(),
       renderDisclosure: "ทุกแหล่งยังใช้นาทีเรนเดอร์ตามแผนหรือ Hero credits ส่วนเกิน ดูวงเงินจริงในใบยืนยัน",
       unavailableTools: MEDIA_TOOL_UNAVAILABLE,
       options: [
-        { value: "stock", title: "วิดีโอสต็อก", detail: "Pexels · Pixabay ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน", needsStockKey: true },
-        { value: "hero-ai-image", title: "Hero AI Image", detail: "ภาพ AI ทุกช่วง ใช้ Hero credits หรือสิทธิ์ทดลองตามใบยืนยัน ไม่ต้องมีคีย์สต็อก", needsStockKey: false },
-        { value: "automix", title: "AutoMix", detail: "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ต้องมีคีย์สต็อก", needsStockKey: true },
-        { value: "external", title: "สื่อจากเครื่องมือของคุณ/ไฟล์/ลิงก์", detail: EXTERNAL_MEDIA_DISCLOSURE, needsStockKey: false },
+        {
+          value: "stock",
+          title: "วิดีโอสต็อก",
+          detail: managedStock
+            ? "Pexels · Pixabay ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน"
+            : "Pexels · Pixabay ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน (ต้องมีคีย์สต็อก Pexels หรือ Pixabay)",
+          needsStockKey: !managedStock,
+        },
+        {
+          value: "hero-ai-image",
+          title: "Hero AI Image",
+          detail: "ภาพ AI ทุกช่วง ใช้ Hero credits หรือสิทธิ์ทดลองตามใบยืนยัน ไม่ต้องมีคีย์สต็อก",
+          needsStockKey: false,
+        },
+        {
+          value: "automix",
+          title: "AutoMix",
+          detail: managedStock
+            ? "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก"
+            : "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ต้องมีคีย์สต็อก",
+          needsStockKey: !managedStock,
+        },
+        {
+          value: "external",
+          title: "สื่อจากเครื่องมือของคุณ/ไฟล์/ลิงก์",
+          detail: EXTERNAL_MEDIA_DISCLOSURE,
+          needsStockKey: false,
+        },
       ],
     },
   };

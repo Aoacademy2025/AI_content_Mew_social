@@ -8,7 +8,9 @@
 // real track path. Unresolvable input is reported so the job fails fast with a
 // clear message + the list of moods, instead of crashing the renderer.
 
-export interface BgmTrack { title: string; bgmFile: string }
+import type { MusicMood } from "@/lib/style-pack-catalog";
+
+export interface BgmTrack { title: string; bgmFile: string; mood?: string | null }
 
 export interface Mood { key: string; label: string; emoji: string; titleKw: string[]; synonyms: string[] }
 
@@ -119,6 +121,37 @@ export function resolveBgm(input: string | undefined | null, tracks: BgmTrack[])
   if (kw) return { kind: "resolved", bgmFile: kw.bgmFile, title: kw.title, via: "keyword" };
 
   return { kind: "unresolved", input: s };
+}
+
+const MUSIC_MOOD_FALLBACK_QUERY: Record<MusicMood, string> = {
+  calm: "chill",
+  lounge: "chill",
+  ominous: "cinematic",
+  tense: "cinematic",
+  emotional: "cinematic",
+  epic: "cinematic",
+  traditional: "cinematic",
+  eerie: "cinematic",
+  serious: "corporate",
+  upbeat: "upbeat",
+};
+
+/** Resolve a StylePack's MusicMood to a track: exact `track.mood` tag first, then title-mood fallback. */
+export function resolveMusicMoodTrack(
+  musicMood: MusicMood | null | undefined,
+  tracks: readonly BgmTrack[],
+): { bgmFile: string; title: string } | null {
+  if (!musicMood || tracks.length === 0) return null;
+  const exactMood = tracks.find((t) => t.mood === musicMood);
+  if (exactMood) return { bgmFile: exactMood.bgmFile, title: exactMood.title };
+  const fallbackWord = MUSIC_MOOD_FALLBACK_QUERY[musicMood];
+  if (fallbackWord) {
+    const resolved = resolveBgm(fallbackWord, [...tracks]);
+    if (resolved.kind === "resolved" && tracks.some((t) => t.bgmFile === resolved.bgmFile)) {
+      return { bgmFile: resolved.bgmFile, title: resolved.title };
+    }
+  }
+  return null;
 }
 
 /** One-line mood list for error messages / prompts, e.g. "😌 ชิล/สบาย · 🎬 ดราม่า/อารมณ์ · …". */

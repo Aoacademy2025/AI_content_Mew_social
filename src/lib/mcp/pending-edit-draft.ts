@@ -564,6 +564,7 @@ export async function clearPendingEditDraftIfRevision(
         windowEdits: stored.windowEdits,
         ...(stored.brollTransition ? { brollTransition: stored.brollTransition } : {}),
         ...(typeof stored.punchZoom === "boolean" ? { punchZoom: stored.punchZoom } : {}),
+        ...(stored.sfxMode ? { sfxMode: stored.sfxMode } : {}),
       });
       if (Buffer.byteLength(next, "utf8") > MAX_EDITOR_PROJECT_DRAFT_BYTES) return false;
     }
@@ -655,6 +656,7 @@ export type PendingEditForWeb = {
     requiredWindows?: ExternalWindowState[];
     brollTransition?: BrollTransition;
     punchZoom?: boolean;
+    sfxMode?: SfxMode;
   };
 };
 
@@ -678,6 +680,7 @@ export function pendingEditForWeb(project: {
       captionOverrides: draft.captionOverrides,
       ...(draft.headlineHook ? { headlineHook: draft.headlineHook } : {}),
       ...(draft.backgroundMusic ? { backgroundMusic: draft.backgroundMusic } : {}),
+      ...(draft.sfxMode ? { sfxMode: draft.sfxMode } : {}),
       tailHoldMs: draft.tailHoldMs,
     },
   };
@@ -713,6 +716,7 @@ export async function pendingEditForWebResolved(userId: string, project: Paramet
       requiredWindows,
       ...(draft.brollTransition ? { brollTransition: draft.brollTransition } : {}),
       ...(typeof draft.punchZoom === "boolean" ? { punchZoom: draft.punchZoom } : {}),
+      ...(draft.sfxMode ? { sfxMode: draft.sfxMode } : {}),
     },
   };
 }

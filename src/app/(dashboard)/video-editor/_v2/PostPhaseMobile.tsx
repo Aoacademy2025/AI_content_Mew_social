@@ -13,8 +13,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { brollTimelineLabel } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Type, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Trash2, Type, Undo2,
 } from "lucide-react";
+import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
 import {
@@ -106,6 +107,8 @@ export function PostPhaseMobile({
   downloadFilename,
   brollRegionPreference,
   projectStylePack,
+  initialTemplateId,
+  onTemplateSelect,
   pendingEdit,
   onReloadPendingEdit,
 }: {
@@ -144,6 +147,8 @@ export function PostPhaseMobile({
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
   projectStylePack?: ProjectStylePack | null;
+  initialTemplateId?: ActiveStylePackId | null;
+  onTemplateSelect?: (next: ActiveStylePackId | undefined) => void;
   pendingEdit?: WebPendingEdit | null;
   onReloadPendingEdit?: () => Promise<WebPendingEdit | null>;
 }) {
@@ -159,6 +164,8 @@ export function PostPhaseMobile({
     logoOverlay,
     onLogoOverlayChange,
     initialSubtitleConfig,
+    initialTemplateId,
+    onTemplateSelect,
     layerVisibility,
     onLayerVisibilityChange,
     headlineHook,
@@ -843,6 +850,63 @@ export function PostPhaseMobile({
               style={{ display: "flex", flexWrap: "wrap" }}
             />
             <span style={{ fontSize: 10, color: color.textFaintest }}>≤N คำ = ซับสั้นเด้งเร็วแบบ TikTok · เปลี่ยนแล้วจะล้างการรวม/แยก/สีรายการ์ดที่แก้ไว้</span>
+          </section>
+
+          <section aria-label="เทมเพลตสไตล์วิดีโอ" className="flex flex-col gap-2">
+            <GroupLabel>
+              <span className="inline-flex items-center gap-1">
+                <Sparkles size={12} strokeWidth={1.8} style={{ color: color.primary300 }} />
+                เทมเพลตสไตล์วิดีโอ (1 คลิกทั้งคลิป)
+              </span>
+            </GroupLabel>
+            <div className="grid grid-cols-2 gap-2">
+              {activeStylePacks().map((pack) => {
+                const active = ed.activeTemplateId === pack.id;
+                return (
+                  <button
+                    key={pack.id}
+                    type="button"
+                    data-post-template-id={pack.id}
+                    aria-pressed={active}
+                    onClick={() => {
+                      ed.applyVideoTemplate(pack.id);
+                      toast.success(`ใช้เทมเพลต "${pack.thaiLabel}" ทั้งคลิปแล้ว`);
+                    }}
+                    className="flex flex-col items-start gap-1 text-left"
+                    style={{
+                      borderRadius: radius.card,
+                      padding: "10px 11px",
+                      background: active ? color.selectedBg : color.cardBg,
+                      border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <span className="truncate" style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>
+                        {pack.thaiLabel}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
+                        {pack.palette.map((hex, idx) => (
+                          <span
+                            key={`${pack.id}-${idx}`}
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: 999,
+                              background: hex,
+                              border: "1px solid rgba(255,255,255,.22)",
+                            }}
+                          />
+                        ))}
+                      </span>
+                    </div>
+                    <span className="w-full truncate" style={{ fontSize: 10, color: active ? color.primary300 : color.textFaint }}>
+                      {active ? "กำลังใช้" : pack.tagline}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </section>
 
           <section className="flex flex-col gap-2">

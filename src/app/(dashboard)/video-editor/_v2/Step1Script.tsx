@@ -7,13 +7,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { PenLine, Clapperboard, GripVertical, Crown } from "lucide-react";
+import { PenLine, Clapperboard, GripVertical, Crown, Sparkles } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
 import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
+import { activeStylePacks } from "@/lib/style-pack-catalog";
 
 const CLIP_CUTAWAY_ON = process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1";
 
@@ -169,6 +170,103 @@ export function Step1Script({
           />
         </div>
         )}
+
+        {/* เทมเพลตสไตล์วิดีโอ (1 คลิก — ตั้งซับ พาดหัว เสียง เพลง และจังหวะครบชุด) */}
+        <section
+          aria-label="เลือกสไตล์เทมเพลตวิดีโอ"
+          className="flex flex-col gap-2"
+          style={{
+            borderRadius: 13,
+            padding: "10px 12px",
+            background: "rgba(255,255,255,.02)",
+            border: `1px solid ${color.cardBorder}`,
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Sparkles size={13} strokeWidth={1.8} style={{ color: color.primary300 }} />
+              <span style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+                เลือกสไตล์เทมเพลตวิดีโอ (Video Template)
+              </span>
+              <span style={{ fontSize: 10.5, color: color.textFaint }}>
+                · แตะ 1 คลิกเพื่อตั้งซับ พาดหัว โทนเสียง และเพลงให้อัตโนมัติ
+              </span>
+            </div>
+            {p.templateId ? (
+              <button
+                type="button"
+                onClick={() => {
+                  p.selectVideoTemplate(null);
+                  toast("เปลี่ยนกลับเป็นกำหนดเองแล้ว");
+                }}
+                style={{
+                  fontSize: 10.5,
+                  color: color.primary300,
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "2px 4px",
+                }}
+              >
+                ล้างเทมเพลต (กำหนดเอง)
+              </button>
+            ) : null}
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {activeStylePacks().map((pack) => {
+              const active = p.templateId === pack.id;
+              return (
+                <button
+                  key={pack.id}
+                  type="button"
+                  data-template-id={pack.id}
+                  aria-pressed={active}
+                  onClick={() => {
+                    const next = active ? null : pack.id;
+                    p.selectVideoTemplate(next);
+                    if (next) toast.success(`เลือกเทมเพลต "${pack.thaiLabel}" แล้ว`);
+                    else toast("เปลี่ยนกลับเป็นกำหนดเองแล้ว");
+                  }}
+                  className="flex min-w-[164px] max-w-[196px] shrink-0 flex-col items-start gap-1 text-left"
+                  style={{
+                    borderRadius: radius.card,
+                    padding: "8px 10px",
+                    background: active ? color.selectedBg : color.cardBg,
+                    border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                    cursor: "pointer",
+                    transition: "all 150ms ease",
+                  }}
+                >
+                  <div className="flex w-full items-center justify-between gap-1.5">
+                    <span className="truncate" style={{ font: `500 12px ${font.heading}`, color: color.text }}>
+                      {pack.thaiLabel}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+                      {pack.palette.map((hex, idx) => (
+                        <span
+                          key={`${pack.id}-${idx}`}
+                          style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: 999,
+                            background: hex,
+                            border: "1px solid rgba(255,255,255,.22)",
+                          }}
+                        />
+                      ))}
+                    </span>
+                  </div>
+                  <span
+                    className="w-full truncate"
+                    style={{ fontSize: 10, color: active ? color.primary300 : color.textFaint }}
+                  >
+                    {active ? `กำลังใช้ · ${pack.tagline}` : pack.tagline}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
 
         {/* โหมดอัปคลิปเอง (cutaway) */}
         {p.mode === "upload" && !firstClipScriptOnly ? (
