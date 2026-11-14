@@ -13,10 +13,16 @@ import { webPendingWindowEdits, refreshPendingWindowMedia } from "./pending-edit
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  DEFAULT_V2_SUB, buildV2BurnConfig,
+  DEFAULT_V2_SUB, FONTS_LIST, buildV2BurnConfig,
   mergeCaptionWithNext, splitCaption, regroupCaptions,
   type V2CardLen, type V2SubConfig, type V2Caption, type V2CardOverrides,
 } from "./subtitle-style";
+import {
+  isActiveStylePackId,
+  stylePack,
+  type ActiveStylePackId,
+} from "@/lib/style-pack-catalog";
+import { resolveTemplatePostEdit } from "@/lib/video-template-apply";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
 import { startPlayback } from "@/lib/media-playback";
@@ -212,6 +218,8 @@ export type UsePostPhaseEditorOptions = {
    *  "apply" toast never lies about a logo change that got silently dropped (M2). */
   canRunProjectOperation?: () => boolean;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
+  initialTemplateId?: ActiveStylePackId | null;
+  onTemplateSelect?: (next: ActiveStylePackId | undefined) => void;
   brollEditAvailable?: boolean;
   /** T8 (ADR 0064, G21): the Pending Edit Draft the Shell loaded for this project, scoped to the
    *  job this editor currently opens — `undefined`/`null` when there is none (today's behaviour,
@@ -227,7 +235,10 @@ function subtitleConfigFromBrandDefault(
 ): V2SubConfig {
   if (!value) return DEFAULT_V2_SUB;
   const { cardLen: _cardLen, ...config } = value;
-  return config;
+  const matchedFont = FONTS_LIST.find(
+    (f) => f.value.toLowerCase() === config.fontFamily.toLowerCase(),
+  )?.value ?? config.fontFamily;
+  return { ...config, fontFamily: matchedFont };
 }
 
 export function usePostPhaseEditor(
@@ -256,12 +267,22 @@ export function usePostPhaseEditor(
     surface = "desktop",
     canRunProjectOperation = alwaysReadyForProjectOperation,
     initialSubtitleConfig,
+    initialTemplateId = null,
+    onTemplateSelect,
     brollEditAvailable = false,
     pendingEdit = null,
     onReloadPendingEdit = ignoreReloadPendingEdit,
   } = options;
   const preview = job.output?.preview ?? null;
   const editSnapshot = job.output?.editSnapshot;
+  const previewTemplateId = (preview?.config as { templateId?: unknown } | undefined)?.templateId;
+  const [activeTemplateId, setActiveTemplateId] = useState<ActiveStylePackId | null>(() => (
+    isActiveStylePackId(initialTemplateId)
+      ? initialTemplateId
+      : isActiveStylePackId(previewTemplateId)
+        ? previewTemplateId
+        : null
+  ));
   // T8 (ADR 0064, G21): when the Shell already loaded a draft for this exact base job, it wins
   // over the normal source (editSnapshot / the raw preview) for every field it carries. The web
   // never writes back to this draft — only a successful export clears it (G12, server-side).
@@ -272,13 +293,37 @@ export function usePostPhaseEditor(
   const effectiveFullText = pendingDraft?.fullText ?? preview?.fullText;
   const effectiveWords = pendingDraft?.words ?? preview?.words;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
-  const [captions, setCaptions] = useState<V2Caption[]>(() => pendingDraft?.captions ?? preview?.captions ?? []);
+  const [captions, setCaptions] = useState<V2Caption[]>(() => {
+    if (pendingDraft?.captions) return pendingDraft.captions;
+    const raw = preview?.captions ?? [];
+    const initLen = editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen;
+    if (!editSnapshot?.captions && initLen && initLen !== "sentence" && raw.length > 0) {
+      return regroupCaptions(
+        raw,
+        initLen,
+        preview?.words,
+        preview?.fullText,
+        initialSubtitleConfig?.fontSize ?? DEFAULT_V2_SUB.fontSize,
+      );
+    }
+    return raw;
+  });
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(() => {
-    const baseCfg = pendingDraft?.subtitleConfig
+    const hasSavedCfg = Boolean(pendingDraft?.subtitleConfig || editSnapshot?.subtitleConfig);
+    let baseCfg = pendingDraft?.subtitleConfig
       ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
       ?? subtitleConfigFromBrandDefault(initialSubtitleConfig);
+    if (!hasSavedCfg && activeTemplateId && isActiveStylePackId(activeTemplateId)) {
+      const pack = stylePack(activeTemplateId);
+      baseCfg = {
+        ...baseCfg,
+        highlightKeywords: pack.highlightKeywords,
+        statCards: pack.statCards,
+        sfxMode: baseCfg.sfxMode ?? pack.sfxMode,
+      };
+    }
     const previewSfx = (preview?.config as { sfxMode?: unknown } | undefined)?.sfxMode;
     if (baseCfg.sfxMode === undefined && (previewSfx === "subtle" || previewSfx === "none")) {
       return { ...baseCfg, sfxMode: previewSfx };
@@ -350,10 +395,22 @@ export function usePostPhaseEditor(
   const [headlineOverride, setHeadlineOverrideState] = useState<HeadlineHookConfig | undefined>(
     () => pendingDraft?.headlineHook,
   );
-  const resolvedHeadlineHook = useMemo(() => (
-    normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs, cfg.verticalPos)
-    ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
-  ), [headlineOverride, headlineHook, headlineSourceText, totalDurationMs, cfg.verticalPos]);
+  const resolvedHeadlineHook = useMemo(() => {
+    const explicit = normalizeHeadlineHookDraft(headlineOverride ?? headlineHook, totalDurationMs, cfg.verticalPos);
+    if (explicit) return explicit;
+    const baseDefault = createDefaultHeadlineHook(headlineSourceText, totalDurationMs);
+    if (activeTemplateId && isActiveStylePackId(activeTemplateId) && headlineSourceText.length > 0) {
+      const pack = stylePack(activeTemplateId);
+      const seeded = applyHeadlineHookPatchWithFallback(
+        baseDefault,
+        { preset: pack.headlineHookPreset, enabled: true },
+        headlineSourceText,
+        totalDurationMs,
+      );
+      return normalizeHeadlineHookDraft(seeded, totalDurationMs, cfg.verticalPos) ?? baseDefault;
+    }
+    return baseDefault;
+  }, [headlineOverride, headlineHook, headlineSourceText, totalDurationMs, cfg.verticalPos, activeTemplateId]);
   const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
   const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
@@ -1179,7 +1236,7 @@ export function usePostPhaseEditor(
   // เพิ่ม/ลบ/รวม/แยก ไม่ย้ายสีของการ์ดไปผิดใบ
   const historyRef = useRef<CaptionHistoryState<CaptionEditSnapshot>>({ past: [], future: [] });
   const historyIdRef = useRef(0);
-  const committedRef = useRef<V2Caption[]>(cloneCaptions(pendingDraft?.captions ?? preview?.captions ?? []));
+  const committedRef = useRef<V2Caption[]>(cloneCaptions(captions));
   const [historyLen, setHistoryLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
 
@@ -1402,6 +1459,57 @@ export function usePostPhaseEditor(
       0,
       len,
     );
+  }
+
+  function applyVideoTemplate(nextTemplateId: ActiveStylePackId) {
+    if (!isActiveStylePackId(nextTemplateId)) return;
+    const resolved = resolveTemplatePostEdit({
+      templateId: nextTemplateId,
+      currentHeadlineHook: resolvedHeadlineHook,
+      headlineSourceText,
+      totalDurationMs,
+    });
+    const matchedFont = FONTS_LIST.find(
+      (f) => f.value.toLowerCase() === resolved.subtitleConfig.fontFamily.toLowerCase(),
+    )?.value ?? resolved.subtitleConfig.fontFamily;
+    const nextCfg: V2SubConfig = {
+      ...resolved.subtitleConfig,
+      fontFamily: matchedFont,
+      highlightKeywords: resolved.highlightKeywords,
+      statCards: resolved.statCards,
+      sfxMode: resolved.sfxMode,
+    };
+    setCfg(nextCfg);
+    commitCaptionChange(
+      regroupCaptions(
+        originalCapsRef.current,
+        resolved.cardLen,
+        effectiveWords,
+        effectiveFullText,
+        nextCfg.fontSize,
+      ),
+      {},
+      0,
+      resolved.cardLen,
+    );
+    if (resolved.headlineHook) {
+      const nextHook = normalizeHeadlineHookDraft(
+        resolved.headlineHook,
+        totalDurationMs,
+        nextCfg.verticalPos,
+      );
+      setHeadlineOverrideState(nextHook ?? undefined);
+      onHeadlineHookChange(nextHook ?? undefined);
+    }
+    if (brollEditAvailable) {
+      setBrollTransitionDefault(resolved.brollTransition);
+    }
+    setActiveTemplateId(nextTemplateId);
+    onTemplateSelect?.(nextTemplateId);
+    trackEvent("editor_video_template_applied", {
+      status: "done",
+      properties: { surface, templateId: nextTemplateId },
+    });
   }
 
   /** เลื่อน key ของ override รายการ์ดตามการเปลี่ยนโครงการ์ด — ห้ามล้างทั้ง map
@@ -1814,6 +1922,8 @@ export function usePostPhaseEditor(
     set,
     setColorScoped,
     applyCardLen,
+    activeTemplateId,
+    applyVideoTemplate,
     mergeSelected,
     splitSelected,
     insertCaptionAtPlayhead,

@@ -90,6 +90,7 @@
     "verify:subtitle-fonts-scope": "tsx scripts/verify-subtitle-fonts-scope.ts",
     "verify:style-pack-catalog": "tsx scripts/verify-style-pack-catalog.ts",
     "verify:style-pack-apply": "tsx scripts/verify-style-pack-apply.ts",
+    "verify:video-templates-mcp-web": "node --conditions=react-server --import tsx scripts/verify-video-templates-mcp-web.ts",
     "verify:music-mood": "tsx scripts/verify-music-mood.ts",
     "verify:preserve-trial-on-convert": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-preserve-trial-on-convert.ts",
     "verify:first-clip-convert": "tsx scripts/verify-first-clip-convert.ts && tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-convert-server.ts && tsx scripts/verify-first-clip-convert-recovery.tsx",

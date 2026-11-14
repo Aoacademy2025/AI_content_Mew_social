@@ -15,6 +15,10 @@ import * as narrationTargetModule from "../src/lib/narration-target";
 import * as musicMoodModule from "../src/lib/music-mood";
 import * as logoEntitlementModule from "../src/lib/logo-entitlement";
 import * as geminiVoiceStylesModule from "../src/lib/gemini-voice-styles";
+import * as stylePackCatalogModule from "../src/lib/style-pack-catalog";
+import * as brollWindowStyleModule from "../src/lib/broll-window-style";
+import * as transitionSfxModule from "../src/lib/transition-sfx";
+import * as videoTemplateApplyModule from "../src/lib/video-template-apply";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -551,6 +555,10 @@ function createHarness(options: HarnessOptions = {}) {
     // Pure module (voice style id/direction helpers, no deps) — same class as
     // tts-providers above, so the harness runs the real normalizer.
     if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
+    if (specifier === "@/lib/style-pack-catalog") return stylePackCatalogModule;
+    if (specifier === "@/lib/broll-window-style") return brollWindowStyleModule;
+    if (specifier === "@/lib/transition-sfx") return transitionSfxModule;
+    if (specifier === "@/lib/video-template-apply") return videoTemplateApplyModule;
     if (specifier === "@/lib/video-account-defaults") {
       return { saveVideoAccountDefaults: async () => ({ ok: true }) };
     }

@@ -16,9 +16,11 @@ import { resolveAvatarRequest } from "./avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
 import { resolveMcpSubtitleDesign } from "./orchestrator-steps";
-import { resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
+import { createDefaultHeadlineHook, resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
-import { resolveBgm, isNoneInput } from "./bgm-resolve";
+import { resolveBgm, resolveMusicMoodTrack, isNoneInput } from "./bgm-resolve";
+import { isActiveStylePackId, stylePack, stylePackSubtitlePreset } from "@/lib/style-pack-catalog";
+import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
 import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { mcpBrollJobFields } from "./broll-source";
 import { withVideoJobSqliteRetry } from "./video-job";
@@ -160,6 +162,8 @@ async function resolveQuoteExecution(
   const presenter = presenters[0] ?? null;
   const avatar = resolveAvatarRequest(input, user);
   if (avatar.kind === "error") return quoteFailure(avatar.payload.error, avatar.payload.message);
+  const templatePack = input.templateId && isActiveStylePackId(input.templateId) ? stylePack(input.templateId) : null;
+  const templateSnapshot = templatePack ? stylePackSnapshotOf(templatePack) : null;
   let brandStyle: SubtitleStylePresetConfig | null = null;
   let brandId = input.brandProfileId;
   if (!brandId) {
@@ -171,8 +175,33 @@ async function resolveQuoteExecution(
     if (!lookup.found) return quoteFailure("brand_not_found", "ไม่พบแบรนด์นี้ หรือยังใช้ไม่ได้");
     brandStyle = lookup.style ?? null;
   }
-  const subtitle = resolveMcpSubtitleDesign(input, brandStyle);
-  const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(input, 60_000, subtitle.design.verticalPos);
+  const baseSubtitleStyle = templatePack ? stylePackSubtitlePreset(templatePack) : brandStyle;
+  const subtitle = resolveMcpSubtitleDesign(
+    templatePack
+      ? {
+          ...input,
+          highlightKeywords: input.highlightKeywords ?? templatePack.highlightKeywords,
+          statCards: input.statCards ?? templatePack.statCards,
+        }
+      : input,
+    baseSubtitleStyle,
+  );
+  const resolvedHeadlineHookStyle = input.headlineHookStyle ?? input.visualHookStyle ?? templatePack?.headlineHookPreset;
+  const fallbackHookSeed = !input.headlineHook && !input.visualHook && templatePack
+    ? createDefaultHeadlineHook(input.title?.trim() || input.script?.trim() || "", 60_000).headline.trim()
+    : "";
+  const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(
+    {
+      ...input,
+      ...(fallbackHookSeed ? { headlineHook: fallbackHookSeed } : {}),
+      ...(resolvedHeadlineHookStyle ? { headlineHookStyle: resolvedHeadlineHookStyle } : {}),
+    },
+    60_000,
+    subtitle.design.verticalPos,
+  );
+  const resolvedPunchZoom = input.punchZoom ?? templatePack?.punchZoom;
+  const resolvedSfxMode = input.sfxMode ?? templatePack?.sfxMode;
+  const resolvedBrollTransition = templatePack?.brollTransition;
   const layout = avatar.kind === "ok" ? resolveAvatarLayout(input, await getAvatarPreset(user.id, avatar.avatarId)) : null;
   const source = input.brollSource ?? "stock";
   const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
@@ -183,24 +212,38 @@ async function resolveQuoteExecution(
   // Same catalog ordering/ownership and pure selector used by /api/music + the worker.
   // Resolve locally now: a later catalog insert must not pick a different approved track.
   let music: { bgmFile: string; title: string } | null = null;
-  if (!isNoneInput(input.bgmFile)) {
+  if (input.bgmFile !== undefined) {
+    if (!isNoneInput(input.bgmFile)) {
+      const [systemTracks, ownerTracks] = await Promise.all([
+        prisma.music.findMany({ orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
+        prisma.userMusic.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
+      ]);
+      const tracks = [
+        ...systemTracks.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}` })),
+        ...ownerTracks.map((track) => ({ title: track.title, bgmFile: `/api/music/${track.filename}` })),
+      ];
+      const resolved = resolveBgm(input.bgmFile, tracks);
+      if (resolved.kind !== "resolved" || !tracks.some((track) => track.bgmFile === resolved.bgmFile)) {
+        return quoteFailure("bgm_not_found", "ไม่พบเพลงที่เลือกในคลังเพลงที่คุณใช้ได้", "เรียก get_video_options แล้วเลือกเพลงที่มีอยู่ หรือระบุ bgmFile: none จากนั้นเตรียมใบยืนยันใหม่");
+      }
+      music = resolved;
+    }
+  } else if (templatePack) {
     const [systemTracks, ownerTracks] = await Promise.all([
-      prisma.music.findMany({ orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
+      prisma.music.findMany({ orderBy: { createdAt: "desc" }, select: { title: true, filename: true, mood: true } }),
       prisma.userMusic.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
     ]);
     const tracks = [
-      ...systemTracks.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}` })),
+      ...systemTracks.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}`, mood: track.mood })),
       ...ownerTracks.map((track) => ({ title: track.title, bgmFile: `/api/music/${track.filename}` })),
     ];
-    const resolved = resolveBgm(input.bgmFile, tracks);
-    if (resolved.kind !== "resolved" || !tracks.some((track) => track.bgmFile === resolved.bgmFile)) {
-      return quoteFailure("bgm_not_found", "ไม่พบเพลงที่เลือกในคลังเพลงที่คุณใช้ได้", "เรียก get_video_options แล้วเลือกเพลงที่มีอยู่ หรือระบุ bgmFile: none จากนั้นเตรียมใบยืนยันใหม่");
-    }
-    music = resolved;
+    music = resolveMusicMoodTrack(templatePack.musicMood, tracks);
   }
   const styleOpen = isInternalAiBetaEnabledFor(user, process.env.GEMINI_TTS_38_PUBLIC === "1");
   const jobInput: VideoJobInput = {
     script: presenter ? "" : input.script!, title: input.title,
+    ...(templatePack && templateSnapshot ? { templateId: templatePack.id, templateSnapshot } : {}),
+    ...(resolvedBrollTransition ? { brollTransition: resolvedBrollTransition } : {}),
     ...(presenter
       ? {
           mode: "upload",
@@ -225,8 +268,9 @@ async function resolveQuoteExecution(
           ...(input.ttsSpeed !== undefined ? { ttsSpeed: input.ttsSpeed } : {}),
           ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),
         }),
-    ...(input.punchZoom !== undefined ? { punchZoom: input.punchZoom } : {}),
-    ...(input.sfxMode !== undefined ? { sfxMode: input.sfxMode } : {}),
+    ...(resolvedPunchZoom !== undefined ? { punchZoom: resolvedPunchZoom } : {}),
+    ...(resolvedSfxMode !== undefined ? { sfxMode: resolvedSfxMode } : {}),
+    ...(resolvedHeadlineHookStyle ? { headlineHookStyle: resolvedHeadlineHookStyle } : {}),
     ...(source === "external" ? { brollSource: "external" } : {}),
     avatarMode: "none",
     ...(avatar.kind === "ok" && layout ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs, avatarScale: layout.scale, avatarOffsetX: layout.offsetX, avatarOffsetY: layout.offsetY } : {}),

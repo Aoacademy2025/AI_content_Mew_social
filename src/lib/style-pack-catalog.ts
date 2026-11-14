@@ -1,16 +1,20 @@
 import type { ActiveVisualFormatId } from "@/lib/brand-visual-system";
 import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
+import type { BrollTransition } from "@/lib/broll-window-style";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import type { HeadlineHookPreset } from "@/lib/headline-hook";
+import type { SfxMode } from "@/lib/transition-sfx";
 
-/** Style Pack catalog V1 — encodes docs/audits/2026-09-02-brands-review.md §8.
- * Wave 1 (packs 1-7) ships active; wave 2 (packs 8-12) is `pending-benchmark`
+/** Style Pack catalog V2 (HERO-94 Styled Video Templates) — extends docs/audits/2026-09-02-brands-review.md §8
+ * with complete video-editing recipes (headline hook preset, keyword highlights, stat cards,
+ * transition SFX, punch-in zoom, and B-roll transition).
+ * Wave 1 (packs 1-7) ships active; wave 2 (`dark-story`..`motivation`) is `pending-benchmark`
  * until its narrative treatment clears the Treatment Qualification Benchmark
  * (ADR 0010) — pending packs are never customer-visible and never recommended.
- * `comic-story` (HERO-35) ships active on an already-qualified pair: the
- * benchmark covers every Visual Format × Treatment, so `dramatic-comic` ×
- * `thai-human-drama` needed no new qualification run. */
+ * `comic-story` (HERO-35), `shop-review`, and `listicle-fast` (HERO-94) ship active on
+ * already-qualified Visual Format × Treatment pairs. */
 
-export const STYLE_PACK_IDS = [
+export const ACTIVE_STYLE_PACK_IDS = [
   "thai-ghost",
   "thai-history",
   "life-drama",
@@ -19,6 +23,13 @@ export const STYLE_PACK_IDS = [
   "health-simple",
   "premium-product",
   "comic-story",
+  "shop-review",
+  "listicle-fast",
+] as const;
+export type ActiveStylePackId = (typeof ACTIVE_STYLE_PACK_IDS)[number];
+
+export const STYLE_PACK_IDS = [
+  ...ACTIVE_STYLE_PACK_IDS,
   "dark-story",
   "politics",
   "mystery",
@@ -76,6 +87,12 @@ export type StylePack = {
   pacing: PacingLevel;
   musicMood: MusicMood;
   subtitle: SubtitleStylePresetConfig;
+  headlineHookPreset: HeadlineHookPreset;
+  highlightKeywords: boolean;
+  statCards: boolean;
+  sfxMode: SfxMode;
+  punchZoom: boolean;
+  brollTransition: BrollTransition;
   scriptTone: string; // Thai, feeds script.tone
 };
 
@@ -100,6 +117,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "ominous",
     subtitle: { preset: "bold-shadow", effect: "fade", cardLen: "3", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 64, textColor: "#FFFFFF", accentColor: "#E11D48", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "viral",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "เล่าช้า ๆ สร้างความกดดันทีละนิด ใช้รายละเอียดที่รู้สึกได้ ไม่เฉลยเร็ว",
   },
   {
@@ -122,6 +145,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "serious",
     subtitle: { preset: "retro", effect: "fade", cardLen: "4", fontFamily: "Sarabun", bold: false, fontWeight: 600, fontSize: 60, textColor: "#F5E6C8", accentColor: "#D4A017", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "clean",
+    highlightKeywords: false,
+    statCards: true,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "เล่าอย่างผู้รู้ ลำดับเหตุการณ์ชัด ใส่ปี สถานที่ และบุคคลจริง ไม่ปรุงแต่งเกินหลักฐาน",
   },
   {
@@ -144,6 +173,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "emotional",
     subtitle: { preset: "shadow", effect: "fade", cardLen: "4", fontFamily: "Kanit", bold: false, fontWeight: 600, fontSize: 60, textColor: "#FFFFFF", accentColor: "#FDE68A", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "question-pill",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "เล่าจากมุมมองคนจริง ใช้ประโยคสั้น ใส่ความรู้สึก ไม่ตัดสินตัวละคร",
   },
   {
@@ -166,6 +201,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "fast",
     musicMood: "upbeat",
     subtitle: { preset: "box", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 64, textColor: "#FFFFFF", accentColor: "#FACC15", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "stat-burst",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
     scriptTone: "อธิบายตรงประเด็น ตัวเลขชัด ยกตัวอย่างใกล้ตัว สรุปเป็นข้อ",
   },
   {
@@ -188,6 +229,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "fast",
     musicMood: "tense",
     subtitle: { preset: "news", effect: "quick", cardLen: "2", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 68, textColor: "#FFFFFF", accentColor: "#DC2626", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "news",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
     scriptTone: "เปิดด้วยประเด็นสำคัญทันที ประโยคสั้น ข้อเท็จจริงนำ ไม่ใส่ความเห็นเกิน",
   },
   {
@@ -210,6 +257,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "calm",
     subtitle: { preset: "box-rounded", effect: "pop", cardLen: "3", fontFamily: "Prompt", bold: false, fontWeight: 600, fontSize: 60, textColor: "#FFFFFF", accentColor: "#34D399", shadow: false, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "question-pill",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "อธิบายเป็นขั้นตอน ใช้คำง่าย ใส่ข้อควรระวัง ไม่ชี้นำเกินหลักฐาน",
   },
   {
@@ -232,6 +285,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "slow",
     musicMood: "lounge",
     subtitle: { preset: "plain", effect: "fade", cardLen: "sentence", fontFamily: "Prompt", bold: false, fontWeight: 400, fontSize: 52, textColor: "#FFFFFF", accentColor: "#D4A017", shadow: true, outline: false, outlineSize: 2, verticalPos: 80 },
+    headlineHookPreset: "clean",
+    highlightKeywords: false,
+    statCards: false,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "เล่าช้าและมั่นใจ เน้นคุณค่าและรายละเอียด ไม่ขายดุดัน",
   },
   {
@@ -254,7 +313,69 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "emotional",
     subtitle: { preset: "pop-outline", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 64, textColor: "#FFFFFF", accentColor: "#F97316", shadow: false, outline: true, outlineSize: 3, verticalPos: 78 },
+    headlineHookPreset: "viral",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
     scriptTone: "เล่าเป็นฉาก ๆ เหมือนช่องการ์ตูน ประโยคสั้น เปิดปมเร็ว ใส่บทพูดและอารมณ์ตัวละคร",
+  },
+  {
+    id: "shop-review",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "รีวิวสินค้า / ปักตะกร้า",
+    tagline: "สนุก กระชับ เด่นจุดขาย เหมาะปักตะกร้า",
+    visualFormatId: "cinematic-realism",
+    treatmentPresetId: "premium-product-lifestyle",
+    palette: ["#18181B", "#F43F5E", "#FEF08A"],
+    personality: "สดใส ใกล้ชิด เห็นสินค้าชัด น่ากดซื้อ",
+    stockMood: {
+      queryToken: "unboxing",
+      positive: ["unboxing", "hands holding product", "shopping bag", "skincare bottle", "package box", "desk setup", "happy shopper", "product closeup"],
+      avoid: ["horror", "funeral", "abandoned", "cartoon"],
+      direction: "bright energetic product review, clean natural light, vibrant rose and warm yellow accents, brisk persuasive pace",
+      fallbackQueries: ["hands unboxing package", "product on table", "shopping bag closeup", "skincare bottle light", "happy woman package"],
+    },
+    pacing: "fast",
+    musicMood: "upbeat",
+    subtitle: { preset: "hormozi", effect: "pop", cardLen: "2", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 66, textColor: "#FFFFFF", accentColor: "#FEF08A", shadow: true, outline: true, outlineSize: 3, verticalPos: 76 },
+    headlineHookPreset: "banner",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
+    scriptTone: "เปิดด้วยปัญหาที่ใช้จริง โชว์จุดเด่นและผลลัพธ์ชัด กระชับ ชวนกดตะกร้าแบบจริงใจ",
+  },
+  {
+    id: "listicle-fast",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "จัดอันดับ / สรุปไว",
+    tagline: "จังหวะไว แบ่งข้อชัด ดูจบในคลิปเดียว",
+    visualFormatId: "clear-infographic",
+    treatmentPresetId: "expert-clarity",
+    palette: ["#0F172A", "#F59E0B", "#FFFFFF"],
+    personality: "กระชับ คมชัด สีเหลืองตัดเข้ม จังหวะไว",
+    stockMood: {
+      queryToken: "modern",
+      positive: ["checklist", "stopwatch", "desk workspace", "smartphone screen", "notebook", "sticky notes", "lightbulb", "coffee desk"],
+      avoid: ["horror", "slow", "funeral", "abandoned"],
+      direction: "punchy fast listicle energy, bright studio contrast, amber yellow and slate tones, snappy rhythmic cuts",
+      fallbackQueries: ["checklist notebook desk", "stopwatch timer hand", "modern desk setup", "sticky notes wall", "lightbulb idea desk"],
+    },
+    pacing: "fast",
+    musicMood: "upbeat",
+    subtitle: { preset: "karaoke-box", effect: "bounce", cardLen: "2", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 66, textColor: "#FFFFFF", accentColor: "#F59E0B", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "stat-burst",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
+    scriptTone: "เรียงเป็นข้อสั้น ๆ เปิดตัวเลขหรืออันดับทันที ตัดคำฟุ่มเฟือย สรุปจบไว",
   },
   {
     id: "dark-story",
@@ -276,6 +397,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "ominous",
     subtitle: { preset: "bold-shadow", effect: "quick", cardLen: "2", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 66, textColor: "#FFFFFF", accentColor: "#B91C1C", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "news",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: false,
+    brollTransition: "cut",
     scriptTone: "เล่าเป็นไทม์ไลน์ ค่อย ๆ เปิดเงื่อนงำ ใช้ข้อเท็จจริง ไม่ตัดสินก่อนจบ",
   },
   {
@@ -298,6 +425,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "normal",
     musicMood: "serious",
     subtitle: { preset: "news", effect: "quick", cardLen: "3", fontFamily: "Sarabun", bold: true, fontWeight: 900, fontSize: 62, textColor: "#FFFFFF", accentColor: "#2563EB", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "news",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "cut",
     scriptTone: "วางบริบทก่อน ให้ทั้งสองฝั่ง ใช้หลักฐาน สรุปผลกระทบต่อคนดู",
   },
   {
@@ -320,6 +453,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "slow",
     musicMood: "eerie",
     subtitle: { preset: "glow", effect: "fade", cardLen: "3", fontFamily: "Kanit", bold: false, fontWeight: 600, fontSize: 62, textColor: "#E5E7EB", accentColor: "#14B8A6", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "question-pill",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "ตั้งคำถามนำ เล่าหลักฐานทีละชิ้น ทิ้งปมให้คิดต่อ ไม่ฟันธง",
   },
   {
@@ -342,6 +481,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "slow",
     musicMood: "traditional",
     subtitle: { preset: "plain", effect: "fade", cardLen: "sentence", fontFamily: "Sarabun", bold: false, fontWeight: 600, fontSize: 58, textColor: "#FFF7E6", accentColor: "#D4A017", shadow: true, outline: false, outlineSize: 2, verticalPos: 50 },
+    headlineHookPreset: "clean",
+    highlightKeywords: false,
+    statCards: false,
+    sfxMode: "none",
+    punchZoom: false,
+    brollTransition: "dissolve",
     scriptTone: "เล่าอย่างสงบ ประโยคเรียบง่าย ปิดด้วยข้อคิดหนึ่งข้อ ไม่เทศนายาว",
   },
   {
@@ -364,6 +509,12 @@ export const STYLE_PACKS: readonly StylePack[] = [
     pacing: "slow",
     musicMood: "epic",
     subtitle: { preset: "bold-shadow", effect: "fade", cardLen: "4", fontFamily: "Kanit", bold: true, fontWeight: 900, fontSize: 64, textColor: "#FFFFFF", accentColor: "#FFFFFF", shadow: true, outline: false, outlineSize: 2, verticalPos: 78 },
+    headlineHookPreset: "viral",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "dissolve",
     scriptTone: "พูดตรงกับคนดู ประโยคสั้นหนักแน่น ค่อย ๆ ยกระดับ จบด้วยคำสั่งให้ลงมือ",
   },
 ] as const;
@@ -376,12 +527,29 @@ export function stylePack(id: StylePackId): StylePack {
   return pack;
 }
 
-export function activeStylePacks(): readonly StylePack[] {
-  return STYLE_PACKS.filter((pack) => pack.status === "active");
+export function activeStylePacks(): readonly (StylePack & { id: ActiveStylePackId })[] {
+  return STYLE_PACKS.filter(
+    (pack): pack is StylePack & { id: ActiveStylePackId } => pack.status === "active",
+  );
 }
 
 export function isStylePackId(value: unknown): value is StylePackId {
   return typeof value === "string" && (STYLE_PACK_IDS as readonly string[]).includes(value);
+}
+
+export function isActiveStylePackId(value: unknown): value is ActiveStylePackId {
+  return typeof value === "string" && (ACTIVE_STYLE_PACK_IDS as readonly string[]).includes(value);
+}
+
+/** Merge a StylePack's subtitle visual preset with its video-editing subtitle flags
+ * (`highlightKeywords`, `statCards`, `sfxMode`) for Editor & MCP job creation. */
+export function stylePackSubtitlePreset(pack: StylePack): SubtitleStylePresetConfig {
+  return {
+    ...pack.subtitle,
+    highlightKeywords: pack.highlightKeywords,
+    statCards: pack.statCards,
+    sfxMode: pack.sfxMode,
+  };
 }
 
 /** First ACTIVE pack using this Treatment; pending packs are never recommended. */

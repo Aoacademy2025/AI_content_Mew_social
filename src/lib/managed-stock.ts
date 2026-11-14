@@ -391,6 +391,21 @@ export function isManagedStockClientEnabled(): boolean {
   return process.env.NEXT_PUBLIC_MANAGED_STOCK === "1";
 }
 
+/**
+ * Pure environment check mirroring `managed-stock.server.ts` (`MANAGED_STOCK === "1"`
+ * AND at least one team stock key is non-empty). Safe to call from plain Node/tsx
+ * modules (`video-options.ts`, `onboarding.ts`, verify harnesses) without pulling in
+ * `server-only`, while never exposing key values.
+ */
+export function isManagedStockConfiguredFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (env.MANAGED_STOCK !== "1") return false;
+  const pexels = typeof env.MANAGED_PEXELS_API_KEY === "string" ? env.MANAGED_PEXELS_API_KEY.trim() : "";
+  const pixabay = typeof env.MANAGED_PIXABAY_API_KEY === "string" ? env.MANAGED_PIXABAY_API_KEY.trim() : "";
+  return Boolean(pexels || pixabay);
+}
+
 /** One-line Step-2 nudge shown after the first completed export (UX option (c)).
  *  Split in two so the second half can be the link without slicing a string at
  *  render time; `MANAGED_STOCK_BROLL_HINT` is the exact copy they compose to. */

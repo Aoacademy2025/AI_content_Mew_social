@@ -41,6 +41,8 @@ const FIXED_SCENES: Record<StylePackId & string, string> = {
   "health-simple": "fresh vegetables and a glass of water on a bright white kitchen counter, soft morning light",
   "premium-product": "a matte black surface with a single gold-rimmed glass bottle, soft studio light",
   "comic-story": "a narrow Thai alley at dusk, one parked motorbike under a single bare glowing bulb, wet pavement, long hard shadows",
+  "shop-review": "an open gift box and a clean glass skincare bottle on a sunlit wooden table, bright natural daylight",
+  "listicle-fast": "a tidy desk with a closed notebook, a brass stopwatch and a ceramic mug, crisp bright light",
 } as Record<StylePackId & string, string>;
 
 /** Short English content-domain label per pack, feeding the compiler's
@@ -54,6 +56,8 @@ const CONTENT_DOMAINS: Record<StylePackId & string, string> = {
   "health-simple": "everyday health and wellness",
   "premium-product": "premium product lifestyle",
   "comic-story": "Thai human drama told as a comic",
+  "shop-review": "energetic product review and shopping showcase",
+  "listicle-fast": "fast-paced numbered listicle summary",
 } as Record<StylePackId & string, string>;
 
 /** Describe the positive composition once. Repeated negations naming people

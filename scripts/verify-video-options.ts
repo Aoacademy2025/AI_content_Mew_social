@@ -107,6 +107,42 @@ async function main() {
   assert(!missingSavedAvatars.some((avatar) => avatar.avatarId === "saved-not-returned-by-own-catalog"), "unverified saved fallback is not exposed as a selectable private look");
   assert(missingSaved.avatarsMeta.totalAvailable === 10, "unverified saved fallback is excluded from catalog totals");
 
+  // HERO-94: Styled Video Templates catalog + dynamic MANAGED_STOCK discovery
+  assert(Array.isArray(o.templates) && o.templates.length === 10, "get_video_options exposes all 10 active Styled Video Templates");
+  assert(
+    o.templates.some((t) => t.id === "shop-review" && t.headlineHookStyle === "banner" && t.brollTransition === "cut")
+      && o.templates.some((t) => t.id === "listicle-fast" && t.headlineHookStyle === "stat-burst" && t.statCards === true)
+      && typeof o.templatesHowToChoose === "string"
+      && o.templatesHowToChoose.includes("templateId"),
+    "templates expose full video-editing recipe metadata and Thai howToChoose",
+  );
+
+  const prevFlag = process.env.MANAGED_STOCK;
+  const prevPexels = process.env.MANAGED_PEXELS_API_KEY;
+  const prevPixabay = process.env.MANAGED_PIXABAY_API_KEY;
+  try {
+    process.env.MANAGED_STOCK = "0";
+    delete process.env.MANAGED_PEXELS_API_KEY;
+    delete process.env.MANAGED_PIXABAY_API_KEY;
+    const offOpts = await getVideoOptions(mock(), u);
+    const offStock = offOpts.broll.options.find((item) => item.value === "stock")!;
+    const offAutomix = offOpts.broll.options.find((item) => item.value === "automix")!;
+    assert(offOpts.broll.managedStock === false && offStock.needsStockKey === true && offAutomix.needsStockKey === true, "MANAGED_STOCK off → stock and automix require user stock key");
+    assert(offAutomix.detail.includes("ต้องมีคีย์สต็อก"), "MANAGED_STOCK off → automix detail preserves legacy stock-key notice");
+
+    process.env.MANAGED_STOCK = "1";
+    process.env.MANAGED_PIXABAY_API_KEY = "team-pixabay-key";
+    const onOpts = await getVideoOptions(mock(), u);
+    const onStock = onOpts.broll.options.find((item) => item.value === "stock")!;
+    const onAutomix = onOpts.broll.options.find((item) => item.value === "automix")!;
+    assert(onOpts.broll.managedStock === true && onStock.needsStockKey === false && onAutomix.needsStockKey === false, "MANAGED_STOCK configured → stock and automix report needsStockKey: false");
+    assert(onStock.detail.includes("คลังกลาง") && onAutomix.detail.includes("ไม่ต้องมีคีย์สต็อก"), "MANAGED_STOCK configured → detail copy states managed library needs no user stock key");
+  } finally {
+    if (prevFlag === undefined) delete process.env.MANAGED_STOCK; else process.env.MANAGED_STOCK = prevFlag;
+    if (prevPexels === undefined) delete process.env.MANAGED_PEXELS_API_KEY; else process.env.MANAGED_PEXELS_API_KEY = prevPexels;
+    if (prevPixabay === undefined) delete process.env.MANAGED_PIXABAY_API_KEY; else process.env.MANAGED_PIXABAY_API_KEY = prevPixabay;
+  }
+
   console.log(`\n${passed} assertions passed ✅`);
 }
 

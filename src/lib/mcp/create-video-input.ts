@@ -22,6 +22,7 @@ import {
 } from "@/lib/headline-hook";
 import { SFX_MODES } from "@/lib/transition-sfx";
 import { MAX_STITCH_CLIPS, MIN_STITCH_CLIPS } from "@/lib/presenter-stitch";
+import { ACTIVE_STYLE_PACK_IDS } from "@/lib/style-pack-catalog";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -45,6 +46,11 @@ const HEADLINE_HOOK_PRESET_IDS = [...HEADLINE_HOOK_PRESETS] as [
   ...(typeof HEADLINE_HOOK_PRESETS)[number][],
 ];
 
+const TEMPLATE_IDS = [...ACTIVE_STYLE_PACK_IDS] as [
+  (typeof ACTIVE_STYLE_PACK_IDS)[number],
+  ...(typeof ACTIVE_STYLE_PACK_IDS)[number][],
+];
+
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 /** Public create_video_job input contract shared by MCP registration and tests. */
@@ -55,6 +61,8 @@ export const createVideoJobInputShape = {
   script: z.string().min(1).max(20000).optional()
     .describe("สคริปต์ที่จะให้พากย์ — จำเป็นเสมอ ยกเว้นเมื่อส่งคลิปพิธีกร (clipUrl หรือ clipUploadId) ซึ่งใช้เสียงในคลิปเองทำซับ"),
   title: z.string().max(200).optional(),
+  templateId: z.enum(TEMPLATE_IDS).optional()
+    .describe("สไตล์เทมเพลตวิดีโอสำเร็จรูป (ดูรายการจาก get_video_options.templates) — ตั้งค่าซับไตเติล พาดหัวฮุค ไฮไลต์คำ การ์ดสถิติ SFX ซูมจังหวะผู้พูด จังหวะตัดภาพ และเพลงประกอบให้อัตโนมัติ (อาร์กิวเมนต์อื่นที่ระบุมาจะทับค่าเริ่มต้นของเทมเพลตเสมอ)"),
   voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
   voiceId: z.string().optional(),
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),

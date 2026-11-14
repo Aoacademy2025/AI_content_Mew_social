@@ -200,6 +200,56 @@
         "sceneAdherence": "accepted",
         "note": "Reviewed for style, legibility at small size, and visible artifact defects. First attempt (glowing shop sign) rendered pseudo-lettering and was rejected; the bare-bulb scene is lettering-free."
       }
+    },
+    {
+      "id": "shop-review",
+      "sampleId": "shop-review-20261114",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "cinematic-realism-v10",
+      "visualFormatId": "cinematic-realism",
+      "treatmentPresetId": "premium-product-lifestyle",
+      "visualIdentity": "{\"palette\":[\"#18181B\",\"#F43F5E\",\"#FEF08A\"],\"personality\":\"สดใส ใกล้ชิด เห็นสินค้าชัด น่ากดซื้อ\"}",
+      "imageUrl": "/style-packs/premium-product.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 777213962,
+      "promptSha256": "e49cf758aa08c8503f72457dd352f25399e3cde49d4644b8e83b3fc5249f90c8",
+      "sha256": "d191a37dd913a09717c362e89a8ac0ba603d7beb20a297ab1dc819440d4f81df",
+      "width": 720,
+      "height": 1280,
+      "bytes": 26906,
+      "generatedAt": "2026-09-05T17:15:28.544Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-11-14",
+        "sceneAdherence": "accepted",
+        "note": "Reviewed clean product-closeup sample on qualified cinematic-realism × premium-product-lifestyle pair; lettering-free and legible at card size."
+      }
+    },
+    {
+      "id": "listicle-fast",
+      "sampleId": "listicle-fast-20261114",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "clear-infographic-v9",
+      "visualFormatId": "clear-infographic",
+      "treatmentPresetId": "expert-clarity",
+      "visualIdentity": "{\"palette\":[\"#0F172A\",\"#F59E0B\",\"#FFFFFF\"],\"personality\":\"กระชับ คมชัด สีเหลืองตัดเข้ม จังหวะไว\"}",
+      "imageUrl": "/style-packs/finance-clear.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 375166551,
+      "promptSha256": "ac6fe748542033212df9f9a57af6715a0f2d335f53ac0eda4203a41010e150ae",
+      "sha256": "e3271738663e84d639380be210d48733240c14758463d0afb3ebddaa60d016e5",
+      "width": 720,
+      "height": 1280,
+      "bytes": 20993,
+      "generatedAt": "2026-09-05T17:15:28.544Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-11-14",
+        "sceneAdherence": "partial",
+        "note": "Reviewed clean desk illustration on qualified clear-infographic × expert-clarity pair; accepted as style illustration."
+      }
     }
   ]
 }

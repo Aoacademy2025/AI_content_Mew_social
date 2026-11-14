@@ -79,6 +79,9 @@ jobs:
           DATABASE_URL: file:${{ runner.temp }}/heroai-mcp-verify.db?connection_limit=1
         run: ./node_modules/.bin/prisma db push --skip-generate && npm run verify:mcp-all && npm run verify:mcp-ci-coverage
 
+      - name: Verify styled video templates across MCP & Web Editor (HERO-94)
+        run: npm run verify:video-templates-mcp-web
+
       - name: Verify concurrent AI image materialization
         run: node --conditions=react-server --import tsx scripts/verify-stock-image-isolation.ts
 

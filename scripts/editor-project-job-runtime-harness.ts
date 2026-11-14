@@ -20,6 +20,10 @@ import * as brollSourceModule from "../src/app/(dashboard)/video-editor/_v2/brol
 import * as brollFillYourselfModule from "../src/lib/broll-fill-yourself";
 import * as ttsPaceModule from "../src/lib/tts-pace";
 import * as presenterTightenModule from "../src/lib/presenter-tighten";
+import * as brollWindowStyleModule from "../src/lib/broll-window-style";
+import * as stylePackCatalogModule from "../src/lib/style-pack-catalog";
+import * as stylePackSnapshotModule from "../src/lib/style-pack-snapshot";
+import * as transitionSfxModule from "../src/lib/transition-sfx";
 
 /** The AI-audio ceiling preflight (HERO-25) reads the user's usage window through prisma.
  *  This harness replays the create route to prove idempotency and project recovery, not
@@ -2168,6 +2172,9 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/mcp/pending-edit-draft") return { MAX_PENDING_EDIT_REVISION: 2_147_483_646 };
     if (specifier === "@/lib/tts-pace") return ttsPaceModule;
     if (specifier === "@/lib/presenter-tighten") return presenterTightenModule;
+    if (specifier === "@/lib/broll-window-style") return brollWindowStyleModule;
+    if (specifier === "@/lib/style-pack-catalog") return stylePackCatalogModule;
+    if (specifier === "@/lib/transition-sfx") return transitionSfxModule;
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
@@ -2573,6 +2580,10 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/tts-pace") return ttsPaceModule;
     if (specifier === "@/lib/presenter-tighten") return presenterTightenModule;
+    if (specifier === "@/lib/broll-window-style") return brollWindowStyleModule;
+    if (specifier === "@/lib/style-pack-catalog") return stylePackCatalogModule;
+    if (specifier === "@/lib/style-pack-snapshot") return stylePackSnapshotModule;
+    if (specifier === "@/lib/transition-sfx") return transitionSfxModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

@@ -113,6 +113,10 @@ import {
   TIGHTEN_MIN_MAX_GAP_MS,
   TIGHTEN_MIN_SPEED,
 } from "@/lib/presenter-tighten";
+import { isBrollTransition } from "@/lib/broll-window-style";
+import { isActiveStylePackId, stylePack } from "@/lib/style-pack-catalog";
+import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
+import { isSfxMode } from "@/lib/transition-sfx";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -144,6 +148,8 @@ type Body = {
   ttsSpeed?: unknown; targetDurationSec?: unknown;
   tighten?: unknown; tightenMaxGapMs?: unknown; tightenSpeed?: unknown;
   punchZoom?: unknown;
+  // HERO-94: Styled Video Template & SFX mode
+  templateId?: unknown; sfxMode?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
   // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
@@ -1016,6 +1022,10 @@ export async function POST(req: Request) {
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;
     const bgmFile = str(body.bgmFile, 300);
+    const templateId = isActiveStylePackId(body.templateId) ? body.templateId : undefined;
+    const templateSnapshot = templateId ? stylePackSnapshotOf(stylePack(templateId)) : undefined;
+    const sfxMode = isSfxMode(body.sfxMode) ? body.sfxMode : undefined;
+    const brollTransition = isBrollTransition(body.brollTransition) ? body.brollTransition : undefined;
 
     try {
       const job = await createVideoJob(
@@ -1062,6 +1072,10 @@ export async function POST(req: Request) {
           ...(tightenMaxGapMs !== undefined ? { tightenMaxGapMs } : {}),
           ...(tightenSpeed !== undefined ? { tightenSpeed } : {}),
           ...(punchZoom !== undefined ? { punchZoom } : {}),
+          ...(templateId ? { templateId } : {}),
+          ...(templateSnapshot ? { templateSnapshot } : {}),
+          ...(sfxMode ? { sfxMode } : {}),
+          ...(brollTransition ? { brollTransition } : {}),
         },
         idempotencyKey,
         {

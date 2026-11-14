@@ -131,6 +131,9 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
             createdVia: "mcp",
             ...(quote.source === "external" ? { brollSource: "external", stockSource: "none" } : {}),
             ...(execution.jobInput.headlineHook ? { headlineHook: execution.jobInput.headlineHook } : {}),
+            ...(execution.jobInput.templateId ? { templateId: execution.jobInput.templateId } : {}),
+            ...(execution.jobInput.sfxMode ? { sfxMode: execution.jobInput.sfxMode } : {}),
+            ...(execution.jobInput.brollTransition ? { brollTransition: execution.jobInput.brollTransition } : {}),
           }),
         },
       });

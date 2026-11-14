@@ -65,7 +65,15 @@ import {
 } from "@/lib/mcp/orchestrator-steps";
 import type { V2SubConfig } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
-import { PACING_CADENCE_MULTIPLIER, PACING_MIN_HOLD_SEC } from "@/lib/style-pack-catalog";
+import {
+  PACING_CADENCE_MULTIPLIER,
+  PACING_MIN_HOLD_SEC,
+  isActiveStylePackId,
+  stylePack,
+  type ActiveStylePackId,
+} from "@/lib/style-pack-catalog";
+import { stylePackSnapshotOf, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
+import { isBrollTransition } from "@/lib/broll-window-style";
 import {
   attemptAvatarComposite,
   generateAvatarVideo,
@@ -302,6 +310,9 @@ interface CreateInput {
   windowEdits?: WindowEdit[];
   /** EP5 #11: new project default B-roll transition, written into the re-rendered config. */
   brollTransition?: string;
+  /** HERO-94: Styled Video Template id + immutable publish-time snapshot. */
+  templateId?: ActiveStylePackId;
+  templateSnapshot?: StylePackSnapshot;
   /** EP5 #17: TTS speed multiplier (0.85..1.25) and/or target duration in seconds (5..600). */
   ttsSpeed?: number;
   targetDurationSec?: number;
@@ -1140,6 +1151,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
         });
         return project?.brandProfileRevision?.visualRecipeJson ?? null;
+      },
+      templateSnapshotJson: async () => {
+        if (input.templateSnapshot) {
+          return JSON.stringify({ stylePack: input.templateSnapshot });
+        }
+        if (input.templateId && isActiveStylePackId(input.templateId)) {
+          return JSON.stringify({ stylePack: stylePackSnapshotOf(stylePack(input.templateId)) });
+        }
+        return null;
       },
     }, {
       // Task 9: fired at most once per job, the first time the resolver above
@@ -2447,6 +2467,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(externalOwnershipPlan ? authorExternalMediaPlan(upCfg.config, externalOwnershipPlan.person) : upCfg.config),
         keywordPopups: [] as unknown[],
         ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+        ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
         ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
         ...(punchZoomCuesSec.length > 0 ? { punchZoomCuesSec } : {}),
         ...(effectiveSfxMode(input.sfxMode) === "subtle" ? { sfxMode: "subtle" as const } : {}),
@@ -3157,6 +3178,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config),
       keywordPopups: [] as unknown[],
       ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+      ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
       ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
       ...(resolvedSfxMode === "subtle" ? { sfxMode: "subtle" as const } : {}),
     };
