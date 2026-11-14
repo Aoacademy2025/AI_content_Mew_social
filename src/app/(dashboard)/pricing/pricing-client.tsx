@@ -29,6 +29,7 @@ import {
 // Type-only: erased at compile time, so promptpay-monthly.ts's server-only import
 // (ensureStripeConfig/Prisma) never reaches this client bundle.
 import type { CancelReturnParams } from "@/lib/promptpay-monthly";
+import { GrantExpiryBanner, type GrantExpiryBannerData } from "@/components/billing/grant-expiry-banner";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -90,6 +91,7 @@ export function PricingClient({
   initialPlans,
   initialFounding,
   foundingMember = false,
+  expiringGrant = null,
   paymentResult,
   acquisitionSource,
   preferredPeriod,
@@ -103,6 +105,8 @@ export function PricingClient({
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
   /** HERO-61 — the viewer holds a CONFIRMED founding seat (server-resolved). */
   foundingMember?: boolean;
+  /** HERO-99 — server-resolved expiring unpaid GRANT coupon banner (`<= 7` days left). */
+  expiringGrant?: GrantExpiryBannerData | null;
   paymentResult: string | null;
   acquisitionSource: string | null;
   preferredPeriod: BillingPeriod | null;
@@ -424,6 +428,13 @@ export function PricingClient({
         )
       )}
 
+      {/* expiring GRANT coupon banner — final 7 days of unpaid workshop/course grant (HERO-99) */}
+      {expiringGrant && (
+        <div className="mx-auto max-w-3xl">
+          <GrantExpiryBanner grant={expiringGrant} surface="pricing" />
+        </div>
+      )}
+
       {/* personalized status band */}
       {userChecked && currentPlan && (
         <div className="ve-card mx-auto mb-8 max-w-3xl overflow-hidden rounded-[18px] p-5" style={{ borderColor: "hsl(258 90% 66% / .22)" }}>
@@ -595,6 +606,7 @@ export function PricingClient({
                 // "manage/current", not as a second purchase the API rejects.
                 hasStripeSubscription: me?.hasStripeSubscription ?? false,
                 preserveTrialOnConvert,
+                hasQualifyingCashPayment: expiringGrant?.canConvertCardImmediately ? false : undefined,
               }, key, period)
             : null;
           const isCurrentTier = !!currentPlan && currentPlan === key && !isTrialPlan;

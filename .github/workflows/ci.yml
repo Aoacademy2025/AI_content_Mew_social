@@ -193,6 +193,9 @@ jobs:
       - name: Verify cash-backed renewal reminders and delivery dedupe
         run: npm run verify:renewal-reminders
 
+      - name: Verify GRANT coupon expiry reminders and alumni conversion path (HERO-99)
+        run: npx tsx scripts/verify-grant-expiry-reminders.ts
+
       - name: Verify past_due dunning dedupe, copy split and follow-up (HERO-33)
         run: npm run verify:past-due-dunning
 

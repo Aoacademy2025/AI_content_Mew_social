@@ -8,6 +8,8 @@ import {
   promptpayMonthlyEnabled,
   promptpayMonthlyOffered,
 } from "@/lib/promptpay-monthly";
+import { resolveUserExpiringGrantBanner } from "@/lib/grant-expiry-reminders.server";
+import type { ExpiringGrantBannerInfo } from "@/lib/grant-expiry-reminders";
 import { PricingClient } from "./pricing-client";
 
 /**
@@ -15,16 +17,24 @@ import { PricingClient } from "./pricing-client";
  * HTML so LCP is the heading, not a blank client-only shell waiting on JS
  * (prod p75 was ~26s when this route suspended with an empty fallback).
  */
-/** HERO-61: a confirmed member sees the founding price on an upgrade even when seats are sold out.
- *  Display-only and fail-closed to false (checkout re-decides on its own). */
-async function viewerIsFoundingMember(): Promise<boolean> {
+/** HERO-61 + HERO-99: resolve founding-member eligibility and expiring GRANT banner
+ *  in one server pass. Display-only and fail-closed on error. */
+async function viewerPricingContext(): Promise<{
+  foundingMember: boolean;
+  expiringGrant: ExpiringGrantBannerInfo | null;
+}> {
   try {
     const { userId: clerkId } = await auth();
-    if (!clerkId) return false;
+    if (!clerkId) return { foundingMember: false, expiringGrant: null };
     const user = await prisma.user.findUnique({ where: { clerkId }, select: { id: true } });
-    return user ? await isFoundingMember(user.id) : false;
+    if (!user) return { foundingMember: false, expiringGrant: null };
+    const [foundingMember, expiringGrant] = await Promise.all([
+      isFoundingMember(user.id),
+      resolveUserExpiringGrantBanner(user.id),
+    ]);
+    return { foundingMember, expiringGrant };
   } catch {
-    return false;
+    return { foundingMember: false, expiringGrant: null };
   }
 }
 
@@ -39,10 +49,10 @@ export default async function PricingPage({
     plan?: string;
   }>;
 }) {
-  const [plans, founding, foundingMember, params, offeredPro, offeredBusiness] = await Promise.all([
+  const [plans, founding, viewerContext, params, offeredPro, offeredBusiness] = await Promise.all([
     getPlanConfig(),
     foundingStatus(),
-    viewerIsFoundingMember(),
+    viewerPricingContext(),
     searchParams,
     promptpayMonthlyOffered("PRO"),
     promptpayMonthlyOffered("BUSINESS"),
@@ -73,7 +83,8 @@ export default async function PricingPage({
         <PricingClient
           initialPlans={plans}
           initialFounding={founding}
-          foundingMember={foundingMember}
+          foundingMember={viewerContext.foundingMember}
+          expiringGrant={viewerContext.expiringGrant}
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
           preferredPeriod={cancelReturn.period ?? null}

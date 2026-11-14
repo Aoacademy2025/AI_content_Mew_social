@@ -5,6 +5,7 @@ import { FREE_LIMITS, isPaid as isPaidPlan } from "@/lib/plan-limits";
 import { apiError } from "@/lib/api-error";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { resolveUserExpiringGrantBanner } from "@/lib/grant-expiry-reminders.server";
 
 export async function GET() {
   try {
@@ -15,9 +16,10 @@ export async function GET() {
 
     const userId = authUser.id;
 
-    const [paidEquivalent, styleCount, contentCount, videoCount, recentContents, recentVideos] =
+    const [paidEquivalent, expiringGrant, styleCount, contentCount, videoCount, recentContents, recentVideos] =
       await Promise.all([
         resolvePaidEquivalentEntitlement(userId),
+        resolveUserExpiringGrantBanner(userId),
         prisma.style.count({ where: { userId } }),
         prisma.content.count({ where: { userId } }),
         prisma.video.count({ where: { userId } }),
@@ -49,6 +51,7 @@ export async function GET() {
     return NextResponse.json({
       plan,
       proExpiresAt,
+      expiringGrant,
       styleCount,
       contentCount,
       videoCount,

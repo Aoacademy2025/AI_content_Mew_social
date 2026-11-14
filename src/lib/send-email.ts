@@ -514,3 +514,40 @@ ${opts.sweptMb > 0 ? `<p style="margin:0 0 8px;color:#34d399;font-size:12px">�
     }),
   });
 }
+
+/**
+ * HERO-99 — workshop / course GRANT coupon expiry reminder (d7 / d3 / d1).
+ * Highlights the creator's saved Brand Profiles / Editor Projects / clips when
+ * present and links directly to `/pricing?source=grant_expiry_<kind>`.
+ */
+export async function sendGrantExpiryReminderEmail(opts: {
+  to: string;
+  subject: string;
+  title: string;
+  body: string;
+  assetsSummary?: string | null;
+  cta: string;
+  pricingUrl: string;
+}): Promise<boolean> {
+  const assetsCard = opts.assetsSummary
+    ? `<div style="margin:0 0 18px;padding:14px 16px;background:rgba(139,92,246,0.10);border:1px solid rgba(139,92,246,0.32);border-radius:12px;color:#e5e7eb;font-size:13px"><b style="color:#c4b5fd">งานที่คุณสร้างไว้ในสตูดิโอ:</b> ${escapeHtml(opts.assetsSummary)}</div>`
+    : "";
+  return sendEmail({
+    to: opts.to,
+    subject: `${opts.subject} — ${BRAND}`,
+    html: emailShell({
+      title: opts.title,
+      previewText: opts.body,
+      accent: "#8b5cf6",
+      body: `
+<h1 style="margin:0 0 10px;color:#fff;font-size:20px;font-weight:700">${escapeHtml(opts.title)}</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">${escapeHtml(opts.body)}</p>
+${assetsCard}
+${premiumButton({ href: opts.pricingUrl, label: opts.cta })}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#71717a;font-size:12px">เลือกได้ทั้งรายเดือนแบบบัตรหรือ PromptPay ในหน้าแพ็กเกจ — งานและแบรนด์ที่ตั้งค่าไว้จะอยู่ครบ</p>
+`.trim(),
+    }),
+  });
+}
+

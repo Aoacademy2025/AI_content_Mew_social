@@ -67,6 +67,8 @@ export function paidPlanCardMode(
     hasStripeSubscription?: boolean;
     /** #348 — PRESERVE_TRIAL_ON_CONVERT, passed in because this runs in the browser too. */
     preserveTrialOnConvert?: boolean;
+    /** HERO-99 — matches PlanChangeState.hasQualifyingCashPayment; false lets unpaid GRANT holders convert by card immediately. */
+    hasQualifyingCashPayment?: boolean;
   },
   cardPlan: string,
   cardPeriod?: "monthly" | "annual",
@@ -89,7 +91,7 @@ export function paidPlanCardMode(
   // PromptPay purchase is a one-time 30-day term, additive just like annual PromptPay, and
   // must never be forced to "wait" for a running timed plan to expire.
   const recurring = state.paymentMethod === "card";
-  if (recurring && state.planExpiresAt && state.planExpiresAt > now) return "wait";
+  if (recurring && state.planExpiresAt && state.planExpiresAt > now && state.hasQualifyingCashPayment !== false) return "wait";
   if (cardPlan === state.currentPlan) {
     // HERO-61-style fix: a BUSINESS cash user with no live subscription can renew BUSINESS
     // from a reminder link, same as PRO already could (previously PRO-only).
