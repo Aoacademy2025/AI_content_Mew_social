@@ -244,10 +244,23 @@ export const exportVideoInputShape = {
   jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
 } satisfies z.ZodRawShape;
 
-export type EditToolFailure = { error: string; code: string; message: string; next: string };
+export type EditToolFailure = {
+  error: string;
+  code: string;
+  message: string;
+  next: string;
+  retryAfterSeconds?: number;
+};
 
-export function editToolFailure(code: string, message: string, next: string): EditToolFailure {
-  return { error: code, code, message, next };
+export function editToolFailure(
+  code: string,
+  message: string,
+  next: string,
+  retryAfterSeconds?: number,
+): EditToolFailure {
+  return retryAfterSeconds === undefined
+    ? { error: code, code, message, next }
+    : { error: code, code, message, next, retryAfterSeconds };
 }
 
 const NEXT_HOLD_CREATE = "สร้างวิดีโอใหม่ด้วย create_video_job โดยส่ง exportMode \"hold\"";
@@ -272,10 +285,11 @@ const ROOT_ENDED = editToolFailure(
   "วิดีโอตัวอย่างนี้ล้มเหลวหรือถูกยกเลิก จึงแก้ต่อไม่ได้",
   NEXT_HOLD_CREATE,
 );
-const NOT_READY = editToolFailure(
+export const NOT_READY = editToolFailure(
   "not_ready",
   "วิดีโอตัวอย่างยังเรนเดอร์ไม่เสร็จ",
   "เรียก get_video_status ทุก ~60–90 วินาที จนได้ status \"held\" แล้วค่อยเรียก get_edit_state",
+  60,
 );
 const STALE_REVISION = editToolFailure(
   "stale_revision",

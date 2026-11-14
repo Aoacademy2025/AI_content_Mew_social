@@ -16,7 +16,7 @@ Build the conclusion through this evidence ladder:
 
 Do not promote a customer claim to a confirmed root cause without corroboration. State confidence as `confirmed`, `probable`, or `unknown`, and name the missing evidence.
 
-Production access follows the repository's production rules. An audit request alone does not authorize SSH or database writes. Prefer existing artifacts and read-only local data; request explicit production access when the missing evidence requires it.
+Production access follows the repository's production rules. An audit request alone does not authorize full root SSH or any database writes. Prefer existing artifacts and read-only local data first; when production inspection is needed for a read-only audit, use `ssh heroai-audit-ro <help|pm2-status|pm2-conf|pm2-logs|disk-health|env-keys|sql-ro>` (`~/.ssh/hostinger_heroai_audit_ro` forced-command `/usr/local/sbin/hero-audit-ro`, which enforces `query_only=ON` and blocks secret/PII columns). Reserve `hostinger_heroai_codex` strictly for explicitly authorized ops/deploy actions.
 
 ## Support disposition
 

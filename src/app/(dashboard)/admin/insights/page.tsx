@@ -94,6 +94,46 @@ type ManagedStockData = {
   pixabayMonth: { used: number };
 };
 
+type McpUsageData = {
+  tokens: {
+    active: number;
+    customerActive: number;
+    total: number;
+    customerUsersEverUsed: number;
+  };
+  calls: {
+    total: number;
+    customerCalls: number;
+    internalCalls: number;
+    activeCustomerUsers: number;
+    okCalls: number;
+    notReadyPolls: number;
+    realErrorCalls: number;
+    deniedCalls: number;
+    realSuccessPct: number | null;
+  };
+  quoteJobs: {
+    total: number;
+    done: number;
+    failed: number;
+    canceled: number;
+    inFlight: number;
+  };
+  topTools: Array<{
+    toolName: string;
+    calls: number;
+    customerCalls: number;
+    realErrors: number;
+    notReadyPolls: number;
+    customerUsers: number;
+  }>;
+  topClients: Array<{
+    family: string;
+    calls: number;
+    customerCalls: number;
+  }>;
+};
+
 type InsightsResponse = {
   range: { days: number; since: string; until: string };
   northStar: {
@@ -113,6 +153,7 @@ type InsightsResponse = {
   renderStats: RenderStats;
   jobOutcomes: JobOutcomes;
   managedStock?: ManagedStockData;
+  mcpUsage?: McpUsageData;
   current: InsightSummary;
   previous: InsightSummary;
 };
@@ -280,6 +321,99 @@ function ManagedStockPanel({ data }: { data: ManagedStockData }) {
       </div>
       <div className="mt-2 text-[11px] text-slate-500">
         Pixabay เดือนนี้ {formatNumber(data.pixabayMonth.used)} ครั้ง (ไม่มีเพดานรายเดือน) · ปรับเพดาน Pexels ที่ env MANAGED_STOCK_PEXELS_PER_MONTH
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Sanitized MCP product & pipeline health (HERO-93, ADR 0062: zero money figures).
+ * Separates transient `not_ready` poll traffic from actionable tool failures and
+ * splits external customer usage from @aoacademy / ADMIN internal traffic.
+ */
+function McpUsagePanel({ data }: { data: McpUsageData }) {
+  const { tokens, calls, quoteJobs, topTools, topClients } = data;
+  const successTone =
+    calls.realSuccessPct == null
+      ? "text-slate-300"
+      : calls.realSuccessPct >= 95
+        ? "text-emerald-300"
+        : calls.realSuccessPct >= 80
+          ? "text-amber-300"
+          : "text-rose-300";
+  return (
+    <Panel>
+      <h3 className="flex items-center gap-2 text-lg font-semibold text-white">
+        <Activity className="h-5 w-5 text-cyan-300" /> MCP Usage &amp; Health
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">
+        การใช้งานผ่านไคลเอนต์ AI (ไม่รวมบัญชีทีมงาน/แอดมินในยอดลูกค้า) · แยก poll รอสถานะออกจาก error จริง
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">การเรียก MCP ลูกค้า</div>
+          <div className="mt-1 text-2xl font-semibold text-white">{formatNumber(calls.customerCalls)}</div>
+          <div className="mt-1 text-xs text-slate-500">
+            รวม {formatNumber(calls.total)} · ทีมงาน {formatNumber(calls.internalCalls)} · ลูกค้า {formatNumber(calls.activeCustomerUsers)} คน
+          </div>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">อัตราสำเร็จจริง (ตัด not_ready)</div>
+          <div className={cn("mt-1 text-2xl font-semibold", successTone)}>
+            {calls.realSuccessPct == null ? "รอข้อมูล" : `${formatNumber(calls.realSuccessPct, 1)}%`}
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            ok {formatNumber(calls.okCalls)} · error จริง {formatNumber(calls.realErrorCalls)} · denied {formatNumber(calls.deniedCalls)}
+          </div>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">โทเคน MCP ที่ใช้งานอยู่</div>
+          <div className="mt-1 text-lg font-semibold text-white">
+            {formatNumber(tokens.customerActive)}{" "}
+            <span className="text-xs font-normal text-slate-500">(รวม {formatNumber(tokens.active)}/{formatNumber(tokens.total)})</span>
+          </div>
+          <div className="mt-1 text-xs text-slate-500">ลูกค้าเคยใช้โทเคน {formatNumber(tokens.customerUsersEverUsed)} คน</div>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">งานวิดีโอ MCP ลูกค้า</div>
+          <div className="mt-1 text-lg font-semibold text-white">
+            {formatNumber(quoteJobs.done)}
+            <span className="text-sm font-normal text-slate-500">/{formatNumber(quoteJobs.total)}</span>
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            กำลังทำ {formatNumber(quoteJobs.inFlight)} · พัง {formatNumber(quoteJobs.failed)} · ยกเลิก {formatNumber(quoteJobs.canceled)}
+          </div>
+        </div>
+      </div>
+      <div
+        className={cn(
+          "mt-3 rounded-md border p-3 text-sm",
+          calls.realErrorCalls > 0
+            ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
+            : "border-white/10 bg-black/20 text-slate-300",
+        )}
+      >
+        Poll รอสถานะ (<code className="text-xs">not_ready</code>): <span className="font-semibold">{formatNumber(calls.notReadyPolls)}</span> ครั้ง · Error จริง: <span className="font-semibold">{formatNumber(calls.realErrorCalls)}</span> ครั้ง
+      </div>
+      <div className="mt-2 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+        {topTools.length === 0
+          ? "ยังไม่มีการเรียกใช้ MCP ในช่วงนี้"
+          : topTools.map((row) => (
+              <span key={row.toolName} className="mr-3 inline-block">
+                <span className="font-semibold text-cyan-300">{row.toolName}</span>{" "}
+                {formatNumber(row.calls)} (ลูกค้า {formatNumber(row.customerCalls)} · {formatNumber(row.customerUsers)} คน
+                {row.realErrors > 0 ? ` · err ${formatNumber(row.realErrors)}` : ""}
+                {row.notReadyPolls > 0 ? ` · รอ ${formatNumber(row.notReadyPolls)}` : ""})
+              </span>
+            ))}
+      </div>
+      <div className="mt-2 text-[11px] text-slate-500">
+        ไคลเอนต์ยอดนิยม:{" "}
+        {topClients.length === 0
+          ? "ยังไม่มีข้อมูลในช่วงนี้"
+          : topClients
+              .map((client) => `${client.family} ${formatNumber(client.calls)} (ลูกค้า ${formatNumber(client.customerCalls)})`)
+              .join(" · ")}
       </div>
     </Panel>
   );
@@ -661,7 +795,7 @@ function AdminInsightsContent() {
             <section className="rounded-lg border border-white/10 bg-white/[0.02] overflow-hidden">
               <button type="button" onClick={() => setDevOpen((v) => !v)} className="flex w-full items-center gap-3 px-5 py-4 text-left transition hover:bg-white/[0.03]">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-500/15"><Database className="h-4 w-4 text-slate-300" /></div>
-                <div><div className="text-sm font-semibold text-white">รายละเอียดสำหรับทีม dev</div><div className="text-xs text-slate-500">Web Vitals · Playback · B-roll · Render — เชิงเทคนิค</div></div>
+                <div><div className="text-sm font-semibold text-white">รายละเอียดสำหรับทีม dev</div><div className="text-xs text-slate-500">Web Vitals · Playback · B-roll · Managed Stock · MCP — เชิงเทคนิค</div></div>
                 <span className="ml-auto text-slate-500">{devOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
               </button>
               {devOpen && (
@@ -687,7 +821,7 @@ function AdminInsightsContent() {
                       <div className="mt-4 grid gap-3 sm:grid-cols-3">{current.vitals.map((vital) => <VitalPill key={vital.metric} vital={vital} />)}</div>
                     </Panel>
                   </div>
-                  {/* Playback + B-roll */}
+                  {/* Playback + B-roll + Managed Stock + MCP */}
                   <div className="grid gap-5 lg:grid-cols-2">
                     <Panel>
                       <h3 className="flex items-center gap-2 text-lg font-semibold text-white"><Radio className="h-5 w-5 text-sky-300" /> Playback Health</h3>
@@ -708,6 +842,7 @@ function AdminInsightsContent() {
                       <div className="mt-2 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">normalize ran/skip/fail {formatNumber(current.broll.normalizeRanCount)}/{formatNumber(current.broll.normalizeSkippedCount)}/{formatNumber(current.broll.normalizeFailedCount)} · no-candidate {formatNumber(current.broll.noCandidateKeywords)}</div>
                     </Panel>
                     {data?.managedStock && <ManagedStockPanel data={data.managedStock} />}
+                    {data?.mcpUsage && <McpUsagePanel data={data.mcpUsage} />}
                   </div>
                 </div>
               )}
