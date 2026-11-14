@@ -65,7 +65,9 @@ import {
   HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_DURATION_MS,
   MAX_HEADLINE_HOOK_OFFSET_PERCENT,
+  MIN_HEADLINE_HOOK_DURATION_MS,
   MIN_HEADLINE_HOOK_OFFSET_PERCENT,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
@@ -102,11 +104,13 @@ import {
 } from "@/lib/mcp/pending-edit-draft";
 import {
   ACTIVE_STYLE_PACK_IDS,
+  MUSIC_MOODS,
   isActiveStylePackId,
   stylePack,
   stylePackSubtitlePreset,
+  type MusicMood,
 } from "@/lib/style-pack-catalog";
-import { resolveMusicMoodTrack } from "@/lib/mcp/bgm-resolve";
+import { isNoneInput, moodMenu, resolveBgm, resolveMusicMoodTrack } from "@/lib/mcp/bgm-resolve";
 
 /**
  * T6 (ADR 0064): the tracer-bullet MCP edit tools — `get_edit_state`, `set_caption_text`,
@@ -129,6 +133,7 @@ export const MCP_EDIT_TOOL_NAMES = [
   "replace_broll_window",
   "set_broll_style",
   "apply_video_template",
+  "batch_edit_video",
   "export_video",
 ] as const;
 
@@ -255,6 +260,76 @@ export const applyVideoTemplateInputShape = {
     .describe("รหัสสไตล์เทมเพลตวิดีโอสำเร็จรูป (ดูรายการจาก get_video_options.templates หรือ get_edit_state.allowed.templates)"),
   includeMusic: z.boolean().optional()
     .describe("true = เลือกเพลงประกอบจากคลังตามอารมณ์เพลงของเทมเพลต (musicMood) พร้อมเปิด ducking อัตโนมัติ; false/ไม่ส่ง = คงเพลงเดิมไว้"),
+} satisfies z.ZodRawShape;
+
+export const batchEditVideoInputShape = {
+  jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  templateId: z.enum(nonEmptyEnum(ACTIVE_STYLE_PACK_IDS)).optional()
+    .describe("สวมสไตล์เทมเพลตวิดีโอสำเร็จรูปเป็นฐานก่อนปรับฟิลด์อื่นที่ส่งมาพร้อมกัน"),
+  includeTemplateMusic: z.boolean().optional()
+    .describe("ใช้คู่กับ templateId: true = เลือกเพลงตามอารมณ์เทมเพลตอัตโนมัติ (ถ้าไม่ได้ระบุ bgmMoodOrTrack หรือ disableBgm แยก)"),
+  regroupCardLen: z.enum(nonEmptyEnum(V2_CARD_LEN_OPTIONS.map((option) => option.value))).optional()
+    .describe("จัดกลุ่มการ์ดซับใหม่จากต้นฉบับเดิมตามจำนวนคำสูงสุดต่อการ์ด (sentence / 4 / 3 / 2 / 1) ก่อนอัปเดต captionIndices"),
+  captionIndices: z.array(z.number().int()).optional()
+    .describe("รายการลำดับการ์ดซับที่จะเปลี่ยนข้อความ (เริ่มที่ 0 ห้ามซ้ำ และความยาวเท่ากับ captionTexts พอดี)"),
+  captionTexts: z.array(z.string()).optional()
+    .describe(`รายการข้อความใหม่ของการ์ดซับแต่ละใบในลำดับเดียวกับ captionIndices (ไม่เกิน ${MAX_CAPTION_TEXT_CHARS} ตัวอักษรต่อใบ)`),
+  subtitlePreset: z.enum(nonEmptyEnum(PRESETS_DATA.map((preset) => preset.value))).optional()
+    .describe("สไตล์ซับ (ดูค่าที่เลือกได้จาก get_edit_state.allowed.presets)"),
+  subtitleEffect: z.enum(nonEmptyEnum(EFFECTS_DATA.map((effect) => effect.value))).optional()
+    .describe("เอฟเฟกต์ตัวอักษรซับ (ดูค่าที่เลือกได้จาก get_edit_state.allowed.effects)"),
+  fontFamily: z.enum(nonEmptyEnum(FONTS_LIST.map((font) => font.value))).optional()
+    .describe("ฟอนต์ซับ (ดูค่าที่เลือกได้จาก get_edit_state.allowed.fonts)"),
+  fontSize: z.number().int().optional()
+    .describe("ขนาดฟอนต์ซับ 30-160 px"),
+  fontWeight: z.enum(["400", "600", "900"]).optional()
+    .describe("น้ำหนักฟอนต์ซับ"),
+  textColor: z.string().optional()
+    .describe("สีตัวอักษรซับ #RRGGBB (ไม่มีผลถ้าสไตล์ซับล็อกสีไว้)"),
+  accentColor: z.string().optional()
+    .describe("สีเน้นคำสำคัญ/HOOK/CTA #RRGGBB (ไม่มีผลถ้าสไตล์ซับล็อกสีเน้นไว้)"),
+  shadow: z.boolean().optional()
+    .describe("เปิด/ปิดเงาซับ"),
+  outline: z.boolean().optional()
+    .describe("เปิด/ปิดเส้นขอบซับ"),
+  outlineSize: z.number().int().optional()
+    .describe("ความหนาเส้นขอบซับ 1-8"),
+  highlightKeywords: z.boolean().optional()
+    .describe("เปิด/ปิดไฮไลต์คำสำคัญหรือตัวเลขเด่นอัตโนมัติ"),
+  statCards: z.boolean().optional()
+    .describe("เปิด/ปิดการ์ดสถิติแอนิเมชันมุมบนขวาอัตโนมัติ"),
+  verticalPos: z.number().int().optional()
+    .describe("ตำแหน่งแนวตั้งของซับ 10-95 (% จากขอบบน)"),
+  headlineHookEnabled: z.boolean().optional()
+    .describe("เปิด/ปิดพาดหัวช่วงต้นคลิป (ต้องมีข้อความพาดหัวด้วยถึงจะเปิดได้จริง)"),
+  headlineHookText: z.string().optional()
+    .describe("ข้อความพาดหัวช่วงต้นคลิป (ไม่เกิน 64 ตัวอักษร 2 บรรทัด)"),
+  headlineHookSubtext: z.string().optional()
+    .describe("ข้อความรองของพาดหัว (ไม่เกิน 90 ตัวอักษร 1 บรรทัด ส่งค่าว่างเพื่อลบ)"),
+  headlineHookPreset: z.enum(nonEmptyEnum(HEADLINE_HOOK_PRESETS)).optional()
+    .describe("สไตล์การ์ดพาดหัว"),
+  headlineHookDurationMs: z.number().int().optional()
+    .describe(`ระยะเวลาที่พาดหัวค้างอยู่ (${MIN_HEADLINE_HOOK_DURATION_MS}-${MAX_HEADLINE_HOOK_DURATION_MS} ms)`),
+  bgmMoodOrTrack: z.string().optional()
+    .describe("เพลงประกอบ: ใส่ชื่ออารมณ์เพลง (เช่น ชิล/ดราม่า/สนุก/calm/tense), ชื่อเพลง, trackId จาก set_background_music หรือ \"none\" = ปิดเพลง"),
+  bgmVolume: z.number().optional()
+    .describe("ความดังเพลงประกอบ 0-100 (%) เช่น 12 (รองรับทศนิยม 0-1 เช่น 0.12)"),
+  bgmDucking: z.boolean().optional()
+    .describe("เปิด/ปิดลดเสียงเพลงอัตโนมัติตอนมีเสียงพูด"),
+  disableBgm: z.boolean().optional()
+    .describe("true = ปิดเพลงประกอบของคลิปนี้"),
+  tailHoldMs: z.number().int().optional()
+    .describe(`ค้างเฟรมสุดท้ายหลังเสียงพากย์จบ (${TAIL_HOLD_MS_MIN}-${TAIL_HOLD_MS_MAX} ms)`),
+  brollWindowIndex: z.number().int().optional()
+    .describe("ระบุช่วง B-roll (windows[].index) เมื่อต้องการตั้ง brollTransition หรือ brollFit เฉพาะช่วงนั้น; ไม่ส่ง = ตั้งค่าหลักทั้งคลิป"),
+  sfxMode: z.enum(SFX_MODES).optional()
+    .describe("เสียงเอฟเฟกต์เปลี่ยนฉากทั้งคลิป (\"none\" / \"subtle\")"),
+  brollTransition: z.enum(["dissolve", "cut", "default"]).optional()
+    .describe("รูปแบบเปลี่ยนฉาก B-roll (\"dissolve\" / \"cut\"; ค่า \"default\" ใช้ได้เฉพาะเมื่อระบุ brollWindowIndex)"),
+  brollFit: z.enum(["cover", "contain"]).optional()
+    .describe("การจัดวางภาพ B-roll เฉพาะช่วง (\"cover\" / \"contain\" — ต้องระบุ brollWindowIndex)"),
+  punchZoom: z.boolean().optional()
+    .describe("เปิด/ปิดซูมจังหวะผู้พูดทั้งคลิป"),
 } satisfies z.ZodRawShape;
 
 export const exportVideoInputShape = {
@@ -677,7 +752,7 @@ export async function getEditStateTool(userId: string, jobId: unknown) {
     sfxMode: draftProjectSfxMode(state.draft, state.base),
     draftRevision: state.revision,
     allowed: ALLOWED,
-    next: "แก้ได้หลายครั้งด้วย apply_video_template / set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
+    next: "แก้รวดเดียวได้ด้วย batch_edit_video หรือแก้ทีละส่วนด้วย apply_video_template / set_caption_text / merge_captions / split_caption / regroup_captions / set_subtitle_style / set_headline_hook / set_background_music / set_tail_hold / replace_broll_window / set_broll_style (หรือ discard_edits เพื่อล้างทั้งหมด) แล้วเรียก export_video(jobId) ครั้งเดียวเมื่อแก้ครบ (ส่งออกไม่ตัดโควต้าเพิ่ม) — windows[].renderedStartMs/renderedEndMs คือช่วงที่เรนเดอร์จริง (อาจไม่ตรงกับ startMs/endMs ถ้าคลิปสั้นกว่าช่วงของมัน) ใช้ค่านี้ตัดสินใจ ไม่ใช่ startMs/endMs ดิบ",
   };
 }
 
@@ -1688,6 +1763,759 @@ export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof 
   };
 }
 
+// ── batch_edit_video (HERO-96) ────────────────────────────────────────────────────────────
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const MAX_BATCH_CAPTIONS = 500;
+const SUBTITLE_PRESET_VALUES = PRESETS_DATA.map((preset) => preset.value);
+const SUBTITLE_EFFECT_VALUES = EFFECTS_DATA.map((effect) => effect.value);
+const SUBTITLE_FONT_VALUES = FONTS_LIST.map((font) => font.value);
+const NEXT_BATCH = "ตรวจสอบพารามิเตอร์ตาม get_edit_state.allowed แล้วเรียก batch_edit_video ใหม่ (ยังไม่ได้บันทึกการแก้ใดๆ)";
+
+function normalizeBatchBgmVolume(raw: number): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > 100) return null;
+  if (raw > 0 && raw < 1 && !Number.isInteger(raw)) return raw;
+  return raw / 100;
+}
+
+/**
+ * HERO-96: apply multiple Held Preview edits onto a single `jobId` atomically in one round-trip.
+ * Validates all requested operations upfront and inside a cloned CAS draft so any invalid sub-edit
+ * returns a G14 `{ error, code, message, next }` refusal without half-mutating `PendingEditDraft`.
+ */
+export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batchEditVideoInputShape>) {
+  if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
+
+  const hasSubtitlePatch =
+    args.subtitlePreset !== undefined
+    || args.subtitleEffect !== undefined
+    || args.fontFamily !== undefined
+    || args.fontSize !== undefined
+    || args.fontWeight !== undefined
+    || args.textColor !== undefined
+    || args.accentColor !== undefined
+    || args.shadow !== undefined
+    || args.outline !== undefined
+    || args.outlineSize !== undefined
+    || args.highlightKeywords !== undefined
+    || args.statCards !== undefined
+    || args.verticalPos !== undefined;
+
+  const hasHeadlinePatch =
+    args.headlineHookEnabled !== undefined
+    || args.headlineHookText !== undefined
+    || args.headlineHookSubtext !== undefined
+    || args.headlineHookPreset !== undefined
+    || args.headlineHookDurationMs !== undefined;
+
+  const hasExplicitBgmPatch =
+    args.disableBgm !== undefined
+    || args.bgmMoodOrTrack !== undefined
+    || args.bgmVolume !== undefined
+    || args.bgmDucking !== undefined;
+
+  const hasBrollPatch =
+    args.brollWindowIndex !== undefined
+    || args.sfxMode !== undefined
+    || args.brollTransition !== undefined
+    || args.brollFit !== undefined
+    || args.punchZoom !== undefined;
+
+  const hasAnyEdit =
+    args.templateId !== undefined
+    || args.includeTemplateMusic !== undefined
+    || args.regroupCardLen !== undefined
+    || args.captionIndices !== undefined
+    || args.captionTexts !== undefined
+    || hasSubtitlePatch
+    || hasHeadlinePatch
+    || hasExplicitBgmPatch
+    || args.tailHoldMs !== undefined
+    || hasBrollPatch;
+
+  if (!hasAnyEdit) {
+    return editToolFailure(
+      "invalid_input",
+      "ต้องระบุรายการแก้ไขอย่างน้อย 1 อย่างใน batch_edit_video",
+      "ส่งฟิลด์ที่ต้องการแก้ เช่น templateId, captionIndices+captionTexts, subtitlePreset, headlineHookText, bgmMoodOrTrack, tailHoldMs หรือ brollTransition",
+    );
+  }
+
+  // 1. Template & regroup validation
+  if (args.templateId !== undefined && !isActiveStylePackId(args.templateId)) {
+    return BAD_TEMPLATE_ID;
+  }
+  if (args.includeTemplateMusic !== undefined) {
+    if (typeof args.includeTemplateMusic !== "boolean") {
+      return editToolFailure("invalid_input", "ตั้งค่า includeTemplateMusic ต้องเป็น true หรือ false", NEXT_BATCH);
+    }
+    if (args.templateId === undefined) {
+      return editToolFailure(
+        "invalid_input",
+        "ส่ง includeTemplateMusic ได้เฉพาะเมื่อระบุ templateId เท่านั้น",
+        "ระบุ templateId ร่วมกับ includeTemplateMusic หรือใช้ bgmMoodOrTrack เพื่อเลือกเพลงโดยตรง",
+      );
+    }
+  }
+  if (
+    args.regroupCardLen !== undefined
+    && (typeof args.regroupCardLen !== "string" || !CARD_LEN_VALUES.includes(args.regroupCardLen as V2CardLen))
+  ) {
+    return editToolFailure(
+      "invalid_input",
+      `regroupCardLen ต้องเป็นหนึ่งใน ${CARD_LEN_VALUES.join(", ")}`,
+      "เรียก get_edit_state เพื่อดูค่าที่เลือกได้ (allowed.cardLen)",
+    );
+  }
+
+  // 2. Batch caption text updates validation
+  if ((args.captionIndices !== undefined) !== (args.captionTexts !== undefined)) {
+    return editToolFailure(
+      "invalid_input",
+      "ต้องส่ง captionIndices และ captionTexts คู่กันเสมอ",
+      "ส่งทั้ง captionIndices และ captionTexts ที่มีความยาวเท่ากัน",
+    );
+  }
+  const normalizedCaptionUpdates: Array<{ index: number; text: string }> = [];
+  if (args.captionIndices !== undefined && args.captionTexts !== undefined) {
+    if (!Array.isArray(args.captionIndices) || !Array.isArray(args.captionTexts)) {
+      return editToolFailure("invalid_input", "captionIndices และ captionTexts ต้องเป็นอาเรย์", NEXT_BATCH);
+    }
+    if (args.captionIndices.length === 0 || args.captionTexts.length === 0) {
+      return editToolFailure(
+        "invalid_input",
+        "captionIndices และ captionTexts ต้องมีอย่างน้อย 1 รายการ",
+        "ส่งรายการการ์ดซับที่ต้องการแก้ไขอย่างน้อย 1 ใบ หรือลบทั้งสองฟิลด์ออก",
+      );
+    }
+    if (args.captionIndices.length !== args.captionTexts.length) {
+      return editToolFailure(
+        "invalid_input",
+        `จำนวน captionIndices (${args.captionIndices.length}) ไม่ตรงกับ captionTexts (${args.captionTexts.length})`,
+        "ตรวจสอบให้ captionIndices และ captionTexts มีจำนวนรายการเท่ากันพอดี",
+      );
+    }
+    if (args.captionIndices.length > MAX_BATCH_CAPTIONS) {
+      return editToolFailure(
+        "invalid_input",
+        `แก้ไขการ์ดซับพร้อมกันได้ไม่เกิน ${MAX_BATCH_CAPTIONS} การ์ดต่อครั้ง`,
+        NEXT_BATCH,
+      );
+    }
+    const seenIndices = new Set<number>();
+    for (let i = 0; i < args.captionIndices.length; i += 1) {
+      const idx = args.captionIndices[i];
+      const rawText = args.captionTexts[i];
+      if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0) {
+        return editToolFailure(
+          "invalid_input",
+          `captionIndices[${i}] ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป`,
+          "เรียก get_edit_state เพื่อดู index ของการ์ดซับ",
+        );
+      }
+      if (seenIndices.has(idx)) {
+        return editToolFailure(
+          "invalid_input",
+          `พบ index ซ้ำใน captionIndices (ลำดับที่ ${idx})`,
+          "รวมการแก้ของการ์ดซับลำดับเดียวกันให้เหลือรายการเดียว",
+        );
+      }
+      seenIndices.add(idx);
+      const trimmed = typeof rawText === "string" ? rawText.trim() : "";
+      if (!trimmed) {
+        return editToolFailure(
+          "invalid_input",
+          `ข้อความซับของการ์ดลำดับที่ ${idx} ต้องไม่ว่าง`,
+          "ส่งข้อความซับที่มีตัวอักษรอย่างน้อย 1 ตัว",
+        );
+      }
+      if (trimmed.length > MAX_CAPTION_TEXT_CHARS) {
+        return editToolFailure(
+          "invalid_input",
+          `ข้อความซับของการ์ดลำดับที่ ${idx} ยาวเกิน ${MAX_CAPTION_TEXT_CHARS} ตัวอักษร`,
+          "ย่อข้อความให้สั้นลงแล้วเรียก batch_edit_video อีกครั้ง",
+        );
+      }
+      normalizedCaptionUpdates.push({ index: idx, text: trimmed });
+    }
+  }
+
+  // 3. Subtitle style validation
+  if (args.subtitlePreset !== undefined && !SUBTITLE_PRESET_VALUES.includes(args.subtitlePreset)) {
+    return editToolFailure("invalid_input", "subtitlePreset ไม่ถูกต้อง", NEXT_BATCH);
+  }
+  if (args.subtitleEffect !== undefined && !SUBTITLE_EFFECT_VALUES.includes(args.subtitleEffect)) {
+    return editToolFailure("invalid_input", "subtitleEffect ไม่ถูกต้อง", NEXT_BATCH);
+  }
+  if (args.fontFamily !== undefined && !SUBTITLE_FONT_VALUES.includes(args.fontFamily)) {
+    return editToolFailure("invalid_input", "fontFamily ไม่ถูกต้อง", NEXT_BATCH);
+  }
+  if (args.fontWeight !== undefined && normalizeSubtitleFontWeight(Number(args.fontWeight)) === null) {
+    return editToolFailure("invalid_input", "fontWeight ต้องเป็น 400, 600 หรือ 900", NEXT_BATCH);
+  }
+  if (args.fontSize !== undefined && (typeof args.fontSize !== "number" || !Number.isInteger(args.fontSize) || args.fontSize < 30 || args.fontSize > 160)) {
+    return editToolFailure("invalid_input", "fontSize ต้องเป็นจำนวนเต็มระหว่าง 30-160", NEXT_BATCH);
+  }
+  if (args.outlineSize !== undefined && (typeof args.outlineSize !== "number" || !Number.isInteger(args.outlineSize) || args.outlineSize < 1 || args.outlineSize > 8)) {
+    return editToolFailure("invalid_input", "outlineSize ต้องเป็นจำนวนเต็มระหว่าง 1-8", NEXT_BATCH);
+  }
+  if (args.verticalPos !== undefined && (typeof args.verticalPos !== "number" || !Number.isInteger(args.verticalPos) || args.verticalPos < 10 || args.verticalPos > 95)) {
+    return editToolFailure("invalid_input", "verticalPos ต้องเป็นจำนวนเต็มระหว่าง 10-95", NEXT_BATCH);
+  }
+  if (args.textColor !== undefined && (typeof args.textColor !== "string" || !HEX_COLOR_RE.test(args.textColor))) {
+    return editToolFailure("invalid_input", "textColor ต้องอยู่ในรูปแบบ #RRGGBB", NEXT_BATCH);
+  }
+  if (args.accentColor !== undefined && (typeof args.accentColor !== "string" || !HEX_COLOR_RE.test(args.accentColor))) {
+    return editToolFailure("invalid_input", "accentColor ต้องอยู่ในรูปแบบ #RRGGBB", NEXT_BATCH);
+  }
+  for (const [label, flag] of [
+    ["shadow", args.shadow],
+    ["outline", args.outline],
+    ["highlightKeywords", args.highlightKeywords],
+    ["statCards", args.statCards],
+  ] as const) {
+    if (flag !== undefined && typeof flag !== "boolean") {
+      return editToolFailure("invalid_input", `ตั้งค่า ${label} ต้องเป็น true หรือ false`, NEXT_BATCH);
+    }
+  }
+
+  // 4. Headline hook validation
+  if (args.headlineHookEnabled !== undefined && typeof args.headlineHookEnabled !== "boolean") {
+    return editToolFailure("invalid_input", "headlineHookEnabled ต้องเป็น true หรือ false", NEXT_BATCH);
+  }
+  if (args.headlineHookText !== undefined && typeof args.headlineHookText !== "string") {
+    return editToolFailure("invalid_input", "headlineHookText ต้องเป็นข้อความ", NEXT_BATCH);
+  }
+  if (args.headlineHookEnabled === true && args.headlineHookText !== undefined && !args.headlineHookText.trim()) {
+    return editToolFailure(
+      "invalid_input",
+      "headlineHookText ต้องไม่ว่างเมื่อเปิดใช้งานพาดหัว (headlineHookEnabled: true)",
+      "ส่งข้อความพาดหัวใน headlineHookText หรือตั้ง headlineHookEnabled: false",
+    );
+  }
+  if (args.headlineHookSubtext !== undefined && typeof args.headlineHookSubtext !== "string") {
+    return editToolFailure("invalid_input", "headlineHookSubtext ต้องเป็นข้อความ", NEXT_BATCH);
+  }
+  if (
+    args.headlineHookPreset !== undefined
+    && !(HEADLINE_HOOK_PRESETS as readonly string[]).includes(args.headlineHookPreset)
+  ) {
+    return editToolFailure("invalid_input", "headlineHookPreset ไม่ถูกต้อง", NEXT_BATCH);
+  }
+  if (
+    args.headlineHookDurationMs !== undefined
+    && (
+      typeof args.headlineHookDurationMs !== "number"
+      || !Number.isInteger(args.headlineHookDurationMs)
+      || args.headlineHookDurationMs < MIN_HEADLINE_HOOK_DURATION_MS
+      || args.headlineHookDurationMs > MAX_HEADLINE_HOOK_DURATION_MS
+    )
+  ) {
+    return editToolFailure(
+      "invalid_input",
+      `headlineHookDurationMs ต้องเป็นจำนวนเต็มระหว่าง ${MIN_HEADLINE_HOOK_DURATION_MS}-${MAX_HEADLINE_HOOK_DURATION_MS} ms`,
+      NEXT_BATCH,
+    );
+  }
+
+  // 5. Background music & tailHoldMs validation
+  if (args.disableBgm !== undefined && typeof args.disableBgm !== "boolean") {
+    return editToolFailure("invalid_input", "disableBgm ต้องเป็น true หรือ false", NEXT_BATCH);
+  }
+  if (args.bgmDucking !== undefined && typeof args.bgmDucking !== "boolean") {
+    return editToolFailure("invalid_input", "bgmDucking ต้องเป็น true หรือ false", NEXT_BATCH);
+  }
+  if (args.bgmMoodOrTrack !== undefined) {
+    if (typeof args.bgmMoodOrTrack !== "string" || !args.bgmMoodOrTrack.trim() || args.bgmMoodOrTrack.length > MAX_TRACK_ID_CHARS) {
+      return editToolFailure(
+        "invalid_input",
+        "bgmMoodOrTrack ต้องเป็นชื่ออารมณ์เพลง, ชื่อเพลง, trackId หรือ \"none\"",
+        NEXT_LIST_MUSIC,
+      );
+    }
+  }
+  if (args.disableBgm === true && args.bgmMoodOrTrack !== undefined && !isNoneInput(args.bgmMoodOrTrack)) {
+    return editToolFailure(
+      "invalid_input",
+      "ห้ามส่ง disableBgm: true พร้อมกับเลือกเพลงใน bgmMoodOrTrack",
+      "ส่งเฉพาะ disableBgm: true เพื่อปิดเพลง หรือส่งเฉพาะ bgmMoodOrTrack เพื่อเลือกเพลง",
+    );
+  }
+  let normalizedBgmVolume: number | undefined;
+  if (args.bgmVolume !== undefined) {
+    const parsedVolume = normalizeBatchBgmVolume(args.bgmVolume);
+    if (parsedVolume === null) {
+      return editToolFailure(
+        "invalid_input",
+        "ความดังเพลง bgmVolume ต้องอยู่ระหว่าง 0-100 (%) หรือทศนิยม 0-1",
+        "ส่ง bgmVolume เช่น 12 (ค่าเริ่มต้น 12%)",
+      );
+    }
+    normalizedBgmVolume = parsedVolume;
+  }
+  if (
+    args.tailHoldMs !== undefined
+    && (
+      typeof args.tailHoldMs !== "number"
+      || !Number.isInteger(args.tailHoldMs)
+      || args.tailHoldMs < TAIL_HOLD_MS_MIN
+      || args.tailHoldMs > TAIL_HOLD_MS_MAX
+    )
+  ) {
+    return editToolFailure(
+      "invalid_input",
+      `tailHoldMs ต้องเป็นจำนวนเต็มระหว่าง ${TAIL_HOLD_MS_MIN}-${TAIL_HOLD_MS_MAX} ms`,
+      NEXT_BATCH,
+    );
+  }
+
+  // 6. B-roll style validation
+  if (args.sfxMode !== undefined && !isSfxMode(args.sfxMode)) return BAD_SFX_MODE;
+  if (args.brollTransition !== undefined && !isBrollTransitionEdit(args.brollTransition)) return BAD_TRANSITION;
+  if (args.brollFit !== undefined && !isBrollFit(args.brollFit)) return BAD_FIT;
+  if (args.punchZoom !== undefined && typeof args.punchZoom !== "boolean") return BAD_PUNCH_ZOOM;
+
+  const windowIdx = args.brollWindowIndex;
+  if (windowIdx !== undefined) {
+    if (typeof windowIdx !== "number" || !Number.isInteger(windowIdx) || windowIdx < 0) return NO_WINDOW;
+    if (args.brollTransition === undefined && args.brollFit === undefined) {
+      return editToolFailure(
+        "invalid_input",
+        "เมื่อระบุ brollWindowIndex ต้องส่ง brollTransition หรือ brollFit อย่างน้อยหนึ่งค่า",
+        NEXT_STYLE,
+      );
+    }
+  } else if (
+    args.brollFit !== undefined
+    || (args.brollTransition !== undefined && !isBrollTransition(args.brollTransition))
+  ) {
+    return PROJECT_TRANSITION_ONLY;
+  }
+
+  // 7. Load Held Preview root, state, and external resources BEFORE mutating draft
+  const held = await resolveHeldRoot(user.id, args.jobId);
+  if (!held.ok) return held.failure;
+  const { root } = held;
+  const loaded = await loadState(user.id, root);
+  if (!loaded.ok) return loaded.failure;
+  const { base } = loaded.state;
+
+  if (windowIdx !== undefined && !previewWindowSpans(base.preview).some((span) => span.index === windowIdx)) {
+    return NO_WINDOW;
+  }
+
+  const baseRow = await prisma.videoJob.findFirst({
+    where: { id: base.id, userId: user.id },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
+  });
+  const canRerenderBroll = Boolean(baseRow && brollWindowEditEnabled(user, baseRow));
+  const needsBrollGate =
+    windowIdx !== undefined
+    || args.brollTransition !== undefined
+    || args.brollFit !== undefined
+    || args.punchZoom !== undefined;
+  if (needsBrollGate && !canRerenderBroll) return WINDOW_EDIT_NOT_ENABLED;
+
+  if (
+    (args.templateId !== undefined || needsBrollGate || args.sfxMode !== undefined)
+    && await linkedRerenderInFlight(user.id, root, loaded.state.projectId)
+  ) {
+    return STYLE_DURING_RERENDER;
+  }
+
+  // Pre-resolve template music and/or explicit BGM track before entering CAS
+  const pack = args.templateId !== undefined ? stylePack(args.templateId) : null;
+  let matchedTemplateMusicTrack: string | null = null;
+  let explicitPickedTrack: string | null | undefined;
+
+  if (args.disableBgm === true || (args.bgmMoodOrTrack !== undefined && isNoneInput(args.bgmMoodOrTrack))) {
+    explicitPickedTrack = null;
+  } else if (args.bgmMoodOrTrack !== undefined) {
+    const query = args.bgmMoodOrTrack.trim();
+    const byId = await findBackgroundMusicTrackById(user.id, query);
+    if (byId) {
+      explicitPickedTrack = byId.track;
+    } else {
+      const tracks = await listBackgroundMusicTracks(user.id);
+      const bgmCatalog = tracks.map((t) => ({ title: t.title, bgmFile: t.track, mood: t.mood }));
+      const lower = query.toLowerCase();
+      let matchedPath: string | null = null;
+      if ((MUSIC_MOODS as readonly string[]).includes(lower)) {
+        const byStyleMood = resolveMusicMoodTrack(lower as MusicMood, bgmCatalog);
+        if (byStyleMood && tracks.some((t) => t.track === byStyleMood.bgmFile)) {
+          matchedPath = byStyleMood.bgmFile;
+        }
+      }
+      if (!matchedPath) {
+        const resolved = resolveBgm(query, bgmCatalog);
+        if (resolved.kind === "resolved" && tracks.some((t) => t.track === resolved.bgmFile)) {
+          matchedPath = resolved.bgmFile;
+        }
+      }
+      if (!matchedPath) {
+        return editToolFailure(
+          "invalid_input",
+          `ไม่พบเพลงหรือแนวเพลง "${query}" ในคลังเพลงของคุณ`,
+          `ระบุแนวเพลง (${moodMenu()}) หรือเรียก set_background_music(jobId) อย่างเดียวเพื่อดู trackId ที่มี`,
+        );
+      }
+      explicitPickedTrack = matchedPath;
+    }
+  } else if (pack && args.includeTemplateMusic === true) {
+    const tracks = await listBackgroundMusicTracks(user.id);
+    const resolved = resolveMusicMoodTrack(
+      pack.musicMood,
+      tracks.map((t) => ({ title: t.title, bgmFile: t.track, mood: t.mood })),
+    );
+    const matched = resolved ? tracks.find((t) => t.track === resolved.bgmFile) ?? null : null;
+    if (matched) matchedTemplateMusicTrack = matched.track;
+  }
+
+  // 8. Atomic CAS mutation on a deep clone — if ANY step fails, return { ok: false } and nothing is saved!
+  const refused: { failure: EditToolFailure | null } = { failure: null };
+  let appliedOps: string[] = [];
+  let ignoredFields: string[] = [];
+
+  const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
+    const nextDraft: PendingEditDraft = structuredClone(draft);
+    const ops: string[] = [];
+    const localIgnored: string[] = [];
+    const baseConfig = state.base.preview.config as {
+      brollTransition?: unknown;
+      punchZoom?: unknown;
+      sfxMode?: unknown;
+    };
+
+    // (a) Template base recipe
+    if (pack) {
+      const totalDurationMs = draftDurationMs(state.base.preview, nextDraft.captions);
+      const sourceText = nextDraft.fullText?.trim()
+        || nextDraft.captions.map((c) => c.text).join(" ").trim();
+      const resolved = resolveTemplatePostEdit({
+        templateId: pack.id as Parameters<typeof resolveTemplatePostEdit>[0]["templateId"],
+        currentHeadlineHook: nextDraft.headlineHook ?? null,
+        headlineSourceText: sourceText,
+        totalDurationMs,
+      });
+      const canonicalFont = canonicalizeFontFamily(resolved.subtitleConfig.fontFamily) ?? resolved.subtitleConfig.fontFamily;
+      nextDraft.subtitleConfig = {
+        ...(resolved.subtitleConfig as V2SubConfig),
+        fontFamily: canonicalFont,
+      };
+      if (nextDraft.cardLen !== resolved.cardLen) {
+        nextDraft.captions = regroupCaptions(
+          nextDraft.originalCaptions,
+          resolved.cardLen,
+          nextDraft.words,
+          nextDraft.fullText,
+          nextDraft.subtitleConfig.fontSize,
+        );
+        nextDraft.cardLen = resolved.cardLen;
+        nextDraft.captionOverrides = {};
+      }
+      if (resolved.headlineHook) {
+        nextDraft.headlineHook = resolved.headlineHook;
+      }
+      if (pack.sfxMode === effectiveSfxMode(baseConfig.sfxMode)) delete nextDraft.sfxMode;
+      else nextDraft.sfxMode = pack.sfxMode;
+
+      if (canRerenderBroll) {
+        if (pack.brollTransition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) {
+          delete nextDraft.brollTransition;
+        } else {
+          nextDraft.brollTransition = pack.brollTransition;
+        }
+        if (pack.punchZoom === effectivePunchZoom(baseConfig.punchZoom)) {
+          delete nextDraft.punchZoom;
+        } else {
+          nextDraft.punchZoom = pack.punchZoom;
+        }
+        nextDraft.windowEdits = nextDraft.windowEdits.flatMap((edit) => {
+          const baseWindow = bgVideoAt(state.base.preview.config, edit.index);
+          const baseHasOwnTransition = isBrollTransition(baseWindow?.transition);
+          const nextEdit: PendingEditWindowEdit = { ...edit };
+          if (baseHasOwnTransition) nextEdit.transition = BROLL_TRANSITION_FOLLOW_DEFAULT;
+          else delete nextEdit.transition;
+          if (
+            nextEdit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+            && nextEdit.transition === undefined
+            && nextEdit.fit === undefined
+          ) {
+            return [];
+          }
+          return [nextEdit];
+        });
+      }
+      if (args.includeTemplateMusic === true && matchedTemplateMusicTrack) {
+        const currentMusic = effectiveBackgroundMusic(nextDraft, state.base.preview);
+        const nextMusic = normalizeBackgroundMusicEdit({
+          track: matchedTemplateMusicTrack,
+          volume: currentMusic.volume || DEFAULT_BGM_VOLUME,
+          ducking: true,
+        });
+        if (nextMusic) nextDraft.backgroundMusic = nextMusic;
+      }
+      ops.push(`template:${pack.id}`);
+    }
+
+    // (b) Explicit regroupCardLen
+    if (args.regroupCardLen !== undefined) {
+      const cardLen = args.regroupCardLen as V2CardLen;
+      nextDraft.captions = regroupCaptions(
+        nextDraft.originalCaptions,
+        cardLen,
+        nextDraft.words,
+        nextDraft.fullText,
+        nextDraft.subtitleConfig.fontSize,
+      );
+      nextDraft.cardLen = cardLen;
+      nextDraft.captionOverrides = {};
+      ops.push(`regroup:${cardLen}`);
+    }
+
+    // (c) Batch caption text updates (validated against post-template/post-regroup captions)
+    if (normalizedCaptionUpdates.length > 0) {
+      for (const update of normalizedCaptionUpdates) {
+        if (update.index >= nextDraft.captions.length) {
+          const message = `ไม่มีการ์ดซับลำดับที่ ${update.index} — มีทั้งหมด ${nextDraft.captions.length} การ์ด (index 0 ถึง ${Math.max(0, nextDraft.captions.length - 1)})`;
+          refused.failure = editToolFailure("invalid_input", message, "เรียก get_edit_state เพื่อดูลำดับการ์ดซับปัจจุบัน");
+          return { ok: false, code: "invalid_input", message };
+        }
+        nextDraft.captions[update.index] = {
+          ...nextDraft.captions[update.index],
+          text: update.text,
+        };
+      }
+      ops.push(`captions:${normalizedCaptionUpdates.length}`);
+    }
+
+    // (d) Subtitle style overrides
+    if (hasSubtitlePatch) {
+      const current = nextDraft.subtitleConfig;
+      const preset: SubPreset = args.subtitlePreset !== undefined ? args.subtitlePreset : current.preset;
+      const effect: SubTextEffect = args.subtitleEffect !== undefined ? args.subtitleEffect : current.effect;
+      const fontFamily = args.fontFamily !== undefined
+        ? args.fontFamily
+        : (canonicalizeFontFamily(current.fontFamily) ?? current.fontFamily);
+
+      let fontWeight = resolveV2FontWeight(current);
+      if (args.fontWeight !== undefined) {
+        const resolvedWeight = normalizeSubtitleFontWeight(Number(args.fontWeight));
+        if (resolvedWeight === null) {
+          const message = "fontWeight ต้องเป็น 400, 600 หรือ 900";
+          refused.failure = editToolFailure("invalid_input", message, NEXT_BATCH);
+          return { ok: false, code: "invalid_input", message };
+        }
+        fontWeight = resolvedWeight;
+      }
+
+      const colorLocked = LOCKED_COLOR_PRESETS.includes(preset);
+      const accentLocked = LOCKED_ACCENT_PRESETS.includes(preset);
+      let textColor = current.textColor;
+      if (args.textColor !== undefined) {
+        if (colorLocked) localIgnored.push("textColor");
+        else textColor = args.textColor;
+      }
+      let accentColor = current.accentColor;
+      if (args.accentColor !== undefined) {
+        if (accentLocked) localIgnored.push("accentColor");
+        else accentColor = args.accentColor;
+      }
+
+      const normalized = normalizeSubtitleStylePresetConfig({
+        preset,
+        effect,
+        cardLen: nextDraft.cardLen,
+        fontFamily,
+        bold: fontWeight === 900,
+        fontWeight,
+        fontSize: args.fontSize !== undefined ? args.fontSize : current.fontSize,
+        textColor,
+        accentColor,
+        shadow: args.shadow !== undefined ? args.shadow : current.shadow,
+        outline: args.outline !== undefined ? args.outline : current.outline,
+        outlineSize: args.outlineSize !== undefined ? args.outlineSize : current.outlineSize,
+        verticalPos: args.verticalPos !== undefined ? args.verticalPos : current.verticalPos,
+        highlightKeywords: args.highlightKeywords !== undefined ? args.highlightKeywords : Boolean(current.highlightKeywords),
+        statCards: args.statCards !== undefined ? args.statCards : Boolean(current.statCards),
+      });
+      if (!normalized) {
+        const message = "ค่าสไตล์ซับที่ส่งไม่ถูกต้อง — เช็คช่วง fontSize (30-160), outlineSize (1-8), verticalPos (10-95) หรือรูปแบบสี #RRGGBB";
+        refused.failure = editToolFailure("invalid_input", message, NEXT_BATCH);
+        return { ok: false, code: "invalid_input", message };
+      }
+      const subtitleConfig = { ...normalized };
+      delete (subtitleConfig as { cardLen?: unknown }).cardLen;
+      nextDraft.subtitleConfig = subtitleConfig as V2SubConfig;
+      ops.push("subtitle_style");
+    }
+
+    // (e) Headline hook overrides
+    if (hasHeadlinePatch) {
+      const totalDurationMs = draftDurationMs(state.base.preview, nextDraft.captions);
+      const patch: Record<string, unknown> = {};
+      if (args.headlineHookEnabled !== undefined) patch.enabled = args.headlineHookEnabled;
+      if (args.headlineHookText !== undefined) {
+        patch.headline = args.headlineHookText;
+        // When headline text is supplied without an explicit enabled flag and no prior hook was active, enable it by default.
+        if (args.headlineHookEnabled === undefined && nextDraft.headlineHook?.enabled === undefined && args.headlineHookText.trim()) {
+          patch.enabled = true;
+        }
+      }
+      if (args.headlineHookSubtext !== undefined) patch.subheadline = args.headlineHookSubtext;
+      if (args.headlineHookPreset !== undefined) patch.preset = args.headlineHookPreset;
+      if (args.headlineHookDurationMs !== undefined) patch.durationMs = args.headlineHookDurationMs;
+
+      const merged = { ...(nextDraft.headlineHook ?? {}), ...patch };
+      const normalized = normalizeHeadlineHook(merged, totalDurationMs, nextDraft.subtitleConfig.verticalPos);
+      if (!normalized) {
+        const message = "ค่าพาดหัวไม่ถูกต้อง";
+        refused.failure = editToolFailure("invalid_input", message, NEXT_BATCH);
+        return { ok: false, code: "invalid_input", message };
+      }
+      if (args.headlineHookEnabled === true && !normalized.enabled) {
+        const message = "ต้องระบุ headlineHookText ที่มีข้อความเมื่อต้องการเปิดใช้งานพาดหัว (headlineHookEnabled: true)";
+        refused.failure = editToolFailure("invalid_input", message, "ส่ง headlineHookText ร่วมกับ headlineHookEnabled: true");
+        return { ok: false, code: "invalid_input", message };
+      }
+      nextDraft.headlineHook = normalized;
+      ops.push("headline_hook");
+    }
+
+    // (f) Explicit background music overrides
+    if (hasExplicitBgmPatch) {
+      const current = effectiveBackgroundMusic(nextDraft, state.base.preview);
+      const track = explicitPickedTrack === undefined ? current.track : explicitPickedTrack;
+      if (track === null && explicitPickedTrack === undefined && (normalizedBgmVolume !== undefined || args.bgmDucking !== undefined)) {
+        const message = "คลิปนี้ยังไม่มีเพลงประกอบ จึงปรับความดังหรือ ducking อย่างเดียวไม่ได้ — ระบุ bgmMoodOrTrack เพื่อเลือกเพลงก่อน";
+        refused.failure = editToolFailure("invalid_input", message, NEXT_LIST_MUSIC);
+        return { ok: false, code: "invalid_input", message };
+      }
+      const newPick = typeof explicitPickedTrack === "string" && explicitPickedTrack !== current.track;
+      const nextMusic = normalizeBackgroundMusicEdit({
+        track,
+        volume: normalizedBgmVolume === undefined ? current.volume : normalizedBgmVolume,
+        ducking: track === null ? false : args.bgmDucking ?? (newPick ? true : current.ducking),
+      });
+      if (!nextMusic) {
+        const message = "เพลงประกอบเดิมของคลิปนี้ปรับไม่ได้ — ระบุ bgmMoodOrTrack เพื่อเลือกเพลงจากคลัง";
+        refused.failure = editToolFailure("invalid_input", message, NEXT_LIST_MUSIC);
+        return { ok: false, code: "invalid_input", message };
+      }
+      nextDraft.backgroundMusic = nextMusic;
+      ops.push(track === null ? "bgm:off" : "bgm:update");
+    }
+
+    // (g) Tail hold
+    if (args.tailHoldMs !== undefined) {
+      nextDraft.tailHoldMs = clampTailHoldMs(args.tailHoldMs);
+      ops.push("tail_hold");
+    }
+
+    // (h) B-roll style overrides (project-level and/or per-window)
+    if (args.sfxMode !== undefined) {
+      if (args.sfxMode === effectiveSfxMode(baseConfig.sfxMode)) delete nextDraft.sfxMode;
+      else nextDraft.sfxMode = args.sfxMode;
+      ops.push(`sfx:${args.sfxMode}`);
+    }
+    if (typeof args.punchZoom === "boolean") {
+      if (args.punchZoom === effectivePunchZoom(baseConfig.punchZoom)) delete nextDraft.punchZoom;
+      else nextDraft.punchZoom = args.punchZoom;
+      ops.push(`punch_zoom:${args.punchZoom}`);
+    }
+    if (windowIdx === undefined) {
+      if (args.brollTransition !== undefined && isBrollTransition(args.brollTransition)) {
+        if (args.brollTransition === effectiveBrollTransition(undefined, baseConfig.brollTransition)) {
+          delete nextDraft.brollTransition;
+        } else {
+          nextDraft.brollTransition = args.brollTransition;
+        }
+        ops.push(`broll_transition:${args.brollTransition}`);
+      }
+    } else {
+      if (!previewWindowSpans(state.base.preview).some((span) => span.index === windowIdx)) {
+        refused.failure = NO_WINDOW;
+        return { ok: false, code: NO_WINDOW.code, message: NO_WINDOW.message };
+      }
+      const baseWindow = bgVideoAt(state.base.preview.config, windowIdx);
+      const previous = nextDraft.windowEdits.find((candidate) => candidate.index === windowIdx);
+      const nextWindowEdit: PendingEditWindowEdit = previous
+        ? { ...previous }
+        : { index: windowIdx, src: null, replacementKind: STYLE_ONLY_REPLACEMENT_KIND };
+      if (args.brollTransition !== undefined) {
+        const baseOwn = isBrollTransition(baseWindow?.transition)
+          ? baseWindow.transition
+          : BROLL_TRANSITION_FOLLOW_DEFAULT;
+        if (args.brollTransition === baseOwn) delete nextWindowEdit.transition;
+        else nextWindowEdit.transition = args.brollTransition;
+      }
+      if (args.brollFit !== undefined) {
+        if (args.brollFit === effectiveBrollFit(baseWindow?.fit)) delete nextWindowEdit.fit;
+        else nextWindowEdit.fit = args.brollFit;
+      }
+      const others = nextDraft.windowEdits.filter((candidate) => candidate.index !== windowIdx);
+      const emptyStyleOnly = nextWindowEdit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+        && nextWindowEdit.transition === undefined
+        && nextWindowEdit.fit === undefined;
+      nextDraft.windowEdits = emptyStyleOnly ? others : [...others, nextWindowEdit];
+      if (nextDraft.windowEdits.length > MAX_DRAFT_WINDOW_EDITS) {
+        refused.failure = TOO_MANY_WINDOW_EDITS;
+        return { ok: false, code: TOO_MANY_WINDOW_EDITS.code, message: TOO_MANY_WINDOW_EDITS.message };
+      }
+      ops.push(`broll_window:${windowIdx}`);
+    }
+
+    appliedOps = ops;
+    ignoredFields = localIgnored;
+    return { ok: true, draft: nextDraft };
+  });
+
+  if (!updated.ok) {
+    return refused.failure ?? mapUpdateFailure(updated.code, updated.message, NEXT_RELOAD);
+  }
+
+  const { draft: finalDraft, base: updatedBase } = updated.state;
+  const windowEdit = windowIdx === undefined
+    ? undefined
+    : finalDraft.windowEdits.find((candidate) => candidate.index === windowIdx);
+
+  return {
+    ok: true,
+    jobId: root.id,
+    applied: appliedOps,
+    ...(pack ? { templateId: pack.id, thaiLabel: pack.thaiLabel } : {}),
+    cardLen: finalDraft.cardLen,
+    cardCount: finalDraft.captions.length,
+    ...(normalizedCaptionUpdates.length > 0
+      ? {
+          updatedCaptions: normalizedCaptionUpdates.map(({ index }) => {
+            const c = finalDraft.captions[index];
+            return { index, text: c.text, startMs: c.startMs, endMs: c.endMs };
+          }),
+        }
+      : {}),
+    subtitleStyle: subtitleStyleView(finalDraft.subtitleConfig),
+    ...(ignoredFields.length > 0
+      ? {
+          ignoredFields,
+          note: `ไม่เปลี่ยน ${ignoredFields.join(", ")} เพราะสไตล์ซับนี้ล็อกสีไว้ (เปลี่ยน subtitlePreset ก่อนถ้าต้องการกำหนดสีเอง)`,
+        }
+      : {}),
+    headlineHook: finalDraft.headlineHook ?? null,
+    backgroundMusic: await backgroundMusicView(user.id, finalDraft, updatedBase.preview),
+    tailHoldMs: finalDraft.tailHoldMs,
+    sfxMode: draftProjectSfxMode(finalDraft, updatedBase),
+    brollTransition: draftProjectTransition(finalDraft, updatedBase),
+    punchZoom: draftProjectPunchZoom(finalDraft, updatedBase),
+    ...(windowIdx !== undefined
+      ? { brollWindow: { windowIndex: windowIdx, ...windowStyleView(finalDraft, updatedBase, windowEdit, windowIdx) } }
+      : {}),
+    pending: draftHasBrollChanges(finalDraft),
+    draftRevision: updated.state.revision,
+    next: "บันทึกการแก้แบบรวดเดียวในดราฟต์แล้ว (ยังไม่เรนเดอร์) — ตรวจภาพตัวอย่างจุดสำคัญด้วย get_preview_frame(jobId, atMs) หรือเรียก export_video(jobId) เพื่อส่งออกทันที (ไม่ตัดโควต้าเพิ่ม)",
+  };
+}
+
 // ── export_video ──────────────────────────────────────────────────────────────────────────
 
 const EXPORT_NEXT = "เรียก get_video_status({id: jobId}) ทุก ~60–90 วินาที จนได้ status \"done\" พร้อม videoUrl";
@@ -2249,6 +3077,19 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
     },
     async (args, extra) =>
       runTool("apply_video_template", extra, (p) => applyVideoTemplateTool(p.user, args), args, { next: RUN_NEXT }),
+    { next: GATE_NEXT },
+  );
+  registerGatedTool(
+    server,
+    principal,
+    "batch_edit_video",
+    {
+      title: "Batch edit held preview video",
+      description: "แก้ไขวิดีโอตัวอย่าง (exportMode \"hold\") หลายรายการพร้อมกันในคำสั่งเดียวแบบอะตอมมิก (หากฟิลด์ใดไม่ถูกต้องจะไม่บันทึกการแก้ใดๆ เลย): สวมเทมเพลต templateId + includeTemplateMusic, จัดกลุ่มคำต่อการ์ด regroupCardLen, แก้ข้อความหลายการ์ดพร้อมกันด้วย captionIndices + captionTexts, ปรับสไตล์ซับ, พาดหัวเปิดคลิป, เพลงประกอบ bgmMoodOrTrack/bgmVolume/disableBgm, ค้างเฟรมท้าย tailHoldMs และสไตล์ B-roll (sfxMode, brollTransition, brollFit, punchZoom). ยังไม่เรนเดอร์ — เรียก get_preview_frame เพื่อเช็คภาพตัวอย่าง หรือ export_video เมื่อพร้อมส่งออก (ไม่ตัดโควต้าเพิ่ม).",
+      inputSchema: batchEditVideoInputShape,
+    },
+    async (args, extra) =>
+      runTool("batch_edit_video", extra, (p) => batchEditVideoTool(p.user, args), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
   registerGatedTool(

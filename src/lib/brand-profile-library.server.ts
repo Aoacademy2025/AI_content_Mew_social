@@ -827,6 +827,102 @@ export async function listActiveBrandProfilesForMcp(userId: string): Promise<Mcp
   return profiles.map((profile) => ({ brandProfileId: profile.id, name: profile.name }));
 }
 
+export type McpBrandProfileVisualSummary = {
+  visualFormatId: string;
+  treatmentPolicy: "adaptive" | "locked";
+  lockedTreatmentPresetId: string | null;
+  stylePackId: string | null;
+  palette: string[];
+  personality?: string;
+};
+
+export type McpBrandProfileDetail = {
+  id: string;
+  name: string;
+  niche: string;
+  audience: string;
+  tone: string;
+  ctaStyle: string;
+  language: string;
+  stylePackId: string | null;
+  visualSummary: McpBrandProfileVisualSummary | null;
+};
+
+/** Owner-scoped active/published Brand Profiles with full writing + visual defaults for `list_brand_profiles`. */
+export async function listActiveBrandProfilesDetailedForMcp(userId: string): Promise<McpBrandProfileDetail[]> {
+  const profiles = await prisma.brandProfile.findMany({
+    where: activeMcpBrandProfileWhere(userId),
+    orderBy: ACTIVE_BRAND_PROFILE_ORDER,
+    select: {
+      id: true,
+      name: true,
+      niche: true,
+      audience: true,
+      tone: true,
+      ctaStyle: true,
+      activeRevisionNumber: true,
+    },
+  });
+  if (profiles.length === 0) return [];
+
+  const revisions = await prisma.brandProfileRevision.findMany({
+    where: {
+      OR: profiles.map((profile) => ({
+        brandProfileId: profile.id,
+        version: profile.activeRevisionNumber,
+      })),
+    },
+    select: { brandProfileId: true, version: true, payloadJson: true },
+  });
+  const revisionByKey = new Map(
+    revisions.map((revision) => [`${revision.brandProfileId}:${revision.version}`, revision.payloadJson]),
+  );
+
+  return profiles.map((profile) => {
+    const rawPayload = revisionByKey.get(`${profile.id}:${profile.activeRevisionNumber}`);
+    if (rawPayload) {
+      try {
+        const parsed = storedBrandProfilePayloadSchema.safeParse(JSON.parse(rawPayload));
+        if (parsed.success) {
+          const { data } = parsed;
+          const stylePackId = data.visual.stylePackId ?? null;
+          return {
+            id: profile.id,
+            name: data.name || profile.name,
+            niche: data.niche,
+            audience: data.audience,
+            tone: data.script.tone,
+            ctaStyle: data.script.ctaStyle || profile.ctaStyle || "follow",
+            language: data.script.language || "th",
+            stylePackId,
+            visualSummary: {
+              visualFormatId: data.visual.primaryVisualFormatId,
+              treatmentPolicy: data.visual.treatmentPolicy,
+              lockedTreatmentPresetId: data.visual.lockedTreatmentPresetId ?? null,
+              stylePackId,
+              palette: [...data.visual.palette],
+              ...(data.visual.personality ? { personality: data.visual.personality } : {}),
+            },
+          };
+        }
+      } catch {
+        // Fall back to the top-level BrandProfile row below when stored JSON is unreadable.
+      }
+    }
+    return {
+      id: profile.id,
+      name: profile.name,
+      niche: profile.niche,
+      audience: profile.audience,
+      tone: profile.tone,
+      ctaStyle: profile.ctaStyle || "follow",
+      language: "th",
+      stylePackId: null,
+      visualSummary: null,
+    };
+  });
+}
+
 export type McpBrandSubtitleLookup =
   | { found: true; style: SubtitleStylePresetConfig | null }
   | { found: false };

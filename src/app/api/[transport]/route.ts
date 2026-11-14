@@ -15,6 +15,7 @@ import type { User, VideoStatus } from "@prisma/client";
 
 import { getRequestPrincipal, runWithRequestPrincipalSlot, setRequestPrincipal } from "@/lib/mcp/request-principal";
 
+import { registerBrandScriptTools } from "@/lib/mcp/brand-script-tools";
 import { registerEditTools } from "@/lib/mcp/edit-tools";
 import { registerMediaImportTools } from "@/lib/mcp/media-import-tools";
 import { registerPreviewFrameTool } from "@/lib/mcp/preview-frame";
@@ -208,6 +209,9 @@ const handler = createMcpHandler(
           return { ok: true, settlementPending: result.settlementPending };
         }, args),
     );
+
+    // HERO-96: upstream Brand Library + Hero Script MCP tools.
+    registerBrandScriptTools(server, runTool);
 
     // T6 (ADR 0064): the MCP edit-before-export tools, registered per request for the
     // principal verifyToken resolved (beta-gated: absent from tools/list otherwise).
