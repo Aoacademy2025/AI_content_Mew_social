@@ -121,6 +121,7 @@ model User {
   userVoices                      UserVoice[]
   trialReminderLogs               TrialReminderLog[]
   renewalReminderLogs             RenewalReminderLog[]
+  grantExpiryReminderLogs         GrantExpiryReminderLog[]
   pastDueReminderLogs             PastDueReminderLog[]
   paidActivationReminderLog       PaidActivationReminderLog?
 }
@@ -1349,6 +1350,7 @@ model CouponRedemption {
   entitlementStartsAt  DateTime?
   entitlementExpiresAt DateTime?
   promotionalGrant     PromotionalCreditGrant?
+  expiryReminderLogs   GrantExpiryReminderLog[]
 
   @@unique([couponId, userId])
   @@index([userId, entitlementStartsAt, entitlementExpiresAt])
@@ -1473,6 +1475,31 @@ model RenewalReminderLog {
   @@unique([userId, termExpiresAt, kind])
   @@index([status, attemptedAt])
   @@index([kind, termExpiresAt])
+}
+
+/// HERO-99 — one durable claim per GRANT coupon redemption and expiry reminder
+/// moment (d7 | d3 | d1). Keyed on (userId, couponRedemptionId, kind) and claimed
+/// before either channel is touched so retries and concurrent cron workers are
+/// strictly at-most-once.
+model GrantExpiryReminderLog {
+  id                    String           @id @default(cuid())
+  userId                String
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  couponRedemptionId    String
+  couponRedemption      CouponRedemption @relation(fields: [couponRedemptionId], references: [id], onDelete: Cascade)
+  entitlementExpiresAt  DateTime
+  kind                  String // d7 | d3 | d1
+  status                String           @default("CLAIMED") // CLAIMED | DELIVERED | PARTIAL | FAILED
+  notificationDelivered Boolean          @default(false)
+  emailAttempted        Boolean          @default(false)
+  emailDelivered        Boolean          @default(false)
+  failureCode           String?
+  attemptedAt           DateTime         @default(now())
+  completedAt           DateTime?
+
+  @@unique([userId, couponRedemptionId, kind])
+  @@index([status, attemptedAt])
+  @@index([kind, entitlementExpiresAt])
 }
 
 /// HERO-33 — one durable claim per failed Stripe invoice and dunning moment. Stripe

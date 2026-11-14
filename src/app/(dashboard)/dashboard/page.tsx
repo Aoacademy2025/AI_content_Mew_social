@@ -11,6 +11,7 @@ import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding
 import { QuotaStatus } from "@/components/quota-status";
 import { V2JobBadge } from "@/components/v2-job-badge";
 import { DashboardFounderBanner } from "@/components/marketing/founder-banner";
+import { GrantExpiryBanner, type GrantExpiryBannerData } from "@/components/billing/grant-expiry-banner";
 import { FirstClipHero } from "@/components/dashboard/first-clip-hero";
 import { ReturnLoopCard } from "@/components/dashboard/return-loop-card";
 import { fetchMe } from "@/lib/use-me";
@@ -22,6 +23,7 @@ type Role = "ADMIN" | "USER";
 interface Stats {
   plan: PlanKey;
   proExpiresAt: string | null;
+  expiringGrant?: GrantExpiryBannerData | null;
   styleCount: number;
   contentCount: number;
   videoCount: number;
@@ -251,6 +253,9 @@ export default function DashboardPage() {
             ? "วางสคริปต์ 1 ชุด ระบบทำเสียง ภาพประกอบ และซับไทยให้ทั้งหมด ไม่ต้องตั้งค่าอะไรก่อน"
             : "เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม"}
         </p>
+
+        {/* Expiring GRANT coupon banner — final 7 days of unpaid workshop/course grant (HERO-99) */}
+        <GrantExpiryBanner grant={stats?.expiringGrant} surface="dashboard" />
 
         {/* Founder-urgency banner — non-paid users only, while founding seats remain */}
         <DashboardFounderBanner plan={stats?.plan} />
