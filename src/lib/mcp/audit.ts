@@ -96,6 +96,23 @@ const AUDIT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const recentPollAuditByKey = new Map<string, number>();
 let auditWriteCounter = 0;
 
+function isTransientNotReadyPollError(
+  status: "ok" | "denied" | "error",
+  responseJson: Record<string, string> | null | undefined,
+): boolean {
+  return (
+    status === "error" &&
+    (responseJson?.code === "not_ready" || responseJson?.error === "not_ready")
+  );
+}
+
+function pruneExpiredPollThrottleKeys(now: number): void {
+  if (recentPollAuditByKey.size <= 2000) return;
+  for (const [k, ts] of recentPollAuditByKey) {
+    if (now - ts >= POLL_AUDIT_THROTTLE_MS) recentPollAuditByKey.delete(k);
+  }
+}
+
 export function resetToolCallAuditThrottleForTests(): void {
   recentPollAuditByKey.clear();
   auditWriteCounter = 0;
@@ -114,21 +131,29 @@ export async function recordToolCall(entry: {
   try {
     const redactedRequest = entry.requestJson ? JSON.stringify(redactRequest(entry.requestJson)).slice(0, 4000) : null;
     if (THROTTLED_POLL_TOOLS.has(entry.toolName)) {
-      const key = `${entry.userId ?? "anon"}:${entry.toolName}:${redactedRequest ?? ""}`;
+      const baseKey = `${entry.userId ?? "anon"}:${entry.toolName}:${redactedRequest ?? ""}`;
+      const okKey = `${baseKey}:ok`;
+      const notReadyKey = `${baseKey}:not_ready`;
       const now = Date.now();
       if (entry.status === "ok") {
-        const lastAt = recentPollAuditByKey.get(key);
+        recentPollAuditByKey.delete(notReadyKey);
+        const lastAt = recentPollAuditByKey.get(okKey);
         if (lastAt !== undefined && now - lastAt < POLL_AUDIT_THROTTLE_MS) {
           return;
         }
-        if (recentPollAuditByKey.size > 2000) {
-          for (const [k, ts] of recentPollAuditByKey) {
-            if (now - ts >= POLL_AUDIT_THROTTLE_MS) recentPollAuditByKey.delete(k);
-          }
+        pruneExpiredPollThrottleKeys(now);
+        recentPollAuditByKey.set(okKey, now);
+      } else if (isTransientNotReadyPollError(entry.status, entry.responseJson)) {
+        recentPollAuditByKey.delete(okKey);
+        const lastAt = recentPollAuditByKey.get(notReadyKey);
+        if (lastAt !== undefined && now - lastAt < POLL_AUDIT_THROTTLE_MS) {
+          return;
         }
-        recentPollAuditByKey.set(key, now);
+        pruneExpiredPollThrottleKeys(now);
+        recentPollAuditByKey.set(notReadyKey, now);
       } else {
-        recentPollAuditByKey.delete(key);
+        recentPollAuditByKey.delete(okKey);
+        recentPollAuditByKey.delete(notReadyKey);
       }
     }
     // Route audit writes through prisma.$transaction([...]) so they join this process's

@@ -25,6 +25,10 @@ import {
   managedStockPexelsMonthlyCeiling,
   readManagedStockMonthlyStatus,
 } from "@/lib/managed-stock.server";
+import {
+  buildInternalOrAdminUserIds,
+  readInsightsMcpUsage,
+} from "@/lib/insights-mcp-usage.server";
 
 type RenderJobRow = {
   type: string;
@@ -917,9 +921,11 @@ export async function GET(req: Request) {
     // "ทั้งหมดในช่วงนี้" counts (events / sessions / users) are counted in SQL over the WHOLE window,
     // so no row cap can shrink them. They need the internal-team ids, hence a second round trip —
     // three cheap indexed aggregates per window, not another row scan.
-    const [currentTelemetryCounts, previousTelemetryCounts] = await Promise.all([
+    const excludedMcpUserIds = buildInternalOrAdminUserIds(allUsers);
+    const [currentTelemetryCounts, previousTelemetryCounts, mcpUsage] = await Promise.all([
       countInsightsTelemetry({ gte: since }, Array.from(internalUserIds)),
       countInsightsTelemetry({ gte: previousSince, lt: since }, Array.from(internalUserIds)),
+      readInsightsMcpUsage({ since, now, excludedUserIds: excludedMcpUserIds }),
     ]);
     const currentTelemetryTotals: TelemetryWindowTotals = {
       ...currentTelemetryCounts,
@@ -1060,6 +1066,7 @@ export async function GET(req: Request) {
       renderStats,
       jobOutcomes,
       managedStock,
+      mcpUsage,
       current: summarize(customerCurrentRows, customerCurrentJobs, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel), currentTelemetryTotals),
       previous: summarize(customerPreviousRows, customerPreviousJobs, undefined, summarizeJobFunnel(previousJobsForFunnel), previousTelemetryTotals),
       processingReconcile: { dryRun: true, ...processingPlan },

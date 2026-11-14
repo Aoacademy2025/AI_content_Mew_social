@@ -1,10 +1,13 @@
 # Ops Guardrails Runbook (PR-4)
 
-Prod box: Hostinger VPS — `ssh -i ~/.ssh/hostinger_heroai_codex root@72.62.196.230`
+Prod box (read-only audit): `ssh heroai-audit-ro <help|pm2-status|pm2-conf|pm2-logs|disk-health|env-keys|sql-ro>` (`~/.ssh/hostinger_heroai_audit_ro` → forced-command `/usr/local/sbin/hero-audit-ro`, enforcing SQLite `query_only=ON` and blocking secret/PII columns)
+Prod box (ops/deploy only): Hostinger VPS — `ssh -i ~/.ssh/hostinger_heroai_codex root@72.62.196.230` (reserved for explicitly authorized ops/deploy actions)
 App dir: `/var/www/ai-content` · PM2 app: `ai-content`
 
-> Policy: confirm with the team (Mew/wao) before SSHing into prod; run heavy
-> steps off-peak. These steps are config-only and independent of any deploy.
+> Policy: use `heroai-audit-ro` for read-only production audits; reserve
+> `hostinger_heroai_codex` for explicitly authorized ops/deploy actions after
+> confirming with the team (Mew/wao), and run heavy steps off-peak. These
+> runbook steps below are config-only and independent of any deploy.
 
 ## 1. HERO-10 PM2 log retention (14-day observation readiness)
 

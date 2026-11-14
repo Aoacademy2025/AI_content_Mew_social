@@ -1169,6 +1169,7 @@ model ToolCallAudit {
 
   @@index([userId])
   @@index([toolName, createdAt])
+  @@index([createdAt])
 }
 
 enum Role {
