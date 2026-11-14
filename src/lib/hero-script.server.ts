@@ -25,7 +25,6 @@ import { NextResponse } from "next/server";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
 import { geminiGenerateText } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import {
   HERO_SCRIPT_LOCKED_CODE,
   HERO_SCRIPT_LOCKED_MESSAGE,
@@ -82,6 +81,7 @@ export type HeroScriptAuthResult =
   | { ok: false; response: NextResponse };
 
 export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
+  const { getCurrentUser } = await import("@/lib/clerk-auth");
   const authUser = await getCurrentUser();
   if (!authUser) {
     return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
