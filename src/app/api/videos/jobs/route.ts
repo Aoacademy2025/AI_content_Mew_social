@@ -80,6 +80,7 @@ import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
 import {
   prepareProjectVisualPin,
   prepareProjectVisualSnapshotAwaitingPreflight,
@@ -87,6 +88,7 @@ import {
   projectHasAdmittedPersistedPin,
   projectHasPersistedVisualPin,
   ProjectLookError,
+  syncTemplateStylePackLookForRender,
 } from "@/lib/project-look.server";
 import { contentPreflightSourceHash, type NarrativeSourceKind } from "@/lib/content-preflight.server";
 import {
@@ -888,6 +890,16 @@ export async function POST(req: Request) {
         message: "กรุณาตรวจและยืนยันใบรับงานก่อนเริ่มสร้างภาพ AutoMix",
       }, { status: 400 });
     }
+    const templateId = isActiveStylePackId(body.templateId) ? body.templateId : undefined;
+    const brandLibraryAccess = decideBrandLibraryAccess(user);
+    if (templateId && projectId && brandLibraryAccess.canUse) {
+      await syncTemplateStylePackLookForRender({
+        userId: user.id,
+        projectId,
+        templateId,
+        admission: pinAdmissionFromDecision(brandVisualAccess),
+      });
+    }
     const requestedContentPreflightId = str(body.contentPreflightId, 120);
     const requestedNarrativeSourceKind: NarrativeSourceKind | undefined = body.narrativeSourceKind === "ai-script"
       || body.narrativeSourceKind === "creator-script"
@@ -922,7 +934,6 @@ export async function POST(req: Request) {
     // the pack's stock mood, subtitle preset, pacing and music are all read off
     // `projectVisualContextJson`. Only the IMAGE decision below still decides
     // whether the job also gets an acceptance envelope.
-    const brandLibraryAccess = decideBrandLibraryAccess(user);
     const snapshotForLibraryPin = Boolean(
       !brandVisualRenderAccess
       && brandLibraryAccess.canUse
@@ -1022,7 +1033,6 @@ export async function POST(req: Request) {
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;
     const bgmFile = str(body.bgmFile, 300);
-    const templateId = isActiveStylePackId(body.templateId) ? body.templateId : undefined;
     const templateSnapshot = templateId ? stylePackSnapshotOf(stylePack(templateId)) : undefined;
     const sfxMode = isSfxMode(body.sfxMode) ? body.sfxMode : undefined;
     const brollTransition = isBrollTransition(body.brollTransition) ? body.brollTransition : undefined;

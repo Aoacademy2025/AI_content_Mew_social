@@ -231,6 +231,34 @@ export async function resolveVideoJobImageFundingStatus(input: {
   );
 }
 
+/** Pure acceptance builder for a newly created project (0 reusable/outdated assets),
+ * allowing MCP quote consumption to stamp the exact same acceptance envelope
+ * inside a SQLite transaction without opening nested non-tx Prisma queries. */
+export function buildFreshProjectBrandVisualJobAcceptance(input: {
+  access: BrandVisualRenderAccess;
+  allowance: Awaited<ReturnType<typeof getStarterAiImageAllowanceStatus>>;
+  now?: Date;
+}): string {
+  if (!input.access.canUse) {
+    throw new Error("Brand Visual acceptance requires treatment access");
+  }
+  const now = input.now ?? new Date();
+  return JSON.stringify(brandVisualJobAcceptanceSchema.parse({
+    schemaVersion: 1,
+    acceptedAt: now.toISOString(),
+    cohort: input.access.cohort,
+    rolloutBucket: input.access.bucket,
+    funding: input.allowance.eligible
+      ? {
+          source: "starter_allowance",
+          windowStartedAt: input.allowance.windowStartedAt.toISOString(),
+        }
+      : { source: "credits" },
+    reusableAssets: [],
+    preserveEstablishedDensity: false,
+  }));
+}
+
 /** Freeze the money/reuse decisions disclosed when a render is accepted.
  * Rollout flags may reject new work later, while this immutable snapshot lets
  * already accepted jobs finish with the same funding source and retained set. */
@@ -246,24 +274,27 @@ export async function prepareBrandVisualJobAcceptance(input: {
   }
   const now = input.now ?? new Date();
   const allowance = await getStarterAiImageAllowanceStatus(input.userId, now);
-  const reusableAssets = input.projectVisualPin.contentPreflightId
-    ? await reusableProjectVisualAssets({
-        userId: input.userId,
-        projectId: input.projectId,
-        preflightId: input.projectVisualPin.contentPreflightId,
-      })
-    : [];
-  const outdatedAssetCount = input.projectVisualPin.contentPreflightId
-    ? await prisma.projectVisualBeat.count({
-        where: {
-          userId: input.userId,
-          projectId: input.projectId,
-          preflightId: input.projectVisualPin.contentPreflightId,
-          status: "outdated",
-          existingAssetUrl: { not: null },
-        },
-      })
-    : 0;
+  if (!input.projectVisualPin.contentPreflightId) {
+    return buildFreshProjectBrandVisualJobAcceptance({
+      access: input.access,
+      allowance,
+      now,
+    });
+  }
+  const reusableAssets = await reusableProjectVisualAssets({
+    userId: input.userId,
+    projectId: input.projectId,
+    preflightId: input.projectVisualPin.contentPreflightId,
+  });
+  const outdatedAssetCount = await prisma.projectVisualBeat.count({
+    where: {
+      userId: input.userId,
+      projectId: input.projectId,
+      preflightId: input.projectVisualPin.contentPreflightId,
+      status: "outdated",
+      existingAssetUrl: { not: null },
+    },
+  });
   return JSON.stringify(brandVisualJobAcceptanceSchema.parse({
     schemaVersion: 1,
     acceptedAt: now.toISOString(),

@@ -62,7 +62,7 @@ export const createVideoJobInputShape = {
     .describe("สคริปต์ที่จะให้พากย์ — จำเป็นเสมอ ยกเว้นเมื่อส่งคลิปพิธีกร (clipUrl หรือ clipUploadId) ซึ่งใช้เสียงในคลิปเองทำซับ"),
   title: z.string().max(200).optional(),
   templateId: z.enum(TEMPLATE_IDS).optional()
-    .describe("สไตล์เทมเพลตวิดีโอสำเร็จรูป (ดูรายการจาก get_video_options.templates) — ตั้งค่าซับไตเติล พาดหัวฮุค ไฮไลต์คำ การ์ดสถิติ SFX ซูมจังหวะผู้พูด จังหวะตัดภาพ และเพลงประกอบให้อัตโนมัติ (อาร์กิวเมนต์อื่นที่ระบุมาจะทับค่าเริ่มต้นของเทมเพลตเสมอ)"),
+    .describe("สไตล์เทมเพลตวิดีโอและภาพ B-roll สำเร็จรูป (ดูรายการจาก get_video_options.templates) — ตั้งค่าโทนและสไตล์ภาพ B-roll ทุกโหมด (โทนฟุตเทจและจังหวะตัดของ stock, รูปแบบศิลปะ แนวเล่าเรื่อง และชุดสีของ hero-ai-image / automix) พร้อมซับไตเติล พาดหัวฮุค ไฮไลต์คำ การ์ดสถิติ โทนเสียงพากย์ SFX ซูมจังหวะผู้พูด และเพลงประกอบให้อัตโนมัติ (อาร์กิวเมนต์อื่นที่ระบุมาจะทับค่าเริ่มต้นของเทมเพลตเสมอ)"),
   voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
   voiceId: z.string().optional(),
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),
@@ -109,7 +109,7 @@ export const createVideoJobInputShape = {
   brandProfileId: z.string().max(64).optional()
     .describe("ใช้สไตล์ซับของแบรนด์นี้ — ถ้ามีแบรนด์ active แบรนด์เดียว ระบบเลือกให้อัตโนมัติโดยไม่ต้องระบุ"),
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()
-    .describe("stock = วิดีโอสต็อกฟรี (ค่าเริ่มต้น), hero-ai-image = ภาพ AI ทุกช่วง, automix = สต็อกผสมภาพ AI"),
+    .describe("stock = วิดีโอสต็อกฟรีตามโทนเทมเพลต (ค่าเริ่มต้น), hero-ai-image = สร้างภาพ AI ทุกช่วงตามสไตล์ภาพของเทมเพลต, automix = ผสมวิดีโอสต็อกและภาพ AI ตามสไตล์เทมเพลต, external = เว้นช่อง B-roll ไว้ให้นำเข้าภาพหรือวิดีโอของคุณเองผ่าน batch_edit_video / replace_broll_window (ไม่ใช้เครดิตสร้างภาพ Hero)"),
   // T6 (ADR 0064, G2): beta-gated server-side (feature_not_enabled otherwise). Omitted = the
   // existing behaviour, byte-identical.
   exportMode: z.enum(["auto", "hold"]).optional()
@@ -149,7 +149,7 @@ export const prepareVideoJobInputShape = {
   resumeJobId: z.string().min(1).max(64).optional().describe("ขอใบยืนยันเพิ่มเติมใหม่สำหรับงาน confirmation_required ที่บันทึกไว้แล้ว"),
   ...createVideoJobInputShape,
   brollSource: z.enum(MCP_BROLL_SOURCES).optional()
-    .describe("stock = สต็อก, hero-ai-image = ภาพ AI, automix = สต็อกผสมภาพ AI, external = นำเข้าสื่อจากเครื่องมือของคุณ ไม่ใช้เครดิต Hero สร้างภาพ"),
+    .describe("stock = วิดีโอสต็อกฟรีตามโทนเทมเพลต (ค่าเริ่มต้น), hero-ai-image = สร้างภาพ AI ทุกช่วงตามสไตล์ภาพของเทมเพลต, automix = ผสมวิดีโอสต็อกและภาพ AI ตามสไตล์เทมเพลต, external = นำเข้าสื่อจากเครื่องมือของคุณผ่าน batch_edit_video / replace_broll_window ไม่ใช้เครดิต Hero สร้างภาพ"),
 } satisfies z.ZodRawShape;
 export const prepareVideoJobInputSchema = z.object(prepareVideoJobInputShape);
 export type PrepareVideoJobInput = z.infer<typeof prepareVideoJobInputSchema>;

@@ -29,7 +29,7 @@ import {
   type VisualBeat,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
-import { stylePack, type StylePack } from "@/lib/style-pack-catalog";
+import { stylePack, type ActiveStylePackId, type StylePack } from "@/lib/style-pack-catalog";
 import { STYLE_PACK_UNAVAILABLE_MESSAGE } from "@/lib/style-pack-apply";
 import { stylePackSnapshotOf, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
 import { assignDistinctShotScales, shotScaleForAction } from "@/lib/scene-brief-diversity";
@@ -55,6 +55,7 @@ import {
   brandVisualPinAdmissionFields,
   hasAdmittedPersistedPin,
   hasPersistedProjectPin,
+  renderTimePinAdmissionFields,
   type PinAdmission,
 } from "@/lib/brand-visual-pin-admission";
 import { resolveRenderTimePinAdmissionFields } from "@/lib/brand-visual-pin-admission.server";
@@ -504,6 +505,144 @@ async function advancePreflightVisualIdentity(input: {
   context: ProjectVisualContext;
 }): Promise<void> {
   await prisma.$transaction((tx) => advancePreflightVisualIdentityInTransaction(tx, input));
+}
+
+/** Pure snapshot builder for an active Style Pack (`templateId`) so Web render
+ * sync and MCP project creation resolve the exact same format, treatment,
+ * palette, personality, stock mood, pacing, and music mood. */
+export function buildStylePackProjectLookSnapshot(packId: ActiveStylePackId): ProjectLookSnapshot {
+  return snapshotForLook({ stylePackId: packId }, null);
+}
+
+/** Build the immutable `ProjectVisualPin` for a fresh Style Pack render before
+ * Content Preflight has been bound (`contentPreflightId: null`). */
+export function buildStylePackProjectVisualPin(packId: ActiveStylePackId): ProjectVisualPin {
+  const snapshot = buildStylePackProjectLookSnapshot(packId);
+  const context = projectVisualContextSchema.parse({
+    source: "project-look",
+    ...snapshot,
+  });
+  return {
+    contentPreflightId: null,
+    projectVisualContextJson: JSON.stringify(context),
+  };
+}
+
+/** Build the awaiting-content-preflight `ProjectVisualPin` for a fresh project
+ * with no explicit look or brand revision so the worker's Content Preflight
+ * resolves the suggested format and narrative treatment. */
+export function buildSuggestedAwaitingContentPreflightPin(
+  narrativeSourceKind: "ai-script" | "creator-script" | "upload-transcript",
+): ProjectVisualPin {
+  return {
+    contentPreflightId: null,
+    projectVisualContextJson: JSON.stringify({
+      schemaVersion: 1,
+      state: "awaiting-content-preflight",
+      selection: "suggested",
+      narrativeSourceKind,
+    }),
+  };
+}
+
+/** Safely sync a chosen `templateId` (`ActiveStylePackId`) onto the project's
+ * `ProjectLook` at render time when the project has not generated AI images yet
+ * and has neither an explicit Brand Profile pin nor a manual unlinked custom look. */
+export async function syncTemplateStylePackLookForRender(input: {
+  userId: string;
+  projectId: string;
+  templateId: ActiveStylePackId;
+  admission: PinAdmission;
+}): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const project = await tx.editorProject.findFirst({
+      where: { id: input.projectId, userId: input.userId },
+      select: {
+        id: true,
+        projectLookJson: true,
+        brandProfileRevisionId: true,
+        treatmentPresetId: true,
+        treatmentPresetVersion: true,
+        brandVisualPinAdmittedCohort: true,
+        brandVisualPinAdmittedAt: true,
+      },
+    });
+    if (!project) return false;
+
+    const generatedAiImageCount = await tx.projectVisualBeat.count({
+      where: {
+        userId: input.userId,
+        projectId: input.projectId,
+        OR: [
+          { existingImageJobId: { not: null } },
+          { existingAssetUrl: { not: null } },
+        ],
+      },
+    });
+    if (generatedAiImageCount > 0) return false;
+
+    const currentLook = parseProjectLook(project.projectLookJson);
+    if (project.projectLookJson && !currentLook) return false;
+
+    const hasManualNonPackLook = Boolean(
+      currentLook && (currentLook.schemaVersion !== 2 || !currentLook.stylePack),
+    );
+    if (hasManualNonPackLook) return false;
+
+    if (!currentLook && project.brandProfileRevisionId !== null) return false;
+
+    const effectiveAdmissionFields = renderTimePinAdmissionFields({
+      liveAdmission: input.admission,
+      project,
+    });
+
+    if (currentLook?.schemaVersion === 2 && currentLook.stylePack?.id === input.templateId) {
+      if (!hasAdmittedPersistedPin(project) && input.admission) {
+        await tx.editorProject.updateMany({
+          where: { id: project.id, userId: input.userId },
+          data: {
+            projectLookJson: project.projectLookJson,
+            ...effectiveAdmissionFields,
+          },
+        });
+      }
+      return false;
+    }
+
+    const now = new Date();
+    const snapshot = buildStylePackProjectLookSnapshot(input.templateId);
+    await tx.editorProject.updateMany({
+      where: { id: project.id, userId: input.userId },
+      data: {
+        projectLookJson: JSON.stringify(snapshot),
+        projectLookUpdatedAt: now,
+        treatmentPresetId: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.presetId : null,
+        treatmentPresetVersion: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.version : null,
+        treatmentPinSource: "creator",
+        treatmentPinnedAt: now,
+        ...effectiveAdmissionFields,
+      },
+    });
+
+    const latestPreflight = await tx.contentPreflight.findFirst({
+      where: { userId: input.userId, projectId: input.projectId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (latestPreflight) {
+      const context = projectVisualContextSchema.parse({
+        source: "project-look",
+        ...snapshot,
+      });
+      await advancePreflightVisualIdentityInTransaction(tx, {
+        userId: input.userId,
+        preflightId: latestPreflight.id,
+        context,
+      });
+    }
+
+    return true;
+  });
 }
 
 /** Freeze both inputs used by scene compilation at the VideoJob boundary.

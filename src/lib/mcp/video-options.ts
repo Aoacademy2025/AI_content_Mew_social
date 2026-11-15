@@ -158,7 +158,7 @@ export async function getVideoOptions(
     },
     templates,
     templatesHowToChoose:
-      "ถ้าผู้ใช้เลือกหรือบอกแนวเทมเพลตวิดีโอ ให้ส่ง templateId ตอน create_video_job หรือ prepare_video_job — ระบบจะตั้งค่าซับ พาดหัว จังหวะตัดภาพ เสียงเอฟเฟกต์ ซูมจังหวะ โทนสต็อก และเพลงประกอบตามอารมณ์เทมเพลตให้อัตโนมัติโดยไม่ต้องไล่ถามสไตล์ย่อยซ้ำ (ค่าที่ระบุแยกเองจะทับเทมเพลตเสมอ; งานที่ hold ไว้ใช้ apply_video_template เปลี่ยนเทมเพลตทั้งชุดได้)",
+      "มี 2 แนวทางหลัก: (1) สไตล์สำเร็จรูป 1 คลิก — เลือก templateId คู่กับ brollSource (\"stock\" | \"hero-ai-image\" | \"automix\") ตอน create_video_job หรือ prepare_video_job ระบบจะตั้งโทนฟุตเทจสต็อกหรือรูปแบบภาพ+แนวเล่าเรื่อง+ชุดสีของ AI พร้อมซับ พาดหัว โทนเสียง SFX ซูมจังหวะ การตัดภาพ และเพลงให้อัตโนมัติโดยไม่ต้องไล่ถามสไตล์ย่อยซ้ำ (ค่าที่ระบุแยกเองจะทับเทมเพลตเสมอ; งานที่ hold ไว้ใช้ apply_video_template เปลี่ยนเทมเพลตทั้งชุดได้) (2) สื่อเฉพาะทางของผู้ใช้ — เลือก brollSource: \"external\" (ส่งคู่กับ templateId ได้เพื่อให้ซับ/พาดหัว/เพลงเข้าชุด) ระบบจะพักงานแบบ hold โดยใช้ 0 เครดิตสร้างภาพ Hero เพื่อให้เติมภาพ/วิดีโอเข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window ก่อน export_video",
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
     // Resolution order: explicit args → templateId defaults → Brand Subtitle Style → default below.
@@ -182,28 +182,28 @@ export async function getVideoOptions(
           value: "stock",
           title: "วิดีโอสต็อก",
           detail: managedStock
-            ? "Pexels · Pixabay ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน"
-            : "Pexels · Pixabay ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน (ต้องมีคีย์สต็อก Pexels หรือ Pixabay)",
+            ? "Pexels · Pixabay คัดตามโทน templateId ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน"
+            : "Pexels · Pixabay คัดตามโทน templateId ไม่มีเครดิตสร้างภาพ; ยังใช้นาทีเรนเดอร์/เครดิตส่วนเกิน (ต้องมีคีย์สต็อก Pexels หรือ Pixabay)",
           needsStockKey: !managedStock,
         },
         {
           value: "hero-ai-image",
           title: "Hero AI Image",
-          detail: "ภาพ AI ทุกช่วง ใช้ Hero credits หรือสิทธิ์ทดลองตามใบยืนยัน ไม่ต้องมีคีย์สต็อก",
+          detail: "ภาพ AI ทุกช่วงตามสไตล์ภาพและชุดสีของ templateId ใช้ Hero credits หรือสิทธิ์ทดลองตามใบยืนยัน ไม่ต้องมีคีย์สต็อก",
           needsStockKey: false,
         },
         {
           value: "automix",
           title: "AutoMix",
           detail: managedStock
-            ? "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก"
-            : "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสัดส่วนแนะนำ ต้องมีคีย์สต็อก",
+            ? "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสไตล์ templateId และสัดส่วนแนะนำ ใช้คลังกลางของระบบได้ทันที ไม่ต้องมีคีย์สต็อก"
+            : "วิดีโอสต็อก + ภาพสต็อก + ภาพ AI ตามสไตล์ templateId และสัดส่วนแนะนำ ต้องมีคีย์สต็อก",
           needsStockKey: !managedStock,
         },
         {
           value: "external",
           title: "สื่อจากเครื่องมือของคุณ/ไฟล์/ลิงก์",
-          detail: EXTERNAL_MEDIA_DISCLOSURE,
+          detail: `${EXTERNAL_MEDIA_DISCLOSURE} · พักงานแบบ hold เพื่อให้เติมสื่อเข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window`,
           needsStockKey: false,
         },
       ],

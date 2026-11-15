@@ -347,3 +347,33 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     return apiError({ route: "PUT /api/editor-projects/[id]/visual-context", error });
   }
 }
+
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const auth = await requireBrandLibraryUser();
+    if (!auth.ok) return auth.response;
+    const { id } = await params;
+    const project = await prisma.editorProject.findFirst({
+      where: { id, userId: auth.user.id },
+      select: { id: true, brandProfileRevisionId: true },
+    });
+    if (!project) {
+      return NextResponse.json({ code: "NOT_FOUND", error: "ไม่พบโปรเจกต์นี้" }, { status: 404 });
+    }
+    if (project.brandProfileRevisionId) {
+      return NextResponse.json({ cleared: false, reason: "brand_pinned" });
+    }
+    const state = await currentVisualState(auth.user.id, id);
+    if (state.existingImageCount > 0) {
+      return NextResponse.json(confirmation(state.existingImageCount), { status: 409 });
+    }
+    const { clearProjectLook } = await import("@/lib/project-look.server");
+    await clearProjectLook({ userId: auth.user.id, projectId: id });
+    return NextResponse.json({ cleared: true });
+  } catch (error) {
+    if (error instanceof ProjectLookError) {
+      return NextResponse.json({ code: error.code, error: error.message }, { status: error.code === "NOT_FOUND" ? 404 : 400 });
+    }
+    return apiError({ route: "DELETE /api/editor-projects/[id]/visual-context", error });
+  }
+}

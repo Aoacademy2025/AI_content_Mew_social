@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, ImageIcon, Loader2, LockKeyhole, RefreshCcw, Sparkles, SwatchBook } from "lucide-react";
 import { toast } from "sonner";
@@ -17,7 +17,7 @@ import {
   buildVisualSummary,
 } from "@/lib/brand-treatment-presentation";
 import { StylePackPicker } from "@/app/(dashboard)/brands/_components/StylePackPicker";
-import type { StylePackId } from "@/lib/style-pack-catalog";
+import { isActiveStylePackId, type ActiveStylePackId, type StylePackId } from "@/lib/style-pack-catalog";
 import {
   sceneContentPolicyFromPreference,
   type SceneContentPolicyWarning,
@@ -147,6 +147,7 @@ export function BrandVisualSelector({
   const [pending, setPending] = useState<PendingChange | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [libraryAuthorized, setLibraryAuthorized] = useState(false);
+  const lastSyncedTemplateIdRef = useRef<ActiveStylePackId | null | undefined>(undefined);
 
   const narrative = p.script.trim();
   const canLoadWithoutNarrative = p.mode === "upload";
@@ -352,6 +353,70 @@ export function BrandVisualSelector({
     onSelectionBlockedChange?.(false);
   }, [onSelectionBlockedChange]);
 
+  useEffect(() => {
+    if (!p.projectId || !canManageBrandVisual || changing || pending !== null || loading) return;
+    if (!narrative && !canLoadWithoutNarrative) return;
+    const existingAiImageCount = preflight?.visualBeats.filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0;
+    if (existingAiImageCount > 0 || selectedBrandProfile !== null) return;
+    const readyForSync = !shouldLoadVisualContext || !narrative || (preflight !== null && !error);
+    if (!readyForSync) return;
+
+    const currentPackId = p.projectStylePack?.source === "project" && isActiveStylePackId(p.projectStylePack.packId)
+      ? p.projectStylePack.packId
+      : null;
+    if (lastSyncedTemplateIdRef.current === p.templateId) return;
+    if (p.templateId !== null) {
+      if (currentPackId === p.templateId) {
+        lastSyncedTemplateIdRef.current = p.templateId;
+        return;
+      }
+      if (lastSyncedTemplateIdRef.current === undefined && context?.source === "project-look" && !p.projectStylePack) {
+        lastSyncedTemplateIdRef.current = p.templateId;
+        return;
+      }
+      lastSyncedTemplateIdRef.current = p.templateId;
+      void applyStylePackChoice(p.templateId, undefined, { silentToast: true, syncTemplate: false });
+      return;
+    }
+    if (lastSyncedTemplateIdRef.current !== undefined && currentPackId !== null) {
+      lastSyncedTemplateIdRef.current = null;
+      setChanging(true);
+      void fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+        method: "DELETE",
+      })
+        .then(payload)
+        .then(async (res) => {
+          if (res.response.ok && res.body.cleared) {
+            p.setHasPersistedVisualPin(false);
+            p.setHasAdmittedVisualPin(false);
+            p.setProjectStylePack(null);
+            setContext(null);
+            if (shouldLoadVisualContext) {
+              await loadContext();
+            }
+          }
+        })
+        .finally(() => setChanging(false));
+    } else {
+      lastSyncedTemplateIdRef.current = null;
+    }
+  }, [
+    canLoadWithoutNarrative,
+    canManageBrandVisual,
+    changing,
+    context?.source,
+    error,
+    loading,
+    narrative,
+    p.projectId,
+    p.projectStylePack,
+    p.templateId,
+    pending,
+    preflight,
+    selectedBrandProfile,
+    shouldLoadVisualContext,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function applyLook(
     formatId: ActiveVisualFormatId,
     treatmentPresetId?: TreatmentPresetId,
@@ -395,6 +460,8 @@ export function BrandVisualSelector({
         treatmentPin: look?.treatmentPin,
       });
       p.setHasPersistedVisualPin(true);
+      lastSyncedTemplateIdRef.current = null;
+      if (p.templateId !== null) p.setTemplateId(undefined);
       // Choosing a format or a narrative style unlinks the ready-made style
       // SERVER-side, so the panel must re-read what is actually pinned. Without
       // this the summary keeps naming the old style, Step 2 keeps printing
@@ -420,6 +487,7 @@ export function BrandVisualSelector({
   async function applyStylePackChoice(
     packId: StylePackId | null,
     applyMode?: "regenerate-all",
+    options?: { silentToast?: boolean; syncTemplate?: boolean },
   ) {
     if (!p.projectId) return;
     let look: { look: Record<string, unknown> };
@@ -435,11 +503,22 @@ export function BrandVisualSelector({
       look = { look: { visualFormatId: keptFormatId, treatmentPresetId: keptTreatmentPresetId, stylePackId: null } };
     }
     setChanging(true); setPending(null);
-    const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+    let result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...look, applyMode, preflightId: preflight?.id }),
     }));
+    if (
+      result.response.status === 409
+      && result.body.code === "PREFLIGHT_ID_REQUIRED"
+      && typeof result.body.currentPreflightId === "string"
+    ) {
+      result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...look, applyMode, preflightId: result.body.currentPreflightId }),
+      }));
+    }
     if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
       // Unlinking is a look change too: it must offer the same all-or-cancel
       // confirmation, never a dead-end error the creator cannot act on.
@@ -456,13 +535,24 @@ export function BrandVisualSelector({
     } else if (!result.response.ok) {
       toast.error(result.body.error || "เปลี่ยนสไตล์ของคลิปนี้ไม่สำเร็จ");
     } else {
+      const nextActivePack = packId && isActiveStylePackId(packId) ? packId : null;
+      lastSyncedTemplateIdRef.current = nextActivePack;
+      if (options?.syncTemplate !== false) {
+        if (nextActivePack && p.templateId !== nextActivePack) {
+          p.selectVideoTemplate(nextActivePack);
+        } else if (packId === null && p.templateId !== null) {
+          p.setTemplateId(undefined);
+        }
+      }
       p.setHasPersistedVisualPin(true);
       setPackPickerOpen(false);
       // The authoritative style — including the exact footage mood the
       // per-window search must send back — is only known to the server, so the
       // panel re-reads it instead of guessing from the card that was tapped.
       await loadContext();
-      toast.success(packId ? "ใช้สไตล์นี้กับคลิปนี้แล้ว" : "คลิปนี้กำหนดแนวภาพเองแล้ว");
+      if (!options?.silentToast) {
+        toast.success(packId ? "ใช้สไตล์นี้กับคลิปนี้แล้ว" : "คลิปนี้กำหนดแนวภาพเองแล้ว");
+      }
     }
     setChanging(false);
   }

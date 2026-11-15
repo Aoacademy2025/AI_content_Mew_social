@@ -24,6 +24,18 @@ import {
   mcpExportKey,
   mcpRerenderKey,
 } from "@/lib/mcp/chain-key";
+import { decideBrandLibraryAccess, resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
+import {
+  buildStylePackProjectVisualPin,
+  buildSuggestedAwaitingContentPreflightPin,
+  syncTemplateStylePackLookForRender,
+} from "@/lib/project-look.server";
+import { buildFreshProjectBrandVisualJobAcceptance } from "@/lib/brand-visual-job-acceptance.server";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { isActiveStylePackId } from "@/lib/style-pack-catalog";
+import { isSfxMode } from "@/lib/transition-sfx";
+import { isBrollTransition } from "@/lib/broll-window-style";
 
 /**
  * T8 (ADR 0063): an MCP video is an Agent-created Project — a Preview Mode job followed by
@@ -134,23 +146,70 @@ export async function createMcpVideoJob(
     return { kind: "created", job: await createVideoJob(user.id, input, idempotencyKey), projectId: null };
   }
 
+  const templateId = isActiveStylePackId(input.templateId) ? input.templateId : undefined;
+  const sfxMode = isSfxMode(input.sfxMode) ? input.sfxMode : undefined;
+  const brollTransition = isBrollTransition(input.brollTransition) ? input.brollTransition : undefined;
+  const isManagedAiImageSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
   const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(input);
   const project = await createEditorProject(user.id, {
     title: opts.title,
     draft: {
       createdVia: MCP_PROJECT_CREATED_VIA,
       ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
+      ...(templateId ? { templateId } : {}),
+      ...(sfxMode ? { sfxMode } : {}),
+      ...(brollTransition ? { brollTransition } : {}),
     },
   });
   let job: VideoJob;
   try {
+    let projectVisualPin = null as ReturnType<typeof buildStylePackProjectVisualPin> | null;
+    let brandVisualAcceptanceJson: string | null = null;
+    if (templateId || isManagedAiImageSource) {
+      const ownerRow = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { id: true, email: true, role: true, suspended: true },
+      });
+      if (ownerRow) {
+        const nowForPin = new Date();
+        const brandLibraryAccess = decideBrandLibraryAccess(ownerRow);
+        const brandVisualAccess = await resolveBrandVisualAccessByUserId(ownerRow);
+        const canApplyTemplateLook = Boolean(templateId && brandLibraryAccess.canUse);
+        if (canApplyTemplateLook && templateId) {
+          await syncTemplateStylePackLookForRender({
+            userId: user.id,
+            projectId: project.id,
+            templateId,
+            admission: pinAdmissionFromDecision(brandVisualAccess, nowForPin),
+          });
+          projectVisualPin = buildStylePackProjectVisualPin(templateId);
+        } else if (isManagedAiImageSource && brandVisualAccess.canUse) {
+          projectVisualPin = buildSuggestedAwaitingContentPreflightPin(
+            input.mode === "upload" ? "upload-transcript" : "creator-script",
+          );
+        }
+        if (projectVisualPin && isManagedAiImageSource && brandVisualAccess.canUse) {
+          const allowance = await getStarterAiImageAllowanceStatus(user.id, nowForPin);
+          brandVisualAcceptanceJson = buildFreshProjectBrandVisualJobAcceptance({
+            access: brandVisualAccess,
+            allowance,
+            now: nowForPin,
+          });
+        }
+      }
+    }
     job = await createVideoJob(
       user.id,
       opts.hold
         ? { ...input, previewMode: true, mcpHold: true }
         : { ...input, previewMode: true, mcpChainExport: true },
       idempotencyKey,
-      { projectId: project.id, ...(opts.waitingImport ? { initialStatus: "waiting_import" as const } : {}) },
+      {
+        projectId: project.id,
+        ...(projectVisualPin ? { projectVisualPin } : {}),
+        ...(brandVisualAcceptanceJson ? { brandVisualAcceptanceJson } : {}),
+        ...(opts.waitingImport ? { initialStatus: "waiting_import" as const } : {}),
+      },
     );
   } catch (error) {
     await prisma.editorProject.deleteMany({ where: { id: project.id, userId: user.id } }).catch(() => {});
