@@ -65,6 +65,13 @@ import {
   effectiveManualCutawayPieceCount,
   estimatedCutawayPieceCount,
 } from "@/lib/cutaway-plan";
+import {
+  activeStylePacks,
+  isActiveStylePackId,
+  stylePack,
+  type ActiveStylePackId,
+} from "@/lib/style-pack-catalog";
+import { visualFormatThaiLabel } from "@/lib/brand-visual-system";
 
 /** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
  *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
@@ -331,6 +338,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     }
   }
 
+  const effectiveTemplatePackId: ActiveStylePackId | null = p.templateId
+    ?? (p.projectStylePack?.packId && isActiveStylePackId(p.projectStylePack.packId)
+      ? p.projectStylePack.packId
+      : null);
+  const selectedBrollTemplatePack = effectiveTemplatePackId
+    ? stylePack(effectiveTemplatePackId)
+    : null;
+
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
   const primaryCta = (
     <BtnPrimary
@@ -367,13 +382,128 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
-          <p style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.6 }}>
-            {p.brollSource === "kie-image"
-              ? "สร้างภาพใหม่ตามเนื้อหาและสไตล์ Brand ที่เลือก แล้วแพนและซูมภาพประกอบเสียงบรรยาย · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง"
-              : p.brollSource === "stock"
-                ? "เลือกวิดีโอที่มีอยู่แล้วจากคลังสต็อกตามเนื้อหาและโทน หากต้องการสร้างภาพตามสไตล์ Brand ให้เลือก Hero AI Image"
-                : p.brollSource === "automix" ? "AutoMix ผสมสต็อกกับภาพ AI ตามสัดส่วนที่เลือก" : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"}
-          </p>
+          {/* Step 1-of-B-roll: เลือกสไตล์ภาพ & เทมเพลตคลิป (1 คลิก) ก่อนเลือกแหล่ง B-roll */}
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-col gap-0.5">
+                <span style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+                  เลือกสไตล์ภาพ & เทมเพลตคลิป (1 คลิก)
+                </span>
+                <span style={{ fontSize: 11, color: color.textFaint }}>
+                  ปรับโทนฟุตเทจ แนวภาพ AI ซับไตเติล พาดหัว จังหวะตัดภาพ และเพลงประกอบให้เข้าชุดกันอัตโนมัติ
+                </span>
+              </div>
+              {effectiveTemplatePackId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    p.selectVideoTemplate(null);
+                    toast("ล้างสไตล์แล้ว — ระบบจะเลือกตามเนื้อหาให้อัตโนมัติ");
+                  }}
+                  style={{
+                    fontSize: 11,
+                    color: color.link,
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  ล้างสไตล์ (ให้อัตโนมัติตามเนื้อหา)
+                </button>
+              ) : null}
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {activeStylePacks().map((pack) => {
+                const active = effectiveTemplatePackId === pack.id;
+                const formatBadge = visualFormatThaiLabel(pack.visualFormatId);
+                return (
+                  <button
+                    key={pack.id}
+                    type="button"
+                    data-broll-template-id={pack.id}
+                    aria-pressed={active}
+                    onClick={() => {
+                      const next = active ? null : pack.id;
+                      p.selectVideoTemplate(next);
+                      if (next) toast.success(`เลือกสไตล์ "${pack.thaiLabel}" แล้ว`);
+                      else toast("ล้างสไตล์แล้ว — ระบบจะเลือกตามเนื้อหาให้อัตโนมัติ");
+                    }}
+                    className="flex min-w-[184px] max-w-[216px] shrink-0 flex-col items-start gap-1.5 text-left"
+                    style={{
+                      borderRadius: radius.card,
+                      padding: "9px 11px",
+                      background: active ? color.selectedBg : color.cardBg,
+                      border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                      cursor: "pointer",
+                      transition: "all 150ms ease",
+                    }}
+                  >
+                    <div className="flex w-full items-center justify-between gap-1.5">
+                      <span className="truncate" style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+                        {pack.thaiLabel}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+                        {pack.palette.map((hex, idx) => (
+                          <span
+                            key={`${pack.id}-${idx}`}
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: 999,
+                              background: hex,
+                              border: "1px solid rgba(255,255,255,.22)",
+                            }}
+                          />
+                        ))}
+                      </span>
+                    </div>
+                    <span
+                      className="inline-flex max-w-full items-center truncate rounded-md px-1.5 py-0.5"
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 500,
+                        color: active ? color.primary300 : color.infoText,
+                        background: active ? "rgba(124,92,255,.18)" : "rgba(56,189,248,.10)",
+                        border: `1px solid ${active ? "rgba(167,139,250,.32)" : "rgba(56,189,248,.22)"}`,
+                      }}
+                    >
+                      {formatBadge}
+                    </span>
+                    <span
+                      className="w-full truncate"
+                      style={{ fontSize: 10.5, color: active ? color.primary300 : color.textFaint }}
+                    >
+                      {active ? `กำลังใช้ · ${pack.tagline}` : pack.tagline}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1 pt-1">
+            <span style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+              เลือกแหล่งภาพ B-roll (ทำงานตามสไตล์ที่เลือกด้านบน)
+            </span>
+            <p style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.6 }}>
+              {selectedBrollTemplatePack
+                ? p.brollSource === "kie-image"
+                  ? `สร้างภาพ Hero AI Image ทุกฉากในแนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)} · ${selectedBrollTemplatePack.thaiLabel}" พร้อมแพน/ซูมและซับเข้าชุด · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง`
+                  : p.brollSource === "stock"
+                    ? `คัดวิดีโอสต็อกฟรีตามโทน "${selectedBrollTemplatePack.thaiLabel}" + ตัดฉากแบบ${selectedBrollTemplatePack.brollTransition === "cut" ? "ตัดชน" : "ละลายภาพ"} พร้อมซับและพาดหัวเข้าชุด`
+                    : p.brollSource === "automix"
+                      ? `ผสมวิดีโอสต็อกโทน "${selectedBrollTemplatePack.thaiLabel}" กับภาพ AI แนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)}" ตามสัดส่วนที่เลือก`
+                      : p.brollSource === "none"
+                        ? `เว้นช่อง B-roll ไว้เติมคลิปหรือภาพเองทีละช่วงหลังเรนเดอร์ โดยยังใช้ซับ พาดหัว และเพลงตามสไตล์ "${selectedBrollTemplatePack.thaiLabel}"`
+                        : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"
+                : p.brollSource === "kie-image"
+                  ? "สร้างภาพใหม่ตามเนื้อหาและสไตล์ Brand ที่เลือก แล้วแพนและซูมภาพประกอบเสียงบรรยาย · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง"
+                  : p.brollSource === "stock"
+                    ? "เลือกวิดีโอที่มีอยู่แล้วจากคลังสต็อกตามเนื้อหาและโทน หากต้องการสร้างภาพตามสไตล์ Brand ให้เลือก Hero AI Image"
+                    : p.brollSource === "automix" ? "AutoMix ผสมสต็อกกับภาพ AI ตามสัดส่วนที่เลือก" : p.brollSource === "none" ? FILL_YOURSELF_DESC : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"}
+            </p>
+          </div>
           {/* Customers see the product choices by their public names. Internal admins keep
               the raw beta controls (including the unreleased AI-video source). */}
           {p.isAdmin ? (

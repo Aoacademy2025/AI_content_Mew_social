@@ -613,11 +613,23 @@ async function main() {
     );
 
     const step1Src = readFileSync(join(ROOT, "src/app/(dashboard)/video-editor/_v2/Step1Script.tsx"), "utf8");
+    const step2Src = readFileSync(join(ROOT, "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx"), "utf8");
     const postDesktopSrc = readFileSync(join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx"), "utf8");
     const postMobileSrc = readFileSync(join(ROOT, "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx"), "utf8");
     check(
       "Step1Script.tsx renders เลือกสไตล์เทมเพลตวิดีโอ (Video Template) strip",
       step1Src.includes("เลือกสไตล์เทมเพลตวิดีโอ (Video Template)") && step1Src.includes("data-template-id={pack.id}"),
+    );
+    const step2TemplateStripIdx = step2Src.indexOf("เลือกสไตล์ภาพ & เทมเพลตคลิป (1 คลิก)");
+    const step2SourceHeadingIdx = step2Src.indexOf("เลือกแหล่งภาพ B-roll (ทำงานตามสไตล์ที่เลือกด้านบน)");
+    const step2SourceButtonsIdx = step2Src.indexOf("CustomerBrollSourceButtons");
+    check(
+      "Step2Elements.tsx renders 1-click B-roll style template strip ABOVE B-roll source selection",
+      step2TemplateStripIdx > 0
+      && step2SourceHeadingIdx > step2TemplateStripIdx
+      && step2SourceButtonsIdx > step2SourceHeadingIdx
+      && step2Src.includes("data-broll-template-id={pack.id}")
+      && step2Src.includes("ล้างสไตล์ (ให้อัตโนมัติตามเนื้อหา)"),
     );
     check(
       "PostPhase.tsx & PostPhaseMobile.tsx render post-render template switcher wired to applyVideoTemplate",
@@ -625,6 +637,239 @@ async function main() {
       && postDesktopSrc.includes("ed.applyVideoTemplate(pack.id)")
       && postMobileSrc.includes("data-post-template-id={pack.id}")
       && postMobileSrc.includes("ed.applyVideoTemplate(pack.id)"),
+    );
+  });
+
+  // ── Section F: HERO-100 Unified B-roll Style -> ProjectLook / ProjectVisualContext (Web + MCP + External) ──
+  await section("F. HERO-100 Unified B-roll Style -> ProjectLook / ProjectVisualContext & MCP brollSource", async () => {
+    const projectLookMod = fromSrc("lib/project-look.server") as typeof import("../src/lib/project-look.server");
+    const projectVisualContextMod = fromSrc("lib/project-visual-context") as typeof import("../src/lib/project-visual-context");
+
+    for (const packId of styleCatalog.ACTIVE_STYLE_PACK_IDS) {
+      const pack = styleCatalog.stylePack(packId);
+      const snapshot = projectLookMod.buildStylePackProjectLookSnapshot(packId);
+      const pin = projectLookMod.buildStylePackProjectVisualPin(packId);
+      const parsedCtx = projectVisualContextMod.projectVisualContextSchema.safeParse(JSON.parse(pin.projectVisualContextJson));
+      check(
+        `buildStylePackProjectLookSnapshot(${packId}) matches pack visualFormat/treatment/palette/stockMood and validates projectVisualContextSchema`,
+        snapshot.schemaVersion === 2
+        && snapshot.visualFormatId === pack.visualFormatId
+        && snapshot.treatmentPin?.presetId === pack.treatmentPresetId
+        && JSON.stringify(snapshot.brandVisualLanguage?.palette) === JSON.stringify(pack.palette)
+        && snapshot.brandVisualLanguage?.personality === pack.personality
+        && snapshot.stylePack?.id === packId
+        && snapshot.stylePack?.stockMood.queryToken === pack.stockMood.queryToken
+        && snapshot.stylePack?.pacing === pack.pacing
+        && snapshot.stylePack?.musicMood === pack.musicMood
+        && parsedCtx.success
+        && parsedCtx.data.source === "project-look",
+      );
+    }
+
+    // Enable Brand Visual System master switch (matches live Studio rollout) and test MCP direct create_video_job -> ProjectLook + VideoJob visual pin
+    process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+    const directLookCreated = await rawCallTool(token, "create_video_job", {
+      script: SCRIPT,
+      title: "HERO-100 Direct Template Look Clip",
+      templateId: "shop-review",
+      exportMode: "hold",
+    });
+    const directProj = await prisma.editorProject.findUniqueOrThrow({ where: { id: String(directLookCreated.projectId) } });
+    const directJob = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(directLookCreated.jobId) } });
+    const directLook = projectVisualContextMod.parseProjectLook(directProj.projectLookJson);
+    const directJobCtx = directJob.projectVisualContextJson
+      ? projectVisualContextMod.projectVisualContextSchema.safeParse(JSON.parse(directJob.projectVisualContextJson))
+      : null;
+    check(
+      "MCP direct create_video_job(templateId: shop-review) persists ProjectLook & VideoJob projectVisualContextJson",
+      directLook?.stylePack?.id === "shop-review"
+      && directProj.treatmentPresetId === styleCatalog.stylePack("shop-review").treatmentPresetId
+      && Boolean(directJobCtx?.success && directJobCtx.data.source === "project-look" && directJobCtx.data.stylePack?.id === "shop-review"),
+    );
+
+    // syncTemplateStylePackLookForRender: empty sync, idempotent no-op, pack swap, and safety guards
+    const syncProj = await prisma.editorProject.create({
+      data: { userId: "u-hero94", title: "Sync Guard Project" },
+    });
+    const admission = { cohort: "treatment-100" as const, at: new Date() };
+    const syncedFirst = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: syncProj.id,
+      templateId: "thai-ghost",
+      admission,
+    });
+    const afterFirst = await prisma.editorProject.findUniqueOrThrow({ where: { id: syncProj.id } });
+    check(
+      "syncTemplateStylePackLookForRender syncs empty project to thai-ghost and stamps admission",
+      syncedFirst === true
+      && projectVisualContextMod.parseProjectLook(afterFirst.projectLookJson)?.stylePack?.id === "thai-ghost"
+      && afterFirst.brandVisualPinAdmittedCohort === "treatment-100"
+      && afterFirst.brandVisualPinAdmittedAt !== null,
+    );
+
+    const syncedSame = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: syncProj.id,
+      templateId: "thai-ghost",
+      admission: null,
+    });
+    const afterSame = await prisma.editorProject.findUniqueOrThrow({ where: { id: syncProj.id } });
+    check(
+      "syncTemplateStylePackLookForRender is a no-op on identical templateId and preserves admitted stamp",
+      syncedSame === false && afterSame.brandVisualPinAdmittedCohort === "treatment-100",
+    );
+
+    const syncedSwap = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: syncProj.id,
+      templateId: "comic-story",
+      admission: null,
+    });
+    const afterSwap = await prisma.editorProject.findUniqueOrThrow({ where: { id: syncProj.id } });
+    check(
+      "syncTemplateStylePackLookForRender updates prior StylePack look to comic-story when generatedAiImageCount === 0",
+      syncedSwap === true
+      && projectVisualContextMod.parseProjectLook(afterSwap.projectLookJson)?.stylePack?.id === "comic-story"
+      && afterSwap.treatmentPresetId === styleCatalog.stylePack("comic-story").treatmentPresetId
+      && afterSwap.brandVisualPinAdmittedCohort === "treatment-100",
+    );
+
+    // Guard 1: refuses when generatedAiImageCount > 0
+    const preflightRow = await prisma.contentPreflight.create({
+      data: {
+        userId: "u-hero94",
+        projectId: syncProj.id,
+        narrativeSourceKind: "creator-script",
+        sourceHash: "hash-hero100",
+        analyzerVersion: "v1",
+        contentDomain: "general",
+        suggestedVisualFormatId: "comic-storyboard",
+        suggestedTreatmentJson: "{}",
+      },
+    });
+    await prisma.projectVisualBeat.create({
+      data: {
+        userId: "u-hero94",
+        projectId: syncProj.id,
+        preflightId: preflightRow.id,
+        beatKey: "beat-0",
+        sequence: 0,
+        sourceExcerptHash: "ex-0",
+        beatJson: "{}",
+        existingImageJobId: "img-job-existing-1",
+      },
+    });
+    const refusedExistingImages = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: syncProj.id,
+      templateId: "finance-clear",
+      admission,
+    });
+    const afterRefusedImages = await prisma.editorProject.findUniqueOrThrow({ where: { id: syncProj.id } });
+    check(
+      "syncTemplateStylePackLookForRender refuses to overwrite project with generatedAiImageCount > 0",
+      refusedExistingImages === false
+      && projectVisualContextMod.parseProjectLook(afterRefusedImages.projectLookJson)?.stylePack?.id === "comic-story",
+    );
+
+    // Guard 2: refuses to overwrite manual custom unlinked ProjectLook (stylePack absent)
+    const manualSnapshot = { ...projectLookMod.buildStylePackProjectLookSnapshot("finance-clear") };
+    delete manualSnapshot.stylePack;
+    const manualProj = await prisma.editorProject.create({
+      data: {
+        userId: "u-hero94",
+        title: "Manual Custom Look Project",
+        projectLookJson: JSON.stringify(manualSnapshot),
+      },
+    });
+    const refusedManual = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: manualProj.id,
+      templateId: "thai-ghost",
+      admission,
+    });
+    check(
+      "syncTemplateStylePackLookForRender refuses to overwrite manual custom unlinked ProjectLook",
+      refusedManual === false,
+    );
+
+    // Guard 3: refuses to overwrite Brand Profile pin when projectLookJson is null
+    const brandProfile = await prisma.brandProfile.create({
+      data: {
+        userId: "u-hero94",
+        name: "Brand Guard",
+        niche: "Tech",
+        audience: "Creators",
+        tone: "Clear",
+        activeRevisionNumber: 1,
+      },
+    });
+    const brandRev = await prisma.brandProfileRevision.create({
+      data: {
+        brandProfileId: brandProfile.id,
+        version: 1,
+        payloadJson: "{}",
+        visualRecipeJson: "{}",
+      },
+    });
+    const brandPinnedProj = await prisma.editorProject.create({
+      data: {
+        userId: "u-hero94",
+        title: "Brand Pinned Project",
+        brandProfileRevisionId: brandRev.id,
+      },
+    });
+    const refusedBrand = await projectLookMod.syncTemplateStylePackLookForRender({
+      userId: "u-hero94",
+      projectId: brandPinnedProj.id,
+      templateId: "thai-ghost",
+      admission,
+    });
+    const afterRefusedBrand = await prisma.editorProject.findUniqueOrThrow({ where: { id: brandPinnedProj.id } });
+    check(
+      "syncTemplateStylePackLookForRender refuses to clobber pinned BrandProfileRevision",
+      refusedBrand === false && afterRefusedBrand.projectLookJson === null,
+    );
+
+    // MCP brollSource schema + external + templateId flow (0 Hero image credits, held preview)
+    const listedTools = await listTools(token);
+    const createSchema = listedTools.find((t) => t.name === "create_video_job")?.inputSchema as {
+      properties?: Record<string, { type?: string; enum?: string[]; description?: string }>;
+    } | undefined;
+    const brollProp = createSchema?.properties?.brollSource;
+    check(
+      "create_video_job.inputSchema.properties.brollSource exposes stock/hero-ai-image/automix/external and documents external",
+      brollProp?.type === "string"
+      && JSON.stringify(brollProp.enum) === JSON.stringify(["stock", "hero-ai-image", "automix", "external"])
+      && Boolean(brollProp.description?.includes("external"))
+      && Boolean(brollProp.description?.includes("replace_broll_window")),
+    );
+
+    const extQuote = await rawCallTool(token, "prepare_video_job", {
+      script: SCRIPT,
+      title: "External + Comic Template",
+      templateId: "comic-story",
+      brollSource: "external",
+    });
+    check(
+      "prepare_video_job(templateId: comic-story, brollSource: external) quotes 0 Hero image credits",
+      typeof extQuote.quoteId === "string"
+      && extQuote.imageCreditCeiling === 0
+      && extQuote.imageCountCeiling === 0,
+    );
+    const extCreated = await rawCallTool(token, "create_video_job", {
+      quoteId: String(extQuote.quoteId),
+    });
+    check("create_video_job({ quoteId }) starts external + templateId job", typeof extCreated.jobId === "string");
+    const extJobRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: String(extCreated.jobId) } });
+    const extJobInput = JSON.parse(extJobRow.inputJson) as Record<string, unknown>;
+    const extProjRow = await prisma.editorProject.findUniqueOrThrow({ where: { id: String(extCreated.projectId) } });
+    check(
+      "external + templateId job runs in hold mode with stockSource='none' while preserving comic-story ProjectLook",
+      extJobInput.mcpHold === true
+      && extJobInput.stockSource === "none"
+      && extJobInput.brollSource === "external"
+      && projectVisualContextMod.parseProjectLook(extProjRow.projectLookJson)?.stylePack?.id === "comic-story",
     );
   });
 

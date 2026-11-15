@@ -18,6 +18,16 @@ import { currentQuotePricing, normalizeQuoteInput, quoteAccountDefaultsRefusal, 
 import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-video-input";
 import type { QuoteExecution } from "./video-quote.server";
 import { VideoBudgetHoldError } from "./video-budget-admission";
+import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { brandVisualPinAdmissionFields, pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
+import {
+  buildStylePackProjectLookSnapshot,
+  buildStylePackProjectVisualPin,
+  buildSuggestedAwaitingContentPreflightPin,
+} from "@/lib/project-look.server";
+import { buildFreshProjectBrandVisualJobAcceptance } from "@/lib/brand-visual-job-acceptance.server";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { isActiveStylePackId } from "@/lib/style-pack-catalog";
 
 function confirmationRequiredReply<T extends { quoteId: string; confirmationUrl: string }>(quote: T) {
   return {
@@ -47,6 +57,17 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
         }
       : quoteFailure("quote_job_unavailable", "ไม่พบงานเดิม กรุณาติดต่อฝ่ายช่วยเหลือ");
   }
+  // Pre-compute non-tx DB reads before opening the SQLite transaction to avoid nested-connection deadlocks.
+  const nowForPin = new Date();
+  const [brandVisualAccess, starterAllowance] = !preQuote.parentQuoteId
+    ? await Promise.all([
+        resolveBrandVisualAccess(preUser),
+        preQuote.source === "hero-ai-image" || preQuote.source === "automix"
+          ? getStarterAiImageAllowanceStatus(userId, nowForPin)
+          : Promise.resolve(null),
+      ])
+    : [null, null];
+  const brandLibraryAccess = !preQuote.parentQuoteId ? decideBrandLibraryAccess(preUser) : null;
   try {
     return await withVideoJobSqliteRetry("consume quote", () => prisma.$transaction(async tx => {
       const [quote, user] = await Promise.all([
@@ -123,6 +144,16 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       if (outstanding >= 3) return quoteFailure("too_many_jobs", "รอให้งานที่ค้างเสร็จก่อน");
       const claimed = await tx.mcpVideoQuote.updateMany({ where: { id: quoteId, userId, status: "approved", expiresAt: { gt: new Date() } }, data: { status: "consumed", consumedAt: new Date() } });
       if (claimed.count !== 1) throw new VideoBudgetHoldError("quote_race");
+      const templateId = isActiveStylePackId(execution.jobInput.templateId)
+        ? execution.jobInput.templateId
+        : undefined;
+      const canApplyTemplateLook = Boolean(templateId && brandLibraryAccess?.canUse);
+      const lookSnapshot = canApplyTemplateLook && templateId
+        ? buildStylePackProjectLookSnapshot(templateId)
+        : null;
+      const admission = brandVisualAccess
+        ? pinAdmissionFromDecision(brandVisualAccess, nowForPin)
+        : null;
       const project = await tx.editorProject.create({
         data: {
           userId,
@@ -135,10 +166,44 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
             ...(execution.jobInput.sfxMode ? { sfxMode: execution.jobInput.sfxMode } : {}),
             ...(execution.jobInput.brollTransition ? { brollTransition: execution.jobInput.brollTransition } : {}),
           }),
+          ...(lookSnapshot && lookSnapshot.schemaVersion === 2
+            ? {
+                projectLookJson: JSON.stringify(lookSnapshot),
+                projectLookUpdatedAt: nowForPin,
+                treatmentPresetId: lookSnapshot.treatmentPin.presetId,
+                treatmentPresetVersion: lookSnapshot.treatmentPin.version,
+                treatmentPinSource: "creator",
+                treatmentPinnedAt: nowForPin,
+                ...brandVisualPinAdmissionFields(admission),
+              }
+            : {}),
         },
       });
+      const isManagedAiImageSource = quote.source === "hero-ai-image" || quote.source === "automix";
+      const narrativeSourceKind = execution.jobInput.mode === "upload" ? "upload-transcript" : "creator-script";
+      const projectVisualPin = canApplyTemplateLook && templateId
+        ? buildStylePackProjectVisualPin(templateId)
+        : isManagedAiImageSource && brandVisualAccess?.canUse
+          ? buildSuggestedAwaitingContentPreflightPin(narrativeSourceKind)
+          : null;
+      const brandVisualAcceptanceJson = projectVisualPin
+        && isManagedAiImageSource
+        && brandVisualAccess?.canUse
+        && starterAllowance
+        ? buildFreshProjectBrandVisualJobAcceptance({
+            access: brandVisualAccess,
+            allowance: starterAllowance,
+            now: nowForPin,
+          })
+        : null;
       const input = { ...execution.jobInput, maxAiImages: quote.imageCountCeiling, previewMode: true, ...(execution.exportMode === "hold" ? { mcpHold: true } : { mcpChainExport: true }) };
-      const job = await createVideoJobInTransaction(tx, userId, input, `mcp-quote:${quote.id}`, { projectId: project.id, budgetQuoteId: quote.id, ...(receipt.pricing.minuteQuotaLive ? { funding: { meteredMinutes: receipt.renderMinutesCeiling, creditsLive: receipt.pricing.creditsLive } } : {}) });
+      const job = await createVideoJobInTransaction(tx, userId, input, `mcp-quote:${quote.id}`, {
+        projectId: project.id,
+        budgetQuoteId: quote.id,
+        ...(projectVisualPin ? { projectVisualPin } : {}),
+        ...(brandVisualAcceptanceJson ? { brandVisualAcceptanceJson } : {}),
+        ...(receipt.pricing.minuteQuotaLive ? { funding: { meteredMinutes: receipt.renderMinutesCeiling, creditsLive: receipt.pricing.creditsLive } } : {}),
+      });
       if ((job.fundedCreditsSpent ?? 0) > quote.renderCreditCeiling || (job.fundedCreditsSpent ?? 0) > quote.totalHeroCreditCeiling) throw new VideoBudgetHoldError("funding_changed");
       await tx.mcpVideoQuote.update({ where: { id: quote.id }, data: { rootJobId: job.id } });
       await tx.editorProject.update({ where: { id: project.id }, data: { activeJobId: job.id, status: "rendering", lastOpenedAt: new Date() } });
