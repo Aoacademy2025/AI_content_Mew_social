@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
+import * as stylePackCatalogModule from "../src/lib/style-pack-catalog";
 
 type EffectRecord = {
   deps: readonly unknown[] | undefined;
@@ -24,8 +25,10 @@ const sameDependencies = (
 
 class HookRuntime {
   private readonly states: unknown[] = [];
+  private readonly refs: Array<{ current: unknown }> = [];
   private readonly effects: EffectRecord[] = [];
   private stateCursor = 0;
+  private refCursor = 0;
   private effectCursor = 0;
   private pendingEffects: PendingEffect[] = [];
   private dirty = false;
@@ -57,6 +60,14 @@ class HookRuntime {
     return [this.states[index] as T, setState];
   }
 
+  useRef<T>(initial: T): { current: T } {
+    const index = this.refCursor++;
+    if (!(index in this.refs)) {
+      this.refs[index] = { current: initial };
+    }
+    return this.refs[index] as { current: T };
+  }
+
   useMemo<T>(create: () => T): T {
     return create();
   }
@@ -70,6 +81,7 @@ class HookRuntime {
 
   render(): void {
     this.stateCursor = 0;
+    this.refCursor = 0;
     this.effectCursor = 0;
     this.pendingEffects = [];
     activeRuntime = this;
@@ -105,6 +117,10 @@ const reactMock = {
   useState<T>(initial: T | (() => T)) {
     assert.ok(activeRuntime, "useState is called during a component render");
     return activeRuntime.useState(initial);
+  },
+  useRef<T>(initial: T) {
+    assert.ok(activeRuntime, "useRef is called during a component render");
+    return activeRuntime.useRef(initial);
   },
   useMemo<T>(create: () => T) {
     assert.ok(activeRuntime, "useMemo is called during a component render");
@@ -271,6 +287,7 @@ const requireMock = (id: string): unknown => {
   if (id === "@/app/(dashboard)/brands/_components/StylePackPicker") {
     return { StylePackPicker: noopComponent };
   }
+  if (id === "@/lib/style-pack-catalog") return stylePackCatalogModule;
   if (id === "./tokens") return { color, font: { heading: "sans-serif" }, radius: { card: 12 } };
   throw new Error(`Unexpected module import: ${id}`);
 };
@@ -316,6 +333,7 @@ const project = {
   hasPersistedVisualPin: false,
   hasAdmittedVisualPin: false,
   projectStylePack: null,
+  templateId: null,
   heroAiBeta: false,
   isAdmin: false,
   starterAiImageAllowance: undefined,
@@ -323,6 +341,8 @@ const project = {
   setHasPersistedVisualPin() {},
   setHasAdmittedVisualPin() {},
   setProjectStylePack() {},
+  setTemplateId() {},
+  selectVideoTemplate() {},
   setMixPreset() {},
   flushPendingProjectDraft: async () => true,
   acceptAuthoritativeProjectSnapshot: () => acceptSnapshot,
