@@ -5,7 +5,7 @@ import type { WindowEdit } from "@/lib/broll-rerender";
 import { cutawayTimelineSourceFromJob, sceneRerollBeatTarget } from "@/lib/cutaway-plan";
 import { prisma } from "@/lib/prisma";
 import { linkVisualBeatAssetInTransaction } from "@/lib/project-visual-assets.server";
-import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { ProjectLookError, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
 
 type SceneRerollCandidate = {
   id: string;
@@ -169,18 +169,25 @@ export async function prepareAppliedSceneRerollAssets(
       throw new Error("Applied Scene Reroll candidate does not belong to this video scene");
     }
     const beatTarget = sceneRerollBeatTarget(edit.index, cutawaySource);
-    if (beatTarget.kind === "presenter") {
-      throw new Error("Applied Scene Reroll has no durable Visual Beat");
-    }
-    const prompt = await dependencies.resolveVisualPrompt({
-      userId: input.userId,
-      videoJobId: input.sourceVideoJobId,
-      sceneIndex: beatTarget.visualBeatSequence,
-    });
-    const requiresDurableBeat = dependencies !== defaultDependencies
-      || Boolean(sourceJob?.contentPreflightId || sourceJob?.projectVisualContextJson);
-    if (!prompt && requiresDurableBeat) {
-      throw new Error("Applied Scene Reroll has no durable Visual Beat");
+    let prompt: { visualBeatId: string; identityKey: string } | null = null;
+    if (beatTarget.kind === "broll") {
+      try {
+        prompt = await dependencies.resolveVisualPrompt({
+          userId: input.userId,
+          videoJobId: input.sourceVideoJobId,
+          sceneIndex: beatTarget.visualBeatSequence,
+        });
+      } catch (error) {
+        if (!(error instanceof ProjectLookError && error.code === "PREFLIGHT_INCOMPLETE")) {
+          throw error;
+        }
+        prompt = null;
+      }
+      const requiresDurableBeat = dependencies !== defaultDependencies
+        || Boolean(sourceJob?.contentPreflightId || sourceJob?.projectVisualContextJson);
+      if (!prompt && requiresDurableBeat) {
+        throw new Error("Applied Scene Reroll has no durable Visual Beat");
+      }
     }
     prepared.push({
       derivativeId: derivative.id,

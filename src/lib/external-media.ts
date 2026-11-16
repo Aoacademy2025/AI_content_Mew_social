@@ -51,3 +51,12 @@ export function isPresenterHookWindow(preview: Parameters<typeof previewWindowOw
   if (slots) return slots.some(s => s.index === index) && slots.filter(s => s.index <= index).every(s => s.owner === "presenter");
   return index === 0 && previewWindowOwner(preview, index) === "presenter";
 }
+
+/** Return the first timeline window index not locked by the opening presenter hook, or null when all windows are locked. */
+export function firstUnlockedCutawayWindowIndex(preview: Parameters<typeof previewWindowOwner>[0], layout: unknown): number | null {
+  const count = mediaWindows(preview.config).length;
+  for (let i = 0; i < count; i += 1) {
+    if (!isPresenterHookWindow(preview, layout, i)) return i;
+  }
+  return count > 0 ? null : 1;
+}

@@ -44,6 +44,9 @@ import {
   cutawayTimelineSourceFromJob,
   sceneRerollBeatTarget,
 } from "@/lib/cutaway-plan";
+import { isPresenterHookWindow } from "@/lib/external-media";
+import { ProjectLookError } from "@/lib/project-visual-context";
+import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import {
   describeHeroImageOffer,
   generateHeroImageForBrollWindow,
@@ -55,6 +58,7 @@ import { refundSettledVideoImageJob } from "@/lib/video-image-batch-settlement";
 export type McpBrollWindowHeroInput = {
   user: User;
   sourceVideoJobId: string;
+  rootJobId?: string;
   sceneIndex: number;
   durationSec: number;
   fallbackSceneText: string;
@@ -161,11 +165,19 @@ export async function generateMcpBrollWindowHeroClip(
     }
   }
 
-  const beatTarget = sceneRerollBeatTarget(
-    input.sceneIndex,
-    cutawayTimelineSourceFromJob(sourceJob),
-  );
-  if (beatTarget.kind === "presenter") {
+  const rootJob = input.rootJobId && input.rootJobId !== sourceJob.id
+    ? await prisma.videoJob.findFirst({
+        where: { id: input.rootJobId, userId: user.id },
+        select: { inputJson: true, outputJson: true },
+      })
+    : null;
+  const cutawaySource = cutawayTimelineSourceFromJob(rootJob ?? sourceJob);
+  const hookPreview = parseVideoJobOutput(rootJob?.outputJson ?? null)?.preview
+    ?? parseVideoJobOutput(sourceJob.outputJson)?.preview;
+  if (
+    hookPreview
+    && isPresenterHookWindow(hookPreview, cutawaySource.cutawayLayout, input.sceneIndex)
+  ) {
     return {
       ok: false,
       code: "window_locked_presenter_hook",
@@ -173,6 +185,7 @@ export async function generateMcpBrollWindowHeroClip(
       next: "เลือกช่วง B-roll อื่นจาก get_edit_state",
     };
   }
+  const beatTarget = sceneRerollBeatTarget(input.sceneIndex, cutawaySource);
 
   let brandVisualPrompt: {
     source: "project-look" | "brand-revision" | "suggested";
@@ -180,68 +193,76 @@ export async function generateMcpBrollWindowHeroClip(
     visualBeatId?: string;
     identityKey?: string;
     lookIdentityKey?: string;
-  };
+  } | null = null;
   let acceptance = undefined;
+  const parsedVisualContext = parseProjectVisualContext(sourceJob.projectVisualContextJson);
 
   if (
-    sourceJob.projectId
+    beatTarget.kind === "broll"
+    && sourceJob.projectId
     && sourceJob.contentPreflightId
-    && parseProjectVisualContext(sourceJob.projectVisualContextJson) !== null
+    && parsedVisualContext !== null
   ) {
-    const resolved = await resolveProjectVisualPromptForVideoScene({
-      userId: user.id,
-      videoJobId: sourceJob.id,
-      sceneIndex: beatTarget.visualBeatSequence,
-      treatmentPresetId: input.treatment,
-      customPrompt: input.prompt,
-    });
-    if (!resolved) {
-      return {
-        ok: false,
-        code: "scene_reroll_unavailable",
-        message: "ไม่พบข้อมูลฉากที่ตรงกับช่วงนี้",
-        next: "ระบุ prompt เพื่ออธิบายฉากที่ต้องการ หรือเลือกช่วงอื่น",
-      };
-    }
-    brandVisualPrompt = resolved;
-    const access = resolveBrandVisualRenderAccess({
-      requestsBrandVisualImage: true,
-      hasAdmittedPersistedPin: await projectHasAdmittedPersistedPin({
+    let resolved = null;
+    try {
+      resolved = await resolveProjectVisualPromptForVideoScene({
         userId: user.id,
-        projectId: sourceJob.projectId,
-      }),
-      liveAccess: await resolveBrandVisualAccess(user),
-    });
-    if (access) {
-      acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
-        userId: user.id,
-        projectId: sourceJob.projectId,
-        projectVisualPin: {
-          contentPreflightId: sourceJob.contentPreflightId,
-          projectVisualContextJson: sourceJob.projectVisualContextJson!,
-        },
-        access,
-      }));
+        videoJobId: sourceJob.id,
+        sceneIndex: beatTarget.visualBeatSequence,
+        treatmentPresetId: input.treatment,
+        customPrompt: input.prompt,
+      });
+    } catch (error) {
+      if (!(error instanceof ProjectLookError && error.code === "PREFLIGHT_INCOMPLETE")) {
+        throw error;
+      }
+      resolved = null;
     }
-  } else {
-    const pin = createCatalogTreatmentPin(
-      input.treatment ?? "practical-documentary",
-      input.treatment ? "creator" : "adaptive",
-    );
+    if (resolved) {
+      brandVisualPrompt = resolved;
+      const access = resolveBrandVisualRenderAccess({
+        requestsBrandVisualImage: true,
+        hasAdmittedPersistedPin: await projectHasAdmittedPersistedPin({
+          userId: user.id,
+          projectId: sourceJob.projectId,
+        }),
+        liveAccess: await resolveBrandVisualAccess(user),
+      });
+      if (access) {
+        acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
+          userId: user.id,
+          projectId: sourceJob.projectId,
+          projectVisualPin: {
+            contentPreflightId: sourceJob.contentPreflightId,
+            projectVisualContextJson: sourceJob.projectVisualContextJson!,
+          },
+          access,
+        }));
+      }
+    }
+  }
+
+  if (!brandVisualPrompt) {
+    const fallbackPin = input.treatment
+      ? createCatalogTreatmentPin(input.treatment, "creator")
+      : parsedVisualContext?.treatmentPin
+        ?? createCatalogTreatmentPin("practical-documentary", "adaptive");
     const beat = visualBeatFromCustomPrompt(
       input.prompt?.trim() || input.fallbackSceneText || `B-roll scene ${input.sceneIndex + 1}`,
       input.sceneIndex === 0 ? "hook" : "explain",
     );
     const compiled = compileBrandVisualPrompt({
-      visualFormatId: "cinematic-realism",
+      visualFormatId: parsedVisualContext?.visualFormatId ?? "cinematic-realism",
+      ...(parsedVisualContext?.recipeVersion ? { recipeVersion: parsedVisualContext.recipeVersion } : {}),
       contentDomain: "a visually led subject",
-      treatment: treatmentPromptDirection(pin),
-      treatmentPin: pin,
+      treatment: treatmentPromptDirection(fallbackPin),
+      treatmentPin: fallbackPin,
+      brandVisualLanguage: parsedVisualContext?.brandVisualLanguage ?? null,
       visualBeat: beat,
       sceneShotScale: shotScaleForAction(beat.subject),
     });
     brandVisualPrompt = {
-      source: "project-look",
+      source: parsedVisualContext?.source ?? "project-look",
       compiled,
     };
   }
