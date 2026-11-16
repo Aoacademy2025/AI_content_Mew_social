@@ -1,3 +1,4 @@
+import { withPrismaOperation } from "@/lib/prisma-operation";
 import { prisma } from "@/lib/prisma";
 import { limitsForPlan, minutesPerMonthForPlan, TRIAL_MINUTES } from "@/lib/plan-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
@@ -79,24 +80,33 @@ export async function syncSharedUsageCycle(
 
   const rolloverDue = !user.usagePeriodStartedAt || user.usagePeriodStartedAt <= expiredBefore;
   if (rolloverDue) {
-    await withTransientSqliteRetry(() => prisma.user.updateMany({
-      where: {
-        id: userId,
-        OR: [
-          { usagePeriodStartedAt: null },
-          { usagePeriodStartedAt: { lte: expiredBefore } },
-        ],
-      },
-      data: {
-        usageCount: 0,
-        usageLimit,
-        minutesUsed: 0,
-        minutesLimit,
-        aiAudioMinutesUsed: 0,
-        aiTextCallsUsed: 0,
-        usagePeriodStartedAt: now,
-      },
-    }));
+    // Route the lazy 30-day cycle rollover through prisma.$transaction([...]) so it joins
+    // this process's FIFO TransactionQueue (HERO-70 / HERO-91) instead of entering SQLite's
+    // busy handler outside the queue while an interactive transaction holds BEGIN IMMEDIATE.
+    await withPrismaOperation("usage.rolloverCycle", () =>
+      withTransientSqliteRetry(() =>
+        prisma.$transaction([
+          prisma.user.updateMany({
+            where: {
+              id: userId,
+              OR: [
+                { usagePeriodStartedAt: null },
+                { usagePeriodStartedAt: { lte: expiredBefore } },
+              ],
+            },
+            data: {
+              usageCount: 0,
+              usageLimit,
+              minutesUsed: 0,
+              minutesLimit,
+              aiAudioMinutesUsed: 0,
+              aiTextCallsUsed: 0,
+              usagePeriodStartedAt: now,
+            },
+          }),
+        ]),
+      ),
+    );
   }
 
   // Re-read after the conditional rollover. If another request won the reset race,
@@ -111,11 +121,17 @@ export async function syncSharedUsageCycle(
     : minutesPerMonthForPlan(current.plan);
 
   if (current.usageLimit !== currentUsageLimit || current.minutesLimit !== currentMinutesLimit) {
-    current = await prisma.user.update({
-      where: { id: userId },
-      data: { usageLimit: currentUsageLimit, minutesLimit: currentMinutesLimit },
-      select,
-    });
+    [current] = await withPrismaOperation("usage.syncLimits", () =>
+      withTransientSqliteRetry(() =>
+        prisma.$transaction([
+          prisma.user.update({
+            where: { id: userId },
+            data: { usageLimit: currentUsageLimit, minutesLimit: currentMinutesLimit },
+            select,
+          }),
+        ]),
+      ),
+    );
   }
 
   return {
