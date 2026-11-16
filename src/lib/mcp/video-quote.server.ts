@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getBalance, getReservedCredits } from "@/lib/credits";
 import { minutesFromSeconds } from "@/lib/minute-round";
 import { resolveHeroAiImageAccess, isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { validateMcpStarterTrialQuoteInput } from "@/lib/mcp/starter-trial";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { estimatePacedDurationSeconds } from "@/lib/tts-pace";
@@ -108,6 +109,8 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     if (paced.warning) quoteWarnings = [paced.warning];
   }
   if (!(durationSeconds > 0) || !Number.isFinite(durationSeconds)) return quoteFailure("invalid_input", "ไม่พบเนื้อหาที่ใช้สร้างวิดีโอ", "ส่ง script ที่มีคำพูด หรือคลิปพิธีกรที่นำเข้าสำเร็จแล้ว");
+  const starterTrialRefusal = await validateMcpStarterTrialQuoteInput(user, input, durationSeconds);
+  if (starterTrialRefusal) return starterTrialRefusal;
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
   const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);
   if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];

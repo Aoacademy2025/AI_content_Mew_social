@@ -3,6 +3,7 @@ import { getVideoJobCostReceipt } from "./billing-receipt";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
+import { getMcpStarterTrialStatus } from "@/lib/mcp/starter-trial";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
 import {
@@ -76,6 +77,7 @@ function deriveTitle(v: { content: { headline: string | null } | null; script: s
 }
 
 export async function getCurrentUserTool(user: User) {
+  const mcpStarterTrial = await getMcpStarterTrialStatus(user);
   const keysConfigured = {
     gemini: !!user.geminiKey || process.env.MANAGED_GEMINI === "1",
     heygen: !!user.heygenKey,
@@ -92,6 +94,7 @@ export async function getCurrentUserTool(user: User) {
     keysConfigured,
     // Onboarding hints so the assistant can guide a BYOK user through setup (links + where to paste).
     setup: buildSetupGuide(keysConfigured),
+    mcpStarterTrial,
   };
 }
 

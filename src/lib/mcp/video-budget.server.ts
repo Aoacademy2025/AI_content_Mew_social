@@ -1,5 +1,6 @@
 import { classifyEntitlement } from "@/lib/entitlements";
 import { mcpAccessAllowed } from "./auth";
+import { validateMcpStarterTrialConsumptionInTransaction } from "./starter-trial";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "./video-job-status";
 import { reconcileVideoJobFundingInTransaction } from "./video-job-funding";
 import {
@@ -89,7 +90,22 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
           : quoteFailure("quote_job_unavailable", "ไม่พบงานเดิม กรุณาติดต่อฝ่ายช่วยเหลือ");
       }
       if (user.suspended) return quoteFailure("account_suspended", "บัญชีนี้ยังสร้างงานไม่ได้");
-      if (!mcpAccessAllowed(classifyEntitlement(user).effectivePlan)) return quoteFailure("plan_required", "สิทธิ์แผนปัจจุบันยังสร้างงานผ่าน MCP ไม่ได้");
+      const receipt = JSON.parse(quote.receiptJson) as QuoteReceipt;
+      const execution = JSON.parse(quote.executionJson) as QuoteExecution;
+      const effectivePlan = classifyEntitlement(user).effectivePlan;
+      if (!mcpAccessAllowed(effectivePlan)) {
+        const starterRefusal = await validateMcpStarterTrialConsumptionInTransaction(tx, user, {
+          source: quote.source,
+          voiceProvider: execution.jobInput.voiceProvider,
+          hasAvatar: Boolean(execution.jobInput.avatarMode && execution.jobInput.avatarMode !== "none"),
+          hasPresenter: execution.jobInput.mode === "upload" || Boolean(execution.presenterImportId),
+          exportMode: execution.exportMode,
+          renderMinutesCeiling: receipt.renderMinutesCeiling,
+          totalHeroCreditCeiling: quote.totalHeroCreditCeiling,
+          parentQuoteId: quote.parentQuoteId,
+        });
+        if (starterRefusal) return starterRefusal;
+      }
       // These entitlement checks are local; never hold a transaction over provider calls.
       if (quote.source === "hero-ai-image" || quote.source === "automix") {
         const access = await resolveHeroAiImageAccess(user, tx);
@@ -101,8 +117,6 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       ]);
       const totalAvailableCredits = (wallet?.granted ?? 0) + (wallet?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0);
       if (totalAvailableCredits < quote.totalHeroCreditCeiling) return quoteFailure("insufficient_funding", "เครดิตปัจจุบันไม่เพียงพอกับวงเงินที่ยืนยัน");
-      const receipt = JSON.parse(quote.receiptJson) as QuoteReceipt;
-      const execution = JSON.parse(quote.executionJson) as QuoteExecution;
       if (execution.jobInput.voiceProvider === "elevenlabs") {
         const refusal = voiceProviderPlanViolation("elevenlabs", user.plan);
         if (refusal) return quoteFailure(refusal.code, refusal.message);
@@ -202,7 +216,7 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
         budgetQuoteId: quote.id,
         ...(projectVisualPin ? { projectVisualPin } : {}),
         ...(brandVisualAcceptanceJson ? { brandVisualAcceptanceJson } : {}),
-        ...(receipt.pricing.minuteQuotaLive ? { funding: { meteredMinutes: receipt.renderMinutesCeiling, creditsLive: receipt.pricing.creditsLive } } : {}),
+        ...(receipt.pricing.minuteQuotaLive ? { funding: { meteredMinutes: receipt.renderMinutesCeiling, creditsLive: mcpAccessAllowed(effectivePlan) && receipt.pricing.creditsLive } } : {}),
       });
       if ((job.fundedCreditsSpent ?? 0) > quote.renderCreditCeiling || (job.fundedCreditsSpent ?? 0) > quote.totalHeroCreditCeiling) throw new VideoBudgetHoldError("funding_changed");
       await tx.mcpVideoQuote.update({ where: { id: quote.id }, data: { rootJobId: job.id } });
