@@ -1,7 +1,5 @@
 import type { Prisma } from "@prisma/client";
 import { admitBudgetRender, VideoBudgetHoldError } from "./video-budget-admission";
-import { classifyEntitlement } from "@/lib/entitlements";
-import { mcpAccessAllowed } from "./auth";
 import { prisma } from "@/lib/prisma";
 import {
   creditCostFor,
@@ -189,8 +187,7 @@ export async function reconcileVideoJobFundingInTransaction(tx: Prisma.Transacti
     }
     if (actualMeteredMinutes > job.fundedMeteredMinutes) {
       const extra = actualMeteredMinutes - job.fundedMeteredMinutes;
-      const current = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-      const canSpendWalletCredits = mcpAccessAllowed(classifyEntitlement(current).effectivePlan) && process.env.CREDITS_LIVE === "1";
+      const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { minutesLimit: true, minutesUsed: true } });
       const extraCreditsEstimate = Math.max(0, extra - Math.max(0, current.minutesLimit - current.minutesUsed)) * creditCostFor("minute");
       await admitBudgetRender(
         tx,
@@ -200,7 +197,7 @@ export async function reconcileVideoJobFundingInTransaction(tx: Prisma.Transacti
         extraCreditsEstimate === 0 ? job.fundedMeteredMinutes : actualMeteredMinutes,
       );
       const topUp = await reserveMinutesOrCreditsInTransaction(tx, userId, extra, {
-        creditsLive: canSpendWalletCredits,
+        creditsLive: process.env.CREDITS_LIVE === "1",
         ref: `duration-extend:${videoJobId}`,
       });
       if (!topUp.allowed) {
