@@ -4,6 +4,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { isMcpPatToken, resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
+import { canInvokeMcpTool } from "@/lib/mcp/starter-trial";
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError, auditErrorSummary, auditExceptionSummary } from "@/lib/mcp/audit";
@@ -65,7 +66,7 @@ async function runTool(
 ) {
   const started = Date.now();
   const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
-  if (!userId || !user || !effectivePlan || !mcpAccessAllowed(effectivePlan)) {
+  if (!userId || !user || !effectivePlan || !canInvokeMcpTool(user, effectivePlan, toolName)) {
     await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: { error: "plan_required" } });
     return text(opts
       ? { error: "plan_required", code: "plan_required", message: UPSELL, next: UPGRADE_NEXT }

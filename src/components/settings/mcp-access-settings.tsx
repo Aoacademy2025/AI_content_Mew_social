@@ -5,26 +5,38 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from "@/components/ui/input";
 import {
   Loader2, Plus, Copy, Trash2, Terminal, Check, ArrowRight, Sparkles, Code2, Bot, Zap, KeyRound,
-  ListChecks, RefreshCw, Puzzle, PlayCircle,
+  ListChecks, RefreshCw, Puzzle, PlayCircle, Crown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { computeKeyStatus, planKeySetupChecklist } from "@/lib/key-tiers";
+import {
+  MCP_ENDPOINT_URL,
+  MCP_TOKEN_PLACEHOLDER,
+  MCP_CREATOR_PROMPT_TEMPLATES,
+  buildClaudeCodeCommand,
+  buildClaudeDesktopConfigJson,
+  buildCursorMcpConfigJson,
+} from "@/lib/mcp/creator-prompt-pack";
 
 type TokenRow = { id: string; name: string | null; lastUsedAt: string | null; createdAt: string; expiresAt: string | null };
+type StarterTrialSummary = {
+  eligible: boolean;
+  isStarterTrialPlan: boolean;
+  usedClips: number;
+  limitClips: number;
+  remainingClips: number;
+  maxDurationSeconds: number;
+  upgradeUrl: string;
+};
 
-const MCP_URL = "https://studio.heroaiengine.com/api/mcp";
-const TOKEN_PLACEHOLDER = "<YOUR_TOKEN>";
+const MCP_URL = MCP_ENDPOINT_URL;
+const TOKEN_PLACEHOLDER = MCP_TOKEN_PLACEHOLDER;
 
 function copyText(value: string, label: string) {
   navigator.clipboard.writeText(value).then(() => toast.success(`คัดลอก${label}แล้ว`)).catch(() => toast.error("คัดลอกไม่สำเร็จ"));
 }
 
-// ── Client connect definitions ───────────────────────────────────────────
-// One source of truth: each client's snippet is a (token) => string so the
-// same guide renders with a placeholder in the static box and the REAL token
-// inside the show-once dialog. Grouped by connection PATH (login vs token),
-// not by "assistant vs agent" — that's what actually changes the steps.
-type ClientId = "claude-cowork" | "claude-code" | "codex" | "openclaw" | "hermes" | "other-mcp";
+type ClientId = "claude-cowork" | "claude-desktop-json" | "cursor" | "claude-code" | "codex" | "openclaw" | "hermes" | "other-mcp";
 type ClientGroup = "login" | "token";
 
 type ClientDef = {
@@ -60,7 +72,27 @@ const CLIENTS: ClientDef[] = [
     blurb: "สั่งจาก terminal — คำสั่งเดียวจบ",
     needsToken: true,
     steps: ["รันคำสั่งนี้ใน terminal (วาง token ของคุณแทน)"],
-    code: (t) => `claude mcp add --transport http heroai ${MCP_URL} \\\n  --header "Authorization: Bearer ${t}"`,
+    code: (t) => buildClaudeCodeCommand(t),
+  },
+  {
+    id: "cursor",
+    label: "Cursor (.cursor/mcp.json)",
+    group: "token",
+    icon: Code2,
+    blurb: "1-Click Copy สำหรับ Cursor MCP config",
+    needsToken: true,
+    steps: ["วาง JSON นี้ใน .cursor/mcp.json หรือ Cursor Settings → MCP"],
+    code: (t) => buildCursorMcpConfigJson(t),
+  },
+  {
+    id: "claude-desktop-json",
+    label: "Claude Desktop (JSON)",
+    group: "token",
+    icon: Sparkles,
+    blurb: "ตั้งค่าผ่านไฟล์ claude_desktop_config.json ด้วย Token",
+    needsToken: true,
+    steps: ["วาง JSON นี้ใน claude_desktop_config.json แล้วรีสตาร์ทแอป Claude"],
+    code: (t) => buildClaudeDesktopConfigJson(t),
   },
   {
     id: "codex",
@@ -70,7 +102,9 @@ const CLIENTS: ClientDef[] = [
     blurb: "OpenAI Codex — token อ่านจาก environment variable",
     needsToken: true,
     steps: ["เพิ่ม server แล้วตั้ง env var ให้ token"],
-    code: (t) => `codex mcp add heroai --url ${MCP_URL} \\\n  --bearer-token-env-var HEROAI_TOKEN\nexport HEROAI_TOKEN="${t}"`,
+    code: (t) => `codex mcp add heroai --url ${MCP_URL} \\
+  --bearer-token-env-var HEROAI_TOKEN
+export HEROAI_TOKEN="${t}"`,
   },
   {
     id: "openclaw",
@@ -80,7 +114,8 @@ const CLIENTS: ClientDef[] = [
     blurb: "Agent อัตโนมัติ — เพิ่มผ่าน CLI คำสั่งเดียว",
     needsToken: true,
     steps: ["รันคำสั่งนี้ (วาง token ของคุณแทน)"],
-    code: (t) => `openclaw mcp add heroai --url ${MCP_URL} \\\n  --transport streamable-http --header "Authorization: Bearer ${t}"`,
+    code: (t) => `openclaw mcp add heroai --url ${MCP_URL} \\
+  --transport streamable-http --header "Authorization: Bearer ${t}"`,
   },
   {
     id: "hermes",
@@ -90,7 +125,12 @@ const CLIENTS: ClientDef[] = [
     blurb: "Nous Research — เพิ่มในไฟล์ config",
     needsToken: true,
     steps: ["แก้ไฟล์ ~/.hermes/config.yaml เพิ่มบล็อกนี้ แล้วรีสตาร์ท Hermes"],
-    code: (t) => `# ~/.hermes/config.yaml\nmcp_servers:\n  heroai:\n    url: "${MCP_URL}"\n    headers:\n      Authorization: "Bearer ${t}"`,
+    code: (t) => `# ~/.hermes/config.yaml
+mcp_servers:
+  heroai:
+    url: "${MCP_URL}"
+    headers:
+      Authorization: "Bearer ${t}"`,
   },
   {
     id: "other-mcp",
@@ -103,20 +143,16 @@ const CLIENTS: ClientDef[] = [
       "เพิ่ม MCP server แบบ streamable HTTP โดยใช้ Endpoint ด้านบน",
       "ใส่ header Authorization: Bearer <token> ของคุณ (ดูวิธีตั้งค่าเฉพาะใน docs ของ AI ตัวนั้น)",
     ],
-    code: (t) => `Endpoint: ${MCP_URL}\nTransport: streamable HTTP\nHeader: Authorization: Bearer ${t}`,
+    code: (t) => `Endpoint: ${MCP_URL}
+Transport: streamable HTTP
+Header: Authorization: Bearer ${t}`,
   },
 ];
 
 const GROUP_LABEL: Record<ClientGroup, string> = {
   login: "เชื่อมด้วยการ Login (ไม่ต้องใช้ Token)",
-  token: "เชื่อมด้วย Token",
+  token: "เชื่อมด้วย Token (1-Click Copy)",
 };
-
-const EXAMPLE_PROMPTS = [
-  `สร้างคลิปจากสคริปต์นี้แบบแก้ก่อนส่งออก ยังไม่ต้องส่งออกจริง: "<วางสคริปต์ของคุณที่นี่>"`,
-  `แก้ซับการ์ดแรกเป็น "<ข้อความใหม่>" ขอดูรายการเพลงแล้วเปลี่ยนเป็นเพลงที่สดใสกว่านี้ แล้วขอดูภาพตัวอย่างวินาทีที่ 5`,
-  `โอเค ส่งออกคลิปนี้เป็นไฟล์สุดท้ายได้เลย`,
-];
 
 function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
   const usingPlaceholder = token === TOKEN_PLACEHOLDER;
@@ -140,7 +176,7 @@ function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
       {client.code && (
         <div className="relative">
           <pre className="overflow-x-auto rounded-lg bg-black/40 p-3 pr-10 text-[11px] leading-relaxed text-zinc-300">{client.code(token)}</pre>
-          <button onClick={() => copyText(client.code!(token), "คำสั่ง")} title="คัดลอก"
+          <button onClick={() => copyText(client.code!(token), "การตั้งค่า")} title="คัดลอก"
             className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md text-white/60 transition-colors hover:bg-white/10 hover:text-white">
             <Copy className="h-3.5 w-3.5" />
           </button>
@@ -168,12 +204,21 @@ function ConnectGuide({ token }: { token: string }) {
 
   return (
     <div className="space-y-3">
-      {/* Endpoint */}
+      {/* Endpoint + 1-click quick copy bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg bg-black/30 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--ui-text-muted)" }}>Endpoint</span>
         <code className="flex-1 min-w-0 truncate text-xs text-violet-300">{MCP_URL}</code>
         <button onClick={() => copyText(MCP_URL, "Endpoint")} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/70 transition-colors hover:bg-white/10 hover:text-white">
-          <Copy className="h-3 w-3" /> คัดลอก
+          <Copy className="h-3 w-3" /> คัดลอก URL
+        </button>
+        <button onClick={() => copyText(buildClaudeDesktopConfigJson(token), " Claude Desktop JSON")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+          <Copy className="h-3 w-3" /> Claude Desktop JSON
+        </button>
+        <button onClick={() => copyText(buildCursorMcpConfigJson(token), " Cursor MCP JSON")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+          <Copy className="h-3 w-3" /> Cursor JSON
+        </button>
+        <button onClick={() => copyText(buildClaudeCodeCommand(token), "คำสั่ง Claude Code")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+          <Copy className="h-3 w-3" /> Claude Code CLI
         </button>
       </div>
 
@@ -213,6 +258,7 @@ function ConnectGuide({ token }: { token: string }) {
 
 export function McpAccessSettings({ allowed }: { allowed: boolean }) {
   const [tokens, setTokens] = useState<TokenRow[]>([]);
+  const [starterTrial, setStarterTrial] = useState<StarterTrialSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -227,17 +273,16 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
     setLoading(true);
     fetch("/api/mcp-tokens")
       .then((r) => r.json())
-      .then((d) => setTokens(Array.isArray(d.tokens) ? d.tokens : []))
+      .then((d) => {
+        setTokens(Array.isArray(d.tokens) ? d.tokens : []);
+        if (d.starterTrial) setStarterTrial(d.starterTrial);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }
-  useEffect(() => { if (allowed) load(); else setLoading(false); }, [allowed]);
+  useEffect(() => { load(); }, [allowed]);
 
-  // Accurate "do I need a key before I can create_video_job" note (defect #2):
-  // same managed-aware decision as the API Keys tab's status card, so the two
-  // tabs never disagree about whether keys are required.
   useEffect(() => {
-    if (!allowed) return;
     fetch("/api/user/api-keys/status", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d?.managed) setManaged(true); if (d?.managedStock) setManagedStock(true); })
@@ -248,7 +293,7 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
         if (d) setKeyStatus({ gemini: !!d.geminiKey?.set, pexels: !!d.pexelsKey?.set, pixabay: !!d.pixabayKey?.set });
       })
       .catch(() => {});
-  }, [allowed]);
+  }, []);
 
   async function createToken() {
     setCreating(true);
@@ -284,25 +329,8 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
     }
   }
 
-  if (!allowed) {
-    return (
-      <a href="/pricing" className="group block rounded-xl p-5 transition-all hover:-translate-y-0.5"
-        style={{ background: "linear-gradient(135deg, hsl(var(--accent-primary) / 0.12), hsl(var(--accent-secondary) / 0.08))", border: "1px solid hsl(var(--accent-primary) / 0.25)" }}>
-        <p className="text-base font-bold" style={{ color: "var(--ui-text-primary)" }}>Agent / MCP เป็นฟีเจอร์ของแผน PRO/BUSINESS</p>
-        <ul className="mt-2 space-y-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>
-          <li>• สั่งสร้างคลิป (เสียง + B-roll + ซับไทย + พิธีกร AI) จากแชทได้เลย</li>
-          <li>• แก้ซับ เพลง พาดหัว ก่อนส่งออก โดยไม่ตัดโควต้าเพิ่ม</li>
-          <li>• กลับมาแก้คลิปเก่าในแชทใหม่ได้</li>
-        </ul>
-        <p className="text-sm mt-2 flex items-center gap-1" style={{ color: "var(--ui-text-muted)" }}>
-          อัปเกรดเพื่อต่อ Claude, Codex, OpenClaw, Hermes และ AI Agent อื่นที่รองรับ MCP เข้ากับ HERO AI <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-        </p>
-      </a>
-    );
-  }
-
   const setupNote = (() => {
-    if (!keyStatus) return null; // ยังโหลดอยู่ — ไม่รีบขึ้นข้อความผิด
+    if (!keyStatus) return null;
     const status = computeKeyStatus({ gemini: keyStatus.gemini, pexels: keyStatus.pexels, pixabay: keyStatus.pixabay }, managed);
     const checklist = planKeySetupChecklist({ status, managedGemini: managed, managedStock });
     if (!checklist.render) {
@@ -316,6 +344,40 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
 
   return (
     <div className="space-y-5">
+      {/* Starter Trial banner for FREE users */}
+      {!allowed && (
+        <div
+          className="rounded-xl p-4 space-y-2"
+          style={{
+            background: "linear-gradient(135deg, hsl(var(--accent-primary) / 0.14), hsl(var(--accent-secondary) / 0.08))",
+            border: "1px solid hsl(var(--accent-primary) / 0.3)",
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Crown className="h-4 w-4 text-amber-300" strokeWidth={2.25} />
+              <p className="text-sm font-bold" style={{ color: "var(--ui-text-primary)" }}>
+                สิทธิ์ทดลอง MCP ฟรี 1 คลิปแรก (Starter Trial)
+              </p>
+            </div>
+            {starterTrial && (
+              <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-semibold text-violet-200">
+                คงเหลือ {starterTrial.remainingClips}/{starterTrial.limitClips} คลิป
+              </span>
+            )}
+          </div>
+          <p className="text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
+            บัญชี FREE สามารถสร้าง Token และลองสั่ง AI Agent สร้างคลิปสั้นได้ฟรี 1 คลิป (เสียงพากย์ Gemini + Stock B-roll ความยาวไม่เกิน 3 นาที โดยไม่ใช้เครดิต) — หากต้องการสร้างเพิ่ม ใช้ Hero AI Image, เสียง ElevenLabs, Avatar หรือสั่งแก้ซับ/B-roll ก่อนส่งออก อัปเกรดเป็น PRO หรือ BUSINESS ได้ทันที
+          </p>
+          <a
+            href="/pricing"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-300 hover:underline"
+          >
+            ดูแพ็กเกจ PRO / BUSINESS <ArrowRight className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      )}
+
       {/* สั่งอะไรได้บ้าง */}
       <div className="rounded-xl border border-white/10 bg-white/3 p-4">
         <div className="flex items-center gap-2 mb-2">
@@ -324,15 +386,13 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
         </div>
         <ul className="space-y-1 text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
           <li>• สร้างคลิปจากสคริปต์ — เสียงพากย์ + B-roll เปลี่ยนทุก 3–5 วิ + ซับไทย + พิธีกร AI (ถ้าต้องการ)</li>
-          <li>• แก้ก่อนส่งออก ไม่ตัดโควต้าเพิ่ม — แก้ซับ เพลง พาดหัว B-roll ได้ก่อนส่งออกจริง</li>
-          <li>• ขอดูพรีวิวเฟรมก่อนส่งออกจริง</li>
-          <li>• นำวิดีโอ/รูปของคุณเองมาใช้เป็น B-roll หรือคลิปพิธีกรได้ (วาง URL หรือลิงก์อัปโหลด)</li>
-          <li>• กลับมาแก้คลิปเก่าในแชทใหม่ได้ ไม่ต้องจำ job เดิม</li>
-          <li>• ยกเลิกงานที่สั่งผิดได้ทันที</li>
+          <li>• เลือก Style Pack สำเร็จรูป (ข่าวด่วน, รีวิวสินค้า, จัดอันดับ, การเงิน, เรื่องหลอน) ได้ทันที</li>
+          <li>• แก้ก่อนส่งออก ไม่ตัดโควต้าเพิ่ม — แก้ซับ เพลง พาดหัว B-roll ได้ก่อนส่งออกจริง (PRO / BUSINESS)</li>
+          <li>• ขอดูพรีวิวเฟรมและนำวิดีโอ/รูปของคุณเองมาใช้เป็น B-roll หรือคลิปพิธีกรได้ (PRO / BUSINESS)</li>
         </ul>
       </div>
 
-      {/* Accurate setup note (replaces the old false prerequisite banner) */}
+      {/* Accurate setup note */}
       {setupNote && (
         <div className="flex items-start gap-2.5 rounded-xl p-3"
           style={setupNote.ok
@@ -355,12 +415,12 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
       <div className="rounded-2xl border border-white/10 bg-white/3 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Terminal className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
-          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 1 — เลือก AI ของคุณ</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 1 — เลือก AI ของคุณ (1-Click Copy)</p>
         </div>
         <ConnectGuide token={TOKEN_PLACEHOLDER} />
       </div>
 
-      {/* Step 2 — Tokens (เฉพาะทาง Token) */}
+      {/* Step 2 — Tokens */}
       <div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -404,19 +464,40 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
         )}
       </div>
 
-      {/* Step 3 — ลองสั่งแบบนี้ */}
+      {/* Step 3 — Creator Prompt Pack (5 พร้อมรันทันที) */}
       <div className="rounded-2xl border border-white/10 bg-white/3 p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <PlayCircle className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
-          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ขั้นตอนที่ 3 — ลองสั่งแบบนี้</p>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <PlayCircle className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
+            <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>
+              ขั้นตอนที่ 3 — Creator Prompt Pack (คัดลอกไปวางในแชท AI ได้ทันที)
+            </p>
+          </div>
+          <span className="text-[11px]" style={{ color: "var(--ui-text-muted)" }}>
+            5 แม่แบบยอดนิยม
+          </span>
         </div>
-        <div className="space-y-2">
-          {EXAMPLE_PROMPTS.map((p, i) => (
-            <div key={i} className="relative rounded-lg bg-black/30 p-3 pr-10 text-xs leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
-              {p}
-              <button onClick={() => copyText(p, "ข้อความ")} title="คัดลอก"
-                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md text-white/50 transition-colors hover:bg-white/10 hover:text-white">
-                <Copy className="h-3 w-3" />
+        <div className="grid gap-3 md:grid-cols-2">
+          {MCP_CREATOR_PROMPT_TEMPLATES.map((tpl) => (
+            <div key={tpl.id} className="flex flex-col justify-between rounded-xl border border-white/10 bg-black/30 p-3.5 space-y-2.5">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold" style={{ color: "var(--ui-text-primary)" }}>{tpl.title}</span>
+                  <span className="rounded-md bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold text-violet-300">
+                    {tpl.category} · {tpl.templateId}
+                  </span>
+                </div>
+                <p className="text-[11px]" style={{ color: "var(--ui-text-muted)" }}>{tpl.subtitle}</p>
+                <p className="rounded-lg bg-black/40 p-2.5 text-[11px] leading-relaxed line-clamp-3" style={{ color: "var(--ui-text-secondary)" }}>
+                  {tpl.prompt}
+                </p>
+              </div>
+              <button
+                onClick={() => copyText(tpl.prompt, ` Prompt "${tpl.title}" `)}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold text-violet-200 transition-colors hover:bg-white/10"
+                style={{ border: "1px solid hsl(0 0% 100% / 0.1)" }}
+              >
+                <Copy className="h-3.5 w-3.5" /> คัดลอก Prompt นี้
               </button>
             </div>
           ))}
@@ -447,7 +528,6 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
                   <Copy className="h-4 w-4" /> คัดลอก token
                 </button>
               </div>
-              {/* ready-to-paste guide with the real token injected */}
               <ConnectGuide token={newToken} />
             </div>
           ) : (
