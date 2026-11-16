@@ -1,4 +1,4 @@
-import { externalWindowStates, externalMediaPlan, previewWindowOwner, isPresenterHookWindow } from "@/lib/external-media";
+import { externalWindowStates, externalMediaPlan, previewWindowOwner, isPresenterHookWindow, firstUnlockedCutawayWindowIndex } from "@/lib/external-media";
 import { validateExternalMediaExport, ownedDraftImports } from "@/lib/external-media.server";
 import { resolvePendingWindowMedia } from "@/lib/pending-broll-media";
 import {
@@ -1256,9 +1256,28 @@ function bgVideoAt(config: unknown, index: number): Record<string, unknown> | nu
   return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
 }
 
-/** Window 0 of an auto-layout Cutaway Mode clip is the presenter's opening hook. */
+/** Opening presenter span of an auto-layout Cutaway Mode clip is the presenter's hook. */
 function presenterHookLocked(root: McpChainRow, preview: VideoJobPreviewData, index: number): boolean {
   return isPresenterHookWindow(rootPreviewOf(root) ?? preview, parseRecord(root.inputJson)?.cutawayLayout, index);
+}
+
+function windowLockedFailure(root: McpChainRow, preview: VideoJobPreviewData): EditToolFailure {
+  const firstUnlocked = firstUnlockedCutawayWindowIndex(
+    rootPreviewOf(root) ?? preview,
+    parseRecord(root.inputJson)?.cutawayLayout,
+  );
+  if (firstUnlocked === null) {
+    return editToolFailure(
+      "window_locked_presenter_hook",
+      "ช่วงเปิดของคลิปโหมดคัตอะเวย์เป็นช่วงของพิธีกร จึงเปลี่ยนภาพช่วงนี้ไม่ได้",
+      `เช็ค windows[] จาก get_edit_state หรือ${NEXT_EDITOR}`,
+    );
+  }
+  return editToolFailure(
+    "window_locked_presenter_hook",
+    "ช่วงแรกของคลิปโหมดคัตอะเวย์เป็นช่วงเปิดของพิธีกร จึงเปลี่ยนภาพช่วงนี้ไม่ได้",
+    `เลือกช่วงอื่น (windowIndex ตั้งแต่ ${firstUnlocked}) หรือ${NEXT_EDITOR}`,
+  );
 }
 
 function rootPreviewOf(root: McpChainRow): VideoJobPreviewData | null {
@@ -1361,7 +1380,7 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
   });
   if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
-  if (presenterHookLocked(root, base.preview, index)) return WINDOW_LOCKED;
+  if (presenterHookLocked(root, base.preview, index)) return windowLockedFailure(root, base.preview);
 
   let source: "url" | "upload" | "original" | "hero-ai-image";
   let importId: string | null = null;
@@ -1391,6 +1410,7 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     const genResult = await generateMcpBrollWindowHeroClip({
       user,
       sourceVideoJobId: base.id,
+      rootJobId: root.id,
       sceneIndex: index,
       durationSec: windowDurationSec,
       fallbackSceneText,

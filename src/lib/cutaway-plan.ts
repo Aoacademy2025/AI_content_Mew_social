@@ -131,9 +131,13 @@ export const CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE =
  */
 export function sceneRerollBeatTarget(
   timelineIndex: number,
-  source: { mode?: unknown; cutawayPersonRanges?: unknown },
+  source: { mode?: unknown; cutawayLayout?: unknown; stockSource?: unknown; cutawayPersonRanges?: unknown },
 ): CutawayTimelineScene {
-  if (!sourceJobUsesCutawayTimeline(source)) {
+  if (
+    !sourceJobUsesCutawayTimeline(source)
+    || source?.cutawayLayout === "fillYourself"
+    || source?.stockSource === "none"
+  ) {
     return { kind: "broll", visualBeatSequence: timelineIndex };
   }
   return cutawayTimelineScene(timelineIndex);
@@ -142,13 +146,25 @@ export function sceneRerollBeatTarget(
 export function cutawayTimelineSourceFromJob(job: {
   inputJson?: string | null;
   outputJson?: string | null;
-}): { mode?: unknown; cutawayPersonRanges?: unknown } {
+}): { mode?: unknown; cutawayLayout?: unknown; stockSource?: unknown; cutawayPersonRanges?: unknown } {
   let mode: unknown;
+  let cutawayLayout: unknown;
+  let stockSource: unknown;
   try {
-    const parsed = JSON.parse(String(job?.inputJson ?? "")) as { mode?: unknown };
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) mode = parsed.mode;
+    const parsed = JSON.parse(String(job?.inputJson ?? "")) as {
+      mode?: unknown;
+      cutawayLayout?: unknown;
+      stockSource?: unknown;
+    };
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      mode = parsed.mode;
+      cutawayLayout = parsed.cutawayLayout;
+      stockSource = parsed.stockSource;
+    }
   } catch {
     mode = undefined;
+    cutawayLayout = undefined;
+    stockSource = undefined;
   }
   let cutawayPersonRanges: unknown;
   try {
@@ -159,7 +175,7 @@ export function cutawayTimelineSourceFromJob(job: {
   } catch {
     cutawayPersonRanges = undefined;
   }
-  return { mode, cutawayPersonRanges };
+  return { mode, cutawayLayout, stockSource, cutawayPersonRanges };
 }
 
 /**
