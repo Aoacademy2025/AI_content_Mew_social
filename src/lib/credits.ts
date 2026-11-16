@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * Credit balance + ledger library (Task P3-1).
  *
@@ -626,62 +627,74 @@ export async function resetMonthlyGranted(
   guard?: { priorResetAt: Date | null }
 ): Promise<void> {
   const newGranted = MONTHLY_GRANT[plan] ?? 0;
-  const now = new Date();
 
-  // Prior-read + hard-set + ledger row in ONE transaction so a crash between them
-  // can never diverge the balance from its audit ledger (MON-4). Reading the prior
-  // value inside the transaction also makes the recorded delta consistent with the
-  // value we overwrite.
-  await withPrismaOperation("credits.resetMonthlyGranted", () => withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
-    // Read prior granted so we can record the true delta (upsert with granted:0 so a
-    // brand-new user's reset logs the full grant as the delta — matches getBalance).
-    const prior = await tx.creditBalance.upsert({
-      where: { userId },
-      create: { userId, granted: 0, purchased: 0 },
-      update: {},
-    });
-    const priorGranted = prior.granted;
+  // HERO-91: Prior-read + hard-set + ledger row in ONE non-interactive batch transaction
+  // (`prisma.$transaction([...])`, `kind=batch`) so:
+  //   1. A crash between statements can never diverge the balance from its audit ledger (MON-4).
+  //   2. Guarded lazy resets (`ensureMonthlyGrant`, MON-7) conditionally insert the ledger row
+  //      and update `CreditBalance` only when `grantedResetAt` still matches `guard.priorResetAt`.
+  //   3. All statements between `BEGIN IMMEDIATE` and `COMMIT` execute in a single query-engine
+  //      batch without yielding back to the Node.js event loop while holding the SQLite writer
+  //      lock (eliminating the 4 sequential interactive-callback round-trips where concurrent
+  //      standalone writes could sleep engine Tokio worker threads in `sqlite3_busy_handler`
+  //      and stall the callback for 20 s `socket_timeout` or 30 s `tx timeout`).
+  await withPrismaOperation("credits.resetMonthlyGranted", () =>
+    withTransientSqliteRetry(async () => {
+      const wallNow = new Date();
+      const now =
+        guard?.priorResetAt && wallNow.getTime() <= guard.priorResetAt.getTime()
+          ? new Date(guard.priorResetAt.getTime() + 1)
+          : wallNow;
+      const ledgerId = `cmreset_${randomUUID().replace(/-/g, "")}`;
+      const action = `monthly-reset:${plan}`;
+      const guardCondition =
+        guard === undefined
+          ? Prisma.sql`1 = 1`
+          : guard.priorResetAt === null
+            ? Prisma.sql`"grantedResetAt" IS NULL`
+            : Prisma.sql`"grantedResetAt" = ${guard.priorResetAt}`;
 
-    let updatedGranted: number;
-    let updatedPurchased: number;
-
-    if (guard) {
-      const flipped = await tx.creditBalance.updateMany({
-        where: { userId, grantedResetAt: guard.priorResetAt },
-        data: { granted: newGranted, grantedResetAt: now },
-      });
-      if (flipped.count !== 1) return; // lost the race — another caller already reset this window
-      updatedGranted = newGranted;
-      updatedPurchased = prior.purchased;
-    } else {
-      // Hard-set granted and reset timestamp (row is guaranteed to exist now)
-      const updated = await tx.creditBalance.update({
-        where: { userId },
-        data: {
-          granted: newGranted,
-          grantedResetAt: now,
-        },
-      });
-      updatedGranted = updated.granted;
-      updatedPurchased = updated.purchased;
-    }
-
-    const promotional = await activePromotionalTotal(tx, userId, now);
-    const balanceAfter = updatedGranted + promotional + updatedPurchased;
-
-    await tx.creditLedger.create({
-      data: {
-        userId,
-        delta: newGranted - priorGranted,
-        kind: "grant",
-        action: `monthly-reset:${plan}`,
-        balanceAfter,
-      },
-    });
-  })));
+      await prisma.$transaction([
+        prisma.$executeRaw(Prisma.sql`
+          INSERT OR IGNORE INTO "CreditBalance" ("userId", "granted", "purchased", "grantedResetAt", "updatedAt")
+          VALUES (${userId}, 0, 0, NULL, ${now})
+        `),
+        prisma.$executeRaw(Prisma.sql`
+          INSERT INTO "CreditLedger" ("id", "userId", "delta", "kind", "action", "balanceAfter", "createdAt")
+          SELECT
+            ${ledgerId},
+            "cb"."userId",
+            ${newGranted} - "cb"."granted",
+            'grant',
+            ${action},
+            ${newGranted} + "cb"."purchased" + COALESCE((
+              SELECT SUM("pg"."remainingAmount")
+              FROM "PromotionalCreditGrant" AS "pg"
+              WHERE "pg"."userId" = ${userId}
+                AND "pg"."expiresAt" > ${now}
+                AND "pg"."remainingAmount" > 0
+            ), 0),
+            ${now}
+          FROM "CreditBalance" AS "cb"
+          WHERE "cb"."userId" = ${userId}
+            AND (${guardCondition})
+        `),
+        prisma.$executeRaw(Prisma.sql`
+          UPDATE "CreditBalance"
+          SET "granted" = ${newGranted},
+              "grantedResetAt" = ${now},
+              "updatedAt" = ${now}
+          WHERE "userId" = ${userId}
+            AND (${guardCondition})
+        `),
+      ]);
+    }),
+  );
 }
 
 // ── Lazy monthly grant ────────────────────────────────────────────────────────
+
+const inFlightMonthlyGrants = new Map<string, Promise<void>>();
 
 /**
  * Ensure the user has received their current-period monthly credit allowance.
@@ -700,33 +713,50 @@ export async function resetMonthlyGranted(
 export async function ensureMonthlyGrant(userId: string): Promise<void> {
   if (process.env.CREDITS_LIVE !== "1") return;
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { plan: true, trialEndsAt: true },
-  });
-  if (!user) return;
+  const existing = inFlightMonthlyGrants.get(userId);
+  if (existing) {
+    await existing;
+    return;
+  }
 
-  // Trial users carry plan=PRO but credits are a PAID benefit (closes the trial-farm
-  // hole). ensureMonthlyGrant is also called from /api/credits/balance for ANY user,
-  // so guard here, not just on the paid webhook path.
-  if (user.trialEndsAt && user.trialEndsAt.getTime() > Date.now()) return;
+  const run = (async () => {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, trialEndsAt: true },
+    });
+    if (!user) return;
 
-  const allowance = MONTHLY_GRANT[user.plan] ?? 0;
-  if (allowance <= 0) return; // FREE or unknown plan — no allowance
+    // Trial users carry plan=PRO but credits are a PAID benefit (closes the trial-farm
+    // hole). ensureMonthlyGrant is also called from /api/credits/balance for ANY user,
+    // so guard here, not just on the paid webhook path.
+    if (user.trialEndsAt && user.trialEndsAt.getTime() > Date.now()) return;
 
-  const balance = await prisma.creditBalance.findUnique({ where: { userId } });
-  const now = Date.now();
-  const windowMs = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
+    const allowance = MONTHLY_GRANT[user.plan] ?? 0;
+    if (allowance <= 0) return; // FREE or unknown plan — no allowance
 
-  const withinWindow =
-    balance?.grantedResetAt !== null &&
-    balance?.grantedResetAt !== undefined &&
-    now - balance.grantedResetAt.getTime() < windowMs;
+    const balance = await prisma.creditBalance.findUnique({ where: { userId } });
+    const now = Date.now();
+    const windowMs = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
 
-  if (withinWindow) return; // already granted this period
+    const withinWindow =
+      balance?.grantedResetAt !== null &&
+      balance?.grantedResetAt !== undefined &&
+      now - balance.grantedResetAt.getTime() < windowMs;
 
-  // MON-7: guard the reset with the grantedResetAt value we just observed, so a concurrent GET
-  // racing this same expired-window decision can't ALSO write a monthly-reset ledger row — see
-  // resetMonthlyGranted's guarded branch.
-  await resetMonthlyGranted(userId, user.plan, { priorResetAt: balance?.grantedResetAt ?? null });
+    if (withinWindow) return; // already granted this period
+
+    // MON-7: guard the reset with the grantedResetAt value we just observed, so a concurrent GET
+    // racing this same expired-window decision can't ALSO write a monthly-reset ledger row — see
+    // resetMonthlyGranted's guarded branch.
+    await resetMonthlyGranted(userId, user.plan, { priorResetAt: balance?.grantedResetAt ?? null });
+  })();
+
+  inFlightMonthlyGrants.set(userId, run);
+  try {
+    await run;
+  } finally {
+    if (inFlightMonthlyGrants.get(userId) === run) {
+      inFlightMonthlyGrants.delete(userId);
+    }
+  }
 }

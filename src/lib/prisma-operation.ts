@@ -10,6 +10,8 @@ const OPERATIONS = [
   "telemetry.recordBatch",
   "mcp.recordToolCall",
   "mcp.pruneToolCallAudit",
+  "usage.rolloverCycle",
+  "usage.syncLimits",
 ] as const;
 export type PrismaOperation = typeof OPERATIONS[number];
 
