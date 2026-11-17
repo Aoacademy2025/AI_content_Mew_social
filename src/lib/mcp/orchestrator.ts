@@ -3114,9 +3114,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           )
         : buildBrollWindows(
             timedCaptionInput,
-            brollWindowSec,
+            motionThemeId ? brollWindowSec * 0.68 : brollWindowSec,
             durMs,
-            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : (motionThemeId ? 0.68 : 1) },
+            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
           )
         : []));
     // HERO-62: same cap as the upload path — a fill-yourself window must never ask the
