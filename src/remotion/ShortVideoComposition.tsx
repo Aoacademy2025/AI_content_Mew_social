@@ -731,6 +731,9 @@ export function ShortVideoComposition({
           const motionTemplate = (v.motionTemplate || uriTemplateId)
             ? normalizeMotionTemplateConfig(v.motionTemplate, uriTemplateId ?? undefined)
             : null;
+          if (!v.src && motionTemplate) {
+            v.src = `motion://${motionTemplate.templateId}`;
+          }
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
           segs.push({
@@ -740,7 +743,7 @@ export function ShortVideoComposition({
             clipOffset,
             clipDuration,
             // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
-            brollEnabled: v.brollEnabled !== false && Boolean(v.src || motionTemplate),
+            brollEnabled: v.brollEnabled !== false && Boolean(v.src),
             transition: v.transition,
             fit: effectiveBrollFit(v.fit),
             motionTemplate,

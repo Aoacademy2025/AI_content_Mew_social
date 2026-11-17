@@ -2290,11 +2290,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // HERO-44: with auto B-roll off every window stays with the presenter, so the
       // keyword, preflight and provider stages below all see zero visible windows and
       // spend nothing. The windows still reach generate-config for the customer to fill.
-      const uploadFillYourself = (brollDisabled && !motionThemeId) || input.cutawayLayout === "fillYourself";
-      const upCutawayPlan = planCutaway(
-        upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
-        { fillYourself: uploadFillYourself },
-      );
+      const upCutawayPlan = motionThemeId
+        ? planCutaway(
+            upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+            { fillYourself: input.cutawayLayout === "fillYourself" },
+          )
+        : planCutaway(
+            upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+            { fillYourself: brollDisabled },
+          );
       const externalOwnershipPlan = input.brollSource === "external"
         ? planCutaway(upWindowsRaw, { fillYourself: input.cutawayLayout === "fillYourself" })
         : null;
@@ -2308,8 +2312,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       // HERO-44 (b): with fill-it-yourself every window is a presenter window, so none is
       // "visible" — plan all of them instead, so each can be filled with Hero AI Image.
-      if (!motionThemeId && (upVisibleWindows.length > 0 || brollDisabled)) {
-        try {
+      if (upVisibleWindows.length > 0 || brollDisabled) {
+        if (!motionThemeId) try {
         const uploadPreflight = await ensureUploadContentPreflight({
           actor: {
             id: user.id,
