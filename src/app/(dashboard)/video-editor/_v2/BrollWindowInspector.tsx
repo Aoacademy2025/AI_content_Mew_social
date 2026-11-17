@@ -24,7 +24,9 @@ import {
   EyeOff,
   Loader2,
   Redo2,
+  Sparkles,
   Undo2,
+  Wand2,
   X,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
@@ -36,6 +38,24 @@ import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
 import { TREATMENT_PRESETS, type TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import { MAX_HERO_BROLL_CUSTOM_PROMPT_LENGTH } from "@/lib/brand-visual-system";
 import type { BrollRegionPreference } from "@/lib/broll-preferences";
+import {
+  DEFAULT_THEME_BRAND_CI,
+  MOTION_MASCOT_IDS,
+  MOTION_TEMPLATES,
+  MOTION_THEMES,
+  buildMotionBrollUri,
+  isMotionBrollUri,
+  motionTemplate,
+  motionTemplatesForTheme,
+  normalizeMotionTemplateConfig,
+  parseMotionTemplateIdFromUri,
+  planMotionSceneForWindow,
+  type MotionMascotId,
+  type MotionTemplateConfig,
+  type MotionTemplateId,
+  type MotionThemeId,
+} from "@/lib/motion-broll-catalog";
+import { paintMotionBrollCanvas } from "@/remotion/MotionBrollScene";
 import type { ProjectStylePack } from "./project-style-pack";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
@@ -74,6 +94,7 @@ function rawBgVideoAt(config: Record<string, unknown> | null, index: number): Re
 function sourceLabel(kind: WindowEditKind | null): string {
   if (kind === "upload") return "อัปโหลด";
   if (kind === "ai") return "AI";
+  if (kind === "motion") return "โมชัน";
   return "สต็อก";
 }
 
@@ -82,12 +103,14 @@ function sourceLabel(kind: WindowEditKind | null): string {
 // broll-window routes stamp the kind into the basename: broll-ai-* / broll-upload-* / stock-*.
 function inferKindFromSrc(src: unknown): WindowEditKind {
   const s = typeof src === "string" ? src : "";
+  if (isMotionBrollUri(s)) return "motion";
   if (s.includes("/broll-ai-")) return "ai";
   if (s.includes("/broll-upload-")) return "upload";
   return "stock";
 }
 
 function entrySourceKind(entry: Record<string, unknown> | null): WindowEditKind {
+  if (entry?.provider === "motion" || isMotionBrollUri(entry?.src)) return "motion";
   if (entry?.provider === "kie-ai" || entry?.provider === "runpod") return "ai";
   return inferKindFromSrc(entry?.src);
 }
@@ -100,6 +123,7 @@ function entrySourceLabel(entry: Record<string, unknown> | null): string {
   const override = windowSourceLabelOverride(entry);
   if (override) return override;
   const provider = entry?.provider;
+  if (provider === "motion") return "โมชัน";
   if (provider === "kie-ai" || provider === "runpod") return "AI";
   if (typeof provider === "string" && provider) return "สต็อก";
   return sourceLabel(entrySourceKind(entry));
@@ -108,6 +132,7 @@ function entrySourceLabel(entry: Record<string, unknown> | null): string {
 function editableInternalSrc(raw: unknown): string | null {
   if (typeof raw !== "string" || !raw.trim()) return null;
   let src = raw.trim();
+  if (isMotionBrollUri(src)) return src;
   if (/^https?:\/\//i.test(src)) {
     try { src = new URL(src).pathname; } catch { return null; }
   }
@@ -126,8 +151,45 @@ function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
 }
 
-type Tab = "search" | "upload" | "ai";
+type Tab = "search" | "motion" | "upload" | "ai";
 type SearchCandidate = { id: string; provider: "pexels" | "pixabay"; thumb: string; videoUrl: string; duration: number; title: string };
+
+function MotionInspectorThumbnail({
+  config,
+  animate = true,
+  className,
+}: {
+  config: MotionTemplateConfig;
+  animate?: boolean;
+  className?: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (!animate) {
+      paintMotionBrollCanvas(canvas, config, 0.72);
+      return;
+    }
+    let raf = 0;
+    const startedAt = performance.now();
+    const tick = (now: number) => {
+      const elapsedSec = ((now - startedAt) / 1000) % 3.2;
+      paintMotionBrollCanvas(canvas, config, elapsedSec / 3.2);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [animate, config]);
+  return (
+    <canvas
+      ref={canvasRef}
+      width={360}
+      height={640}
+      className={className ?? "h-full w-full object-contain"}
+    />
+  );
+}
 
 // ── Bottom "อัปเดตวิดีโอ" bar — mounted at the PostPhase/PostPhaseMobile screen
 // level (not inside the inspector) so it stays visible while the user keeps editing
@@ -327,10 +389,54 @@ export function BrollWindowInspector({
   const [pendingRerollRequestId, setPendingRerollRequestId] = useState<string | null>(null);
   const autoRecoveryAttemptRef = useRef<string | null>(null);
 
+  const [motionThemeFilter, setMotionThemeFilter] = useState<MotionThemeId>("doodle-explainer");
+  const [selectedMotionTemplateId, setSelectedMotionTemplateId] = useState<MotionTemplateId>("doodle.hook-character");
+  const [motionMascot, setMotionMascot] = useState<MotionMascotId>("stickman-scarf");
+  const [motionHeader, setMotionHeader] = useState("");
+  const [motionTitle, setMotionTitle] = useState("");
+  const [motionSubtitle, setMotionSubtitle] = useState("");
+  const [motionBadge, setMotionBadge] = useState("");
+  const [motionLeft, setMotionLeft] = useState("");
+  const [motionRight, setMotionRight] = useState("");
+
   const rawEntry = index != null ? rawBgVideoAt(ed.previewConfig, index) : null;
 
+  function captionTextForSpan(targetSpan: { startMs: number; endMs: number } | null): string {
+    if (!targetSpan) return "";
+    const caps = (ed.previewConfig as { captions?: Array<{ text?: string; startMs?: number; endMs?: number }> } | null)?.captions;
+    if (!Array.isArray(caps)) return "";
+    return caps
+      .filter((c) => typeof c.startMs === "number" && typeof c.endMs === "number" && c.endMs > targetSpan.startMs && c.startMs < targetSpan.endMs)
+      .map((c) => (typeof c.text === "string" ? c.text.trim() : ""))
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function currentBrandCi() {
+    return {
+      primaryColor: ed.cfg.accentColor,
+      accentColor: ed.cfg.textColor,
+      fontFamily: ed.cfg.fontFamily,
+    };
+  }
+
   useEffect(() => {
-    setTab(fullBrollEditEnabled ? "search" : "ai");
+    const staged = index != null ? ed.windowEdits.get(index) : undefined;
+    const initialMotion =
+      normalizeMotionTemplateConfig(staged?.motionTemplate) ??
+      normalizeMotionTemplateConfig(rawEntry?.motionTemplate) ??
+      (() => {
+        const parsedId = parseMotionTemplateIdFromUri(staged?.src ?? rawEntry?.src);
+        return parsedId ? normalizeMotionTemplateConfig({ templateId: parsedId }) : null;
+      })();
+
+    setTab(
+      initialMotion
+        ? "motion"
+        : fullBrollEditEnabled
+          ? "search"
+          : "ai",
+    );
     setSearchLoading(false);
     setSearchError(null);
     setSearchCandidates(null);
@@ -344,6 +450,37 @@ export function BrollWindowInspector({
     setCustomPrompt("");
     setShowCustomPrompt(false);
     setSearchKeyword(seedSearchKeyword(rawEntry?.keyword));
+
+    if (initialMotion) {
+      const tpl = motionTemplate(initialMotion.templateId);
+      setMotionThemeFilter(initialMotion.themeId ?? tpl?.themeId ?? "doodle-explainer");
+      setSelectedMotionTemplateId(initialMotion.templateId);
+      setMotionMascot(initialMotion.mascot ?? initialMotion.props?.mascot ?? "stickman-scarf");
+      setMotionHeader(initialMotion.headerText ?? tpl?.defaultProps.headerText ?? "");
+      setMotionTitle(initialMotion.title ?? tpl?.defaultProps.title ?? "");
+      setMotionSubtitle(initialMotion.subtitle ?? tpl?.defaultProps.subtitle ?? "");
+      setMotionBadge(initialMotion.badgeText ?? tpl?.defaultProps.badgeText ?? "");
+      setMotionLeft(initialMotion.leftText ?? tpl?.defaultProps.leftText ?? "");
+      setMotionRight(initialMotion.rightText ?? tpl?.defaultProps.rightText ?? "");
+    } else if (span && index != null) {
+      const posIdx = Math.max(0, spans.findIndex((s) => s.index === index));
+      const planned = planMotionSceneForWindow({
+        themeId: motionThemeFilter,
+        windowIndex: posIdx,
+        totalWindows: Math.max(1, spans.length),
+        captionText: captionTextForSpan(span),
+        keyword: typeof rawEntry?.keyword === "string" ? rawEntry.keyword : undefined,
+        brandCi: currentBrandCi(),
+        mascot: motionMascot,
+      });
+      setSelectedMotionTemplateId(planned.templateId);
+      setMotionHeader(planned.headerText ?? "");
+      setMotionTitle(planned.title ?? "");
+      setMotionSubtitle(planned.subtitle ?? "");
+      setMotionBadge(planned.badgeText ?? "");
+      setMotionLeft(planned.leftText ?? "");
+      setMotionRight(planned.rightText ?? "");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullBrollEditEnabled, index]);
 
@@ -430,6 +567,7 @@ export function BrollWindowInspector({
     clipDuration?: number,
     imageJobId?: string,
     stillImage = false,
+    motionConfig?: MotionTemplateConfig,
   ) {
     // HERO-44: a pick on a window that is off (an unfilled slot, or a presenter window of an
     // uploaded clip) also turns it on, so one free update is enough to see the result.
@@ -448,8 +586,144 @@ export function BrollWindowInspector({
       // when the creator chooses Stock/Upload instead.
       imageJobId,
       stillImage,
+      motionTemplate: motionConfig,
     });
-    toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
+    toast.success(
+      kind === "ai"
+        ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว"
+        : kind === "motion"
+          ? "ตั้งค่าฉากโมชันแล้ว — ดูตัวอย่างบนเวทีได้ทันที"
+          : "เปลี่ยนคลิปแล้ว",
+    );
+  }
+
+  function buildActiveMotionConfig(templateIdOverride?: MotionTemplateId): MotionTemplateConfig {
+    const tplId = templateIdOverride ?? selectedMotionTemplateId;
+    const tpl = motionTemplate(tplId) ?? MOTION_TEMPLATES[0];
+    return {
+      templateId: tpl.id,
+      themeId: tpl.themeId,
+      headerText: (motionHeader || tpl.defaultProps.headerText || "").slice(0, 60),
+      title: (motionTitle || tpl.defaultProps.title || "").slice(0, 80),
+      subtitle: (motionSubtitle || tpl.defaultProps.subtitle || "").slice(0, 90),
+      badgeText: (motionBadge || tpl.defaultProps.badgeText || "").slice(0, 48),
+      leftText: (motionLeft || tpl.defaultProps.leftText || "").slice(0, 48),
+      rightText: (motionRight || tpl.defaultProps.rightText || "").slice(0, 48),
+      mascot: motionMascot,
+      brandCi: currentBrandCi(),
+    };
+  }
+
+  function handlePickMotionTemplate(tplId: MotionTemplateId) {
+    const tpl = motionTemplate(tplId);
+    if (!tpl) return;
+    setSelectedMotionTemplateId(tpl.id);
+    setMotionThemeFilter(tpl.themeId);
+    const nextHeader = motionHeader.trim() ? motionHeader : (tpl.defaultProps.headerText ?? "");
+    const nextTitle = motionTitle.trim() ? motionTitle : (tpl.defaultProps.title ?? "");
+    const nextSubtitle = motionSubtitle.trim() ? motionSubtitle : (tpl.defaultProps.subtitle ?? "");
+    const nextBadge = motionBadge.trim() ? motionBadge : (tpl.defaultProps.badgeText ?? "");
+    const nextLeft = motionLeft.trim() ? motionLeft : (tpl.defaultProps.leftText ?? "");
+    const nextRight = motionRight.trim() ? motionRight : (tpl.defaultProps.rightText ?? "");
+    setMotionHeader(nextHeader);
+    setMotionTitle(nextTitle);
+    setMotionSubtitle(nextSubtitle);
+    setMotionBadge(nextBadge);
+    setMotionLeft(nextLeft);
+    setMotionRight(nextRight);
+    const config: MotionTemplateConfig = {
+      templateId: tpl.id,
+      themeId: tpl.themeId,
+      headerText: nextHeader,
+      title: nextTitle,
+      subtitle: nextSubtitle,
+      badgeText: nextBadge,
+      leftText: nextLeft,
+      rightText: nextRight,
+      mascot: motionMascot,
+      brandCi: currentBrandCi(),
+    };
+    markEdited("motion", buildMotionBrollUri(tpl.id), tpl.id, `โมชัน · ${tpl.thaiLabel}`, undefined, undefined, false, config);
+  }
+
+  function handleAutoPlanCurrentWindow(themeId: MotionThemeId = motionThemeFilter) {
+    if (index == null || !span) return;
+    const posIdx = Math.max(0, spans.findIndex((s) => s.index === index));
+    const planned = planMotionSceneForWindow({
+      themeId,
+      windowIndex: posIdx,
+      totalWindows: Math.max(1, spans.length),
+      captionText: captionTextForSpan(span),
+      keyword: typeof rawEntry?.keyword === "string" ? rawEntry.keyword : undefined,
+      mascot: motionMascot,
+      brandCi: currentBrandCi(),
+    });
+    const tpl = motionTemplate(planned.templateId);
+    setMotionThemeFilter(themeId);
+    setSelectedMotionTemplateId(planned.templateId);
+    setMotionHeader(planned.headerText ?? "");
+    setMotionTitle(planned.title ?? "");
+    setMotionSubtitle(planned.subtitle ?? "");
+    setMotionBadge(planned.badgeText ?? "");
+    setMotionLeft(planned.leftText ?? "");
+    setMotionRight(planned.rightText ?? "");
+    markEdited(
+      "motion",
+      buildMotionBrollUri(planned.templateId),
+      planned.templateId,
+      `โมชัน · ${tpl?.thaiLabel ?? planned.templateId}`,
+      undefined,
+      undefined,
+      false,
+      planned,
+    );
+  }
+
+  function handleApplyMotionThemeWholeClip(themeId: MotionThemeId = motionThemeFilter) {
+    if (spans.length === 0) return;
+    const brandCi = currentBrandCi();
+    const themeMeta = MOTION_THEMES.find((t) => t.id === themeId);
+    const updates = spans.map((s, posIdx) => {
+      const raw = rawBgVideoAt(ed.previewConfig, s.index);
+      const planned = planMotionSceneForWindow({
+        themeId,
+        windowIndex: posIdx,
+        totalWindows: spans.length,
+        captionText: captionTextForSpan(s),
+        keyword: typeof raw?.keyword === "string" ? raw.keyword : undefined,
+        mascot: motionMascot,
+        brandCi,
+      });
+      const tpl = motionTemplate(planned.templateId);
+      const turnsOn = pickTurnsWindowOn({
+        currentlyEnabled: ed.isBrollWindowEnabled(s.index),
+        stagedEnabled: ed.windowEdits.get(s.index)?.enabled,
+      });
+      if (s.index === index) {
+        setSelectedMotionTemplateId(planned.templateId);
+        setMotionHeader(planned.headerText ?? "");
+        setMotionTitle(planned.title ?? "");
+        setMotionSubtitle(planned.subtitle ?? "");
+        setMotionBadge(planned.badgeText ?? "");
+        setMotionLeft(planned.leftText ?? "");
+        setMotionRight(planned.rightText ?? "");
+      }
+      return {
+        index: s.index,
+        edit: {
+          src: buildMotionBrollUri(planned.templateId),
+          kind: "motion" as WindowEditKind,
+          ...(turnsOn ? { enabled: true } : {}),
+          keyword: planned.templateId,
+          label: `โมชัน · ${tpl?.thaiLabel ?? planned.templateId}`,
+          imageJobId: undefined,
+          stillImage: false,
+          motionTemplate: planned,
+        },
+      };
+    });
+    ed.setWindowEdits(updates);
+    toast.success(`คุมธีม "${themeMeta?.thaiLabel ?? themeId}" + Brand CI ทั้งคลิป (${updates.length} ฉาก) แล้ว`);
   }
 
   function effectiveAsset(windowIndex: number): {
@@ -459,12 +733,21 @@ export function BrollWindowInspector({
     label: string;
     stillImage: boolean;
     imageJobId?: string;
+    motionTemplate?: MotionTemplateConfig;
   } | null {
     const raw = rawBgVideoAt(ed.previewConfig, windowIndex);
     const staged = ed.windowEdits.get(windowIndex);
     const src = editableInternalSrc(staged?.src ?? raw?.src);
     if (!src) return null;
     const rawKeyword = typeof raw?.keyword === "string" ? raw.keyword : undefined;
+    const motionConfig =
+      normalizeMotionTemplateConfig(staged?.motionTemplate) ??
+      normalizeMotionTemplateConfig(raw?.motionTemplate) ??
+      (() => {
+        const parsed = parseMotionTemplateIdFromUri(src);
+        return parsed ? normalizeMotionTemplateConfig({ templateId: parsed }) : null;
+      })() ??
+      undefined;
     return {
       src,
       keyword: staged?.keyword ?? rawKeyword,
@@ -472,6 +755,7 @@ export function BrollWindowInspector({
       label: staged?.label ?? entrySourceLabel(raw),
       stillImage: staged?.src ? staged.stillImage === true : raw?.stillImage === true,
       ...(staged?.imageJobId ? { imageJobId: staged.imageJobId } : {}),
+      ...(motionConfig ? { motionTemplate: motionConfig } : {}),
     };
   }
 
@@ -497,6 +781,7 @@ export function BrollWindowInspector({
           label: targetAsset.label,
           stillImage: targetAsset.stillImage,
           imageJobId: undefined,
+          motionTemplate: targetAsset.motionTemplate,
         },
       },
       {
@@ -508,6 +793,7 @@ export function BrollWindowInspector({
           label: currentAsset.label,
           stillImage: currentAsset.stillImage,
           imageJobId: undefined,
+          motionTemplate: currentAsset.motionTemplate,
         },
       },
     ]);
@@ -701,17 +987,25 @@ export function BrollWindowInspector({
           }}
         >
           {currentAssetPreview ? (
-            <video
-              key={currentAssetPreview.src}
-              src={currentAssetPreview.src}
-              aria-label={`ตัวอย่าง B-roll ฉากที่ ${positionLabel}`}
-              muted
-              loop
-              autoPlay
-              playsInline
-              preload="metadata"
-              className="h-full w-full object-contain"
-            />
+            isMotionBrollUri(currentAssetPreview.src) && currentAssetPreview.motionTemplate ? (
+              <MotionInspectorThumbnail
+                key={`${currentAssetPreview.src}-${JSON.stringify(currentAssetPreview.motionTemplate)}`}
+                config={currentAssetPreview.motionTemplate}
+                animate
+              />
+            ) : (
+              <video
+                key={currentAssetPreview.src}
+                src={currentAssetPreview.src}
+                aria-label={`ตัวอย่าง B-roll ฉากที่ ${positionLabel}`}
+                muted
+                loop
+                autoPlay
+                playsInline
+                preload="metadata"
+                className="h-full w-full object-contain"
+              />
+            )
           ) : (
             <span className="px-4 text-center" style={{ fontSize: 11.5, lineHeight: 1.6, color: color.textFaint }}>
               {rawEntry && !rawEntry.src
@@ -945,6 +1239,11 @@ export function BrollWindowInspector({
             onChange={(v) => setTab(v as Tab)}
             options={[
               { value: "search", label: "เปลี่ยนสต็อก" },
+              {
+                value: "motion",
+                label: "โมชัน / Doodle",
+                title: "สร้างฉากเคลื่อนไหว Doodle / Cue Step Board / HyperFrames พร้อม Brand CI (ฟรี 0 เครดิต)",
+              },
               { value: "upload", label: "อัปโหลด" },
               {
                 value: "ai",
@@ -966,6 +1265,250 @@ export function BrollWindowInspector({
 
   const tabContent = (
     <div className="flex flex-col gap-3">
+      {tab === "motion" && (
+        <div className="flex flex-col gap-3">
+          <div
+            className="flex flex-col gap-2.5"
+            style={{
+              padding: "12px",
+              borderRadius: radius.card,
+              border: "1px solid rgba(56,189,248,.32)",
+              background: "linear-gradient(145deg, rgba(56,189,248,.11), rgba(167,139,250,.07))",
+            }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-col gap-0.5">
+                <span style={{ font: `600 13px ${font.heading}`, color: color.text }}>
+                  Motion Style + Brand CI (0 เครดิต)
+                </span>
+                <span style={{ fontSize: 11, color: color.textSecondary, lineHeight: 1.5 }}>
+                  เลือกธีม Doodle, Cue Step Board หรือ HyperFrames แล้วล็อกสไตล์ทั้งคลิป หรือปรับเฉพาะฉากนี้
+                </span>
+              </div>
+              <Chip selected>{ed.cfg.fontFamily}</Chip>
+            </div>
+
+            <GroupLabel>1. เลือกธีมหลัก (Motion Theme)</GroupLabel>
+            <div className="grid grid-cols-1 gap-1.5">
+              {MOTION_THEMES.map((theme) => {
+                const active = motionThemeFilter === theme.id;
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    onClick={() => setMotionThemeFilter(theme.id)}
+                    className="flex items-center justify-between gap-2 text-left"
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: radius.control,
+                      border: active ? `1.5px solid ${color.primary300}` : `1px solid ${color.cardBorder}`,
+                      background: active ? "rgba(139,92,246,.16)" : "rgba(10,10,18,.55)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span style={{ fontSize: 12, fontWeight: 600, color: color.text }}>
+                        {theme.thaiLabel}
+                      </span>
+                      <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.35 }}>
+                        {theme.description}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 999,
+                          background: DEFAULT_THEME_BRAND_CI[theme.id].primaryColor,
+                          border: "1px solid rgba(255,255,255,.3)",
+                        }}
+                      />
+                      <span
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 999,
+                          background: DEFAULT_THEME_BRAND_CI[theme.id].backgroundColor,
+                          border: "1px solid rgba(255,255,255,.3)",
+                        }}
+                      />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col gap-1.5 pt-1">
+              <span style={{ fontSize: 10.5, color: color.textSecondary }}>
+                คาแรคเตอร์ประจำช่อง (Mascot)
+              </span>
+              <div className="grid grid-cols-4 gap-1.5">
+                {(
+                  [
+                    { id: "stickman-scarf" as MotionMascotId, label: "ผ้าพันคอ" },
+                    { id: "stickman-glasses" as MotionMascotId, label: "แว่นตา" },
+                    { id: "stickman-cap" as MotionMascotId, label: "หมวกแก๊ป" },
+                    { id: "ai-bot" as MotionMascotId, label: "หุ่น AI" },
+                  ] as const
+                ).map((item) => {
+                  const active = motionMascot === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setMotionMascot(item.id)}
+                      style={{
+                        padding: "5px 6px",
+                        borderRadius: radius.control,
+                        fontSize: 10.5,
+                        fontWeight: active ? 600 : 500,
+                        color: active ? color.text : color.textSecondary,
+                        border: active ? `1.5px solid ${color.primary300}` : `1px solid ${color.cardBorder}`,
+                        background: active ? "rgba(139,92,246,.18)" : "rgba(10,10,18,.55)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 pt-1">
+              <BtnPrimary
+                onClick={() => handleApplyMotionThemeWholeClip(motionThemeFilter)}
+                style={{ minHeight: 40, fontSize: 12 }}
+              >
+                <span className="flex items-center justify-center gap-1.5">
+                  <Sparkles size={14} /> คุมธีมนี้ทั้งคลิป ({spans.length} ฉาก + Brand CI)
+                </span>
+              </BtnPrimary>
+              <BtnSecondary
+                onClick={() => handleAutoPlanCurrentWindow(motionThemeFilter)}
+                style={{ minHeight: 38, fontSize: 11.5 }}
+              >
+                <span className="flex items-center justify-center gap-1.5">
+                  <Wand2 size={13} /> จัดฉากที่ {positionLabel} ตามบทพูดอัตโนมัติ
+                </span>
+              </BtnSecondary>
+            </div>
+          </div>
+
+          <GroupLabel>2. เลือกรูปแบบฉาก (Scene Archetype)</GroupLabel>
+          <div className="grid grid-cols-2 gap-2">
+            {motionTemplatesForTheme(motionThemeFilter).map((tpl) => {
+              const isSelected = selectedMotionTemplateId === tpl.id;
+              const thumbConfig = normalizeMotionTemplateConfig({
+                templateId: tpl.id,
+                themeId: tpl.themeId,
+                mascot: motionMascot,
+                brandCi: currentBrandCi(),
+              })!;
+              return (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() => handlePickMotionTemplate(tpl.id)}
+                  className="flex flex-col overflow-hidden text-left"
+                  style={{
+                    borderRadius: radius.card,
+                    border: isSelected ? `2px solid ${color.primary300}` : `1px solid ${color.cardBorder}`,
+                    background: isSelected ? "rgba(139,92,246,.14)" : "rgba(10,10,18,.65)",
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ aspectRatio: "9/12", width: "100%", overflow: "hidden", background: "#050508" }}>
+                    <MotionInspectorThumbnail config={thumbConfig} animate={false} className="h-full w-full object-cover" />
+                  </div>
+                  <div className="flex flex-col gap-0.5 p-2">
+                    <span style={{ fontSize: 11, fontWeight: 600, color: color.text, lineHeight: 1.3 }}>
+                      {tpl.thaiLabel}
+                    </span>
+                    <span style={{ fontSize: 9.5, color: color.textFaint, lineHeight: 1.3 }}>
+                      {tpl.description}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            className="flex flex-col gap-2"
+            style={{
+              padding: "10px 12px",
+              borderRadius: radius.card,
+              border: `1px solid ${color.cardBorder}`,
+              background: "rgba(255,255,255,.025)",
+            }}
+          >
+            <GroupLabel>3. ปรับข้อความในฉากนี้</GroupLabel>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={motionHeader}
+                onChange={(e) => setMotionHeader(e.target.value)}
+                placeholder="ป้ายบนสุด (Header)"
+                style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 11.5 }}
+              />
+              <input
+                value={motionBadge}
+                onChange={(e) => setMotionBadge(e.target.value)}
+                placeholder="ป้าย Badge / ตัวเลข"
+                style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 11.5 }}
+              />
+            </div>
+            <input
+              value={motionTitle}
+              onChange={(e) => setMotionTitle(e.target.value)}
+              placeholder="หัวข้อหลักบนการ์ด (Title)"
+              style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 12 }}
+            />
+            <input
+              value={motionSubtitle}
+              onChange={(e) => setMotionSubtitle(e.target.value)}
+              placeholder="ข้อความรอง / บทสรุป (Subtitle)"
+              style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 11.5 }}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={motionLeft}
+                onChange={(e) => setMotionLeft(e.target.value)}
+                placeholder="ข้อความซ้าย / ก่อน"
+                style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 11.5 }}
+              />
+              <input
+                value={motionRight}
+                onChange={(e) => setMotionRight(e.target.value)}
+                placeholder="ข้อความขวา / หลัง"
+                style={{ padding: "7px 10px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 11.5 }}
+              />
+            </div>
+            <BtnSecondary
+              onClick={() => {
+                const cfg = buildActiveMotionConfig();
+                const tpl = motionTemplate(cfg.templateId);
+                markEdited(
+                  "motion",
+                  buildMotionBrollUri(cfg.templateId),
+                  cfg.templateId,
+                  `โมชัน · ${tpl?.thaiLabel ?? cfg.templateId}`,
+                  undefined,
+                  undefined,
+                  false,
+                  cfg,
+                );
+              }}
+              style={{ minHeight: 38, fontSize: 12 }}
+            >
+              ใช้ข้อความนี้กับฉากที่ {positionLabel}
+            </BtnSecondary>
+          </div>
+        </div>
+      )}
+
       {tab === "search" && (
         <div className="flex flex-col gap-3">
           <div className="flex gap-2">

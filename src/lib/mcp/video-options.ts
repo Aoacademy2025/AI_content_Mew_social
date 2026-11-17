@@ -7,6 +7,7 @@ import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/
 import type { McpActiveBrandProfileSummary } from "@/lib/brand-profile-library.server";
 import { isManagedStockConfiguredFromEnv } from "@/lib/managed-stock";
 import { activeStylePacks } from "@/lib/style-pack-catalog";
+import { MOTION_MASCOT_IDS, MOTION_TEMPLATES, MOTION_THEMES } from "@/lib/motion-broll-catalog";
 
 export const MEDIA_SOURCE_QUESTION = "อยากใช้ภาพประกอบแบบไหน: สต็อก, Hero AI Image, AutoMix หรือให้ AI ที่คุณคุยอยู่สร้าง/หาภาพและวิดีโอแล้วนำเข้าให้?";
 export const MEDIA_TOOL_UNAVAILABLE = "เครื่องมือที่เชื่อมต่ออยู่ยังสร้างหรือค้นหาสื่อนี้ไม่ได้ คุณส่งไฟล์/ลิงก์ให้ผม หรือเลือกแหล่งสื่ออื่นได้";
@@ -157,8 +158,22 @@ export async function getVideoOptions(
       savedElevenlabs: user.elevenlabsVoiceId ?? null,
     },
     templates,
+    motionThemes: MOTION_THEMES.map((theme) => ({
+      id: theme.id,
+      thaiLabel: theme.thaiLabel,
+      englishLabel: theme.englishLabel,
+      description: theme.description,
+    })),
+    motionMascots: MOTION_MASCOT_IDS,
+    motionTemplates: MOTION_TEMPLATES.map((tpl) => ({
+      id: tpl.id,
+      themeId: tpl.themeId,
+      archetype: tpl.archetype,
+      thaiLabel: tpl.thaiLabel,
+      description: tpl.description,
+    })),
     templatesHowToChoose:
-      "มี 2 แนวทางหลัก: (1) สไตล์สำเร็จรูป 1 คลิก — เลือก templateId คู่กับ brollSource (\"stock\" | \"hero-ai-image\" | \"automix\") ตอน create_video_job หรือ prepare_video_job ระบบจะตั้งโทนฟุตเทจสต็อกหรือรูปแบบภาพ+แนวเล่าเรื่อง+ชุดสีของ AI พร้อมซับ พาดหัว โทนเสียง SFX ซูมจังหวะ การตัดภาพ และเพลงให้อัตโนมัติโดยไม่ต้องไล่ถามสไตล์ย่อยซ้ำ (ค่าที่ระบุแยกเองจะทับเทมเพลตเสมอ; งานที่ hold ไว้ใช้ apply_video_template เปลี่ยนเทมเพลตทั้งชุดได้) (2) สื่อเฉพาะทางของผู้ใช้ — เลือก brollSource: \"external\" (ส่งคู่กับ templateId ได้เพื่อให้ซับ/พาดหัว/เพลงเข้าชุด) ระบบจะพักงานแบบ hold โดยใช้ 0 เครดิตสร้างภาพ Hero เพื่อให้เติมภาพ/วิดีโอเข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window ก่อน export_video",
+      "มี 2 แนวทางหลัก: (1) สไตล์สำเร็จรูป 1 คลิก — เลือก templateId คู่กับ brollSource (\"stock\" | \"hero-ai-image\" | \"automix\") หรือเลือกธีมโมชัน motionThemeId (\"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") ตอน create_video_job หรือ prepare_video_job ระบบจะตั้งโทนภาพหรือสร้างฉากโมชันด้วยโค้ด + Brand CI ทั้งคลิปให้อัตโนมัติตั้งแต่รอบแรก (0 เครดิตภาพเมื่อใช้ motionThemeId) (2) สื่อเฉพาะทางของผู้ใช้ — เลือก brollSource: \"external\" ระบบจะพักงานแบบ hold เพื่อให้เติมภาพ/วิดีโอหรือฉาก Motion/HyperFrames เข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window ก่อน export_video",
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
     // Resolution order: explicit args → templateId defaults → Brand Subtitle Style → default below.

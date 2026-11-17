@@ -26,6 +26,7 @@ import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { mcpBrollJobFields } from "./broll-source";
 import { withVideoJobSqliteRetry } from "./video-job";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import { isMotionMascotId, isMotionThemeId, type MotionMascotId, type MotionThemeId } from "@/lib/motion-broll-catalog";
 import type { createMcpVideoJob } from "./chain-export";
 type VideoJobInput = Parameters<typeof createMcpVideoJob>[1];
 import {
@@ -114,8 +115,11 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
   const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);
   if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];
+  const execution = await resolveQuoteExecution(user, input, presenters);
+  if ("error" in execution) return execution;
+  const hasMotionTheme = Boolean(execution.jobInput.motionThemeId);
   const source = input.brollSource ?? "stock";
-  const noAutomaticBroll = source === "external" || clip.clip?.cutawayLayout === "fillYourself";
+  const noAutomaticBroll = hasMotionTheme || source === "external" || clip.clip?.cutawayLayout === "fillYourself";
   const usesImages = !noAutomaticBroll && (source === "hero-ai-image" || source === "automix");
   const access = usesImages ? await resolveHeroAiImageAccess(user) : null;
   if (access && !access.canUse) return quoteFailure("image_access_required", "บัญชียังไม่มีสิทธิ์สร้างภาพ Hero AI Image", "ตรวจสิทธิ์ทดลองหรือแผนใน Studio หรือให้ผู้ใช้เลือกแหล่งสื่ออื่นด้วยตนเอง");
@@ -138,8 +142,6 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     voiceProvider: presenter ? undefined : voiceProvider, noAutomaticBroll, pricing,
   });
   const receipt: QuoteReceipt = quoteWarnings.length > 0 ? { ...baseReceipt, warnings: quoteWarnings } : baseReceipt;
-  const execution = await resolveQuoteExecution(user, input, presenters);
-  if ("error" in execution) return execution;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
   const result = await withVideoJobSqliteRetry("prepare quote", () => prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -168,6 +170,9 @@ async function resolveQuoteExecution(
   const templatePack = input.templateId && isActiveStylePackId(input.templateId) ? stylePack(input.templateId) : null;
   const templateSnapshot = templatePack ? stylePackSnapshotOf(templatePack) : null;
   let brandStyle: SubtitleStylePresetConfig | null = null;
+  let brandMotionThemeId: MotionThemeId | undefined;
+  let brandMotionMascot: MotionMascotId | undefined;
+  let brandPalette: string[] | undefined;
   let brandId = input.brandProfileId;
   if (!brandId) {
     const brands = await listActiveBrandProfilesForMcp(user.id);
@@ -177,16 +182,28 @@ async function resolveQuoteExecution(
     const lookup = await resolveMcpBrandSubtitleStyle(user.id, brandId);
     if (!lookup.found) return quoteFailure("brand_not_found", "ไม่พบแบรนด์นี้ หรือยังใช้ไม่ได้");
     brandStyle = lookup.style ?? null;
+    if (isMotionThemeId(lookup.motionThemeId)) brandMotionThemeId = lookup.motionThemeId;
+    if (isMotionMascotId(lookup.motionMascot)) brandMotionMascot = lookup.motionMascot;
+    if (Array.isArray(lookup.palette) && lookup.palette.length > 0) brandPalette = lookup.palette;
   }
+  const resolvedMotionThemeId = isMotionThemeId(input.motionThemeId)
+    ? input.motionThemeId
+    : brandMotionThemeId;
+  const resolvedMotionMascot = isMotionMascotId(input.motionMascot)
+    ? input.motionMascot
+    : brandMotionMascot;
   const baseSubtitleStyle = templatePack ? stylePackSubtitlePreset(templatePack) : brandStyle;
   const subtitle = resolveMcpSubtitleDesign(
-    templatePack
-      ? {
-          ...input,
-          highlightKeywords: input.highlightKeywords ?? templatePack.highlightKeywords,
-          statCards: input.statCards ?? templatePack.statCards,
-        }
-      : input,
+    {
+      ...input,
+      ...(resolvedMotionThemeId ? { motionThemeId: resolvedMotionThemeId } : {}),
+      ...(templatePack
+        ? {
+            highlightKeywords: input.highlightKeywords ?? templatePack.highlightKeywords,
+            statCards: input.statCards ?? templatePack.statCards,
+          }
+        : {}),
+    },
     baseSubtitleStyle,
   );
   const resolvedHeadlineHookStyle = input.headlineHookStyle ?? input.visualHookStyle ?? templatePack?.headlineHookPreset;
@@ -203,7 +220,8 @@ async function resolveQuoteExecution(
     subtitle.design.verticalPos,
   );
   const resolvedPunchZoom = input.punchZoom ?? templatePack?.punchZoom;
-  const resolvedSfxMode = input.sfxMode ?? templatePack?.sfxMode;
+  // Motion themes default to subtle pop/whoosh SFX unless the caller explicitly asked for "none".
+  const resolvedSfxMode = input.sfxMode ?? templatePack?.sfxMode ?? (resolvedMotionThemeId ? "subtle" : undefined);
   const resolvedBrollTransition = templatePack?.brollTransition;
   const layout = avatar.kind === "ok" ? resolveAvatarLayout(input, await getAvatarPreset(user.id, avatar.avatarId)) : null;
   const source = input.brollSource ?? "stock";
@@ -246,6 +264,9 @@ async function resolveQuoteExecution(
   const jobInput: VideoJobInput = {
     script: presenter ? "" : input.script!, title: input.title,
     ...(templatePack && templateSnapshot ? { templateId: templatePack.id, templateSnapshot } : {}),
+    ...(resolvedMotionThemeId ? { motionThemeId: resolvedMotionThemeId } : {}),
+    ...(resolvedMotionMascot ? { motionMascot: resolvedMotionMascot } : {}),
+    ...(brandPalette && brandPalette.length > 0 ? { brandPalette } : {}),
     ...(resolvedBrollTransition ? { brollTransition: resolvedBrollTransition } : {}),
     ...(presenter
       ? {
@@ -282,7 +303,7 @@ async function resolveQuoteExecution(
     ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
     ...(input.subtitleMode ? { subtitleMode: input.subtitleMode } : {}),
     ...(input.subtitlePosition ? { subtitlePosition: input.subtitlePosition } : {}),
-    ...(source === "external" || input.cutawayLayout === "fillYourself" ? { stockSource: "none" } : mcpBrollJobFields(source)),
+    ...(source === "external" || input.cutawayLayout === "fillYourself" || resolvedMotionThemeId ? { stockSource: "none" } : mcpBrollJobFields(source)),
   };
   return {
     jobInput,

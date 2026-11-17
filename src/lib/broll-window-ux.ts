@@ -29,9 +29,13 @@ export function seedSearchKeyword(keyword: unknown): string {
 
 /** Source badge for windows the normal provider/filename inference gets wrong. */
 export function windowSourceLabelOverride(
-  entry: { keyword?: unknown; timelineAligned?: unknown } | null | undefined,
+  entry: { keyword?: unknown; timelineAligned?: unknown; provider?: unknown; src?: unknown } | null | undefined,
 ): string | null {
-  return entry?.timelineAligned === true || entry?.keyword === PRESENTER_KEYWORD ? "คลิปของคุณ" : null;
+  if (entry?.timelineAligned === true || entry?.keyword === PRESENTER_KEYWORD) return "คลิปของคุณ";
+  if (entry?.provider === "motion" || (typeof entry?.src === "string" && entry.src.startsWith("motion://"))) {
+    return "โมชัน";
+  }
+  return null;
 }
 
 /**

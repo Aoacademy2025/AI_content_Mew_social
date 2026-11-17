@@ -689,12 +689,21 @@ export function AdvancedSettings({
                 disabled={disabled}
                 onValueChange={(value) => {
                   const preset = library.subtitlePresets.find((item) => item.id === value);
-                  setDraft((current) => ({
-                    ...current,
-                    subtitle: preset
-                      ? { presetId: preset.id, config: preset.config }
-                      : { presetId: null, config: {} },
-                  }));
+                  setDraft((current) => {
+                    const preservedMotion: Record<string, string | number | boolean | null> = {};
+                    if (typeof current.subtitle.config?.motionThemeId === "string" && current.subtitle.config.motionThemeId) {
+                      preservedMotion.motionThemeId = current.subtitle.config.motionThemeId;
+                    }
+                    if (typeof current.subtitle.config?.motionMascot === "string" && current.subtitle.config.motionMascot) {
+                      preservedMotion.motionMascot = current.subtitle.config.motionMascot;
+                    }
+                    return {
+                      ...current,
+                      subtitle: preset
+                        ? { presetId: preset.id, config: { ...preset.config, ...preservedMotion } }
+                        : { presetId: null, config: preservedMotion },
+                    };
+                  });
                 }}
               >
                 <SelectTrigger id="brand-subtitle-preset" className="h-10">
@@ -713,6 +722,85 @@ export function AdvancedSettings({
             <p className="text-[11px] text-muted-foreground">
               เลือกได้ทุกแผน ระบบเก็บค่านี้ไว้กับแนวภาพแต่ละรุ่น จึงไม่เปลี่ยนตามการแก้รูปแบบภายหลัง
             </p>
+          </Group>
+
+          <Group title="ธีมฉาก Motion B-Roll / HyperFrames เริ่มต้น">
+            <div className="grid gap-4 md:grid-cols-2">
+              <FieldShell
+                id="brand-motion-theme"
+                label="ธีมโมชันเริ่มต้น"
+                helper="กำหนดให้คลิปใหม่ของแบรนด์นี้ใช้ฉาก Motion B-Roll / HyperFrames อัตโนมัติทั้งในเว็บและ MCP"
+              >
+                <Select
+                  value={
+                    typeof draft.subtitle.config?.motionThemeId === "string" && draft.subtitle.config.motionThemeId
+                      ? draft.subtitle.config.motionThemeId
+                      : NO_BRAND_ASSET
+                  }
+                  disabled={disabled}
+                  onValueChange={(value) =>
+                    setDraft((current) => {
+                      const nextConfig = { ...current.subtitle.config };
+                      if (value === NO_BRAND_ASSET) {
+                        delete nextConfig.motionThemeId;
+                      } else {
+                        nextConfig.motionThemeId = value;
+                      }
+                      return {
+                        ...current,
+                        subtitle: { ...current.subtitle, config: nextConfig },
+                      };
+                    })
+                  }
+                >
+                  <SelectTrigger id="brand-motion-theme" className="h-10">
+                    <SelectValue placeholder="ใช้ตามแนวภาพปกติ (ไม่ล็อกธีมโมชัน)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_BRAND_ASSET}>ใช้ตามแนวภาพปกติ (ไม่ล็อกธีมโมชัน)</SelectItem>
+                    <SelectItem value="doodle-explainer">Doodle Stickman (วาดเส้นการ์ตูน + ผ้าพันคอแบรนด์)</SelectItem>
+                    <SelectItem value="cue-step-board">Cue Step Board (การ์ด 1-2-3 + โต๊ะผู้บรรยาย)</SelectItem>
+                    <SelectItem value="hyperframe-kinetic">HyperFrame Kinetic (กราฟิก 3 มิติ + แสงนีออน)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+              <FieldShell
+                id="brand-motion-mascot"
+                label="ตัวละครประจำช่อง (Mascot)"
+                helper="ใช้แสดงเป็นตัวละครหลักและผู้บรรยายในฉาก Motion B-Roll"
+              >
+                <Select
+                  value={
+                    typeof draft.subtitle.config?.motionMascot === "string" && draft.subtitle.config.motionMascot
+                      ? draft.subtitle.config.motionMascot
+                      : "stickman-scarf"
+                  }
+                  disabled={disabled}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      subtitle: {
+                        ...current.subtitle,
+                        config: {
+                          ...current.subtitle.config,
+                          motionMascot: value,
+                        },
+                      },
+                    }))
+                  }
+                >
+                  <SelectTrigger id="brand-motion-mascot" className="h-10">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="stickman-scarf">Stickman ผ้าพันคอสีแบรนด์</SelectItem>
+                    <SelectItem value="stickman-glasses">Stickman แว่นตาเนิร์ด</SelectItem>
+                    <SelectItem value="stickman-cap">Stickman หมวกแก๊ปครีเอเตอร์</SelectItem>
+                    <SelectItem value="ai-bot">AI Robot ผู้ช่วยอัจฉริยะ</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+            </div>
           </Group>
 
           <Group title="โลโก้ / ลายน้ำเริ่มต้น">

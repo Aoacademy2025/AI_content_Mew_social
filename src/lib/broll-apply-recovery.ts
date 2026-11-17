@@ -8,8 +8,8 @@ export type PendingBrollApply = {
   sourceJobId: string;
   idempotencyKey: string;
   jobId: string | null;
-  draftEdits: [number, Record<string, string | number | boolean>][];
-  windowEdits: Record<string, string | number | boolean>[];
+  draftEdits: [number, Record<string, unknown>][];
+  windowEdits: Record<string, unknown>[];
   /** EP5 #11 staged project default; with one, the edit lists may be empty. */
   brollTransition?: BrollTransition;
 };
@@ -28,12 +28,13 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function validEdits(value: unknown, allowEmpty = false): value is Record<string, string | number | boolean>[] {
+function validEdits(value: unknown, allowEmpty = false): value is Record<string, unknown>[] {
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.length <= 1000
     && value.every((entry) => record(entry)
       && Number.isSafeInteger(entry.index) && (entry.index as number) >= 0
-      && Object.values(entry).every((field) => field === undefined || typeof field === "string"
-        || typeof field === "boolean" || (typeof field === "number" && Number.isFinite(field))));
+      && Object.entries(entry).every(([key, field]) => field === undefined || typeof field === "string"
+        || typeof field === "boolean" || (typeof field === "number" && Number.isFinite(field))
+        || (key === "motionTemplate" && record(field))));
 }
 
 function parse(value: unknown, accountId: string, projectId: string): PendingBrollApply | null {

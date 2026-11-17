@@ -344,6 +344,57 @@ export function brandSubtitleStyleToV2SubConfig(preset: SubtitleStylePresetConfi
   return design;
 }
 
+import { isMotionThemeId, type MotionThemeId } from "@/lib/motion-broll-catalog";
+
+/** Production-grade subtitle preset tailored for each Motion B-Roll / HyperFrames theme.
+ *  - `doodle-explainer`: crisp white rounded card (`box-white`) with dark border, Brand CI
+ *    karaoke active-word highlight pill (`highlight`) at 82% vertical position.
+ *  - `cue-step-board` / `hyperframe-kinetic`: floating white pill (`box-white`) with `pop`
+ *    and keyword accent coloring at 55% vertical position (above the presenter desk), paired
+ *    with short 3-word (`"3"`) single-line phrase cards. */
+export function motionThemeDefaultSubtitlePreset(
+  motionThemeId: MotionThemeId,
+  brandStyle?: SubtitleStylePresetConfig | null,
+): SubtitleStylePresetConfig {
+  const fontFamily = brandStyle?.fontFamily || "Kanit";
+  if (motionThemeId === "doodle-explainer") {
+    return {
+      preset: "box-white",
+      effect: "highlight",
+      fontFamily,
+      fontSize: 64,
+      fontWeight: 600,
+      bold: true,
+      textColor: "#111827",
+      accentColor: brandStyle?.accentColor || "#38BDF8",
+      outline: false,
+      outlineSize: 4,
+      shadow: true,
+      verticalPos: 82,
+      highlightKeywords: false,
+      statCards: false,
+      cardLen: "sentence",
+    };
+  }
+  return {
+    preset: "box-white",
+    effect: "pop",
+    fontFamily,
+    fontSize: 54,
+    fontWeight: 600,
+    bold: true,
+    textColor: "#111827",
+    accentColor: brandStyle?.accentColor || "#2563EB",
+    outline: false,
+    outlineSize: 4,
+    shadow: true,
+    verticalPos: 55,
+    highlightKeywords: true,
+    statCards: false,
+    cardLen: "3",
+  };
+}
+
 export type McpSubtitleStyleArgs = {
   subtitleSize?: number;
   subtitleStyle?: string;
@@ -353,6 +404,7 @@ export type McpSubtitleStyleArgs = {
   subtitleMode?: SubtitleCardLen;
   highlightKeywords?: boolean;
   statCards?: boolean;
+  motionThemeId?: MotionThemeId;
 };
 
 /** Resolve one job's subtitle design + card length from explicit MCP args and an
@@ -363,7 +415,12 @@ export function resolveMcpSubtitleDesign(
   args: McpSubtitleStyleArgs,
   brandStyle: SubtitleStylePresetConfig | null,
 ): { design: V2SubConfig; cardLen: SubtitleCardLen } {
-  const base: V2SubConfig = brandStyle ? brandSubtitleStyleToV2SubConfig(brandStyle) : DEFAULT_V2_SUB;
+  const effectiveBrandOrMotionStyle = args.motionThemeId && isMotionThemeId(args.motionThemeId)
+    ? motionThemeDefaultSubtitlePreset(args.motionThemeId, brandStyle)
+    : brandStyle;
+  const base: V2SubConfig = effectiveBrandOrMotionStyle
+    ? brandSubtitleStyleToV2SubConfig(effectiveBrandOrMotionStyle)
+    : DEFAULT_V2_SUB;
   const quickStyle = args.subtitleStyle
     ? V2_QUICK_STYLES.find((style) => style.key === args.subtitleStyle)
     : undefined;
@@ -377,7 +434,7 @@ export function resolveMcpSubtitleDesign(
     ...(args.highlightKeywords !== undefined ? { highlightKeywords: args.highlightKeywords } : {}),
     ...(args.statCards !== undefined ? { statCards: args.statCards } : {}),
   };
-  const cardLen: SubtitleCardLen = args.subtitleMode ?? brandStyle?.cardLen ?? "sentence";
+  const cardLen: SubtitleCardLen = args.subtitleMode ?? effectiveBrandOrMotionStyle?.cardLen ?? "sentence";
   return { design, cardLen };
 }
 
@@ -409,6 +466,8 @@ export type ResolvedMcpSubtitleJobInput = {
   subtitleCardLen?: SubtitleCardLen;
   /** Pre-T4 jobs only ever carried the raw arg under this key. */
   subtitleMode?: string;
+  subtitlePosition?: "top" | "middle" | "bottom";
+  motionThemeId?: MotionThemeId;
 };
 
 /** Read back what `resolveMcpSubtitleDesign` persisted into job `inputJson` (T4). A
@@ -419,6 +478,17 @@ export type ResolvedMcpSubtitleJobInput = {
 export function resolvedMcpSubtitleDesignFromInput(
   input: ResolvedMcpSubtitleJobInput,
 ): { design: V2SubConfig; cardLen: SubtitleCardLen } {
+  if (!input.subtitleDesign && input.motionThemeId && isMotionThemeId(input.motionThemeId)) {
+    const motionPreset = motionThemeDefaultSubtitlePreset(input.motionThemeId);
+    const baseDesign = brandSubtitleStyleToV2SubConfig(motionPreset);
+    return {
+      design: {
+        ...baseDesign,
+        ...(input.subtitlePosition ? { verticalPos: POSITION_TOP_PERCENT[input.subtitlePosition] } : {}),
+      },
+      cardLen: (input.subtitleMode as SubtitleCardLen | undefined) ?? motionPreset.cardLen ?? "sentence",
+    };
+  }
   return {
     design: input.subtitleDesign ?? DEFAULT_V2_SUB,
     cardLen: input.subtitleCardLen ?? (input.subtitleMode as SubtitleCardLen | undefined) ?? "sentence",

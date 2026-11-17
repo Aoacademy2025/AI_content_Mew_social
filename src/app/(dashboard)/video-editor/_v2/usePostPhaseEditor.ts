@@ -93,6 +93,7 @@ import {
   summarizeBrollGrowthEdits,
   type BrollGrowthSummary,
 } from "@/lib/broll-growth-funnel";
+import type { MotionTemplateConfig } from "@/lib/motion-broll-catalog";
 import { useEditorStylePresets } from "./useEditorStylePresets";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
@@ -117,8 +118,8 @@ export type ExportState =
 
 // Phase 2 per-window b-roll editing (Task 11) — batched, applied via the free
 // broll-rerender job mode (Task 10). `kind` drives the source badge/label in the
-// inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI").
-export type WindowEditKind = "stock" | "upload" | "ai";
+// inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI" / "โมชัน").
+export type WindowEditKind = "stock" | "upload" | "ai" | "motion";
 export type WindowEdit = {
   startSec?: number;
   endSec?: number;
@@ -134,6 +135,8 @@ export type WindowEdit = {
   transition?: BrollTransitionEdit;
   /** U3: "cover" fills the frame; "contain" shows the whole picture over a blurred copy. */
   fit?: BrollFit;
+  /** Procedural Canvas / HyperFrames Motion B-Roll scene configuration. */
+  motionTemplate?: MotionTemplateConfig;
 };
 
 export type PendingBrollIntent = "export" | "new-project";
@@ -881,6 +884,7 @@ export function usePostPhaseEditor(
         ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
         ...(e.transition ? { transition: e.transition } : {}),
         ...(e.fit ? { fit: e.fit } : {}),
+        ...(e.motionTemplate ? { motionTemplate: e.motionTemplate } : {}),
       }));
       operation = {
         version: 1, accountId, projectId, sourceJobId,
