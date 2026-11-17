@@ -39,6 +39,7 @@ import {
   type BrollTransition,
   type BrollTransitionEdit,
 } from "@/lib/broll-window-style";
+import { normalizeMotionTemplateConfig, type MotionTemplateConfig } from "@/lib/motion-broll-catalog";
 import { clampTailHoldMs } from "@/lib/tail-hold";
 import { effectiveSfxMode, isSfxMode, planTransitionSfxCues, type SfxMode } from "@/lib/transition-sfx";
 
@@ -65,12 +66,14 @@ export type PendingEditWindowEdit = {
   importId?: string;
   imageJobId?: string;
   clipDuration?: number;
-  /** "upload" / "original" / "ai", or "style" = only `transition`/`fit` change (src stays null). */
+  /** "upload" / "original" / "ai" / "motion", or "style" = only `transition`/`fit` change (src stays null). */
   replacementKind: string;
   /** EP5 #11: how this window ends ("default" = drop its own value, follow the project default). */
   transition?: BrollTransitionEdit;
   /** U3: "cover" (fill, crop) or "contain" (whole picture over a blurred, darkened copy). */
   fit?: BrollFit;
+  /** Procedural Canvas / HyperFrames Motion B-Roll scene configuration. */
+  motionTemplate?: MotionTemplateConfig;
 };
 
 /** EP5 #11 / U3: a window edit that changes only how the window looks, not its media. */
@@ -194,6 +197,10 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       || (item.transition !== undefined && !isBrollTransitionEdit(item.transition))
       || (item.fit !== undefined && !isBrollFit(item.fit))
     ) return null;
+    const motionTemplate = item.motionTemplate !== undefined
+      ? normalizeMotionTemplateConfig(item.motionTemplate)
+      : undefined;
+    if (item.motionTemplate !== undefined && !motionTemplate) return null;
     edits.push({
       index: item.index as number,
       src: item.src as string | null,
@@ -205,6 +212,7 @@ function parseWindowEdits(value: unknown): PendingEditWindowEdit[] | null {
       replacementKind: item.replacementKind,
       ...(isBrollTransitionEdit(item.transition) ? { transition: item.transition } : {}),
       ...(isBrollFit(item.fit) ? { fit: item.fit } : {}),
+      ...(motionTemplate ? { motionTemplate } : {}),
     });
   }
   return edits;

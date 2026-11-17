@@ -24,6 +24,13 @@ import { planStatCardsForCaptions } from "../lib/stat-cards";
 import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 import { StatCardOverlay } from "./StatCardOverlay";
+import { MotionBrollScene } from "./MotionBrollScene";
+import {
+  isMotionBrollUri,
+  normalizeMotionTemplateConfig,
+  parseMotionTemplateIdFromUri,
+  type MotionTemplateConfig,
+} from "../lib/motion-broll-catalog";
 import { useWebfontGate } from "./webfont-gate";
 
 // Re-export for backwards compatibility with any other importers
@@ -700,7 +707,7 @@ export function ShortVideoComposition({
     }}>
       <link rel="stylesheet" href={FONTS_CSS} {...webfontGate} />
 
-      {/* ── Stock video clips ─────────────────────────────────────────────── */}
+      {/* ── Stock video / Motion B-Roll clips ─────────────────────────────── */}
       {(() => {
         // 1. Convert bgVideos to integer frame ranges
         type Seg = {
@@ -712,6 +719,7 @@ export function ShortVideoComposition({
           brollEnabled: boolean;
           transition?: unknown;
           fit: BrollFit;
+          motionTemplate: MotionTemplateConfig | null;
         };
         const segs: Seg[] = [];
         for (const v of bgVideos) {
@@ -719,6 +727,10 @@ export function ShortVideoComposition({
           const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
           const clipOffset   = v.clipOffset ?? 0;
+          const uriTemplateId = parseMotionTemplateIdFromUri(v.src);
+          const motionTemplate = (v.motionTemplate || uriTemplateId)
+            ? normalizeMotionTemplateConfig(v.motionTemplate, uriTemplateId ?? undefined)
+            : null;
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
           segs.push({
@@ -728,9 +740,10 @@ export function ShortVideoComposition({
             clipOffset,
             clipDuration,
             // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
-            brollEnabled: v.brollEnabled !== false && Boolean(v.src),
+            brollEnabled: v.brollEnabled !== false && Boolean(v.src || motionTemplate),
             transition: v.transition,
             fit: effectiveBrollFit(v.fit),
+            motionTemplate,
           });
         }
         // EP5 #11: a window set to "cut" ends on a hard cut — no dissolve into the next one.
@@ -769,6 +782,21 @@ export function ShortVideoComposition({
           const seqDur  = segDurFrames + tailFrames;
 
           if (!v.brollEnabled) return null;
+
+          if (v.motionTemplate || isMotionBrollUri(v.src)) {
+            const fallbackId = parseMotionTemplateIdFromUri(v.src) ?? "doodle.hook-character";
+            return (
+              <Sequence key={`${i}-${v.src}-${v.startFrame}`} from={seqFrom} durationInFrames={seqDur} layout="none">
+                <MotionBrollScene
+                  motionTemplate={v.motionTemplate}
+                  fallbackTemplateId={fallbackId}
+                  segDurFrames={segDurFrames}
+                  tailFrames={tailFrames}
+                  headFrames={headFrames}
+                />
+              </Sequence>
+            );
+          }
 
           return (
             <Sequence key={`${i}-${v.src}-${v.startFrame}`} from={seqFrom} durationInFrames={seqDur} layout="none">

@@ -1,5 +1,6 @@
 import { externalMediaPlan, mediaWindows, previewWindowOwner } from "./external-media";
 import type { WindowEdit } from "./broll-rerender";
+import { isMotionBrollUri, normalizeMotionTemplateConfig, parseMotionTemplateIdFromUri } from "./motion-broll-catalog";
 import type { PendingEditWindowEdit } from "./mcp/pending-edit-draft";
 import type { VideoJobPreviewData } from "./mcp/video-job";
 export type OwnedImportView = { status: string; errorCode: string | null; resultSrc: string | null; durationMs: number | null; purpose: string | null };
@@ -16,6 +17,26 @@ export function resolvePendingWindowMedia(rootPreview: VideoJobPreviewData | nul
       return { index: edit.index, status: "ready", edit: { index: edit.index, src: row.resultSrc, enabled: true, replacementKind: "upload", ...(row.purpose === "broll_image" ? { stillImage: true } : {}), ...(row.durationMs && row.durationMs > 0 ? { clipDuration: row.durationMs / 1000 } : {}), ...style } };
     }
     if (edit.replacementKind === "style") return { index: edit.index, status: "ready", edit: { index: edit.index, ...style } };
+    if (edit.replacementKind === "motion") {
+      if (typeof edit.src !== "string" || !isMotionBrollUri(edit.src)) {
+        return { index: edit.index, status: "failed", error: "import_missing" };
+      }
+      const tid = parseMotionTemplateIdFromUri(edit.src);
+      const motionTemplate = edit.motionTemplate
+        ?? (tid ? normalizeMotionTemplateConfig({ templateId: tid }) ?? undefined : undefined);
+      return {
+        index: edit.index,
+        status: "ready",
+        edit: {
+          index: edit.index,
+          src: edit.src,
+          enabled: true,
+          replacementKind: "motion",
+          ...(motionTemplate ? { motionTemplate } : {}),
+          ...style,
+        },
+      };
+    }
     if (edit.replacementKind === "ai") {
       if (
         typeof edit.src !== "string"

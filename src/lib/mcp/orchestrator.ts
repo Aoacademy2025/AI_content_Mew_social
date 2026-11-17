@@ -190,6 +190,15 @@ import {
   type SfxMode,
 } from "@/lib/transition-sfx";
 import { stitchPresenterVideoFiles } from "@/lib/presenter-stitch.server";
+import {
+  buildMotionBrollUri,
+  isMotionMascotId,
+  isMotionThemeId,
+  planMotionSceneForWindow,
+  resolveMotionBrandCiFromPalette,
+  type MotionMascotId,
+  type MotionThemeId,
+} from "@/lib/motion-broll-catalog";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -313,6 +322,10 @@ interface CreateInput {
   /** HERO-94: Styled Video Template id + immutable publish-time snapshot. */
   templateId?: ActiveStylePackId;
   templateSnapshot?: StylePackSnapshot;
+  /** Motion B-Roll & HyperFrames theme + mascot + resolved Brand Profile palette. */
+  motionThemeId?: MotionThemeId;
+  motionMascot?: MotionMascotId;
+  brandPalette?: string[];
   /** EP5 #17: TTS speed multiplier (0.85..1.25) and/or target duration in seconds (5..600). */
   ttsSpeed?: number;
   targetDurationSec?: number;
@@ -1092,7 +1105,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // HERO-42: the customer asked for a video with no B-roll. Declared once here so
     // every stage below — window planning, keyword extraction, the provider call and
     // the preflight degrade path — reads the same decision.
-    const brollDisabled = input.stockSource === "none";
+    // Motion B-Roll (`motionThemeId`) also skips external keyword/stock calls and fills
+    // every window procedurally from the script + Brand CI at the config stage.
+    const motionThemeId = isMotionThemeId(input.motionThemeId) ? input.motionThemeId : undefined;
+    const motionMascot = isMotionMascotId(input.motionMascot) ? input.motionMascot : undefined;
+    const brollDisabled = input.stockSource === "none" || Boolean(motionThemeId);
     const persistedNarrationPlan = typeof input.script === "string"
       ? parseNarrationPlan(input.narrationPlan, input.script)
       : null;
@@ -2273,9 +2290,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // HERO-44: with auto B-roll off every window stays with the presenter, so the
       // keyword, preflight and provider stages below all see zero visible windows and
       // spend nothing. The windows still reach generate-config for the customer to fill.
+      const uploadFillYourself = (brollDisabled && !motionThemeId) || input.cutawayLayout === "fillYourself";
       const upCutawayPlan = planCutaway(
         upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
-        { fillYourself: brollDisabled },
+        { fillYourself: uploadFillYourself },
       );
       const externalOwnershipPlan = input.brollSource === "external"
         ? planCutaway(upWindowsRaw, { fillYourself: input.cutawayLayout === "fillYourself" })
@@ -2290,7 +2308,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       // HERO-44 (b): with fill-it-yourself every window is a presenter window, so none is
       // "visible" — plan all of them instead, so each can be filled with Hero AI Image.
-      if (upVisibleWindows.length > 0 || brollDisabled) {
+      if (!motionThemeId && (upVisibleWindows.length > 0 || brollDisabled)) {
         try {
         const uploadPreflight = await ensureUploadContentPreflight({
           actor: {
@@ -2370,7 +2388,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
 
       await step("keywords", 40);
-      const upKw = upBrollUnits.length > 0
+      const upKw = (!motionThemeId && upBrollUnits.length > 0)
         ? await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
             "/api/videos/extract-keywords",
             {
@@ -2400,7 +2418,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upTotalDur = upAligned.windows.length > 0
         ? Math.round(upDurMs / 1000)
         : (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
-      const upStock = upAligned.windows.length > 0
+      const upStock = (!motionThemeId && upAligned.windows.length > 0)
         ? await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
             {
               ...buildStockPayload(upAligned.keywords, upTotalDur, upStockSource, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
@@ -2423,8 +2441,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             upAiGen,
           )
         : {
-            // With fewer than two windows the presenter covers the whole clip. Reuse
-            // that clip as the hidden render background without calling stock/AI.
+            // With fewer than two windows (or in procedural Motion mode) reuse the
+            // presenter clip as the placeholder asset for generate-config without calling stock/AI.
             results: [{
               videoUrl: input.clipUrl,
               keyword: "uploaded presenter clip",
@@ -2432,7 +2450,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               sourceIndex: 0,
             }] as unknown[],
           };
-      emitBrollStockInventory(upAligned.windows.length, upStock.results ?? []);
+      emitBrollStockInventory(motionThemeId ? 0 : upAligned.windows.length, upStock.results ?? []);
 
       await step("config", 65);
       const upScc = upAligned.windows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
@@ -2463,8 +2481,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...upCaps.map((c) => Number((c.startMs / 1000).toFixed(3))),
         ]),
       ).sort((a, b) => a - b);
+      const upMotionBrandCi = motionThemeId
+        ? resolveMotionBrandCiFromPalette({
+            themeId: motionThemeId,
+            palette: input.brandPalette ?? input.templateSnapshot?.palette,
+            fontFamily: resolvedSubtitleDesign.fontFamily,
+            accentColor: resolvedSubtitleDesign.accentColor,
+          })
+        : null;
+      const rawUpConfig = externalOwnershipPlan
+        ? authorExternalMediaPlan(upCfg.config, externalOwnershipPlan.person)
+        : upCfg.config;
+      const upConfiguredBgVideos = motionThemeId && upMotionBrandCi && Array.isArray((rawUpConfig as { bgVideos?: unknown }).bgVideos)
+        ? ((rawUpConfig as { bgVideos: Array<Record<string, unknown>> }).bgVideos).map((seg, idx, arr) => {
+            const segStartMs = Math.round((Number(seg.start) || 0) * 1000);
+            const segEndMs = Math.round((Number(seg.end) || 0) * 1000);
+            const isBrollRange = visibleBrollRanges.has(`${segStartMs}:${segEndMs}`);
+            if (!isBrollRange) return seg;
+            const winText = upWindows[idx]?.text ?? String(seg.keyword ?? "");
+            const planned = planMotionSceneForWindow({
+              themeId: motionThemeId,
+              windowIndex: idx,
+              totalWindows: arr.length,
+              spokenText: winText,
+              clipTitle: input.title,
+              brandCi: upMotionBrandCi,
+              mascot: motionMascot,
+            });
+            return {
+              ...seg,
+              src: buildMotionBrollUri(planned.templateId),
+              provider: "motion" as const,
+              brollEnabled: true,
+              motionTemplate: planned,
+            };
+          })
+        : undefined;
       const upBaseConfig = {
-        ...(externalOwnershipPlan ? authorExternalMediaPlan(upCfg.config, externalOwnershipPlan.person) : upCfg.config),
+        ...rawUpConfig,
+        ...(upConfiguredBgVideos ? { bgVideos: upConfiguredBgVideos } : {}),
         keywordPopups: [] as unknown[],
         ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
         ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
@@ -3057,7 +3112,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             timedCaptionInput,
             brollWindowSec,
             durMs,
-            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
+            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : (motionThemeId ? 0.68 : 1) },
           )
         : []));
     // HERO-62: same cap as the upload path — a fill-yourself window must never ask the
@@ -3144,6 +3199,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 5. Config
     await step("config", 65);
+    const resolvedBrandPalette = brollDisabled
+      ? (input.brandPalette && input.brandPalette.length > 0 ? input.brandPalette : await resolveBrandPalette())
+      : [];
     // Window mode → empty sceneClipCounts so generate-config takes the window branch (one clip
     // per window) instead of per-caption cycling; brollWindows below carries the spans (mirrors
     // web page.tsx runConfig). Otherwise keep the legacy 1-clip-per-caption path.
@@ -3154,7 +3212,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       "/api/videos/generate-config",
       {
         ...(brollDisabled
-          ? { brollDisabled: true, backgroundColors: await resolveBrandPalette() }
+          ? { brollDisabled: true, backgroundColors: resolvedBrandPalette }
           : {}),
         ...buildConfigPayload(
         captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
@@ -3173,9 +3231,42 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await step("render", 75);
-    const resolvedSfxMode = effectiveSfxMode(input.sfxMode);
+    const resolvedSfxMode = effectiveSfxMode(input.sfxMode ?? (motionThemeId ? "subtle" : undefined));
+    const scriptMotionBrandCi = motionThemeId
+      ? resolveMotionBrandCiFromPalette({
+          themeId: motionThemeId,
+          palette: resolvedBrandPalette.length > 0 ? resolvedBrandPalette : input.templateSnapshot?.palette,
+          fontFamily: resolvedSubtitleDesign.fontFamily,
+          accentColor: resolvedSubtitleDesign.accentColor,
+        })
+      : null;
+    const rawScriptConfig = input.brollSource === "external"
+      ? authorExternalMediaPlan(cfgRes.config)
+      : cfgRes.config;
+    const scriptConfiguredBgVideos = motionThemeId && scriptMotionBrandCi && Array.isArray((rawScriptConfig as { bgVideos?: unknown }).bgVideos)
+      ? ((rawScriptConfig as { bgVideos: Array<Record<string, unknown>> }).bgVideos).map((seg, idx, arr) => {
+          const winText = aligned.windows[idx]?.text ?? captions[idx]?.text ?? String(seg.keyword ?? "");
+          const planned = planMotionSceneForWindow({
+            themeId: motionThemeId,
+            windowIndex: idx,
+            totalWindows: arr.length,
+            spokenText: winText,
+            clipTitle: input.title,
+            brandCi: scriptMotionBrandCi,
+            mascot: motionMascot,
+          });
+          return {
+            ...seg,
+            src: buildMotionBrollUri(planned.templateId),
+            provider: "motion" as const,
+            brollEnabled: true,
+            motionTemplate: planned,
+          };
+        })
+      : undefined;
     const baseConfig = {
-      ...(input.brollSource === "external" ? authorExternalMediaPlan(cfgRes.config) : cfgRes.config),
+      ...rawScriptConfig,
+      ...(scriptConfiguredBgVideos ? { bgVideos: scriptConfiguredBgVideos } : {}),
       keywordPopups: [] as unknown[],
       ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
       ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),

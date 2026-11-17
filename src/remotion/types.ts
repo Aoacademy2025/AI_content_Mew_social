@@ -3,6 +3,7 @@ import type { LogoPosition } from "../lib/logo-overlay";
 import type { HeadlineHookConfig } from "../lib/headline-hook";
 import type { BrollFit, BrollTransition } from "../lib/broll-window-style";
 import type { SfxMode, TransitionSfxCue } from "../lib/transition-sfx";
+import type { MotionTemplateConfig } from "../lib/motion-broll-catalog";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -41,7 +42,7 @@ export interface VideoCompositionProps {
 // ── Short Video types ──────────────────────────────────────────────────────
 
 export interface BrollVideo {
-  src: string;         // absolute URL or /renders/xxx.mp4
+  src: string;         // absolute URL, /renders/xxx.mp4, or motion://<templateId>
   start: number;       // timeline position: seconds from video start
   end: number;         // timeline position: seconds from video start
   /** Explicit scene visibility. undefined = legacy/default visible; false = render neutral BG. */
@@ -57,13 +58,15 @@ export interface BrollVideo {
   transition?: BrollTransition;
   /** U3: "contain" letterboxes the whole picture over a blurred copy. Absent = "cover". */
   fit?: BrollFit;
+  /** Theme-locked procedural Motion / Canvas / HyperFrames scene template for this window. */
+  motionTemplate?: MotionTemplateConfig;
   keyword?: string;
   title?: string;
   query?: string;
   /** Asset provenance survives into the post-render editor. Scene Reroll uses
    *  this server-authored value to distinguish an existing AI Visual Beat from
    *  Stock/Upload without inspecting filenames or accepting browser claims. */
-  provider?: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met";
+  provider?: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met" | "motion";
   contentProfile?: string;
   selectionReason?: string;
   relevanceScore?: number;

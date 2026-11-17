@@ -119,6 +119,7 @@ import { isBrollTransition } from "@/lib/broll-window-style";
 import { isActiveStylePackId, stylePack } from "@/lib/style-pack-catalog";
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
 import { isSfxMode } from "@/lib/transition-sfx";
+import { isMotionMascotId, isMotionThemeId } from "@/lib/motion-broll-catalog";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -152,6 +153,8 @@ type Body = {
   punchZoom?: unknown;
   // HERO-94: Styled Video Template & SFX mode
   templateId?: unknown; sfxMode?: unknown;
+  // Motion B-Roll & HyperFrames theme + mascot
+  motionThemeId?: unknown; motionMascot?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
   // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
@@ -547,12 +550,17 @@ export async function POST(req: Request) {
       : "neutral";
     const omniVoiceId = str(body.omniVoiceId, 64);
     let voiceBackend: OmniVoiceBackend | undefined;
-    let requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    const hasMotionTheme = isMotionThemeId(body.motionThemeId);
+    let requestedSource = hasMotionTheme
+      ? "none"
+      : typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource)
+        ? body.stockSource
+        : "stock";
     let requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
     let requestedImageModel = str(body.imageModel, 60);
     // Conversion Trial sample clip spends the 8-image Hero AI Image allowance.
     // GRANT/paid First-Clip Path keeps the caller's stock/AI choice (#267).
-    if (firstClip.reason === "conversion_trial" && !uploadMode) {
+    if (firstClip.reason === "conversion_trial" && !uploadMode && !hasMotionTheme) {
       requestedSource = "kie-image";
       requestedImageEngine = "runpod";
       requestedImageModel = requestedImageModel || "z-image-turbo";
@@ -1034,7 +1042,11 @@ export async function POST(req: Request) {
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;
     const bgmFile = str(body.bgmFile, 300);
     const templateSnapshot = templateId ? stylePackSnapshotOf(stylePack(templateId)) : undefined;
-    const sfxMode = isSfxMode(body.sfxMode) ? body.sfxMode : undefined;
+    const motionThemeId = isMotionThemeId(body.motionThemeId) ? body.motionThemeId : undefined;
+    const motionMascot = isMotionMascotId(body.motionMascot) ? body.motionMascot : undefined;
+    const sfxMode = isSfxMode(body.sfxMode)
+      ? body.sfxMode
+      : (motionThemeId ? "subtle" : undefined);
     const brollTransition = isBrollTransition(body.brollTransition) ? body.brollTransition : undefined;
 
     try {
@@ -1062,7 +1074,8 @@ export async function POST(req: Request) {
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
           ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
-          ...(stockSource ? { stockSource } : {}),
+          ...(motionThemeId ? { stockSource: "none", motionThemeId } : stockSource ? { stockSource } : {}),
+          ...(motionMascot ? { motionMascot } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),

@@ -27,6 +27,12 @@ import {
   type BrollTransition,
   type BrollTransitionEdit,
 } from "./broll-window-style";
+import {
+  isMotionBrollUri,
+  normalizeMotionTemplateConfig,
+  parseMotionTemplateIdFromUri,
+  type MotionTemplateConfig,
+} from "./motion-broll-catalog";
 
 export type WindowEdit = {
   index: number;
@@ -43,13 +49,15 @@ export type WindowEdit = {
   /** Explicit per-window visibility. Tri-state in persisted config: undefined = legacy default. */
   enabled?: boolean;
   /** De-identified rejection class used only by server-owned quality telemetry. */
-  replacementKind?: "stock" | "upload" | "ai";
+  replacementKind?: "stock" | "upload" | "ai" | "motion";
   /** Durable paid image candidate. It is promoted to the Visual Beat only after Apply succeeds. */
   imageJobId?: string;
   /** EP5 #11: how the window ends. "default" drops the window's own value (follow the project). */
   transition?: BrollTransitionEdit;
   /** U3: "cover" (crop to fill) or "contain" (letterbox over a blurred copy). */
   fit?: BrollFit;
+  /** Procedural Canvas / HyperFrames Motion B-Roll scene configuration. */
+  motionTemplate?: MotionTemplateConfig;
 };
 
 /** The exact media/job pair an export must bind to after any pending B-roll apply. */
@@ -91,7 +99,7 @@ const TRANSITION_ERROR = "รูปแบบการเปลี่ยนฉา
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
  * per index) or `{ error }` with a Thai message. Every item must change `src`, `enabled`, `start`,
  * `end`, `transition`, or `fit`. Rejects: non-array, 0 or more than MAX_BROLL_WINDOW_EDITS edits, non-integer/negative index, a supplied `src`
- * that isn't a single flat `.mp4` under /api/renders or /api/stocks, non-boolean `enabled`, and
+ * that isn't a single flat `.mp4` under /api/renders or /api/stocks (or a validated `motion://` URI), non-boolean `enabled`, and
  * a keyword without a replacement source.
  */
 export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: string } {
@@ -104,7 +112,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
     const {
-      index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId, stillImage, transition, fit,
+      index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId, stillImage, transition, fit, motionTemplate,
     } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
@@ -124,7 +132,8 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     if (hasFit && !isBrollFit(fit)) {
       return { error: "รูปแบบการจัดภาพ b-roll ไม่ถูกต้อง" };
     }
-    if (hasSrc && (typeof src !== "string" || !SRC_RE.test(src))) {
+    const isMotionSrc = typeof src === "string" && isMotionBrollUri(src);
+    if (hasSrc && (typeof src !== "string" || (!SRC_RE.test(src) && !isMotionSrc))) {
       return { error: "ไฟล์ b-roll ไม่ถูกต้อง (ต้องเป็นไฟล์ .mp4 ในระบบ)" };
     }
     if (hasEnabled && typeof enabled !== "boolean") {
@@ -142,7 +151,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     }
     if (
       replacementKind !== undefined
-      && (replacementKind !== "stock" && replacementKind !== "upload" && replacementKind !== "ai")
+      && (replacementKind !== "stock" && replacementKind !== "upload" && replacementKind !== "ai" && replacementKind !== "motion")
     ) {
       return { error: "ประเภทไฟล์ b-roll ที่ใช้แทนไม่ถูกต้อง" };
     }
@@ -159,6 +168,17 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
       )
     ) {
       return { error: "งานภาพ AI ที่รอใช้ไม่ถูกต้อง" };
+    }
+    let normalizedMotionTemplate: MotionTemplateConfig | undefined;
+    if (motionTemplate !== undefined) {
+      const parsed = normalizeMotionTemplateConfig(motionTemplate);
+      if (!parsed || !isMotionSrc) {
+        return { error: "ข้อมูลเทมเพลตโมชัน b-roll ไม่ถูกต้อง" };
+      }
+      normalizedMotionTemplate = parsed;
+    } else if (isMotionSrc) {
+      const tid = parseMotionTemplateIdFromUri(src);
+      if (tid) normalizedMotionTemplate = normalizeMotionTemplateConfig({ templateId: tid }) ?? undefined;
     }
     if (keyword !== undefined && typeof keyword !== "string") {
       return { error: "คำค้น b-roll ไม่ถูกต้อง" };
@@ -191,12 +211,13 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       ...(typeof stillImage === "boolean" ? { stillImage } : {}),
       ...(typeof enabled === "boolean" ? { enabled } : {}),
-      ...(replacementKind === "stock" || replacementKind === "upload" || replacementKind === "ai"
+      ...(replacementKind === "stock" || replacementKind === "upload" || replacementKind === "ai" || replacementKind === "motion"
         ? { replacementKind }
         : {}),
       ...(typeof imageJobId === "string" ? { imageJobId } : {}),
       ...(isBrollTransitionEdit(transition) ? { transition } : {}),
       ...(isBrollFit(fit) ? { fit } : {}),
+      ...(normalizedMotionTemplate ? { motionTemplate: normalizedMotionTemplate } : {}),
     };
     byIndex.set(index, edit); // last-wins
   }
@@ -319,7 +340,18 @@ export function mergeWindowEdits(
       // silently puts the presenter back.
       delete base.timelineAligned;
       delete base.stillImage;
+      delete base.motionTemplate;
       base.src = e.src;
+      if (isMotionBrollUri(e.src)) {
+        base.provider = "motion";
+        if (e.motionTemplate) {
+          base.motionTemplate = e.motionTemplate;
+        } else {
+          const tid = parseMotionTemplateIdFromUri(e.src);
+          const fallback = tid ? normalizeMotionTemplateConfig({ templateId: tid }) : null;
+          if (fallback) base.motionTemplate = fallback;
+        }
+      }
       if (e.keyword) base.keyword = e.keyword;
       if (e.clipDuration !== undefined) base.clipDuration = e.clipDuration;
       if (e.stillImage === true) base.stillImage = true;

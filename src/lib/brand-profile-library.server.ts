@@ -834,6 +834,8 @@ export type McpBrandProfileVisualSummary = {
   stylePackId: string | null;
   palette: string[];
   personality?: string;
+  motionThemeId?: string | null;
+  motionMascot?: string | null;
 };
 
 export type McpBrandProfileDetail = {
@@ -886,6 +888,9 @@ export async function listActiveBrandProfilesDetailedForMcp(userId: string): Pro
         if (parsed.success) {
           const { data } = parsed;
           const stylePackId = data.visual.stylePackId ?? null;
+          const rawConfig = data.subtitle.config ?? {};
+          const motionThemeId = typeof rawConfig.motionThemeId === "string" ? rawConfig.motionThemeId : null;
+          const motionMascot = typeof rawConfig.motionMascot === "string" ? rawConfig.motionMascot : null;
           return {
             id: profile.id,
             name: data.name || profile.name,
@@ -902,6 +907,8 @@ export async function listActiveBrandProfilesDetailedForMcp(userId: string): Pro
               stylePackId,
               palette: [...data.visual.palette],
               ...(data.visual.personality ? { personality: data.visual.personality } : {}),
+              ...(motionThemeId ? { motionThemeId } : {}),
+              ...(motionMascot ? { motionMascot } : {}),
             },
           };
         }
@@ -924,7 +931,13 @@ export async function listActiveBrandProfilesDetailedForMcp(userId: string): Pro
 }
 
 export type McpBrandSubtitleLookup =
-  | { found: true; style: SubtitleStylePresetConfig | null }
+  | {
+      found: true;
+      style: SubtitleStylePresetConfig | null;
+      motionThemeId?: string | null;
+      motionMascot?: string | null;
+      palette?: string[];
+    }
   | { found: false };
 
 /** Owner-checked, subtitle-style-only read of one Brand Profile for MCP create (T4).
@@ -951,7 +964,17 @@ export async function resolveMcpBrandSubtitleStyle(
   try {
     const parsed = storedBrandProfilePayloadSchema.safeParse(JSON.parse(revision.payloadJson));
     if (!parsed.success) return { found: true, style: null };
-    return { found: true, style: normalizeSubtitleStylePresetConfig(parsed.data.subtitle.config) };
+    const rawConfig = parsed.data.subtitle.config ?? {};
+    const motionThemeId = typeof rawConfig.motionThemeId === "string" ? rawConfig.motionThemeId : null;
+    const motionMascot = typeof rawConfig.motionMascot === "string" ? rawConfig.motionMascot : null;
+    const palette = Array.isArray(parsed.data.visual?.palette) ? [...parsed.data.visual.palette] : [];
+    return {
+      found: true,
+      style: normalizeSubtitleStylePresetConfig(rawConfig),
+      ...(motionThemeId ? { motionThemeId } : {}),
+      ...(motionMascot ? { motionMascot } : {}),
+      ...(palette.length > 0 ? { palette } : {}),
+    };
   } catch {
     return { found: true, style: null };
   }

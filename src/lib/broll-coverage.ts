@@ -1,5 +1,6 @@
 import type { BrollVideo } from "../remotion/types";
 import { brollWindowStyle } from "./broll-window-style";
+import { isMotionBrollUri } from "./motion-broll-catalog";
 
 export const BROLL_SEQUENCE_GUARD_FRAMES = 10;
 export const BROLL_PROBE_SAFETY_MARGIN_SEC = 0.5;
@@ -493,9 +494,9 @@ export function coverProbedBrollTimeline(
       droppedAssetCount += 1;
       continue;
     }
-    if (entry.asset.brollEnabled === false) {
-      // A hidden segment renders the composition's neutral background and does not consume
-      // frames from its source file. Preserve it as coverage without requiring disk/network I/O.
+    if (entry.asset.brollEnabled === false || isMotionBrollUri(entry.asset.src)) {
+      // A hidden segment or procedural Motion B-Roll scene renders directly inside Remotion
+      // and does not consume frames from a disk video file. Preserve it as coverage without I/O.
       usable.push({
         ...entry.asset,
         clipDuration: durationSec + guardSec + BROLL_PROBE_SAFETY_MARGIN_SEC,
@@ -643,10 +644,10 @@ export async function prepareBrollRenderAssets(
   let resolutionDroppedAssetCount = 0;
 
   for (const asset of assets) {
-    if (asset.brollEnabled === false) {
+    if (asset.brollEnabled === false || isMotionBrollUri(asset.src)) {
       probedAssets.push({
         asset: { ...asset },
-        actualDurationSec: null,
+        actualDurationSec: isMotionBrollUri(asset.src) ? durationSec + 10 : null,
         probeRequired: false,
       });
       continue;

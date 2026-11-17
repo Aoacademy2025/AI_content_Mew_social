@@ -110,6 +110,22 @@ import {
   stylePackSubtitlePreset,
   type MusicMood,
 } from "@/lib/style-pack-catalog";
+import {
+  MOTION_MASCOT_IDS,
+  MOTION_TEMPLATE_IDS,
+  MOTION_THEME_IDS,
+  buildMotionBrollUri,
+  isMotionMascotId,
+  isMotionTemplateId,
+  isMotionThemeId,
+  motionTemplate,
+  normalizeMotionTemplateConfig,
+  planMotionSceneForWindow,
+  type MotionMascotId,
+  type MotionTemplateConfig,
+  type MotionTemplateId,
+  type MotionThemeId,
+} from "@/lib/motion-broll-catalog";
 import { isNoneInput, moodMenu, resolveBgm, resolveMusicMoodTrack } from "@/lib/mcp/bgm-resolve";
 
 /**
@@ -235,9 +251,18 @@ export const replaceBrollWindowInputShape = {
   windowIndex: z.number().int().describe("ช่วง B-roll ที่จะเปลี่ยน (windows[].index จาก get_edit_state)"),
   url: z.string().optional().describe("ลิงก์สาธารณะ https ของรูปหรือวิดีโอ (ระบบดาวน์โหลดเอง) — ส่งอย่างใดอย่างหนึ่งจาก url / uploadId / source"),
   uploadId: z.string().optional().describe("uploadId จาก create_upload_url ที่ PUT ไฟล์เสร็จแล้ว"),
-  source: z.enum(["original", "hero-ai-image"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง, \"hero-ai-image\" = สร้างภาพ Hero AI Image ใหม่ให้ช่วงนี้ (2 เครดิตต่อภาพ)"),
+  source: z.enum(["original", "hero-ai-image", "motion-template"]).optional().describe("\"original\" = คืนช่วงนี้กลับเป็นภาพเดิมของวิดีโอตัวอย่าง, \"hero-ai-image\" = สร้างภาพ Hero AI Image ใหม่ให้ช่วงนี้ (2 เครดิตต่อภาพ), \"motion-template\" = สร้างฉากแอนิเมชันด้วยโค้ด (Doodle / Cue Step Board / HyperFrames + Brand CI) ฟรี 0 เครดิต"),
   prompt: z.string().optional().describe("คำอธิบายฉากเมื่อใช้ source \"hero-ai-image\" (ไม่เกิน 500 ตัวอักษร เขียนไทยหรืออังกฤษได้ แทนที่ฉากเดิมของช่วงนี้ แต่ตัวอักษรในภาพรองรับเฉพาะภาษาอังกฤษ)"),
   treatment: z.string().optional().describe("สไตล์การเล่าเรื่องของภาพเมื่อใช้ source \"hero-ai-image\" (ดูค่าที่เลือกได้จาก get_edit_state.allowed.brollImageTreatments; ไม่ส่ง = ใช้แนวแบรนด์ของโปรเจกต์)"),
+  motionThemeId: z.enum(MOTION_THEME_IDS).optional().describe("ธีมโมชันเมื่อใช้ source \"motion-template\" (\"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") — หากไม่ส่ง motionTemplateId ระบบจะเลือกฉากตามบทพูดอัตโนมัติในธีมนี้"),
+  motionMascot: z.enum(MOTION_MASCOT_IDS).optional().describe("รูปแบบตัวละครประกอบฉากโมชันเมื่อใช้ source \"motion-template\" (\"stickman-scarf\" | \"stickman-glasses\" | \"stickman-cap\" | \"ai-bot\")"),
+  motionTemplateId: z.enum(MOTION_TEMPLATE_IDS).optional().describe("รหัสเทมเพลตฉากโมชันเมื่อใช้ source \"motion-template\" (ดูจาก get_edit_state.allowed.motionTemplates)"),
+  motionHeaderText: z.string().optional().describe("ป้ายหัวข้อด้านบนสุดของฉากโมชัน (เมื่อใช้ source \"motion-template\")"),
+  motionTitle: z.string().optional().describe("หัวข้อหลักในการ์ดโมชัน (เมื่อใช้ source \"motion-template\")"),
+  motionSubtitle: z.string().optional().describe("ข้อความรองหรือสรุปในฉากโมชัน (เมื่อใช้ source \"motion-template\")"),
+  motionBadgeText: z.string().optional().describe("ข้อความป้าย Badge หรือตัวเลขสถิติในฉากโมชัน (เมื่อใช้ source \"motion-template\")"),
+  motionLeftText: z.string().optional().describe("ข้อความฝั่งซ้าย/ก่อน ในฉากเปรียบเทียบหรือราคา (เมื่อใช้ source \"motion-template\")"),
+  motionRightText: z.string().optional().describe("ข้อความฝั่งขวา/หลัง ในฉากเปรียบเทียบหรือราคา (เมื่อใช้ source \"motion-template\")"),
 } satisfies z.ZodRawShape;
 
 export const setBrollStyleInputShape = {
@@ -260,6 +285,10 @@ export const applyVideoTemplateInputShape = {
     .describe("รหัสสไตล์เทมเพลตวิดีโอสำเร็จรูป (ดูรายการจาก get_video_options.templates หรือ get_edit_state.allowed.templates)"),
   includeMusic: z.boolean().optional()
     .describe("true = เลือกเพลงประกอบจากคลังตามอารมณ์เพลงของเทมเพลต (musicMood) พร้อมเปิด ducking อัตโนมัติ; false/ไม่ส่ง = คงเพลงเดิมไว้"),
+  motionThemeId: z.enum(MOTION_THEME_IDS).optional()
+    .describe("ล็อกธีมฉากเคลื่อนไหว Motion / HyperFrames ทั้งคลิป (\"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") พร้อมดึงสีและฟอนต์ Brand CI ของเทมเพลตเข้าทุกฉากอัตโนมัติ (ฟรี 0 เครดิต)"),
+  motionMascot: z.enum(MOTION_MASCOT_IDS).optional()
+    .describe("รูปแบบตัวละครประกอบฉากโมชันเมื่อใช้คู่กับ motionThemeId (\"stickman-scarf\" | \"stickman-glasses\" | \"stickman-cap\" | \"ai-bot\")"),
 } satisfies z.ZodRawShape;
 
 export const batchEditVideoInputShape = {
@@ -268,6 +297,10 @@ export const batchEditVideoInputShape = {
     .describe("สวมสไตล์เทมเพลตวิดีโอสำเร็จรูปเป็นฐานก่อนปรับฟิลด์อื่นที่ส่งมาพร้อมกัน"),
   includeTemplateMusic: z.boolean().optional()
     .describe("ใช้คู่กับ templateId: true = เลือกเพลงตามอารมณ์เทมเพลตอัตโนมัติ (ถ้าไม่ได้ระบุ bgmMoodOrTrack หรือ disableBgm แยก)"),
+  motionThemeId: z.enum(MOTION_THEME_IDS).optional()
+    .describe("ล็อกธีมฉากเคลื่อนไหว Motion / HyperFrames ทั้งคลิป (\"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") โดยวางแผนฉากตามบทพูดแต่ละช่วง + Brand CI ให้อัตโนมัติทุกช่วง B-roll (ฟรี 0 เครดิต)"),
+  motionMascot: z.enum(MOTION_MASCOT_IDS).optional()
+    .describe("รูปแบบตัวละครประกอบฉากโมชันเมื่อใช้คู่กับ motionThemeId (\"stickman-scarf\" | \"stickman-glasses\" | \"stickman-cap\" | \"ai-bot\")"),
   regroupCardLen: z.enum(nonEmptyEnum(V2_CARD_LEN_OPTIONS.map((option) => option.value))).optional()
     .describe("จัดกลุ่มการ์ดซับใหม่จากต้นฉบับเดิมตามจำนวนคำสูงสุดต่อการ์ด (sentence / 4 / 3 / 2 / 1) ก่อนอัปเดต captionIndices"),
   captionIndices: z.array(z.number().int()).optional()
@@ -454,6 +487,8 @@ const ALLOWED = {
   captionTextMaxChars: MAX_CAPTION_TEXT_CHARS,
   // EP5 #11 / U3 / #3 (set_broll_style) + HERO-94 (apply_video_template).
   templates: [...ACTIVE_STYLE_PACK_IDS],
+  motionThemes: [...MOTION_THEME_IDS],
+  motionTemplates: [...MOTION_TEMPLATE_IDS],
   brollTransitions: [...BROLL_TRANSITIONS],
   brollWindowTransitions: [...BROLL_TRANSITIONS, BROLL_TRANSITION_FOLLOW_DEFAULT],
   brollFits: [...BROLL_FITS],
@@ -688,10 +723,16 @@ function editWindows(
   const requirements = externalWindowStates(rootPreview?.config, { bgVideos: mergedBgVideosForReport(root, base, draft.windowEdits, imports) });
   return previewWindowSpans(preview).map((span) => {
     const edit = draft.windowEdits.find((candidate) => candidate.index === span.index);
+    const baseWindow = bgVideoAt(preview.config, span.index);
     const view = importViewOf(edit, imports);
     const renderedSpan = rendered.get(span.index) ?? null;
     // A style-only edit changes how the window looks, not its media.
     const replacesMedia = edit !== undefined && edit.replacementKind !== STYLE_ONLY_REPLACEMENT_KIND;
+    const activeMotionTemplate =
+      normalizeMotionTemplateConfig(edit?.motionTemplate) ??
+      (edit === undefined || edit.replacementKind === STYLE_ONLY_REPLACEMENT_KIND
+        ? normalizeMotionTemplateConfig(baseWindow?.motionTemplate)
+        : null);
     return {
       index: span.index,
       startMs: span.startMs,
@@ -705,6 +746,7 @@ function editWindows(
       pending: edit !== undefined,
       importStatus: view?.status ?? null,
       importError: view?.status === "failed" ? view.errorCode ?? "import_failed" : null,
+      ...(activeMotionTemplate ? { motionTemplate: activeMotionTemplate } : {}),
       ...windowStyleView(draft, base, edit, span.index),
     };
   });
@@ -1184,8 +1226,8 @@ const NEXT_MEDIA = "ส่งลิงก์ https สาธารณะขอ�
 
 const ONE_SOURCE = editToolFailure(
   "invalid_input",
-  "ต้องส่งอย่างใดอย่างหนึ่งเท่านั้น: url หรือ uploadId หรือ source (\"original\" / \"hero-ai-image\")",
-  `${NEXT_MEDIA} หรือ source "original" / "hero-ai-image" (อย่างใดอย่างหนึ่ง)`,
+  "ต้องส่งอย่างใดอย่างหนึ่งเท่านั้น: url หรือ uploadId หรือ source (\"original\" / \"hero-ai-image\" / \"motion-template\")",
+  `${NEXT_MEDIA} หรือ source "original" / "hero-ai-image" / "motion-template" (อย่างใดอย่างหนึ่ง)`,
 );
 const BAD_URL = editToolFailure(
   "invalid_input",
@@ -1319,7 +1361,12 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
   const sources = [args.url, args.uploadId, args.source].filter((value) => value !== undefined).length;
   if (sources !== 1) return ONE_SOURCE;
-  if (args.source !== undefined && args.source !== "original" && args.source !== "hero-ai-image") {
+  if (
+    args.source !== undefined
+    && args.source !== "original"
+    && args.source !== "hero-ai-image"
+    && args.source !== "motion-template"
+  ) {
     return ONE_SOURCE;
   }
   if ((args.prompt !== undefined || args.treatment !== undefined) && args.source !== "hero-ai-image") {
@@ -1327,6 +1374,36 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
       "invalid_input",
       "ส่ง prompt หรือ treatment ได้เฉพาะเมื่อระบุ source เป็น \"hero-ai-image\" เท่านั้น",
       "ระบุ source: \"hero-ai-image\" หรือลบ prompt และ treatment ออก",
+    );
+  }
+  const hasMotionParam =
+    args.motionThemeId !== undefined
+    || args.motionTemplateId !== undefined
+    || args.motionHeaderText !== undefined
+    || args.motionTitle !== undefined
+    || args.motionSubtitle !== undefined
+    || args.motionBadgeText !== undefined
+    || args.motionLeftText !== undefined
+    || args.motionRightText !== undefined;
+  if (hasMotionParam && args.source !== "motion-template") {
+    return editToolFailure(
+      "invalid_input",
+      "ส่งพารามิเตอร์ motion* ได้เฉพาะเมื่อระบุ source เป็น \"motion-template\" เท่านั้น",
+      "ระบุ source: \"motion-template\" หรือลบพารามิเตอร์ motion* ออก",
+    );
+  }
+  if (args.motionThemeId !== undefined && !isMotionThemeId(args.motionThemeId)) {
+    return editToolFailure(
+      "invalid_input",
+      `motionThemeId ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${MOTION_THEME_IDS.join(", ")}`,
+      "ดูค่าที่เลือกได้จาก get_edit_state.allowed.motionThemes",
+    );
+  }
+  if (args.motionTemplateId !== undefined && !isMotionTemplateId(args.motionTemplateId)) {
+    return editToolFailure(
+      "invalid_input",
+      `motionTemplateId ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${MOTION_TEMPLATE_IDS.join(", ")}`,
+      "ดูค่าที่เลือกได้จาก get_edit_state.allowed.motionTemplates",
     );
   }
   let treatmentPreset: TreatmentPresetId | undefined;
@@ -1382,10 +1459,11 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
   if (!baseRow || !brollWindowEditEnabled(user, baseRow)) return WINDOW_EDIT_NOT_ENABLED;
   if (presenterHookLocked(root, base.preview, index)) return windowLockedFailure(root, base.preview);
 
-  let source: "url" | "upload" | "original" | "hero-ai-image";
+  let source: "url" | "upload" | "original" | "hero-ai-image" | "motion-template";
   let importId: string | null = null;
   let importStatus: string | null = null;
   let generatedHero: { src: string; imageJobId: string; clipDuration: number; creditsSpent: number } | null = null;
+  let plannedMotion: MotionTemplateConfig | null = null;
   if (args.uploadId !== undefined) {
     const owned = await findOwnedMediaImport(user.id, args.uploadId, BROLL_IMPORT_PURPOSES);
     if (!owned.ok) return owned.failure;
@@ -1423,6 +1501,47 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
     source = "hero-ai-image";
     importStatus = "ready";
     generatedHero = genResult;
+  } else if (args.source === "motion-template") {
+    if (await linkedRerenderInFlight(user.id, root, loaded.state.projectId)) return ORIGINAL_DURING_RERENDER;
+    const posIdx = Math.max(0, spans.findIndex((s) => s.index === index));
+    const sceneText = loaded.state.draft.captions
+      .filter((c) => c.endMs > targetSpan.startMs && c.startMs < targetSpan.endMs)
+      .map((c) => c.text)
+      .join(" ")
+      .trim() || loaded.state.draft.captions[index]?.text || "";
+    const baseWindow = bgVideoAt(base.preview.config, index);
+    const brandCi = {
+      primaryColor: loaded.state.draft.subtitleConfig.accentColor,
+      accentColor: loaded.state.draft.subtitleConfig.textColor,
+      fontFamily: loaded.state.draft.subtitleConfig.fontFamily,
+    };
+    const explicitTpl = args.motionTemplateId ? motionTemplate(args.motionTemplateId) : null;
+    const themeId: MotionThemeId = explicitTpl?.themeId ?? args.motionThemeId ?? "doodle-explainer";
+    const autoPlanned = planMotionSceneForWindow({
+      themeId,
+      windowIndex: posIdx,
+      totalWindows: Math.max(1, spans.length),
+      captionText: sceneText,
+      keyword: typeof baseWindow?.keyword === "string" ? baseWindow.keyword : undefined,
+      mascot: args.motionMascot,
+      brandCi,
+    });
+    const finalTemplateId: MotionTemplateId = explicitTpl?.id ?? autoPlanned.templateId;
+    plannedMotion = normalizeMotionTemplateConfig({
+      templateId: finalTemplateId,
+      themeId,
+      headerText: args.motionHeaderText ?? autoPlanned.headerText ?? explicitTpl?.defaultProps.headerText,
+      title: args.motionTitle ?? autoPlanned.title ?? explicitTpl?.defaultProps.title,
+      subtitle: args.motionSubtitle ?? autoPlanned.subtitle ?? explicitTpl?.defaultProps.subtitle,
+      badgeText: args.motionBadgeText ?? autoPlanned.badgeText ?? explicitTpl?.defaultProps.badgeText,
+      leftText: args.motionLeftText ?? autoPlanned.leftText ?? explicitTpl?.defaultProps.leftText,
+      rightText: args.motionRightText ?? autoPlanned.rightText ?? explicitTpl?.defaultProps.rightText,
+      items: autoPlanned.items ?? explicitTpl?.defaultProps.items,
+      mascot: args.motionMascot ?? autoPlanned.mascot,
+      brandCi,
+    });
+    source = "motion-template";
+    importStatus = "ready";
   } else {
     // A1: while a re-render of this root runs, the base it is replacing is about to change, so a
     // restore decided against the current base could be lost when the re-render lands. Refuse
@@ -1444,6 +1563,13 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
         imageJobId: generatedHero.imageJobId,
         clipDuration: generatedHero.clipDuration,
         replacementKind: "ai",
+      };
+    } else if (plannedMotion) {
+      edit = {
+        index,
+        src: buildMotionBrollUri(plannedMotion.templateId),
+        replacementKind: "motion",
+        motionTemplate: plannedMotion,
       };
     } else {
       const original = originalWindowEdit(root, state.base, index);
@@ -1485,15 +1611,23 @@ export async function replaceBrollWindowTool(user: User, args: ShapeArgs<typeof 
           ...(treatmentPreset ? { treatment: treatmentPreset } : {}),
         }
       : {}),
+    ...(plannedMotion
+      ? {
+          motionTemplate: plannedMotion,
+          creditsSpent: 0,
+        }
+      : {}),
     importStatus,
     draftRevision: updated.state.revision,
     next: source === "original"
       ? "ช่วงนี้จะกลับเป็นภาพเดิมตอนส่งออก — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
       : source === "hero-ai-image"
         ? "สร้างภาพ Hero AI Image สำหรับช่วงนี้เสร็จแล้ว — แก้ส่วนอื่นต่อได้ หรือเรียก export_video(jobId) เพื่อเรนเดอร์และส่งออก (การส่งออกไม่ตัดโควต้าเพิ่ม)"
-        : importStatus === "ready"
-          ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
-          : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
+        : source === "motion-template"
+          ? "ตั้งค่าฉากแอนิเมชัน Motion / HyperFrames พร้อม Brand CI สำหรับช่วงนี้แล้ว (0 เครดิต) — แก้ส่วนอื่นต่อได้ หรือเรียก export_video(jobId) เพื่อเรนเดอร์และส่งออก"
+          : importStatus === "ready"
+            ? "ไฟล์พร้อมแล้ว (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ต่อได้ หรือเรียก export_video(jobId) เมื่อแก้ครบ"
+            : "ไฟล์กำลังนำเข้า (เสียงในไฟล์จะถูกปิด ใช้เสียงพากย์เดิม) — แก้ส่วนอื่นต่อได้ระหว่างนี้; เช็ค windows[].importStatus ด้วย get_edit_state เป็นระยะจนเป็น \"ready\" แล้วเรียก export_video(jobId)",
   };
 }
 
@@ -1635,6 +1769,11 @@ const BAD_TEMPLATE_ID = editToolFailure(
   `templateId ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${ACTIVE_STYLE_PACK_IDS.join(", ")}`,
   "เรียก get_video_options เพื่อดู templates ที่เปิดใช้งาน",
 );
+const BAD_MOTION_THEME_ID = editToolFailure(
+  "invalid_input",
+  `motionThemeId ไม่ถูกต้อง — ต้องเป็นหนึ่งใน ${MOTION_THEME_IDS.join(", ")}`,
+  "เรียก get_video_options หรือ get_edit_state.allowed.motionThemes เพื่อดูธีมโมชันที่เลือกได้",
+);
 const BAD_INCLUDE_MUSIC = editToolFailure(
   "invalid_input",
   "ตั้งค่า includeMusic ต้องเป็น true หรือ false",
@@ -1642,16 +1781,74 @@ const BAD_INCLUDE_MUSIC = editToolFailure(
 );
 
 /**
+ * Whole-clip Motion Theme lock: auto-plans every unlocked B-roll window in `preview` with the chosen
+ * `motionThemeId` (`"doodle-explainer"` | `"cue-step-board"` | `"hyperframe-kinetic"`) and the draft's
+ * current Brand CI (`accentColor`, `textColor`, `fontFamily`).
+ */
+function applyMotionThemeAcrossDraftWindows(
+  root: McpChainRow,
+  draft: PendingEditDraft,
+  preview: VideoJobPreviewData,
+  themeId: MotionThemeId,
+  mascot?: MotionMascotId,
+): number {
+  const spans = previewWindowSpans(preview);
+  const brandCi = {
+    primaryColor: draft.subtitleConfig.accentColor,
+    accentColor: draft.subtitleConfig.textColor,
+    fontFamily: draft.subtitleConfig.fontFamily,
+  };
+  const byIndex = new Map<number, PendingEditWindowEdit>(
+    draft.windowEdits.map((e) => [e.index, { ...e }]),
+  );
+  let plannedCount = 0;
+  for (let posIdx = 0; posIdx < spans.length; posIdx += 1) {
+    const span = spans[posIdx];
+    if (presenterHookLocked(root, preview, span.index)) continue;
+    if (!byIndex.has(span.index) && byIndex.size >= MAX_DRAFT_WINDOW_EDITS) break;
+    const sceneText = draft.captions
+      .filter((c) => c.endMs > span.startMs && c.startMs < span.endMs)
+      .map((c) => c.text)
+      .join(" ")
+      .trim() || draft.captions[posIdx]?.text || "";
+    const baseWindow = bgVideoAt(preview.config, span.index);
+    const planned = planMotionSceneForWindow({
+      themeId,
+      windowIndex: posIdx,
+      totalWindows: spans.length,
+      captionText: sceneText,
+      keyword: typeof baseWindow?.keyword === "string" ? baseWindow.keyword : undefined,
+      mascot,
+      brandCi,
+    });
+    const prev = byIndex.get(span.index);
+    const style = prev ? windowEditStyle(prev) : {};
+    byIndex.set(span.index, {
+      index: span.index,
+      src: buildMotionBrollUri(planned.templateId),
+      replacementKind: "motion",
+      motionTemplate: planned,
+      ...style,
+    });
+    plannedCount += 1;
+  }
+  draft.windowEdits = [...byIndex.values()].sort((a, b) => a.index - b.index);
+  return plannedCount;
+}
+
+/**
  * HERO-94: 1-click full-recipe video template transformation on a Held Preview's Pending Edit Draft.
  * Applies the StylePack's subtitle config (`V2SubConfig` + `highlightKeywords` + `statCards` + `cardLen`),
  * headline hook preset (preserving existing hook text/enabled state when present), `sfxMode`,
  * `brollTransition` across windows + `punchZoom` (when B-roll window edits are enabled for the job),
- * and optionally picks a BGM track matching `musicMood` when `includeMusic: true`.
+ * optionally locks all B-roll windows to `motionThemeId` + Brand CI, and optionally picks a BGM track
+ * matching `musicMood` when `includeMusic: true`.
  */
 export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof applyVideoTemplateInputShape>) {
   if (invalidJobId(args.jobId)) return UNKNOWN_JOB;
   if (!isActiveStylePackId(args.templateId)) return BAD_TEMPLATE_ID;
   if (args.includeMusic !== undefined && typeof args.includeMusic !== "boolean") return BAD_INCLUDE_MUSIC;
+  if (args.motionThemeId !== undefined && !isMotionThemeId(args.motionThemeId)) return BAD_MOTION_THEME_ID;
 
   const held = await resolveHeldRoot(user.id, args.jobId);
   if (!held.ok) return held.failure;
@@ -1666,6 +1863,7 @@ export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof 
     select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
   });
   const canRerenderBroll = Boolean(baseRow && brollWindowEditEnabled(user, baseRow));
+  if (args.motionThemeId !== undefined && !canRerenderBroll) return WINDOW_EDIT_NOT_ENABLED;
 
   const pack = stylePack(args.templateId);
   let matchedMusicTrack: { track: string; title: string; trackId: string } | null = null;
@@ -1679,6 +1877,7 @@ export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof 
     if (matched) matchedMusicTrack = { track: matched.track, title: matched.title, trackId: matched.trackId };
   }
 
+  let motionWindowsPlanned = 0;
   const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
     const totalDurationMs = draftDurationMs(state.base.preview, draft.captions);
     const sourceText = draft.fullText?.trim()
@@ -1746,6 +1945,9 @@ export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof 
         }
         return [nextEdit];
       });
+      if (args.motionThemeId !== undefined) {
+        motionWindowsPlanned = applyMotionThemeAcrossDraftWindows(root, draft, state.base.preview, args.motionThemeId, args.motionMascot);
+      }
     }
 
     if (args.includeMusic === true && matchedMusicTrack) {
@@ -1768,6 +1970,7 @@ export async function applyVideoTemplateTool(user: User, args: ShapeArgs<typeof 
     jobId: root.id,
     templateId: pack.id,
     thaiLabel: pack.thaiLabel,
+    ...(args.motionThemeId ? { motionThemeId: args.motionThemeId, motionWindowsPlanned } : {}),
     cardLen: nextDraft.cardLen,
     cardCount: nextDraft.captions.length,
     subtitleStyle: subtitleStyleView(nextDraft.subtitleConfig),
@@ -1844,6 +2047,7 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
   const hasAnyEdit =
     args.templateId !== undefined
     || args.includeTemplateMusic !== undefined
+    || args.motionThemeId !== undefined
     || args.regroupCardLen !== undefined
     || args.captionIndices !== undefined
     || args.captionTexts !== undefined
@@ -1857,13 +2061,16 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
     return editToolFailure(
       "invalid_input",
       "ต้องระบุรายการแก้ไขอย่างน้อย 1 อย่างใน batch_edit_video",
-      "ส่งฟิลด์ที่ต้องการแก้ เช่น templateId, captionIndices+captionTexts, subtitlePreset, headlineHookText, bgmMoodOrTrack, tailHoldMs หรือ brollTransition",
+      "ส่งฟิลด์ที่ต้องการแก้ เช่น templateId, motionThemeId, captionIndices+captionTexts, subtitlePreset, headlineHookText, bgmMoodOrTrack, tailHoldMs หรือ brollTransition",
     );
   }
 
   // 1. Template & regroup validation
   if (args.templateId !== undefined && !isActiveStylePackId(args.templateId)) {
     return BAD_TEMPLATE_ID;
+  }
+  if (args.motionThemeId !== undefined && !isMotionThemeId(args.motionThemeId)) {
+    return BAD_MOTION_THEME_ID;
   }
   if (args.includeTemplateMusic !== undefined) {
     if (typeof args.includeTemplateMusic !== "boolean") {
@@ -2131,6 +2338,7 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
   const canRerenderBroll = Boolean(baseRow && brollWindowEditEnabled(user, baseRow));
   const needsBrollGate =
     windowIdx !== undefined
+    || args.motionThemeId !== undefined
     || args.brollTransition !== undefined
     || args.brollFit !== undefined
     || args.punchZoom !== undefined;
@@ -2195,6 +2403,7 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
   const refused: { failure: EditToolFailure | null } = { failure: null };
   let appliedOps: string[] = [];
   let ignoredFields: string[] = [];
+  let motionWindowsPlanned = 0;
 
   const updated = await updatePendingEditDraft(user.id, root, (draft, state) => {
     const nextDraft: PendingEditDraft = structuredClone(draft);
@@ -2370,6 +2579,12 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
       ops.push("subtitle_style");
     }
 
+    // (d.2) Whole-clip Motion Theme lock (after subtitle style so Brand CI colors/fonts are up to date)
+    if (args.motionThemeId !== undefined && canRerenderBroll) {
+      motionWindowsPlanned = applyMotionThemeAcrossDraftWindows(root, nextDraft, state.base.preview, args.motionThemeId, args.motionMascot);
+      ops.push(`motion_theme:${args.motionThemeId}(${motionWindowsPlanned})`);
+    }
+
     // (e) Headline hook overrides
     if (hasHeadlinePatch) {
       const totalDurationMs = draftDurationMs(state.base.preview, nextDraft.captions);
@@ -2504,6 +2719,7 @@ export async function batchEditVideoTool(user: User, args: ShapeArgs<typeof batc
     jobId: root.id,
     applied: appliedOps,
     ...(pack ? { templateId: pack.id, thaiLabel: pack.thaiLabel } : {}),
+    ...(args.motionThemeId ? { motionThemeId: args.motionThemeId, motionWindowsPlanned } : {}),
     cardLen: finalDraft.cardLen,
     cardCount: finalDraft.captions.length,
     ...(normalizedCaptionUpdates.length > 0

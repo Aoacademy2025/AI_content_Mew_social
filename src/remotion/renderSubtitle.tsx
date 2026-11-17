@@ -78,6 +78,13 @@ const THAI_DISPLAY_NO_BREAK_TERMS = [
   "ทุกเรื่อง",
   "มองไม่เห็น",
   "หลงทาง",
+  "ครีเอเตอร์",
+  "เทมเพลต",
+  "อัตโนมัติ",
+  "รายละเอียด",
+  "คำอธิบาย",
+  "ภาพคำตอบ",
+  "คอมเมนต์",
 ] as const;
 
 type ProtectedSpan = { start: number; end: number };
@@ -259,12 +266,26 @@ type TokenPart = { text: string; isWordLike: boolean };
 function segmentParts(s: string): TokenPart[] {
   const seg = getSegmenter("th", "word");
   if (seg) {
+    const protectedSpans = computeProtectedSpans(s);
     const out: TokenPart[] = [];
-    for (const { segment, isWordLike } of seg.segment(s)) {
-      out.push({
-        text: segment,
-        isWordLike: isWordLike === true && segment.trim().length > 0,
-      });
+    for (const { segment, index, isWordLike } of seg.segment(s)) {
+      const wordLike = isWordLike === true && segment.trim().length > 0;
+      const prev = out.at(-1);
+      // If this segment and the previous segment fall inside the same protected compound
+      // (e.g. ครีเอเตอร์ or คำอธิบาย), merge them so highlight/karaoke treats the whole compound as one word.
+      const inSameProtected =
+        prev &&
+        wordLike &&
+        prev.isWordLike &&
+        protectedSpans.some((sp) => index > sp.start && index < sp.end);
+      if (inSameProtected && prev) {
+        prev.text += segment;
+      } else {
+        out.push({
+          text: segment,
+          isWordLike: wordLike,
+        });
+      }
     }
     if (out.length > 0) return mergeNumericAffixTokens(out);
   }
@@ -494,7 +515,7 @@ export function renderSubtitle(
   // Caption Styles that fully own their own rendering (ignore Text Effect)
   const LOCKED_PRESETS: SubtitleStylePreset[] = [
     "classic-yellow", "hormozi", "beast", "neon-green", "neon-red", "neon-blue",
-    "pastel", "retro", "box-white", "box-yellow", "news",
+    "pastel", "retro", "box-yellow", "news",
   ];
 
   // ── Text Effects that render special inline content ────────────────────────
@@ -511,20 +532,63 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
+      const isWhiteCard = preset === "box-white";
+      const isDarkCard = preset === "box" || preset === "box-rounded" || preset === "karaoke-box";
+      const wrapHighlightCard = (inner: React.ReactNode) => {
+        if (isWhiteCard) {
+          return (
+            <div style={{
+              display: "inline-block",
+              background: "#FFFFFF",
+              border: "4px solid #111827",
+              boxShadow: "0 6px 0 rgba(17,24,39,0.22), 0 10px 24px rgba(0,0,0,0.18)",
+              padding: "16px 32px 18px",
+              borderRadius: 20,
+              maxWidth: "92%",
+            }}>
+              {inner}
+            </div>
+          );
+        }
+        if (preset === "box-rounded" || preset === "karaoke-box") {
+          return (
+            <div style={{
+              display: "inline-block",
+              background: "rgba(15, 23, 42, 0.92)",
+              border: "3px solid rgba(255,255,255,0.22)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+              padding: "12px 28px 14px",
+              borderRadius: 18,
+              maxWidth: "90%",
+            }}>
+              {inner}
+            </div>
+          );
+        }
+        if (preset === "box") {
+          return (
+            <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 22px 10px", borderRadius: 8 }}>
+              {inner}
+            </div>
+          );
+        }
+        return inner;
+      };
+      const baseTextColor = isWhiteCard ? "#111827" : color;
       if (frame < 0) {
-        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+        return wrapHighlightCard(<span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined })}>{text}</span>);
       }
       const lines = tokenLines(text);
       const active = activeTokenIndex(lines, frame, captionDurFrames);
       if (active < 0) {
-        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+        return wrapHighlightCard(<span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined })}>{text}</span>);
       }
       // Thinner outline + drop shadow only — heavy 4-way stroke smeared the
       // small text into an unreadable blob. The active word reads dark-on-yellow,
       // so it needs no stroke; inactive words keep a light outline for contrast.
       let tokenIdx = 0;
-      return (
-        <span style={withDecorations({ ...base, display: "inline" })}>
+      return wrapHighlightCard(
+        <span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined, WebkitTextStroke: isWhiteCard ? "0px transparent" : undefined })}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
               {line.parts.map((part, partIdx) => {
@@ -536,11 +600,11 @@ export function renderSubtitle(
                 return (
                   <span key={`${lineIdx}-${partIdx}`} style={withDecorations({
                     background: isActive ? accentColor : "transparent",
-                    color: isActive ? "#000" : color,
-                    borderRadius: "0.12em",
-                    padding: isActive ? "0.02em 0.18em" : undefined,
-                    textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
-                    WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
+                    color: isActive ? "#111827" : baseTextColor,
+                    borderRadius: "0.18em",
+                    padding: isActive ? "0.02em 0.16em" : undefined,
+                    textShadow: isActive || isWhiteCard || isDarkCard ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
+                    WebkitTextStroke: isActive || isWhiteCard || isDarkCard ? "0px transparent" : "1px rgba(0,0,0,0.85)",
                     paintOrder: "stroke fill",
                     boxDecorationBreak: "clone",
                     WebkitBoxDecorationBreak: "clone",
@@ -550,7 +614,7 @@ export function renderSubtitle(
               {lineIdx < lines.length - 1 ? <br /> : null}
             </React.Fragment>
           ))}
-        </span>
+        </span>,
       );
     }
 
@@ -768,8 +832,16 @@ export function renderSubtitle(
 
     case "box-white":
       return (
-        <div style={{ display: "inline-block", background: "#ffffff", padding: "6px 20px 8px", borderRadius: 4 }}>
-          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{renderContent("#111111")}</span>
+        <div style={{
+          display: "inline-block",
+          background: "#FFFFFF",
+          border: "4px solid #111827",
+          boxShadow: "0 6px 0 rgba(17,24,39,0.28), 0 10px 24px rgba(0,0,0,0.35)",
+          padding: "10px 28px 12px",
+          borderRadius: 16,
+          maxWidth: "88%",
+        }}>
+          <span style={withDecorations({ ...base, color: "#111827", textShadow: "none", WebkitTextStroke: "0px transparent" })}>{renderContent("#111827")}</span>
         </div>
       );
 

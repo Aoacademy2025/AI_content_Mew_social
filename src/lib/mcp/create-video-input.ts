@@ -23,6 +23,7 @@ import {
 import { SFX_MODES } from "@/lib/transition-sfx";
 import { MAX_STITCH_CLIPS, MIN_STITCH_CLIPS } from "@/lib/presenter-stitch";
 import { ACTIVE_STYLE_PACK_IDS } from "@/lib/style-pack-catalog";
+import { MOTION_MASCOT_IDS, MOTION_THEME_IDS } from "@/lib/motion-broll-catalog";
 
 const GEMINI_VOICE_IDS = GEMINI_VOICES.map((voice) => voice.id) as [
   (typeof GEMINI_VOICES)[number]["id"],
@@ -63,6 +64,10 @@ export const createVideoJobInputShape = {
   title: z.string().max(200).optional(),
   templateId: z.enum(TEMPLATE_IDS).optional()
     .describe("สไตล์เทมเพลตวิดีโอและภาพ B-roll สำเร็จรูป (ดูรายการจาก get_video_options.templates) — ตั้งค่าโทนและสไตล์ภาพ B-roll ทุกโหมด (โทนฟุตเทจและจังหวะตัดของ stock, รูปแบบศิลปะ แนวเล่าเรื่อง และชุดสีของ hero-ai-image / automix) พร้อมซับไตเติล พาดหัวฮุค ไฮไลต์คำ การ์ดสถิติ โทนเสียงพากย์ SFX ซูมจังหวะผู้พูด และเพลงประกอบให้อัตโนมัติ (อาร์กิวเมนต์อื่นที่ระบุมาจะทับค่าเริ่มต้นของเทมเพลตเสมอ)"),
+  motionThemeId: z.enum(MOTION_THEME_IDS).optional()
+    .describe("ธีมฉาก Motion B-Roll / HyperFrames วาดด้วยโค้ดทั้งคลิป (doodle-explainer | cue-step-board | hyperframe-kinetic) — เมื่อระบุ ระบบจะสร้างฉากแอนิเมชันจากบทพูดและซิงค์สี/ฟอนต์ Brand CI อัตโนมัติตั้งแต่รอบแรกโดยไม่ใช้เครดิตสร้างภาพและไม่ต้องใช้คีย์สต็อก"),
+  motionMascot: z.enum(MOTION_MASCOT_IDS).optional()
+    .describe("รูปแบบตัวละครประจำช่องสำหรับฉาก Motion B-Roll: stickman-scarf (ผ้าพันคอสีแบรนด์ ค่าเริ่มต้น) | stickman-glasses (แว่นตากลม) | stickman-cap (หมวกแก๊ปสีแบรนด์) | ai-bot (หุ่นยนต์ AI หน้าจอดิจิทัล)"),
   voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
   voiceId: z.string().optional(),
   geminiVoiceName: z.enum(GEMINI_VOICE_IDS).optional(),
