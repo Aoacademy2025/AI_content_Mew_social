@@ -603,12 +603,12 @@ export function BrollWindowInspector({
     return {
       templateId: tpl.id,
       themeId: tpl.themeId,
-      headerText: (motionHeader || tpl.defaultProps.headerText).slice(0, 60),
-      title: (motionTitle || tpl.defaultProps.title).slice(0, 80),
-      subtitle: (motionSubtitle || tpl.defaultProps.subtitle).slice(0, 90),
-      badgeText: (motionBadge || tpl.defaultProps.badgeText).slice(0, 48),
-      leftText: (motionLeft || tpl.defaultProps.leftText).slice(0, 48),
-      rightText: (motionRight || tpl.defaultProps.rightText).slice(0, 48),
+      headerText: (motionHeader || tpl.defaultProps.headerText || "").slice(0, 60),
+      title: (motionTitle || tpl.defaultProps.title || "").slice(0, 80),
+      subtitle: (motionSubtitle || tpl.defaultProps.subtitle || "").slice(0, 90),
+      badgeText: (motionBadge || tpl.defaultProps.badgeText || "").slice(0, 48),
+      leftText: (motionLeft || tpl.defaultProps.leftText || "").slice(0, 48),
+      rightText: (motionRight || tpl.defaultProps.rightText || "").slice(0, 48),
       mascot: motionMascot,
       brandCi: currentBrandCi(),
     };
@@ -619,12 +619,12 @@ export function BrollWindowInspector({
     if (!tpl) return;
     setSelectedMotionTemplateId(tpl.id);
     setMotionThemeFilter(tpl.themeId);
-    const nextHeader = motionHeader.trim() ? motionHeader : tpl.defaultProps.headerText;
-    const nextTitle = motionTitle.trim() ? motionTitle : tpl.defaultProps.title;
-    const nextSubtitle = motionSubtitle.trim() ? motionSubtitle : tpl.defaultProps.subtitle;
-    const nextBadge = motionBadge.trim() ? motionBadge : tpl.defaultProps.badgeText;
-    const nextLeft = motionLeft.trim() ? motionLeft : tpl.defaultProps.leftText;
-    const nextRight = motionRight.trim() ? motionRight : tpl.defaultProps.rightText;
+    const nextHeader = motionHeader.trim() ? motionHeader : (tpl.defaultProps.headerText ?? "");
+    const nextTitle = motionTitle.trim() ? motionTitle : (tpl.defaultProps.title ?? "");
+    const nextSubtitle = motionSubtitle.trim() ? motionSubtitle : (tpl.defaultProps.subtitle ?? "");
+    const nextBadge = motionBadge.trim() ? motionBadge : (tpl.defaultProps.badgeText ?? "");
+    const nextLeft = motionLeft.trim() ? motionLeft : (tpl.defaultProps.leftText ?? "");
+    const nextRight = motionRight.trim() ? motionRight : (tpl.defaultProps.rightText ?? "");
     setMotionHeader(nextHeader);
     setMotionTitle(nextTitle);
     setMotionSubtitle(nextSubtitle);

@@ -463,7 +463,7 @@ export function toMotionBrollUri(templateId: MotionTemplateId): string {
 
 export const buildMotionBrollUri = toMotionBrollUri;
 
-export function isMotionBrollUri(src: unknown): src is string {
+export function isMotionBrollUri(src: unknown): src is `motion://${MotionTemplateId}` {
   if (typeof src !== "string" || !src.startsWith(MOTION_URI_PREFIX)) return false;
   const id = src.slice(MOTION_URI_PREFIX.length).trim();
   return isMotionTemplateId(id);

@@ -2488,7 +2488,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upMotionBrandCi = motionThemeId
         ? resolveMotionBrandCiFromPalette({
             themeId: motionThemeId,
-            palette: input.brandPalette ?? input.templateSnapshot?.palette,
+            palette: input.brandPalette,
             fontFamily: resolvedSubtitleDesign.fontFamily,
             accentColor: resolvedSubtitleDesign.accentColor,
           })
@@ -3239,7 +3239,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const scriptMotionBrandCi = motionThemeId
       ? resolveMotionBrandCiFromPalette({
           themeId: motionThemeId,
-          palette: resolvedBrandPalette.length > 0 ? resolvedBrandPalette : input.templateSnapshot?.palette,
+          palette: resolvedBrandPalette.length > 0 ? resolvedBrandPalette : input.brandPalette,
           fontFamily: resolvedSubtitleDesign.fontFamily,
           accentColor: resolvedSubtitleDesign.accentColor,
         })
