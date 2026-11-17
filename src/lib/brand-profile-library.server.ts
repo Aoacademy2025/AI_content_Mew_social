@@ -378,7 +378,7 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
   const subtitle = normalizeSubtitleStylePresetConfig(payload.subtitle.config);
   if (subtitle) next.brandSubtitleDefault = subtitle;
   else delete next.brandSubtitleDefault;
-  const rawSubtitleConfig = isRecord(payload.subtitle.config) ? payload.subtitle.config : {};
+  const rawSubtitleConfig = payload.subtitle.config ?? {};
   const motionThemeId =
     typeof rawSubtitleConfig.motionThemeId === "string"
       && rawSubtitleConfig.motionThemeId.trim().length > 0
