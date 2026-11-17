@@ -378,6 +378,21 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
   const subtitle = normalizeSubtitleStylePresetConfig(payload.subtitle.config);
   if (subtitle) next.brandSubtitleDefault = subtitle;
   else delete next.brandSubtitleDefault;
+  const rawSubtitleConfig = isRecord(payload.subtitle.config) ? payload.subtitle.config : {};
+  const motionThemeId =
+    typeof rawSubtitleConfig.motionThemeId === "string"
+      && rawSubtitleConfig.motionThemeId.trim().length > 0
+      ? rawSubtitleConfig.motionThemeId.trim()
+      : null;
+  if (motionThemeId) next.motionThemeId = motionThemeId;
+  else delete next.motionThemeId;
+  const motionMascot =
+    typeof rawSubtitleConfig.motionMascot === "string"
+      && rawSubtitleConfig.motionMascot.trim().length > 0
+      ? rawSubtitleConfig.motionMascot.trim()
+      : null;
+  if (motionMascot) next.motionMascot = motionMascot;
+  else delete next.motionMascot;
   const logo = normalizeLogoOverlayConfig(payload.brandMark);
   if (logo) next.logoOverlay = logo;
   else delete next.logoOverlay;
