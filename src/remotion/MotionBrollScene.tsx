@@ -1328,7 +1328,7 @@ export function paintMotionBrollCanvas(
     ctx.fillRect(0, 0, bw, bh);
 
     const orb2 = ctx.createRadialGradient(420, 520, 10, 420, 520, 260);
-    orb2.addColorStop(0, hexToRgba(brand.secondaryColor, 0.22));
+    orb2.addColorStop(0, hexToRgba(brand.accentColor, 0.22));
     orb2.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = orb2;
     ctx.fillRect(0, 0, bw, bh);
@@ -1592,7 +1592,7 @@ export function paintMotionBrollCanvas(
     ctx.fillRect(0, 0, bw, bh);
 
     const mesh2 = ctx.createRadialGradient(410, 480, 10, 410, 480, 280);
-    mesh2.addColorStop(0, hexToRgba(brand.secondaryColor, 0.28));
+    mesh2.addColorStop(0, hexToRgba(brand.accentColor, 0.28));
     mesh2.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = mesh2;
     ctx.fillRect(0, 0, bw, bh);
