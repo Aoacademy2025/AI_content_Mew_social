@@ -761,6 +761,9 @@ export function AdvancedSettings({
                     <SelectItem value="doodle-explainer">Doodle Stickman (วาดเส้นการ์ตูน + ผ้าพันคอแบรนด์)</SelectItem>
                     <SelectItem value="cue-step-board">Cue Step Board (การ์ด 1-2-3 + โต๊ะผู้บรรยาย)</SelectItem>
                     <SelectItem value="hyperframe-kinetic">HyperFrame Kinetic (กราฟิก 3 มิติ + แสงนีออน)</SelectItem>
+                    <SelectItem value="paper-cutout-doc">Paper Cutout Doc (กระดาษฉีกสารคดี + ปากกาไฮไลต์)</SelectItem>
+                    <SelectItem value="social-chat-sim">Social Chat Sim (จำลองแชตมือถือ + แจ้งเตือนเด้ง)</SelectItem>
+                    <SelectItem value="apple-bento-glass">Apple Bento Glass (การ์ดกระจก Bento + ตัวเลขวิ่ง 60fps)</SelectItem>
                   </SelectContent>
                 </Select>
               </FieldShell>
