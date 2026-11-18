@@ -357,7 +357,7 @@ export function motionThemeDefaultSubtitlePreset(
   brandStyle?: SubtitleStylePresetConfig | null,
 ): SubtitleStylePresetConfig {
   const fontFamily = brandStyle?.fontFamily || "Kanit";
-  if (motionThemeId === "doodle-explainer") {
+  if (motionThemeId === "doodle-explainer" || motionThemeId === "paper-cutout-doc") {
     return {
       preset: "box-white",
       effect: "highlight",
@@ -366,7 +366,9 @@ export function motionThemeDefaultSubtitlePreset(
       fontWeight: 600,
       bold: true,
       textColor: "#111827",
-      accentColor: brandStyle?.accentColor || "#38BDF8",
+      accentColor:
+        brandStyle?.accentColor ||
+        (motionThemeId === "paper-cutout-doc" ? "#FACC15" : "#38BDF8"),
       outline: false,
       outlineSize: 4,
       shadow: true,
@@ -374,6 +376,25 @@ export function motionThemeDefaultSubtitlePreset(
       highlightKeywords: false,
       statCards: false,
       cardLen: "sentence",
+    };
+  }
+  if (motionThemeId === "social-chat-sim" || motionThemeId === "apple-bento-glass") {
+    return {
+      preset: "box-white",
+      effect: "pop",
+      fontFamily,
+      fontSize: 56,
+      fontWeight: 600,
+      bold: true,
+      textColor: "#111827",
+      accentColor: brandStyle?.accentColor || "#38BDF8",
+      outline: false,
+      outlineSize: 4,
+      shadow: true,
+      verticalPos: 82,
+      highlightKeywords: true,
+      statCards: false,
+      cardLen: "3",
     };
   }
   return {

@@ -950,6 +950,902 @@ export function paintMotionBrollCanvas(
     };
     drawDrawer(38);
     drawDrawer(bw - 233);
+  } else if (config.themeId === "paper-cutout-doc") {
+    // ── THEME C: PAPER CUTOUT DOCUMENTARY (Vox / Johnny Harris Editorial Collage) ──
+    // Craft paper / vintage newsprint grid + torn edges + masking tape + live highlighter sweep
+    ctx.fillStyle = "#EAE2D3";
+    ctx.fillRect(0, 0, bw, bh);
+
+    // Subtle editorial rule lines & micro-grain dots
+    ctx.strokeStyle = "rgba(120, 108, 90, 0.14)";
+    ctx.lineWidth = 1;
+    for (let y = 40; y < bh; y += 36) {
+      ctx.beginPath();
+      ctx.moveTo(24, y);
+      ctx.lineTo(bw - 24, y);
+      ctx.stroke();
+    }
+    for (let x = 36; x < bw; x += 54) {
+      ctx.beginPath();
+      ctx.moveTo(x, 24);
+      ctx.lineTo(x, bh - 24);
+      ctx.stroke();
+    }
+
+    // Helper: Torn-edge newspaper clipping card with masking tape
+    const drawPaperClipping = (
+      cx: number,
+      cy: number,
+      w: number,
+      h: number,
+      tiltRad: number,
+      paperColor = "#FAF6EE",
+      showTape = true,
+    ) => {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(tiltRad);
+
+      // Deep collage drop shadow
+      ctx.fillStyle = "rgba(28, 25, 23, 0.24)";
+      ctx.beginPath();
+      ctx.roundRect(-w / 2 + 7, -h / 2 + 10, w, h, 4);
+      ctx.fill();
+
+      // Main paper body with jagged torn bottom edge
+      ctx.fillStyle = paperColor;
+      ctx.strokeStyle = "#292524";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, -h / 2);
+      ctx.lineTo(w / 2, -h / 2);
+      ctx.lineTo(w / 2, h / 2 - 8);
+      const zigSteps = 18;
+      for (let i = zigSteps; i >= 0; i--) {
+        const zx = -w / 2 + (w * i) / zigSteps;
+        const zy = h / 2 - (i % 2 === 0 ? 8 : 0);
+        ctx.lineTo(zx, zy);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Translucent masking tape at top center
+      if (showTape) {
+        ctx.save();
+        ctx.translate(0, -h / 2 - 2);
+        ctx.rotate(-0.04);
+        ctx.fillStyle = "rgba(234, 215, 167, 0.82)";
+        ctx.strokeStyle = "rgba(120, 102, 68, 0.45)";
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(-58, -13, 116, 26);
+        ctx.strokeRect(-58, -13, 116, 26);
+        ctx.restore();
+      }
+      ctx.restore();
+    };
+
+    // Top Editorial Masthead Tag
+    const headerTag = trimPhraseAtWordBoundary(props.headerText ?? "INVESTIGATION FILE", 22);
+    ctx.save();
+    ctx.translate(bw / 2, 74);
+    ctx.rotate(-0.015);
+    ctx.fillStyle = "#1C1917";
+    ctx.fillRect(-195, -22, 390, 44);
+    ctx.fillStyle = "#FAF6EE";
+    ctx.font = `900 18px ${monoFont}`;
+    ctx.textAlign = "center";
+    ctx.fillText(`📰  ${headerTag}  ·  DOC #2026`, 0, 6);
+    ctx.restore();
+
+    const items =
+      props.items && props.items.length > 0
+        ? props.items
+        : ["คนดูตัดสินใน 3 วินาทีแรก", "เปิดคลิปช้า = คนปัดทิ้ง 78%", "ต้องขึ้นคำตอบตั้งแต่ประโยคแรก"];
+
+    if (config.templateId === "paper.evidence-dossier") {
+      // 2 Polaroid Evidence Frames connected by Red Investigation String + Pushpins
+      const p1 = easeOutBack(clamp01((p - 0.04) / 0.18));
+      const p2 = easeOutBack(clamp01((p - 0.18) / 0.18));
+
+      // Polaroid 1 (Left-Top)
+      ctx.save();
+      ctx.translate(158, 290);
+      ctx.scale(p1, p1);
+      ctx.rotate(-0.055);
+      ctx.fillStyle = "rgba(28, 25, 23, 0.25)";
+      ctx.fillRect(-108 + 6, -124 + 8, 216, 248);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#1C1917";
+      ctx.lineWidth = 3;
+      ctx.fillRect(-108, -124, 216, 248);
+      ctx.strokeRect(-108, -124, 216, 248);
+
+      // Dark archival photo area inside Polaroid 1
+      ctx.fillStyle = "#1E293B";
+      ctx.fillRect(-92, -106, 184, 152);
+      // Red declining retention graph inside photo
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(-74, -76);
+      ctx.lineTo(-22, -52);
+      ctx.lineTo(18, -14);
+      ctx.lineTo(74, 24);
+      ctx.stroke();
+      ctx.fillStyle = "#F8FAFC";
+      ctx.font = `800 15px ${monoFont}`;
+      ctx.textAlign = "left";
+      ctx.fillText("RETENTION: 22%", -78, -82);
+
+      // Caption on Polaroid bottom
+      ctx.fillStyle = "#1C1917";
+      ctx.font = `900 20px ${font}`;
+      ctx.textAlign = "center";
+      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "คลิปทั่วไป: เกริ่นยาว", 18), 0, 82);
+      ctx.fillStyle = "#DC2626";
+      ctx.font = `800 16px ${font}`;
+      ctx.fillText("❌ คนปัดทิ้งตั้งแต่ 3 วิแรก", 0, 106);
+
+      // Red Pushpin
+      ctx.fillStyle = "#DC2626";
+      ctx.beginPath();
+      ctx.arc(0, -116, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      // Polaroid 2 (Right-Bottom)
+      if (p > 0.16) {
+        ctx.save();
+        ctx.translate(382, 435);
+        ctx.scale(p2, p2);
+        ctx.rotate(0.045);
+        ctx.fillStyle = "rgba(28, 25, 23, 0.25)";
+        ctx.fillRect(-108 + 6, -124 + 8, 216, 248);
+        ctx.fillStyle = "#FFFFFF";
+        ctx.strokeStyle = "#1C1917";
+        ctx.lineWidth = 3;
+        ctx.fillRect(-108, -124, 216, 248);
+        ctx.strokeRect(-108, -124, 216, 248);
+
+        ctx.fillStyle = "#0F172A";
+        ctx.fillRect(-92, -106, 184, 152);
+        // Rising Brand CI retention bar inside photo
+        ctx.strokeStyle = brand.primaryColor;
+        ctx.lineWidth = 5.5;
+        ctx.beginPath();
+        ctx.moveTo(-74, 18);
+        ctx.lineTo(-22, -26);
+        ctx.lineTo(24, -44);
+        ctx.lineTo(74, -82);
+        ctx.stroke();
+        ctx.fillStyle = brand.accentColor || "#FACC15";
+        ctx.font = `800 15px ${monoFont}`;
+        ctx.textAlign = "left";
+        ctx.fillText("HOOK LOCKED: +310%", -78, 34);
+
+        ctx.fillStyle = "#1C1917";
+        ctx.font = `900 20px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "เปิดด้วยคำตอบ + ภาพขยับ", 18), 0, 82);
+        ctx.fillStyle = "#15803D";
+        ctx.font = `800 16px ${font}`;
+        ctx.fillText("✓ หยุดนิ้วคนดูได้ทันที", 0, 106);
+
+        // Red Pushpin
+        ctx.fillStyle = "#DC2626";
+        ctx.beginPath();
+        ctx.arc(0, -116, 11, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Red Investigation String connecting the two pushpins
+      if (p > 0.28) {
+        const sp = clamp01((p - 0.28) / 0.22);
+        ctx.save();
+        ctx.strokeStyle = "#DC2626";
+        ctx.lineWidth = 4;
+        ctx.setLineDash([8, 4]);
+        ctx.beginPath();
+        ctx.moveTo(158, 174);
+        ctx.quadraticCurveTo(270, 265, 158 + (382 - 158) * sp, 174 + (319 - 174) * sp);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Bottom Torn Dossier Summary Note
+      if (p > 0.36) {
+        const np = easeOutBack(clamp01((p - 0.36) / 0.18));
+        ctx.save();
+        ctx.translate(bw / 2, 645);
+        ctx.scale(np, np);
+        drawPaperClipping(0, 0, 448, 118, -0.012, "#FEF9C3", true);
+        ctx.fillStyle = "#1C1917";
+        ctx.font = `900 24px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หลักฐานเปรียบเทียบชัด", 22), 0, -12);
+        ctx.fillStyle = "#DC2626";
+        ctx.font = `800 20px ${font}`;
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "พิสูจน์แล้วจากดาต้าจริง", 24), 0, 26);
+        ctx.restore();
+      }
+    } else if (config.templateId === "paper.quote-stamp") {
+      // Editorial Cutout Quote + Slamming Rubber Stamp
+      const clipEnter = easeOutBack(clamp01(p / 0.18));
+      ctx.save();
+      ctx.translate(bw / 2, 330);
+      ctx.scale(clipEnter, clipEnter);
+      drawPaperClipping(0, 0, 456, 340, -0.02, "#FAF6EE", true);
+
+      // Giant serif quotation marks
+      ctx.fillStyle = "rgba(220, 38, 38, 0.18)";
+      ctx.font = `900 120px Georgia, serif`;
+      ctx.textAlign = "left";
+      ctx.fillText("“", -204, -52);
+
+      // Highlighted Quote Headline
+      const hlSweep = clamp01((p - 0.14) / 0.32);
+      ctx.fillStyle = "rgba(250, 204, 21, 0.78)";
+      ctx.fillRect(-190, -82, 380 * hlSweep, 46);
+
+      ctx.fillStyle = "#1C1917";
+      ctx.font = `900 29px ${font}`;
+      ctx.textAlign = "center";
+      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "กฏเหล็กของช่องที่โตไว", 22), 0, -48);
+
+      items.slice(0, 2).forEach((line, idx) => {
+        ctx.fillStyle = "#292524";
+        ctx.font = `700 22px ${font}`;
+        ctx.fillText(`• ${trimPhraseAtWordBoundary(line, 24)}`, 0, 12 + idx * 44);
+      });
+      ctx.restore();
+
+      // Rubber Stamp Slam Effect (scales from 2.4x -> 1.0x with ink border)
+      if (p > 0.34) {
+        const rawStamp = clamp01((p - 0.34) / 0.14);
+        const stampScale = rawStamp < 1 ? 2.2 - 1.2 * rawStamp : 1.0;
+        ctx.save();
+        ctx.translate(bw / 2 + 78, 535);
+        ctx.rotate(-0.18);
+        ctx.scale(stampScale, stampScale);
+
+        ctx.fillStyle = "rgba(254, 242, 242, 0.92)";
+        ctx.strokeStyle = "#DC2626";
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.roundRect(-142, -44, 284, 88, 10);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.roundRect(-132, -34, 264, 68, 6);
+        ctx.stroke();
+
+        ctx.fillStyle = "#DC2626";
+        ctx.font = `900 28px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "APPROVED · ทำตามได้ทันที", 18), 0, 10);
+        ctx.restore();
+      }
+    } else {
+      // Default: paper.headline-highlighter (Vox Newspaper Clipping + Live Yellow Highlighter Sweep)
+      const clipEnter = easeOutBack(clamp01(p / 0.16));
+      ctx.save();
+      ctx.translate(bw / 2, 355);
+      ctx.scale(clipEnter, clipEnter);
+      drawPaperClipping(0, 0, 464, 420, -0.018, "#FAF6EE", true);
+
+      // Newspaper metadata header
+      ctx.fillStyle = "#57534E";
+      ctx.font = `700 14px ${monoFont}`;
+      ctx.textAlign = "left";
+      ctx.fillText("THE CREATOR TIMES  ·  SPECIAL REPORT", -202, -162);
+      ctx.strokeStyle = "#1C1917";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-202, -146);
+      ctx.lineTo(202, -146);
+      ctx.stroke();
+
+      // Main Headline with Live Yellow Marker Sweep
+      const sweep1 = clamp01((p - 0.12) / 0.28);
+      ctx.fillStyle = "rgba(250, 204, 21, 0.85)";
+      ctx.beginPath();
+      ctx.roundRect(-204, -126, 408 * sweep1, 54, 6);
+      ctx.fill();
+
+      ctx.fillStyle = "#1C1917";
+      ctx.font = `900 30px ${font}`;
+      ctx.textAlign = "left";
+      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "ทำไมคนเลื่อนผ่านใน 3 วิแรก?", 22), -194, -88);
+
+      // Sub-items with progressive marker sweeps & red editorial underlines
+      items.slice(0, 3).forEach((item, idx) => {
+        const at = 0.22 + idx * 0.15;
+        if (p < at) return;
+        const rowSweep = clamp01((p - at) / 0.22);
+        const y = -18 + idx * 74;
+
+        // Faux newspaper body lines in background
+        ctx.fillStyle = "rgba(168, 162, 158, 0.28)";
+        ctx.fillRect(-194, y - 24, 388, 8);
+        ctx.fillRect(-194, y + 22, 310, 8);
+
+        // Live Highlighter strip on key phrase
+        ctx.fillStyle = idx === 1 ? hexToRgba(brand.primaryColor, 0.32) : "rgba(253, 224, 71, 0.78)";
+        ctx.fillRect(-196, y - 18, 392 * rowSweep, 38);
+
+        ctx.fillStyle = "#1C1917";
+        ctx.font = `800 22px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(`${idx + 1}. ${trimPhraseAtWordBoundary(item, 24)}`, -186, y + 8);
+
+        // Hand-drawn Red Pen Underline on last item
+        if (idx === 2 && rowSweep > 0.5) {
+          ctx.strokeStyle = "#DC2626";
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(-186, y + 18);
+          ctx.quadraticCurveTo(0, y + 24, -186 + 360 * rowSweep, y + 16);
+          ctx.stroke();
+        }
+      });
+      ctx.restore();
+
+      // Bottom Red Editorial Badge
+      if (p > 0.45) {
+        const bp = easeOutBack(clamp01((p - 0.45) / 0.16));
+        ctx.save();
+        ctx.translate(bw / 2, 628);
+        ctx.scale(bp, bp);
+        ctx.rotate(0.02);
+        drawCard(-155, -26, 310, 52, "#DC2626", 10, "#1C1917", 3.5);
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `900 21px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "KEY FINDING · อินไซต์สำคัญ", 22), 0, 8);
+        ctx.restore();
+      }
+    }
+  } else if (config.themeId === "social-chat-sim") {
+    // ── THEME D: SOCIAL CHAT & NOTIFICATION SIMULATOR (Modern Mobile Glass UI) ──
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, bh);
+    bgGrad.addColorStop(0, "#090D16");
+    bgGrad.addColorStop(0.5, "#0F172A");
+    bgGrad.addColorStop(1, "#090D16");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, bw, bh);
+
+    // Dual Brand CI ambient glow orbs
+    const orb1 = ctx.createRadialGradient(120, 220, 10, 120, 220, 260);
+    orb1.addColorStop(0, hexToRgba(brand.primaryColor, 0.28));
+    orb1.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = orb1;
+    ctx.fillRect(0, 0, bw, bh);
+
+    const orb2 = ctx.createRadialGradient(420, 520, 10, 420, 520, 260);
+    orb2.addColorStop(0, hexToRgba(brand.secondaryColor, 0.22));
+    orb2.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = orb2;
+    ctx.fillRect(0, 0, bw, bh);
+
+    const items =
+      props.items && props.items.length > 0
+        ? props.items
+        : [
+            "พี่ครับ ทำไมลงคลิปทุกวันแต่ยอดวิวนิ่ง?",
+            "เพราะ 3 วิแรกยังไม่ได้บอกคำตอบที่คนดูอยากรู้ครับ",
+            "ลองเปลี่ยนมาเปิดด้วยผลลัพธ์ + ซับคำสำคัญดูครับ 🔥",
+          ];
+
+    // Frosted Phone Container Frame (top & center area, leaving bottom for subtitles)
+    const frameEnter = easeOutBack(clamp01(p / 0.14));
+    ctx.save();
+    ctx.translate(bw / 2, 355);
+    ctx.scale(frameEnter, frameEnter);
+
+    // Glass phone shell
+    ctx.fillStyle = "rgba(15, 23, 42, 0.84)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(-236, -295, 472, 575, 34);
+    ctx.fill();
+    ctx.stroke();
+
+    // Top Dynamic Island + Status Header
+    ctx.fillStyle = "#020617";
+    ctx.beginPath();
+    ctx.roundRect(-62, -278, 124, 24, 12);
+    ctx.fill();
+
+    // Profile Header Bar inside phone
+    ctx.fillStyle = "rgba(30, 41, 59, 0.75)";
+    ctx.beginPath();
+    ctx.roundRect(-216, -240, 432, 64, 18);
+    ctx.fill();
+
+    // Avatar Circle with Brand Ring + Online Dot
+    ctx.fillStyle = brand.primaryColor;
+    ctx.beginPath();
+    ctx.arc(-176, -208, 22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#090D16";
+    ctx.font = `900 18px ${font}`;
+    ctx.textAlign = "center";
+    ctx.fillText("M", -176, -201);
+
+    ctx.fillStyle = "#22C55E";
+    ctx.beginPath();
+    ctx.arc(-159, -192, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#F8FAFC";
+    ctx.font = `800 20px ${font}`;
+    ctx.textAlign = "left";
+    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "Mew Social Studio", 22), -142, -212);
+    ctx.fillStyle = brand.primaryColor;
+    ctx.font = `600 14px ${monoFont}`;
+    ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "ACTIVE NOW · VERIFIED", 26), -142, -190);
+
+    if (config.templateId === "chat.notification-stack") {
+      // Stacked iOS Glass Notification Banners cascading in with spring physics
+      items.slice(0, 3).forEach((alertText, idx) => {
+        const at = 0.08 + idx * 0.16;
+        if (p < at) return;
+        const np = easeOutBack(clamp01((p - at) / 0.18));
+        const y = -118 + idx * 112;
+        ctx.save();
+        ctx.translate(0, y);
+        ctx.scale(np, np);
+
+        ctx.fillStyle = idx === 2 ? hexToRgba(brand.primaryColor, 0.22) : "rgba(30, 41, 59, 0.92)";
+        ctx.strokeStyle = idx === 2 ? brand.primaryColor : "rgba(255, 255, 255, 0.16)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-208, -44, 416, 92, 20);
+        ctx.fill();
+        ctx.stroke();
+
+        // App Icon Badge
+        ctx.fillStyle = idx === 0 ? "#EF4444" : idx === 1 ? "#F59E0B" : brand.primaryColor;
+        ctx.beginPath();
+        ctx.roundRect(-190, -24, 48, 48, 12);
+        ctx.fill();
+        ctx.fillStyle = "#090D16";
+        ctx.font = `900 22px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(idx === 0 ? "!" : idx === 1 ? "⚡" : "✓", -166, 8);
+
+        // Notification Title + Timestamp
+        ctx.fillStyle = "#94A3B8";
+        ctx.font = `700 13px ${monoFont}`;
+        ctx.textAlign = "left";
+        ctx.fillText(idx === 2 ? "BRAND CI SYSTEM · NOW" : `ANALYTICS ALERT · ${idx + 1}m ago`, -128, -14);
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `800 20px ${font}`;
+        ctx.fillText(trimPhraseAtWordBoundary(alertText, 25), -128, 18);
+        ctx.restore();
+      });
+    } else if (config.templateId === "chat.viral-comment-reply") {
+      // Pinned Creator Comment Card + Auto-Reply DM Input Box
+      const c1 = easeOutBack(clamp01((p - 0.06) / 0.16));
+      ctx.save();
+      ctx.translate(0, -88);
+      ctx.scale(c1, c1);
+      ctx.fillStyle = "rgba(30, 41, 59, 0.95)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-208, -64, 416, 128, 22);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#F43F5E";
+      ctx.beginPath();
+      ctx.roundRect(-190, -48, 128, 26, 8);
+      ctx.fill();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = `800 13px ${font}`;
+      ctx.textAlign = "center";
+      ctx.fillText("📌 คอมเมนต์ปักหมุด", -126, -30);
+
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = `800 22px ${font}`;
+      ctx.textAlign = "left";
+      ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "อยากได้เทมเพลตนี้ ต้องทำยังไงครับ?", 24), -190, 8);
+      ctx.fillStyle = "#94A3B8";
+      ctx.font = `600 15px ${font}`;
+      ctx.fillText("❤️ 1.4K   ·   ดูการตอบกลับของครีเอเตอร์", -190, 40);
+      ctx.restore();
+
+      // Creator Auto-Reply Bubble with Typewriter Keyword
+      if (p > 0.22) {
+        const c2 = easeOutBack(clamp01((p - 0.22) / 0.18));
+        const kw = props.rightText ?? "MEW";
+        ctx.save();
+        ctx.translate(0, 78);
+        ctx.scale(c2, c2);
+        ctx.fillStyle = brand.primaryColor;
+        ctx.beginPath();
+        ctx.roundRect(-208, -56, 416, 112, 24);
+        ctx.fill();
+
+        ctx.fillStyle = "#090D16";
+        ctx.font = `900 32px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(`💬 พิมพ์คอมเมนต์ "${kw}"`, 0, -4);
+        ctx.font = `800 19px ${font}`;
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ส่งลิงก์ให้ใน DM ทันที ⚡", 24), 0, 32);
+        ctx.restore();
+      }
+    } else {
+      // Default: chat.dm-conversation (Incoming & Outgoing Chat Bubbles + Typing Indicator + Emoji Reactions)
+      // Bubble 1 (Incoming Left)
+      if (p > 0.05) {
+        const b1 = easeOutBack(clamp01((p - 0.05) / 0.16));
+        ctx.save();
+        ctx.translate(-18, -118);
+        ctx.scale(b1, b1);
+        ctx.fillStyle = "#1E293B";
+        ctx.strokeStyle = "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(-194, -38, 368, 76, 20);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#F8FAFC";
+        ctx.font = `700 20px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "ทำไมลงคลิปทุกวันแต่คนเลื่อนผ่าน?", 24), -174, 7);
+        ctx.restore();
+      }
+
+      // Bubble 2 (Outgoing Right - Brand Primary Color)
+      if (p > 0.2) {
+        const b2 = easeOutBack(clamp01((p - 0.2) / 0.16));
+        ctx.save();
+        ctx.translate(18, -12);
+        ctx.scale(b2, b2);
+        ctx.fillStyle = brand.primaryColor;
+        ctx.beginPath();
+        ctx.roundRect(-174, -42, 368, 84, 22);
+        ctx.fill();
+
+        ctx.fillStyle = "#090D16";
+        ctx.font = `800 20px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(trimPhraseAtWordBoundary(items[1] ?? "เพราะ 3 วิแรกยังไม่ได้ขึ้นคำตอบครับ", 24), -154, 7);
+        ctx.restore();
+      }
+
+      // Bubble 3 (Outgoing Right + Emoji Reaction Pill)
+      if (p > 0.36) {
+        const b3 = easeOutBack(clamp01((p - 0.36) / 0.16));
+        ctx.save();
+        ctx.translate(18, 98);
+        ctx.scale(b3, b3);
+        ctx.fillStyle = "rgba(30, 41, 59, 0.95)";
+        ctx.strokeStyle = brand.primaryColor;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.roundRect(-174, -42, 368, 84, 22);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `800 20px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(trimPhraseAtWordBoundary(items[2] ?? "เปิดด้วยภาพคำตอบ + ซับคำสำคัญ 🔥", 24), -154, 7);
+
+        // Floating Emoji Reaction Pill
+        ctx.fillStyle = "#0F172A";
+        ctx.strokeStyle = "rgba(255,255,255,0.22)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(102, 26, 82, 32, 16);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = `700 15px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText("🔥 ❤️ 99+", 143, 47);
+        ctx.restore();
+      }
+
+      // Live Typing Indicator Pill at bottom of chat
+      const dotBounce = (idx: number) => Math.sin(p * Math.PI * 8 + idx * 1.1) * 4;
+      ctx.save();
+      ctx.translate(-138, 212);
+      ctx.fillStyle = "#1E293B";
+      ctx.beginPath();
+      ctx.roundRect(-54, -20, 108, 40, 20);
+      ctx.fill();
+      for (let d = 0; d < 3; d++) {
+        ctx.fillStyle = d === 1 ? brand.primaryColor : "#94A3B8";
+        ctx.beginPath();
+        ctx.arc(-22 + d * 22, dotBounce(d), 5.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  } else if (config.themeId === "apple-bento-glass") {
+    // ── THEME E: APPLE BENTO GRID / GLASSMORPHISM (Keynote Frosted Glass + Specular Rim) ──
+    const bgGrad = ctx.createLinearGradient(0, 0, bw, bh);
+    bgGrad.addColorStop(0, "#050811");
+    bgGrad.addColorStop(0.5, "#0B1120");
+    bgGrad.addColorStop(1, "#090D16");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, bw, bh);
+
+    // Ambient Mesh Gradient Orbs behind frosted Bento cards
+    const mesh1 = ctx.createRadialGradient(140, 210, 10, 140, 210, 280);
+    mesh1.addColorStop(0, hexToRgba(brand.primaryColor, 0.34));
+    mesh1.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = mesh1;
+    ctx.fillRect(0, 0, bw, bh);
+
+    const mesh2 = ctx.createRadialGradient(410, 480, 10, 410, 480, 280);
+    mesh2.addColorStop(0, hexToRgba(brand.secondaryColor, 0.28));
+    mesh2.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = mesh2;
+    ctx.fillRect(0, 0, bw, bh);
+
+    // Helper: Frosted Apple Bento Tile with Specular Top Rim Highlight
+    const drawBentoTile = (
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      activeGlow = false,
+      radius = 26,
+    ) => {
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
+      ctx.beginPath();
+      ctx.roundRect(x + 4, y + 10, w, h, radius);
+      ctx.fill();
+
+      const tileGrad = ctx.createLinearGradient(x, y, x, y + h);
+      if (activeGlow) {
+        tileGrad.addColorStop(0, hexToRgba(brand.primaryColor, 0.26));
+        tileGrad.addColorStop(1, "rgba(15, 23, 42, 0.88)");
+      } else {
+        tileGrad.addColorStop(0, "rgba(30, 41, 59, 0.78)");
+        tileGrad.addColorStop(1, "rgba(15, 23, 42, 0.88)");
+      }
+      ctx.fillStyle = tileGrad;
+      ctx.strokeStyle = activeGlow
+        ? hexToRgba(brand.primaryColor, 0.85)
+        : "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = activeGlow ? 2.5 : 1.8;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, radius);
+      ctx.fill();
+      ctx.stroke();
+
+      // Top Specular Glass Rim
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y + 1.5);
+      ctx.lineTo(x + w - radius, y + 1.5);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    // Keynote Pill Header
+    const topTag = trimPhraseAtWordBoundary(props.headerText ?? "APPLE BENTO SUMMARY", 24);
+    ctx.save();
+    ctx.translate(bw / 2, 72);
+    drawBentoTile(-175, -22, 350, 44, false, 22);
+    ctx.fillStyle = brand.primaryColor;
+    ctx.font = `800 15px ${monoFont}`;
+    ctx.textAlign = "center";
+    ctx.fillText(`✦  ${topTag}`, 0, 6);
+    ctx.restore();
+
+    const items =
+      props.items && props.items.length > 0
+        ? props.items
+        : ["AI Script Hook", "Brand CI Lock", "60fps Motion B-Roll", "Smart Karaoke Sub"];
+
+    if (config.templateId === "bento.feature-matrix") {
+      // 2x2 Apple Keynote Bento Grid with Active Spotlight Tile
+      const tiles = [
+        { x: 34, y: 120, w: 226, h: 215, tag: "01 · HOOK", icon: "⚡" },
+        { x: 280, y: 120, w: 226, h: 215, tag: "02 · BRAND CI", icon: "🎨" },
+        { x: 34, y: 355, w: 226, h: 215, tag: "03 · MOTION", icon: "🎬" },
+        { x: 280, y: 355, w: 226, h: 215, tag: "04 · SUBTITLE", icon: "💬" },
+      ];
+      const activeIdx = Math.min(3, Math.floor(p * 4));
+      tiles.forEach((t, idx) => {
+        const at = 0.04 + idx * 0.1;
+        if (p < at) return;
+        const tp = easeOutBack(clamp01((p - at) / 0.16));
+        const isCurrent = idx === activeIdx;
+        ctx.save();
+        ctx.translate(t.x + t.w / 2, t.y + t.h / 2);
+        ctx.scale(tp, tp);
+        drawBentoTile(-t.w / 2, -t.h / 2, t.w, t.h, isCurrent, 26);
+
+        ctx.fillStyle = isCurrent ? brand.primaryColor : "#94A3B8";
+        ctx.font = `700 13px ${monoFont}`;
+        ctx.textAlign = "left";
+        ctx.fillText(t.tag, -t.w / 2 + 22, -t.h / 2 + 34);
+
+        ctx.font = `900 38px ${font}`;
+        ctx.fillText(t.icon, -t.w / 2 + 22, -4);
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `800 21px ${font}`;
+        ctx.fillText(trimPhraseAtWordBoundary(items[idx] ?? t.tag, 16), -t.w / 2 + 22, 46);
+
+        ctx.fillStyle = isCurrent ? brand.accentColor || "#FACC15" : "rgba(148,163,184,0.65)";
+        ctx.font = `600 14px ${font}`;
+        ctx.fillText(isCurrent ? "● ACTIVE MODULE" : "✓ READY", -t.w / 2 + 22, 78);
+        ctx.restore();
+      });
+
+      // Bottom Full-Width Summary Glass Bar
+      if (p > 0.36) {
+        const bp = easeOutBack(clamp01((p - 0.36) / 0.16));
+        ctx.save();
+        ctx.translate(bw / 2, 628);
+        ctx.scale(bp, bp);
+        drawBentoTile(-236, -34, 472, 68, true, 22);
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `900 22px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "4 ระบบหลักทำงานเชื่อมกันอัตโนมัติ", 26), 0, 8);
+        ctx.restore();
+      }
+    } else if (config.templateId === "bento.pricing-verdict") {
+      // Old Manual Workflow Card vs Highlighted Pro Bento Verdict Card
+      const c1 = easeOutBack(clamp01((p - 0.04) / 0.16));
+      ctx.save();
+      ctx.translate(bw / 2, 225);
+      ctx.scale(c1, c1);
+      drawBentoTile(-236, -88, 472, 176, false, 26);
+
+      ctx.fillStyle = "#EF4444";
+      ctx.font = `800 15px ${monoFont}`;
+      ctx.textAlign = "left";
+      ctx.fillText("OLD WORKFLOW · วิธีเดิมที่เสียเวลา", -204, -46);
+
+      ctx.fillStyle = "#94A3B8";
+      ctx.font = `800 28px ${font}`;
+      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "ตัดต่อเอง 4 ชั่วโมง / คลิป", 22), -204, 4);
+
+      // Animated red strikethrough line
+      const strikeP = clamp01((p - 0.18) / 0.2);
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(-204, -6);
+      ctx.lineTo(-204 + 340 * strikeP, -6);
+      ctx.stroke();
+
+      ctx.fillStyle = "#64748B";
+      ctx.font = `600 18px ${font}`;
+      ctx.fillText("× ซับไม่ตรงแบรนด์   × กราฟิกไม่ขยับตามเสียงพูด", -204, 52);
+      ctx.restore();
+
+      // Bottom Highlighted Bento Verdict Card
+      if (p > 0.22) {
+        const c2 = easeOutBack(clamp01((p - 0.22) / 0.18));
+        ctx.save();
+        ctx.translate(bw / 2, 470);
+        ctx.scale(c2, c2);
+        drawBentoTile(-236, -124, 472, 248, true, 30);
+
+        ctx.fillStyle = brand.primaryColor;
+        ctx.beginPath();
+        ctx.roundRect(-204, -96, 176, 32, 10);
+        ctx.fill();
+        ctx.fillStyle = "#090D16";
+        ctx.font = `900 14px ${monoFont}`;
+        ctx.textAlign = "center";
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "PRO VERDICT", 16), -116, -75);
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `900 34px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "ใช้ AI + Brand CI เสร็จใน 5 นาที", 22), -204, -22);
+
+        items.slice(0, 2).forEach((point, idx) => {
+          ctx.fillStyle = "#E2E8F0";
+          ctx.font = `700 20px ${font}`;
+          ctx.fillText(`✓  ${trimPhraseAtWordBoundary(point, 26)}`, -204, 34 + idx * 38);
+        });
+        ctx.restore();
+      }
+    } else {
+      // Default: bento.glass-metrics (Hero KPI Card with 60fps Animated Number Counter + 2 Sub-Bento Cards)
+      const heroEnter = easeOutBack(clamp01(p / 0.16));
+      ctx.save();
+      ctx.translate(bw / 2, 255);
+      ctx.scale(heroEnter, heroEnter);
+      drawBentoTile(-236, -135, 472, 270, true, 30);
+
+      ctx.fillStyle = "#94A3B8";
+      ctx.font = `700 16px ${monoFont}`;
+      ctx.textAlign = "left";
+      ctx.fillText("RETENTION & HOOK VELOCITY", -202, -92);
+
+      // 60fps Animated KPI Number Counter
+      const countVal = Math.round(clamp01(p / 0.55) * 320);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = `900 78px ${font}`;
+      ctx.fillText(`+${countVal}%`, -202, -8);
+
+      // Glowing Growth Pill
+      ctx.fillStyle = "rgba(34, 197, 94, 0.22)";
+      ctx.strokeStyle = "#22C55E";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(72, -62, 132, 42, 21);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#4ADE80";
+      ctx.font = `800 18px ${monoFont}`;
+      ctx.textAlign = "center";
+      ctx.fillText("▲ 3.2x FAST", 138, -35);
+
+      ctx.fillStyle = "#F8FAFC";
+      ctx.font = `800 24px ${font}`;
+      ctx.textAlign = "left";
+      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หยุดนิ้วคนดูตั้งแต่วินาทีแรก", 24), -202, 44);
+
+      // Smooth Sparkline Curve inside Hero Bento Card
+      const sparkP = clamp01((p - 0.1) / 0.5);
+      ctx.strokeStyle = brand.primaryColor;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(-202, 102);
+      ctx.bezierCurveTo(-90, 98, 10, 42, -202 + 404 * sparkP, 102 - 64 * sparkP);
+      ctx.stroke();
+      ctx.restore();
+
+      // 2 Bottom Sub-Bento Cards
+      const subCards = [
+        { x: 34, title: items[0] ?? "เปิดด้วยคำตอบทันที", sub: "3 วิแรกห้ามเกริ่น" },
+        { x: 280, title: items[1] ?? "ล็อกสี Brand CI", sub: "จำช่องได้ในพริบตา" },
+      ];
+      subCards.forEach((sc, idx) => {
+        const at = 0.22 + idx * 0.12;
+        if (p < at) return;
+        const sp = easeOutBack(clamp01((p - at) / 0.16));
+        ctx.save();
+        ctx.translate(sc.x + 113, 505);
+        ctx.scale(sp, sp);
+        drawBentoTile(-113, -95, 226, 190, false, 26);
+
+        ctx.fillStyle = brand.primaryColor;
+        ctx.beginPath();
+        ctx.arc(-72, -46, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#090D16";
+        ctx.font = `900 18px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(idx === 0 ? "01" : "02", -72, -40);
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `800 20px ${font}`;
+        ctx.textAlign = "left";
+        ctx.fillText(trimPhraseAtWordBoundary(sc.title, 15), -88, 14);
+        ctx.fillStyle = "#94A3B8";
+        ctx.font = `600 16px ${font}`;
+        ctx.fillText(trimPhraseAtWordBoundary(sc.sub, 18), -88, 48);
+        ctx.restore();
+      });
+    }
   } else {
     // ── THEME B: DOODLE EXPLAINER (Ref 1 Editorial Hand-Drawn Vector Style) ──
     if (props.headerText) {

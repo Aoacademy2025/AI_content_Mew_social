@@ -19,6 +19,9 @@ export const MOTION_THEME_IDS = [
   "doodle-explainer",
   "cue-step-board",
   "hyperframe-kinetic",
+  "paper-cutout-doc",
+  "social-chat-sim",
+  "apple-bento-glass",
 ] as const;
 
 export type MotionThemeId = (typeof MOTION_THEME_IDS)[number];
@@ -51,6 +54,15 @@ export const MOTION_TEMPLATE_IDS = [
   "cue.price-slash-cta",
   "hyperframe.kinetic-stat",
   "hyperframe.flow-diagram",
+  "paper.headline-highlighter",
+  "paper.evidence-dossier",
+  "paper.quote-stamp",
+  "chat.dm-conversation",
+  "chat.notification-stack",
+  "chat.viral-comment-reply",
+  "bento.glass-metrics",
+  "bento.feature-matrix",
+  "bento.pricing-verdict",
 ] as const;
 
 export type MotionTemplateId = (typeof MOTION_TEMPLATE_IDS)[number];
@@ -164,6 +176,24 @@ export const MOTION_THEMES: readonly MotionThemeCatalogEntry[] = [
     englishLabel: "HyperFrames Kinetic Canvas",
     description: "โมชันกราฟิก 60fps เน้นตัวเลขสถิติขนาดใหญ่และแผนผังโฟลว์เรืองแสงตามสี Brand CI",
   },
+  {
+    id: "paper-cutout-doc",
+    thaiLabel: "ตัดแปะหนังสือพิมพ์ & ไฮไลต์สารคดี (Paper Cutout Doc)",
+    englishLabel: "Newspaper & Documentary Cutout",
+    description: "ฉากกระดาษหนังสือพิมพ์ฉีกแปะ ปากกาเน้นข้อความปาดสด แฟ้มหลักฐาน และตราประทับสไตล์สารคดี Vox/Johnny Harris",
+  },
+  {
+    id: "social-chat-sim",
+    thaiLabel: "แชตเด้ง & แจ้งเตือนโซเชียล (Social Chat & Notification)",
+    englishLabel: "Social Chat & Notification Simulator",
+    description: "หน้าจอแชตเด้งทีละบับเบิล จุดกำลังพิมพ์ แจ้งเตือนยอดเข้า และกล่องตอบคอมเมนต์ไวรัล",
+  },
+  {
+    id: "apple-bento-glass",
+    thaiLabel: "การ์ดกระจก Apple Bento & ตัวเลขวิ่ง (Apple Bento Glass)",
+    englishLabel: "Apple Keynote Bento Glassmorphism",
+    description: "การ์ดกระจกใสขอบเรืองแสงสไตล์ Apple Keynote ตัวเลขวิ่งขึ้นอัตโนมัติ และตารางเทียบสเปกพรีเมียม",
+  },
 ] as const;
 
 export type MotionTemplateCatalogEntry = {
@@ -194,6 +224,24 @@ export const DEFAULT_THEME_BRAND_CI: Record<MotionThemeId, MotionBrandCi> = {
     primaryColor: "#38BDF8",
     accentColor: "#F43F5E",
     backgroundColor: "#090D16",
+    fontFamily: "Kanit",
+  },
+  "paper-cutout-doc": {
+    primaryColor: "#DC2626",
+    accentColor: "#FDE047",
+    backgroundColor: "#F6F1E3",
+    fontFamily: "Kanit",
+  },
+  "social-chat-sim": {
+    primaryColor: "#10B981",
+    accentColor: "#38BDF8",
+    backgroundColor: "#0B1120",
+    fontFamily: "Kanit",
+  },
+  "apple-bento-glass": {
+    primaryColor: "#8B5CF6",
+    accentColor: "#38BDF8",
+    backgroundColor: "#070913",
     fontFamily: "Kanit",
   },
 };
@@ -413,6 +461,160 @@ export const MOTION_TEMPLATE_CATALOG: readonly MotionTemplateCatalogEntry[] = [
       backgroundVariant: "dark-grid",
     },
   },
+  {
+    id: "paper.headline-highlighter",
+    themeId: "paper-cutout-doc",
+    archetypeId: "hook-character",
+    thaiLabel: "ตัดแปะพาดหัวข่าว + ปากกาไฮไลต์ปาดสด",
+    description: "พาดหัวข่าวหนังสือพิมพ์ฉีกแปะบนกระดาษคราฟต์ พร้อมปากกาเน้นข้อความปาดทับคำสำคัญแบบสารคดี",
+    defaultBackgroundVariant: "cream-dots",
+    defaultProps: {
+      headerText: "SPECIAL REPORT · 2026",
+      title: "ทำไม 90% ถึงพลาดจุดนี้",
+      subtitle: "จากการวิเคราะห์คลิปสั้นกว่า 10,000 ชิ้นในตลาด",
+      items: ["คนดูตัดสินใจใน 1.8 วินาทีแรก", "ภาพนิ่งซ้ำๆ ทำให้คนปัดทิ้งทันที", "Motion B-Roll ดึงสายตาได้นานกว่า 3.4 เท่า"],
+      badgeText: "EXCLUSIVE",
+      backgroundVariant: "cream-dots",
+    },
+  },
+  {
+    id: "paper.evidence-dossier",
+    themeId: "paper-cutout-doc",
+    archetypeId: "step-checklist",
+    thaiLabel: "แฟ้มหลักฐานโพลารอยด์ + ด้ายแดงเชื่อมปม",
+    description: "การ์ดภาพโพลารอยด์แปะเทปกาวและหมุดปัก พร้อมเส้นด้ายแดงลากเชื่อมหลักฐานทีละจุด",
+    defaultBackgroundVariant: "cream-dots",
+    defaultProps: {
+      headerText: "CASE FILE #409",
+      title: "3 หลักฐานที่พิสูจน์แล้ว",
+      items: ["หลักฐานที่ 1: โครงสร้างเปิดคลิป", "หลักฐานที่ 2: จังหวะตัดภาพทุก 2.7 วิ", "หลักฐานที่ 3: ซับตรงคำพูด 100%"],
+      leftText: "ก่อนปรับระบบ",
+      rightText: "หลังใช้สูตรนี้",
+      badgeText: "VERIFIED",
+      backgroundVariant: "cream-dots",
+    },
+  },
+  {
+    id: "paper.quote-stamp",
+    themeId: "paper-cutout-doc",
+    archetypeId: "price-slash-cta",
+    thaiLabel: "คอลัมน์สรุป + ตราประทับกระแทกเฟรม",
+    description: "ใบตัดหนังสือพิมพ์สรุปประเด็นสำคัญ พร้อมตราประทับสีแดงกระแทกลงกระดาษในจังหวะปิดท้าย",
+    defaultBackgroundVariant: "cream-dots",
+    defaultProps: {
+      headerText: "EDITORIAL VERDICT",
+      title: "สรุปชัดใน 1 หน้ากระดาษ",
+      subtitle: "ระบบที่ทำซ้ำได้ชนะการพึ่งดวงเสมอ",
+      rightText: "CONFIRMED",
+      badgeText: "MUST READ",
+      backgroundVariant: "cream-dots",
+    },
+  },
+  {
+    id: "chat.dm-conversation",
+    themeId: "social-chat-sim",
+    archetypeId: "hook-character",
+    thaiLabel: "แชต DM เด้งทีละบับเบิล + จุดกำลังพิมพ์",
+    description: "หน้าจอแชตโซเชียลเด้งข้อความถาม-ตอบตามจังหวะพูด พร้อมจุดกำลังพิมพ์และอิโมจิรีแอ็กชัน",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "Mew Social Official",
+      title: "ทำยังไงให้คลิปดูแพงขึ้นครับ?",
+      subtitle: "ตอบกลับทันที · Online",
+      items: [
+        "ทำไมตัดคลิปออกมาแล้วยังดูเหมือนดราฟต์ครับ?",
+        "เพราะยังขาด Motion B-Roll ที่คุมสีแบรนด์ครับ!",
+        "พอเปลี่ยนมาใช้โหมดนี้ ยอดดูจนจบพุ่งทันที 🔥",
+      ],
+      badgeText: "ACTIVE NOW",
+      backgroundVariant: "dark-grid",
+    },
+  },
+  {
+    id: "chat.notification-stack",
+    themeId: "social-chat-sim",
+    archetypeId: "three-cards-progression",
+    thaiLabel: "แจ้งเตือนยอดเข้า & รีวิวเด้งซ้อนหน้าจอ",
+    description: "การ์ดแจ้งเตือน iOS / Social Pop-up เด้งซ้อนกันพร้อมป้ายตัวเลขและสถานะยืนยัน",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "LIVE NOTIFICATIONS",
+      title: "+12,450 วิวใน 1 ชั่วโมง",
+      items: [
+        "มีผู้ติดตามใหม่ +340 คนจากคลิปเมื่อกี้",
+        "ลูกค้าคอมเมนต์ขอรายละเอียด 48 รายการ",
+        "ระบบส่งลิงก์อัตโนมัติใน DM สำเร็จ 100%",
+      ],
+      badgeText: "NEW ALERT",
+      backgroundVariant: "dark-grid",
+    },
+  },
+  {
+    id: "chat.viral-comment-reply",
+    themeId: "social-chat-sim",
+    archetypeId: "price-slash-cta",
+    thaiLabel: "กล่องปักหมุดคอมเมนต์ + ปุ่มทักแชต",
+    description: "การ์ดปักหมุดคอมเมนต์ยอดฮิตจากผู้ชม พร้อมกรอบตอบกลับของครีเอเตอร์และปุ่ม CTA",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "PINNED COMMENT",
+      title: "พิมพ์คำว่า MEW ใต้คลิปนี้ได้เลย",
+      leftText: "ขอทราบวิธีตั้งค่าหน่อยครับ",
+      rightText: "MEW",
+      badgeText: "ส่งให้ทางแชต",
+      backgroundVariant: "dark-grid",
+    },
+  },
+  {
+    id: "bento.glass-metrics",
+    themeId: "apple-bento-glass",
+    archetypeId: "chart-vs-reality",
+    thaiLabel: "Apple Bento Glass + ตัวเลขวิ่ง 60fps",
+    description: "การ์ดกระจกใสขอบเรืองแสงสไตล์ Apple Keynote พร้อมตัวเลขสถิติวิ่งขึ้นและกราฟเส้นเรืองแสง",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "PERFORMANCE ENGINE",
+      title: "3.8x",
+      subtitle: "Retention สูงขึ้นด้วยกราฟิกระดับ Keynote",
+      leftText: "60 FPS",
+      rightText: "100% CI",
+      items: ["ซิงค์สีแบรนด์อัตโนมัติ", "เรนเดอร์คมชัดระดับ 1080p", "0 เครดิตค่าภาพสต็อก"],
+      badgeText: "PRO GRADE",
+      backgroundVariant: "dark-grid",
+    },
+  },
+  {
+    id: "bento.feature-matrix",
+    themeId: "apple-bento-glass",
+    archetypeId: "step-checklist",
+    thaiLabel: "Apple Bento Grid 4 ช่องสรุปฟีเจอร์",
+    description: "ตาราง Bento Grid กระจกใส 4 ช่อง ไฮไลต์ทีละบล็อกตามจังหวะพูดอย่างลื่นไหล",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "ARCHITECTURE",
+      title: "ครบทุกองค์ประกอบในเฟรมเดียว",
+      items: ["เสียงพากย์ธรรมชาติ", "ซับไตเติลแม่นยำ", "Motion B-Roll คุมโทน", "เพลงพร้อม Ducking"],
+      badgeText: "ALL-IN-ONE",
+      backgroundVariant: "dark-grid",
+    },
+  },
+  {
+    id: "bento.pricing-verdict",
+    themeId: "apple-bento-glass",
+    archetypeId: "before-after-split",
+    thaiLabel: "การ์ดกระจกเทียบความคุ้มค่า Old vs New",
+    description: "เทียบวิธีแบบเดิมกับการใช้ระบบอัตโนมัติบนการ์ดกระจก Frosted Glass พร้อมป้ายสรุป",
+    defaultBackgroundVariant: "dark-grid",
+    defaultProps: {
+      headerText: "SMART UPGRADE",
+      title: "ยกระดับงานโปรดักชันทันที",
+      leftText: "ตัดเอง 4 ชั่วโมง/คลิป",
+      rightText: "เสร็จใน 3 นาที",
+      items: ["ไม่ต้องหาฟุตเทจเอง", "ไม่ต้องคีย์เฟรมทีละจุด", "พร้อมโพสต์ทุกแพลตฟอร์ม"],
+      badgeText: "RECOMMENDED",
+      backgroundVariant: "dark-grid",
+    },
+  },
 ] as const;
 
 export const MOTION_TEMPLATES: readonly (MotionTemplateCatalogEntry & { archetype: MotionArchetypeId })[] =
@@ -520,17 +722,17 @@ export function resolveMotionBrandCiFromPalette(input: {
   palette?: readonly string[] | null;
   fontFamily?: string | null;
   accentColor?: string | null;
-}): MotionBrandCi {
+ }): MotionBrandCi {
   const defaults = DEFAULT_THEME_BRAND_CI[input.themeId];
   const validColors = (input.palette ?? []).filter(
     (c): c is string => typeof c === "string" && HEX_COLOR_RE.test(c.trim()),
   );
-  // For doodle-explainer, palette[1] is typically the vivid primary accent (e.g. #EF4444) and palette[2] is warm paper
-  if (input.themeId === "doodle-explainer") {
+  // For light paper themes (doodle-explainer, paper-cutout-doc), palette[1] is the vivid primary accent and defaults.backgroundColor is warm paper
+  if (input.themeId === "doodle-explainer" || input.themeId === "paper-cutout-doc") {
     return {
       primaryColor: validColors[1] ?? validColors[0] ?? defaults.primaryColor,
       accentColor: (input.accentColor && HEX_COLOR_RE.test(input.accentColor) ? input.accentColor : null) ?? defaults.accentColor,
-      backgroundColor: validColors[2] ?? defaults.backgroundColor,
+      backgroundColor: defaults.backgroundColor,
       fontFamily: cleanShortString(input.fontFamily, 60) ?? defaults.fontFamily,
     };
   }
@@ -758,6 +960,45 @@ export function planMotionSceneForWindow(input: {
       templateId = "cue.chart-vs-reality";
     } else {
       templateId = "cue.step-checklist";
+    }
+  } else if (themeId === "paper-cutout-doc") {
+    if (isFirst) {
+      templateId = "paper.headline-highlighter";
+    } else if (isLast || hasPriceOrCta) {
+      templateId = "paper.quote-stamp";
+    } else {
+      const rotation: MotionTemplateId[] = [
+        "paper.evidence-dossier",
+        "paper.headline-highlighter",
+        "paper.quote-stamp",
+      ];
+      templateId = rotation[windowIndex % rotation.length];
+    }
+  } else if (themeId === "social-chat-sim") {
+    if (isFirst) {
+      templateId = "chat.dm-conversation";
+    } else if (isLast || hasPriceOrCta) {
+      templateId = "chat.viral-comment-reply";
+    } else {
+      const rotation: MotionTemplateId[] = [
+        "chat.notification-stack",
+        "chat.dm-conversation",
+        "chat.viral-comment-reply",
+      ];
+      templateId = rotation[windowIndex % rotation.length];
+    }
+  } else if (themeId === "apple-bento-glass") {
+    if (isLast || hasPriceOrCta || hasComparison) {
+      templateId = "bento.pricing-verdict";
+    } else if (hasChartOrStat || isFirst) {
+      templateId = "bento.glass-metrics";
+    } else {
+      const rotation: MotionTemplateId[] = [
+        "bento.feature-matrix",
+        "bento.glass-metrics",
+        "bento.pricing-verdict",
+      ];
+      templateId = rotation[windowIndex % rotation.length];
     }
   } else {
     templateId = windowIndex % 2 === 0 ? "hyperframe.kinetic-stat" : "hyperframe.flow-diagram";
