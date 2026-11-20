@@ -9,7 +9,7 @@ import { fetchMe } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
 import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 import {
-  Settings, Users, Lock,
+  Settings, Users, Lock, Terminal,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, TrendingUp, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
   BarChart3, Tag, Languages, HardDrive, Music,
 } from "lucide-react";
@@ -60,6 +60,7 @@ const userNavItems: SidebarNavItem[] = [
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
+  { title: "ต่อ AI Agent (MCP)", href: "/mcp",     icon: Terminal, badgeText: "ใหม่" },
   { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
   { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
   { title: "Pricing",      href: "/pricing",       icon: CreditCard },
@@ -77,6 +78,7 @@ const adminStudioItems: SidebarNavItem[] = [
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
+  { title: "ต่อ AI Agent (MCP)", href: "/mcp",     icon: Terminal, badgeText: "ใหม่" },
   { title: "Settings",     href: "/settings",      icon: Settings },
 ];
 // Admin nav — five Thai groups (ADR 0062: each admin surface answers one
@@ -298,6 +300,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
           }
           if (item.href === "/brands") {
             trackEvent("brand_library_menu_clicked", { properties: { access: brandVisualAllowed ? "full" : brandVisualCohort === "rollout-wait" ? "rollout_wait" : "preview" } });
+          }
+          if (item.href === "/mcp") {
+            trackEvent("mcp_menu_clicked", { properties: { plan } });
           }
         }}
         className={cn(
