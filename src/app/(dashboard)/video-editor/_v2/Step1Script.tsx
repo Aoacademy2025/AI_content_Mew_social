@@ -511,9 +511,13 @@ export function Step1Script({
           className="flex min-h-0 flex-1 flex-col"
           style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
         >
-          <div className="flex items-center justify-between px-4 pt-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3.5">
             <span style={{ font: `500 13.5px ${font.heading}` }}>สคริปต์ของคุณ</span>
-            <span style={{ fontSize: 10.5, color: color.textFaint }}>Enter = ขึ้นเซ็กเมนต์ใหม่</span>
+            <span style={{ fontSize: 10.5, color: firstClipPath ? color.success : color.textFaint }}>
+              {firstClipPath
+                ? "✓ รวมเสียง AI + สต็อกในสิทธิ์ทดลองแล้ว ไม่ต้องใส่ API Key · Enter = แยกเซ็กเมนต์"
+                : "Enter = ขึ้นเซ็กเมนต์ใหม่"}
+            </span>
           </div>
           <textarea
             value={p.script}

@@ -77,6 +77,7 @@ import { fetchMe, type MeData } from "@/lib/use-me";
 import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
 import { isActiveStylePackId } from "@/lib/style-pack-catalog";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
+import { findFirstClipStarter, shouldApplyFirstClipStarterScript } from "@/lib/first-clip-starter";
 import { useEditorDiagnostics } from "./useEditorDiagnostics";
 
 // Which submit path a missing-key error interrupted, so the retry (after saving a key,
@@ -207,31 +208,44 @@ export function EditorV2Shell() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const tplParam = params.get("templateId");
+    const sampleParam = params.get("sample");
     const sourceParam = params.get("source");
     const isDormantSource =
       sourceParam === "lapsed_payer_d21"
       || sourceParam === "lapsed_payer_d35"
       || sourceParam === "preview_stalled_d3";
-    if (!tplParam && !isDormantSource) return;
+    if (!tplParam && sampleParam !== "1" && !isDormantSource) return;
     queryTemplateAppliedRef.current = true;
 
-    if (tplParam && isActiveStylePackId(tplParam) && !p.templateId) {
-      p.selectVideoTemplate(tplParam);
+    const validTemplateId = tplParam && isActiveStylePackId(tplParam) ? tplParam : null;
+    if (validTemplateId && (sampleParam === "1" || !p.templateId)) {
+      p.selectVideoTemplate(validTemplateId);
+    }
+    const starter = findFirstClipStarter(validTemplateId);
+    let appliedSample = false;
+    if (sampleParam === "1" && starter && shouldApplyFirstClipStarterScript(p.script)) {
+      p.setMode("script");
+      p.setScript(starter.script);
+      appliedSample = true;
+    }
+    if (appliedSample) {
+      toast.success("ใส่สคริปต์ตัวอย่างและสไตล์ให้แล้ว — แก้ข้อความหรือกดถัดไปได้เลย");
     }
     if (isDormantSource) {
       trackEvent("dormant_payer_restart_landed", {
         properties: {
           source: sourceParam,
-          templateId: tplParam && isActiveStylePackId(tplParam) ? tplParam : null,
+          templateId: validTemplateId,
         },
       });
     }
-    if (tplParam) {
+    if (tplParam || sampleParam === "1") {
       const url = new URL(window.location.href);
+      url.searchParams.delete("sample");
       url.searchParams.delete("templateId");
       window.history.replaceState({}, "", `${url.pathname}${url.search}`);
     }
-  }, [p.projectReady, p.templateId, p.selectVideoTemplate]);
+  }, [p.projectReady, p.templateId, p.script, p.selectVideoTemplate, p.setMode, p.setScript]);
 
   useEffect(() => {
     let alive = true;
