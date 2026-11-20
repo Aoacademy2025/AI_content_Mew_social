@@ -13,12 +13,16 @@ import {
 import {
   classifyDormantPayer,
   lapsedPayerCopy,
+  lapsedPayerLink,
   lapsedPayerReminderDecision,
-  LAPSED_PAYER_LINK,
   paidActivationCopy,
   paidActivationDecision,
   PAID_ACTIVATION_LINK,
+  PREVIEW_STALLED_LINK,
+  previewStalledPayerCopy,
+  previewStalledPayerDecision,
   type DormancyReason,
+  type LapsedPayerStage,
 } from "@/lib/paid-activation-reminder";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -366,6 +370,7 @@ export async function sendDueLapsedPayerReminders(
         createdAt: { gte: since30d },
       },
       _count: { _all: true },
+      _max: { createdAt: true },
     }),
     prisma.editorProject.groupBy({
       by: ["userId"],
@@ -374,6 +379,7 @@ export async function sendDueLapsedPayerReminders(
         updatedAt: { gte: since30d },
       },
       _count: { _all: true },
+      _max: { updatedAt: true },
     }),
   ]);
 
@@ -386,8 +392,12 @@ export async function sendDueLapsedPayerReminders(
       { count: row._count._all, last: row._max.finishedAt ?? row._max.updatedAt ?? null },
     ]),
   );
-  const previews30dBy = new Map(preview30dStats.map((row) => [row.userId, row._count._all]));
-  const projects30dBy = new Map(project30dStats.map((row) => [row.userId, row._count._all]));
+  const previews30dBy = new Map(
+    preview30dStats.map((row) => [row.userId, { count: row._count._all, last: row._max.createdAt ?? null }]),
+  );
+  const projects30dBy = new Map(
+    project30dStats.map((row) => [row.userId, { count: row._count._all, last: row._max.updatedAt ?? null }]),
+  );
   const userById = new Map(evidence.users.map((u) => [u.id, u]));
 
   const notify = deps.createNotification ?? createNotification;
@@ -395,6 +405,99 @@ export async function sendDueLapsedPayerReminders(
   const telemetry = deps.recordTelemetry ?? recordTelemetryEvent;
   const emailOn = (deps.emailEnabled ?? paidActivationEmailEnabled)();
   const origin = (process.env.NEXTAUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
+
+  async function deliverClaimedNudge(params: {
+    user: { id: string; email: string | null; plan: string };
+    dedupeKey: string;
+    claimEventName: string;
+    deliveryEventName: string;
+    anchorDateKey: string;
+    stage: string;
+    copy: { title: string; body: string; cta: string; emailSubject: string };
+    link: string;
+  }): Promise<"sent" | "duplicate" | "failed"> {
+    let claimId: string;
+    try {
+      const claim = await prisma.telemetryEvent.create({
+        data: {
+          dedupeKey: params.dedupeKey,
+          userId: params.user.id,
+          name: params.claimEventName,
+          category: "product",
+          source: "server",
+          status: "CLAIMED",
+          properties: JSON.stringify({ anchorDateKey: params.anchorDateKey, stage: params.stage }),
+          createdAt: now,
+        },
+        select: { id: true },
+      });
+      claimId = claim.id;
+    } catch (error) {
+      if (isUniqueClaimError(error)) {
+        return "duplicate";
+      }
+      throw error;
+    }
+
+    let notificationDelivered = false;
+    let emailAttempted = false;
+    let emailDelivered = false;
+    try {
+      await notify({
+        userId: params.user.id,
+        type: "LIMIT_WARNING",
+        title: params.copy.title,
+        body: params.copy.body,
+        link: params.link,
+      });
+      notificationDelivered = true;
+    } catch {
+      notificationDelivered = false;
+    }
+
+    if (emailOn && params.user.email) {
+      emailAttempted = true;
+      emailDelivered = await email({
+        to: params.user.email,
+        subject: params.copy.emailSubject,
+        title: params.copy.title,
+        body: params.copy.body,
+        cta: params.copy.cta,
+        editorUrl: `${origin}${params.link}`,
+      }).catch(() => false);
+    }
+
+    const status = deliveryStatus(notificationDelivered, emailAttempted, emailDelivered);
+    await prisma.telemetryEvent.update({
+      where: { id: claimId },
+      data: {
+        status,
+        properties: JSON.stringify({
+          anchorDateKey: params.anchorDateKey,
+          stage: params.stage,
+          notificationDelivered,
+          emailAttempted,
+          emailDelivered,
+        }),
+      },
+    });
+
+    for (const [channel, attempted, delivered] of [
+      ["notification", true, notificationDelivered],
+      ["email", emailAttempted, emailDelivered],
+    ] as const) {
+      if (!attempted) continue;
+      await telemetry(params.user.id, {
+        name: params.deliveryEventName,
+        category: delivered ? "product" : "error",
+        source: "server",
+        status: delivered ? "done" : "error",
+        properties: { channel, anchorDateKey: params.anchorDateKey, stage: params.stage },
+      }).catch(() => {});
+    }
+
+    return status === "FAILED" ? "failed" : "sent";
+  }
 
   for (const userId of payerIds) {
     const user = userById.get(userId);
@@ -406,110 +509,92 @@ export async function sendDueLapsedPayerReminders(
     const videos = videosBy.get(userId) ?? { count: 0, last: null };
     const scripts = scriptsBy.get(userId) ?? { count: 0, last: null };
     const images = imagesBy.get(userId) ?? { count: 0, last: null };
+    const preview30d = previews30dBy.get(userId) ?? { count: 0, last: null };
+    const project30d = projects30dBy.get(userId) ?? { count: 0, last: null };
     const hasPriorActivity =
       jobs.count > 0 || videos.count > 0 || scripts.count > 0 || images.count > 0;
     const lastActivityAt = latestDate(jobs.last, videos.last, scripts.last, images.last);
 
-    const decision = lapsedPayerReminderDecision({
-      isInternal: isInternalNorthStarAccount(user),
-      suspended: user.suspended,
-      isActivePayer: evidence.payerIds.has(userId),
-      hasPriorActivity,
-      lastActivityAt,
-      previewsDone30d: previews30dBy.get(userId) ?? 0,
-      projectsTouched30d: projects30dBy.get(userId) ?? 0,
-      now,
-    });
-
-    if (!decision.send) {
-      if (decision.reason === "active_recently") run.tooEarly += 1;
-      else run.skipped += 1;
+    // HERO-102 Path A: Paying customer touched a draft or rendered a preview in the last 30d
+    // without completing a Core Creation Outcome — send a dedicated finish-export nudge once ≥3d idle.
+    if (preview30d.count > 0 || project30d.count > 0) {
+      const stalledDecision = previewStalledPayerDecision({
+        isInternal: isInternalNorthStarAccount(user),
+        suspended: user.suspended,
+        isActivePayer: evidence.payerIds.has(userId),
+        isActiveCreator30d: evidence.creatorIds.has(userId),
+        lastDraftOrPreviewAt: latestDate(preview30d.last, project30d.last),
+        now,
+      });
+      if (!stalledDecision.send) {
+        if (stalledDecision.reason === "too_recent") run.tooEarly += 1;
+        else run.skipped += 1;
+        continue;
+      }
+      const outcome = await deliverClaimedNudge({
+        user,
+        dedupeKey: `preview_stalled_nudge:${user.id}:${stalledDecision.anchorDateKey}`,
+        claimEventName: "preview_stalled_reminder_claim",
+        deliveryEventName: "preview_stalled_reminder_delivery",
+        anchorDateKey: stalledDecision.anchorDateKey,
+        stage: "preview_stalled_d3",
+        copy: previewStalledPayerCopy(user.plan),
+        link: PREVIEW_STALLED_LINK,
+      });
+      if (outcome === "duplicate") run.duplicateClaimsSkipped += 1;
+      else if (outcome === "failed") run.deliveryFailed += 1;
+      else run.sent += 1;
       continue;
     }
 
-    const dedupeKey = `lapsed_payer_nudge:${user.id}:${decision.anchorDateKey}`;
-    let claimId: string;
-    try {
-      const claim = await prisma.telemetryEvent.create({
-        data: {
-          dedupeKey,
-          userId: user.id,
-          name: "lapsed_payer_reminder_claim",
-          category: "product",
-          source: "server",
-          status: "CLAIMED",
-          properties: JSON.stringify({ anchorDateKey: decision.anchorDateKey }),
-          createdAt: now,
-        },
-        select: { id: true },
+    // HERO-81 + HERO-102 Path B: Multi-stage lapsed creator re-activation (d21, then bounded d35 follow-up).
+    // At most ONE stage fires per daily cron pass per user (d21 first; if already claimed and idle ≥35d, d35 fires).
+    const stages: readonly LapsedPayerStage[] = ["d21", "d35"];
+    let userHandled = false;
+    let sawDuplicate = false;
+    let sawTooEarly = false;
+
+    for (const stage of stages) {
+      const decision = lapsedPayerReminderDecision({
+        isInternal: isInternalNorthStarAccount(user),
+        suspended: user.suspended,
+        isActivePayer: evidence.payerIds.has(userId),
+        hasPriorActivity,
+        lastActivityAt,
+        previewsDone30d: preview30d.count,
+        projectsTouched30d: project30d.count,
+        now,
+        stage,
       });
-      claimId = claim.id;
-    } catch (error) {
-      if (isUniqueClaimError(error)) {
-        run.duplicateClaimsSkipped += 1;
-        continue;
+      if (!decision.send) {
+        if (decision.reason === "active_recently") sawTooEarly = true;
+        break;
       }
-      throw error;
-    }
 
-    const copy = lapsedPayerCopy(user.plan);
-    let notificationDelivered = false;
-    let emailAttempted = false;
-    let emailDelivered = false;
-    try {
-      await notify({
-        userId: user.id,
-        type: "LIMIT_WARNING",
-        title: copy.title,
-        body: copy.body,
-        link: LAPSED_PAYER_LINK,
+      const outcome = await deliverClaimedNudge({
+        user,
+        dedupeKey: `lapsed_payer_nudge:${user.id}:${decision.dedupeKeySuffix}`,
+        claimEventName: "lapsed_payer_reminder_claim",
+        deliveryEventName: "lapsed_payer_reminder_delivery",
+        anchorDateKey: decision.anchorDateKey,
+        stage: decision.stage,
+        copy: lapsedPayerCopy(user.plan, decision.stage),
+        link: lapsedPayerLink(decision.stage),
       });
-      notificationDelivered = true;
-    } catch {
-      notificationDelivered = false;
+      if (outcome === "duplicate") {
+        sawDuplicate = true;
+        continue; // d21 already sent -> check whether d35 follow-up is now due
+      }
+      if (outcome === "failed") run.deliveryFailed += 1;
+      else run.sent += 1;
+      userHandled = true;
+      break;
     }
 
-    if (emailOn && user.email) {
-      emailAttempted = true;
-      emailDelivered = await email({
-        to: user.email,
-        subject: copy.emailSubject,
-        title: copy.title,
-        body: copy.body,
-        cta: copy.cta,
-        editorUrl: `${origin}${LAPSED_PAYER_LINK}`,
-      }).catch(() => false);
-    }
-
-    const status = deliveryStatus(notificationDelivered, emailAttempted, emailDelivered);
-    await prisma.telemetryEvent.update({
-      where: { id: claimId },
-      data: {
-        status,
-        properties: JSON.stringify({
-          anchorDateKey: decision.anchorDateKey,
-          notificationDelivered,
-          emailAttempted,
-          emailDelivered,
-        }),
-      },
-    });
-
-    if (status === "FAILED") run.deliveryFailed += 1;
-    else run.sent += 1;
-
-    for (const [channel, attempted, delivered] of [
-      ["notification", true, notificationDelivered],
-      ["email", emailAttempted, emailDelivered],
-    ] as const) {
-      if (!attempted) continue;
-      await telemetry(user.id, {
-        name: "lapsed_payer_reminder_delivery",
-        category: delivered ? "product" : "error",
-        source: "server",
-        status: delivered ? "done" : "error",
-        properties: { channel, anchorDateKey: decision.anchorDateKey },
-      }).catch(() => {});
+    if (!userHandled) {
+      if (sawDuplicate) run.duplicateClaimsSkipped += 1;
+      else if (sawTooEarly) run.tooEarly += 1;
+      else run.skipped += 1;
     }
   }
 
