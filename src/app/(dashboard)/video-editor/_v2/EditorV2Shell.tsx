@@ -75,6 +75,7 @@ import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
 import { fetchMe, type MeData } from "@/lib/use-me";
 import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
+import { isActiveStylePackId } from "@/lib/style-pack-catalog";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
 import { useEditorDiagnostics } from "./useEditorDiagnostics";
 
@@ -181,6 +182,7 @@ export function EditorV2Shell() {
   const pendingGeminiRetryRef = useRef<RetryAction | null>(null);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
   const activeProjectIdRef = useRef(p.projectId);
+  const queryTemplateAppliedRef = useRef(false);
   const mountedRef = useRef(false);
   const archiveGenerationRef = useRef(0);
   const archiveAttemptRef = useRef<{
@@ -199,6 +201,37 @@ export function EditorV2Shell() {
       archiveAttemptRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (queryTemplateAppliedRef.current || !p.projectReady) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const tplParam = params.get("templateId");
+    const sourceParam = params.get("source");
+    const isDormantSource =
+      sourceParam === "lapsed_payer_d21"
+      || sourceParam === "lapsed_payer_d35"
+      || sourceParam === "preview_stalled_d3";
+    if (!tplParam && !isDormantSource) return;
+    queryTemplateAppliedRef.current = true;
+
+    if (tplParam && isActiveStylePackId(tplParam) && !p.templateId) {
+      p.selectVideoTemplate(tplParam);
+    }
+    if (isDormantSource) {
+      trackEvent("dormant_payer_restart_landed", {
+        properties: {
+          source: sourceParam,
+          templateId: tplParam && isActiveStylePackId(tplParam) ? tplParam : null,
+        },
+      });
+    }
+    if (tplParam) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("templateId");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+    }
+  }, [p.projectReady, p.templateId, p.selectVideoTemplate]);
 
   useEffect(() => {
     let alive = true;

@@ -139,8 +139,14 @@ async function main() {
   const quietLog = await prisma.paidActivationReminderLog.findUniqueOrThrow({ where: { userId: "quiet-never" } });
   assert.equal(quietLog.emailAttempted, false);
 
-  // 6. HERO-81: preview_or_draft_30d classification & Month-2+ lapsed creator nudge.
-  await payer({ id: "preview-only-payer", paidDaysAgo: 4, withJob: "recent" });
+  // 6. HERO-81 + HERO-102: preview_or_draft_30d classification, preview-stalled nudge, and d21/d35 lapsed nudges.
+  await payer({ id: "preview-only-payer", paidDaysAgo: 6, withJob: "recent" });
+  // Make preview-only-payer's preview 4 days old so it crosses PREVIEW_STALLED_MIN_DAYS (3d)
+  const fourDaysAgo = new Date(NOW.getTime() - 4 * DAY_MS);
+  await prisma.videoJob.update({
+    where: { id: "job-preview-only-payer" },
+    data: { createdAt: fourDaysAgo, updatedAt: fourDaysAgo },
+  });
   const listWithPreview = await dormant.listDormantPayers(NOW);
   const previewPayer = listWithPreview.find((p) => p.id === "preview-only-payer")!;
   assert.equal(previewPayer.dormancyReason, "preview_or_draft_30d");
@@ -161,21 +167,34 @@ async function main() {
     emailEnabled: () => true,
   };
 
+  // Pass 1: dormant-old-job gets d21 (template restart link) AND preview-only-payer gets preview_stalled_d3.
   const lapsedRun1 = await dormant.sendDueLapsedPayerReminders(NOW, lapsedDeps as never);
-  assert.equal(lapsedRun1.sent, 1, "only dormant-old-job (45d idle, has prior job) qualifies for lapsed nudge");
-  assert.equal(lapsedNotifications.length, 1);
-  assert.equal((lapsedNotifications[0] as { userId: string }).userId, "dormant-old-job");
-  assert.equal((lapsedNotifications[0] as { link: string }).link, "/video-editor?source=lapsed_payer_d21");
-  assert.equal(lapsedEmails.length, 1);
+  assert.equal(lapsedRun1.sent, 2, "dormant-old-job (d21) and preview-only-payer (preview_stalled_d3) both qualify");
+  assert.equal(lapsedNotifications.length, 2);
+  const d21Notif = lapsedNotifications.find((n) => n.userId === "dormant-old-job") as { link: string };
+  assert.ok(d21Notif, "dormant-old-job received d21 nudge");
+  assert.equal(d21Notif.link, "/video-editor?templateId=news-fast&source=lapsed_payer_d21");
+  const stalledNotif = lapsedNotifications.find((n) => n.userId === "preview-only-payer") as { link: string };
+  assert.ok(stalledNotif, "preview-only-payer received preview-stalled nudge");
+  assert.equal(stalledNotif.link, "/video-editor?source=preview_stalled_d3");
+  assert.equal(lapsedEmails.length, 2);
 
-  // Idempotent on repeat run for the same silence streak.
+  // Pass 2: dormant-old-job is 45d idle (>=35d) so bounded d35 follow-up fires once; preview-only-payer is deduplicated.
   const lapsedRun2 = await dormant.sendDueLapsedPayerReminders(NOW, lapsedDeps as never);
-  assert.equal(lapsedRun2.sent, 0);
-  assert.equal(lapsedRun2.duplicateClaimsSkipped, 1);
-  assert.equal(lapsedNotifications.length, 1);
+  assert.equal(lapsedRun2.sent, 1, "bounded d35 follow-up fires for 45d-idle dormant-old-job");
+  assert.equal(lapsedRun2.duplicateClaimsSkipped, 1, "preview-only-payer is deduplicated");
+  const d35Notif = lapsedNotifications[2] as { userId: string; link: string };
+  assert.equal(d35Notif.userId, "dormant-old-job");
+  assert.equal(d35Notif.link, "/video-editor?templateId=finance-clear&source=lapsed_payer_d35");
+
+  // Pass 3: both d21+d35 and preview_stalled are now claimed -> strictly idempotent (0 sent).
+  const lapsedRun3 = await dormant.sendDueLapsedPayerReminders(NOW, lapsedDeps as never);
+  assert.equal(lapsedRun3.sent, 0);
+  assert.equal(lapsedRun3.duplicateClaimsSkipped, 2);
+  assert.equal(lapsedNotifications.length, 3);
 
   await prisma.$disconnect();
-  console.log("verify-dormant-payers-server: PASS dormant = payers − MAPC, never-created first, one nudge ≥3 days, lapsed nudge ≥21 days, skips job/internal/suspended");
+  console.log("verify-dormant-payers-server: PASS dormant = payers − MAPC, d21/d35 template restart nudges, preview-stalled nudge, strict idempotency");
 }
 
 main().catch((error) => {
