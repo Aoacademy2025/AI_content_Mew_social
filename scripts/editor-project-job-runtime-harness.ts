@@ -640,6 +640,9 @@ function mountEditorShell(input: {
         emitFirstClipRenderActive: () => undefined,
       };
     }
+    if (specifier === "@/lib/style-pack-catalog") {
+      return { isActiveStylePackId: () => false };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {
