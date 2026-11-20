@@ -11,6 +11,22 @@ import {
   type PresenterStitchFilterClipSpec,
 } from "@/lib/presenter-stitch";
 
+export function computePresenterStitchTimeoutMs(totalDurationSec: number): number {
+  const safeSec = Number.isFinite(totalDurationSec) && totalDurationSec > 0 ? totalDurationSec : 0;
+  return Math.max(180_000, Math.min(600_000, Math.ceil(safeSec * 4_000) + 120_000));
+}
+
+export function sanitizePresenterStitchError(err: { killed?: boolean; signal?: string | null; code?: unknown }): Error {
+  if (err.killed || err.signal === "SIGTERM" || err.signal === "SIGKILL") {
+    return new Error(
+      "จัดเตรียมคลิปพิธีกรไม่สำเร็จ (ใช้เวลาประมวลผลเกินกำหนด) — กรุณาลองลดความละเอียดหรือความยาวคลิปแล้วลองใหม่",
+    );
+  }
+  return new Error(
+    "จัดเตรียมคลิปพิธีกรไม่สำเร็จ — กรุณาตรวจสอบว่าไฟล์วิดีโอไม่เสียหายและรองรับมาตรฐาน MP4/MOV แล้วลองใหม่",
+  );
+}
+
 function runFfmpegCaptureStderr(
   args: string[],
   timeoutMs = 180_000,
@@ -23,11 +39,15 @@ function runFfmpegCaptureStderr(
       { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         if (err) {
-          reject(
-            new Error(
-              `[presenter-stitch] ffmpeg failed: ${err.message} ${String(stderr || "").slice(-400)}`,
-            ),
-          );
+          const execErr = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+          console.error("[presenter-stitch] ffmpeg failed", {
+            code: execErr.code ?? null,
+            killed: Boolean(execErr.killed),
+            signal: execErr.signal ?? null,
+            timeoutMs,
+            stderrTail: String(stderr || "").slice(-400),
+          });
+          reject(sanitizePresenterStitchError(execErr));
           return;
         }
         resolve(String(stderr || ""));
@@ -156,6 +176,8 @@ export async function stitchPresenterVideoFiles(input: {
     inputArgs.push("-i", p);
   }
 
+  const timeoutMs = computePresenterStitchTimeoutMs(plan.totalDurationSec);
+
   await runFfmpegCaptureStderr([
     "-hide_banner",
     "-loglevel",
@@ -171,9 +193,9 @@ export async function stitchPresenterVideoFiles(input: {
     "-c:v",
     "libx264",
     "-preset",
-    "fast",
+    "veryfast",
     "-crf",
-    "18",
+    "20",
     "-c:a",
     "aac",
     "-b:a",
@@ -183,7 +205,7 @@ export async function stitchPresenterVideoFiles(input: {
     "-movflags",
     "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
   try {
     fs.chmodSync(outPath, 0o644);
   } catch {}
