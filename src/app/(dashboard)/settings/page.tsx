@@ -654,15 +654,24 @@ function SettingsContent() {
         {/* Agent / MCP Tab */}
         {tab === "mcp" && (
           <div className="ve-card rounded-xl p-7">
-            <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl"
-                style={{ background: "hsl(var(--accent-primary) / 0.1)", border: "1px solid hsl(var(--accent-primary) / 0.2)" }}>
-                <Terminal className="h-4 w-4" style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2.25} />
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-5 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl"
+                  style={{ background: "hsl(var(--accent-primary) / 0.1)", border: "1px solid hsl(var(--accent-primary) / 0.2)" }}>
+                  <Terminal className="h-4 w-4" style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2.25} />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>ต่อ AI Agent</h2>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>สั่ง AI Agent ที่รองรับ MCP ให้สร้างและตัดต่อคลิปแทนคุณ</p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>ต่อ AI Agent</h2>
-                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>สั่ง AI Agent ที่รองรับ MCP ให้สร้างและตัดต่อคลิปแทนคุณ</p>
-              </div>
+              <a
+                href="/mcp"
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-violet-200 transition-colors hover:bg-white/10"
+                style={{ border: "1px solid hsl(var(--accent-primary) / 0.3)", background: "hsl(var(--accent-primary) / 0.1)" }}
+              >
+                เปิดหน้า /mcp เต็มจอ <ExternalLink className="h-3.5 w-3.5" />
+              </a>
             </div>
             <McpAccessSettings allowed={(meUser?.effectivePlan ?? meUser?.plan) === "PRO" || (meUser?.effectivePlan ?? meUser?.plan) === "BUSINESS"} />
           </div>

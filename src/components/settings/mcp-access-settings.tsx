@@ -8,6 +8,7 @@ import {
   ListChecks, RefreshCw, Puzzle, PlayCircle, Crown,
 } from "lucide-react";
 import { toast } from "sonner";
+import { trackEvent } from "@/lib/client-telemetry";
 import { computeKeyStatus, planKeySetupChecklist } from "@/lib/key-tiers";
 import {
   MCP_ENDPOINT_URL,
@@ -32,8 +33,16 @@ type StarterTrialSummary = {
 const MCP_URL = MCP_ENDPOINT_URL;
 const TOKEN_PLACEHOLDER = MCP_TOKEN_PLACEHOLDER;
 
-function copyText(value: string, label: string) {
-  navigator.clipboard.writeText(value).then(() => toast.success(`คัดลอก${label}แล้ว`)).catch(() => toast.error("คัดลอกไม่สำเร็จ"));
+function copyText(value: string, label: string, telemetry?: { event: string; properties?: Record<string, string | number | boolean | null> }) {
+  navigator.clipboard
+    .writeText(value)
+    .then(() => {
+      toast.success(`คัดลอก${label}แล้ว`);
+      if (telemetry) {
+        trackEvent(telemetry.event, { properties: telemetry.properties });
+      }
+    })
+    .catch(() => toast.error("คัดลอกไม่สำเร็จ"));
 }
 
 type ClientId = "claude-cowork" | "claude-desktop-json" | "cursor" | "claude-code" | "codex" | "openclaw" | "hermes" | "other-mcp";
@@ -208,16 +217,16 @@ function ConnectGuide({ token }: { token: string }) {
       <div className="flex flex-wrap items-center gap-2 rounded-lg bg-black/30 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--ui-text-muted)" }}>Endpoint</span>
         <code className="flex-1 min-w-0 truncate text-xs text-violet-300">{MCP_URL}</code>
-        <button onClick={() => copyText(MCP_URL, "Endpoint")} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/70 transition-colors hover:bg-white/10 hover:text-white">
+        <button onClick={() => copyText(MCP_URL, "Endpoint", { event: "mcp_config_copied", properties: { target: "endpoint" } })} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/70 transition-colors hover:bg-white/10 hover:text-white">
           <Copy className="h-3 w-3" /> คัดลอก URL
         </button>
-        <button onClick={() => copyText(buildClaudeDesktopConfigJson(token), " Claude Desktop JSON")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+        <button onClick={() => copyText(buildClaudeDesktopConfigJson(token), " Claude Desktop JSON", { event: "mcp_config_copied", properties: { target: "claude_desktop_json" } })} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
           <Copy className="h-3 w-3" /> Claude Desktop JSON
         </button>
-        <button onClick={() => copyText(buildCursorMcpConfigJson(token), " Cursor MCP JSON")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+        <button onClick={() => copyText(buildCursorMcpConfigJson(token), " Cursor MCP JSON", { event: "mcp_config_copied", properties: { target: "cursor_json" } })} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
           <Copy className="h-3 w-3" /> Cursor JSON
         </button>
-        <button onClick={() => copyText(buildClaudeCodeCommand(token), "คำสั่ง Claude Code")} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
+        <button onClick={() => copyText(buildClaudeCodeCommand(token), "คำสั่ง Claude Code", { event: "mcp_config_copied", properties: { target: "claude_code_cli" } })} className="flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[11px] text-violet-200 transition-colors hover:bg-white/10">
           <Copy className="h-3 w-3" /> Claude Code CLI
         </button>
       </div>
@@ -493,7 +502,17 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
                 </p>
               </div>
               <button
-                onClick={() => copyText(tpl.prompt, ` Prompt "${tpl.title}" `)}
+                onClick={() =>
+                  copyText(tpl.prompt, ` Prompt "${tpl.title}" `, {
+                    event: "mcp_prompt_pack_copied",
+                    properties: {
+                      promptId: tpl.id,
+                      templateId: tpl.templateId,
+                      category: tpl.category,
+                      allowed,
+                    },
+                  })
+                }
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold text-violet-200 transition-colors hover:bg-white/10"
                 style={{ border: "1px solid hsl(0 0% 100% / 0.1)" }}
               >
