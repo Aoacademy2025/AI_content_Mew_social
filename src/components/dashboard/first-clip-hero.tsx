@@ -21,6 +21,10 @@ import {
   firstClipStepIndex,
   type FirstClipState,
 } from "@/lib/first-clip-dashboard";
+import {
+  FIRST_CLIP_STARTERS,
+  firstClipStarterHref,
+} from "@/lib/first-clip-starter";
 
 const VIOLET = "#8B5CF6";
 const VIOLET_LIGHT = "#B9A6FF";
@@ -271,6 +275,70 @@ export function FirstClipHero({
             <QuotaStatus variant="chip" compact />
           )}
         </div>
+
+        {/* HERO-104: Explicit Trial reassurance so new users don't detour to /settings for API keys */}
+        {state === "no_script" && (
+          <p
+            data-testid="first-clip-no-api-key-reassurance"
+            className="mt-3 text-[12px]"
+            style={{ color: "#34D399" }}
+          >
+            ✓ รวมเสียงพากย์ AI และคลังวิดีโอสต็อกในสิทธิ์ทดลองแล้ว — เริ่มทำคลิปได้ทันที ไม่ต้องตั้งค่า API Key
+          </p>
+        )}
+
+        {/* HERO-104: Clear finish-export nudge for rendered_not_exported drop-off cohort */}
+        {state === "rendered_not_exported" && (
+          <div
+            data-testid="first-clip-export-nudge"
+            className="mt-3.5 rounded-xl px-3.5 py-2.5 text-[12.5px] font-medium"
+            style={{
+              background: "rgba(52,211,153,.10)",
+              border: "1px solid rgba(52,211,153,.30)",
+              color: "#34D399",
+            }}
+          >
+            พรีวิวคลิปแรกของคุณพร้อมแล้ว — กด &ldquo;ส่งออกคลิปแรก&rdquo; ด้านบนเพื่อบันทึกไฟล์ MP4 พร้อมโพสต์ลง TikTok/Reels ได้เลยใน 1 คลิก
+          </div>
+        )}
+
+        {/* HERO-104: 1-Click Template + Starter Script deep-links (zero copy-paste) */}
+        {state === "no_script" && (
+          <div className="mt-4 pt-4" style={{ borderTop: "1px solid var(--ui-divider)" }}>
+            <p className="mb-2.5 text-[11.5px] font-semibold" style={{ color: "var(--ui-text-secondary)" }}>
+              หรือลองคลิกเดียวพร้อมสคริปต์ตัวอย่าง + สไตล์สำเร็จรูป (~30 วินาที):
+            </p>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              {FIRST_CLIP_STARTERS.map((starter) => (
+                <Link
+                  key={starter.templateId}
+                  href={firstClipStarterHref(starter.templateId)}
+                  prefetch={true}
+                  onClick={() =>
+                    trackEvent("first_clip_template_starter_clicked", {
+                      step: state,
+                      properties: { templateId: starter.templateId },
+                    })
+                  }
+                  className="group flex flex-col justify-between gap-1 rounded-xl px-3.5 py-3 transition-all hover:brightness-110"
+                  style={{
+                    background: VIOLET_TILE_BG,
+                    border: `1px solid ${VIOLET_TILE_BORDER}`,
+                    minHeight: 44,
+                  }}
+                >
+                  <span className="flex items-center justify-between gap-1 text-[12.5px] font-semibold" style={{ color: "var(--ui-text-primary)" }}>
+                    <span>{starter.title}</span>
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0 transition-transform group-hover:translate-x-0.5" style={{ color: VIOLET_LIGHT }} />
+                  </span>
+                  <span className="text-[11px] leading-snug" style={{ color: "var(--ui-text-muted)" }}>
+                    {starter.subtitle}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Two ways to get a script */}
