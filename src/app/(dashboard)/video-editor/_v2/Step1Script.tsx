@@ -69,6 +69,9 @@ export function Step1Script({
   const clipDurationViolation = p.mode === "upload" && p.clipDurationSec > 0
     ? audioDurationLimitViolation(p.clipDurationSec * 1000, p.plan ?? "FREE")
     : null;
+  const scriptDurationViolation = p.mode === "script" && totalSec > 0
+    ? audioDurationLimitViolation(totalSec * 1000, p.plan ?? "FREE")
+    : null;
   const showScriptSegments = p.mode !== "upload";
   const activeClipUrls = useMemo(
     () => (Array.isArray(p.clipUrls) && p.clipUrls.length > 0 ? p.clipUrls : p.clipUrl ? [p.clipUrl] : []),
@@ -520,10 +523,18 @@ export function Step1Script({
             style={{ fontSize: 14, lineHeight: 1.7, color: color.text, fontFamily: font.body }}
           />
           <div
-            className="flex items-center justify-end px-4 py-3"
+            className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
             style={{ borderTop: `1px solid ${color.cardBorder}` }}
           >
-            <span style={{ fontSize: 11, color: color.textFaint }}>
+            {scriptDurationViolation ? (
+              <span
+                data-testid="script-duration-limit-warning"
+                style={{ fontSize: 11.5, color: color.warningText, fontWeight: 500 }}
+              >
+                ⚠️ ประมาณการยาวเกินเพดานแผน: {scriptDurationViolation.message}
+              </span>
+            ) : <span />}
+            <span style={{ fontSize: 11, color: scriptDurationViolation ? color.warningText : color.textFaint }}>
               {wordCount} คำ · {lines.length} เซ็กเมนต์ · คลิปยาว ~{fmtTime(totalSec)} นาที
             </span>
           </div>

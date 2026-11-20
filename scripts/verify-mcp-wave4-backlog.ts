@@ -191,10 +191,10 @@ async function main() {
       { presenterFit: "contain" },
     );
     assert(
-      filterContain.includes("boxblur=24:4") &&
+      filterContain.includes("boxblur=6:2") &&
         filterContain.includes("force_original_aspect_ratio=decrease") &&
         filterContain.includes("overlay=(W-w)/2:(H-h)/2"),
-      "presenterFit='contain' generates blurred 9:16 backdrop with centered 16:9 foreground",
+      "presenterFit='contain' generates downscaled blurred 9:16 backdrop with centered 16:9 foreground",
     );
 
     const landscapeName = `presenter-landscape-${Date.now()}-33333333-3333-4333-8333-333333333333.mp4`;

@@ -101,10 +101,18 @@ export function buildPresenterStitchFfmpegFilter(
     const hasAudio = spec.hasAudio !== false;
 
     if (presenterFit === "contain") {
+      // HERO-105: Downscale backdrop to 1/4 resolution before boxblur, then upscale to target.
+      // Blurring at 270x480 instead of full 1080x1920 cuts CPU time by ~12-16x (fixing the 180s
+      // ffmpeg timeout on 16:9 uploads) while producing an equally smooth blurred canvas.
+      // Normalizing to yuv420p prior to boxblur also prevents 10-bit HDR / exotic pix_fmt failures.
+      const bgW = Math.max(64, Math.floor(width / 4) * 2 / 2);
+      const bgH = Math.max(64, Math.floor(height / 4) * 2 / 2);
+      const bgEvenW = bgW % 2 === 0 ? bgW : bgW + 1;
+      const bgEvenH = bgH % 2 === 0 ? bgH : bgH + 1;
       parts.push(
-        `[${i}:v]fps=${fps},setpts=PTS-STARTPTS,split=2[vsrc_bg${i}][vsrc_fg${i}]`,
-        `[vsrc_bg${i}]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=24:4,setsar=1[vbg${i}]`,
-        `[vsrc_fg${i}]scale=${width}:${height}:force_original_aspect_ratio=decrease,setsar=1[vfg${i}]`,
+        `[${i}:v]fps=${fps},format=yuv420p,setpts=PTS-STARTPTS,split=2[vsrc_bg${i}][vsrc_fg${i}]`,
+        `[vsrc_bg${i}]scale=${bgEvenW}:${bgEvenH}:force_original_aspect_ratio=increase,crop=${bgEvenW}:${bgEvenH},boxblur=6:2,scale=${width}:${height}:flags=bilinear,setsar=1[vbg${i}]`,
+        `[vsrc_fg${i}]scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[vfg${i}]`,
         `[vbg${i}][vfg${i}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1,format=yuv420p[v${i}]`,
       );
     } else {
