@@ -217,11 +217,11 @@ export function EditorV2Shell() {
     if (!tplParam && sampleParam !== "1" && !isDormantSource) return;
     queryTemplateAppliedRef.current = true;
 
-    const validTemplate = Boolean(tplParam && isActiveStylePackId(tplParam));
-    if (validTemplate && tplParam && (sampleParam === "1" || !p.templateId)) {
-      p.selectVideoTemplate(tplParam);
+    const validTemplateId = tplParam && isActiveStylePackId(tplParam) ? tplParam : null;
+    if (validTemplateId && (sampleParam === "1" || !p.templateId)) {
+      p.selectVideoTemplate(validTemplateId);
     }
-    const starter = findFirstClipStarter(tplParam);
+    const starter = findFirstClipStarter(validTemplateId);
     let appliedSample = false;
     if (sampleParam === "1" && starter && shouldApplyFirstClipStarterScript(p.script)) {
       p.setMode("script");
@@ -235,7 +235,7 @@ export function EditorV2Shell() {
       trackEvent("dormant_payer_restart_landed", {
         properties: {
           source: sourceParam,
-          templateId: validTemplate ? tplParam : null,
+          templateId: validTemplateId,
         },
       });
     }
