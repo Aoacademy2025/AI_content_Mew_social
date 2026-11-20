@@ -58,6 +58,7 @@ import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
+import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
 import { emitFirstClipViewed } from "@/lib/first-clip-convert-events";
 
 function fmtMs(ms: number) {
@@ -99,6 +100,7 @@ export function PostPhase({
   sceneRerollEnabled,
   sceneRerollUnavailableReason,
   starterImageAllowance,
+  expiringGrant,
   downloadFilename,
   brollRegionPreference,
   projectStylePack,
@@ -139,6 +141,7 @@ export function PostPhase({
   sceneRerollEnabled: boolean;
   sceneRerollUnavailableReason?: string;
   starterImageAllowance?: MeData["starterAiImageAllowance"];
+  expiringGrant?: MeData["expiringGrant"];
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
   projectStylePack?: ProjectStylePack | null;
@@ -201,6 +204,11 @@ export function PostPhase({
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
         <FirstClipExportedViewSignal />
+        {expiringGrant ? (
+          <div className="w-full max-w-[560px]">
+            <GrantExpiryBanner grant={expiringGrant} surface="post-export" compact />
+          </div>
+        ) : null}
         <div className="flex items-center gap-2">
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
