@@ -630,6 +630,9 @@ function mountEditorShell(input: {
     if (specifier === "@/components/convert/first-clip-exported-view-signal") {
       return { FirstClipExportedViewSignal: marker("FirstClipExportedViewSignal") };
     }
+    if (specifier === "@/components/billing/grant-expiry-banner") {
+      return { GrantExpiryBanner: marker("GrantExpiryBanner") };
+    }
     if (specifier === "@/lib/first-clip-convert-events") {
       return {
         emitFirstClipExportedView: () => undefined,
