@@ -9,7 +9,7 @@ export const GRANT_EXPIRY_REMINDER_KINDS = ["d7", "d3", "d1"] as const;
 export type GrantExpiryReminderKind = typeof GRANT_EXPIRY_REMINDER_KINDS[number];
 export type GrantPaidPlan = "PRO" | "BUSINESS";
 
-export const GRANT_BANNER_MAX_DAYS = 7;
+export const GRANT_BANNER_MAX_DAYS = 14;
 export const GRANT_BANNER_LINK = "/pricing?source=grant_banner";
 
 const KIND_BY_DAYS: Readonly<Record<number, GrantExpiryReminderKind>> = {

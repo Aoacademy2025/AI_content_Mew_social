@@ -40,10 +40,17 @@ async function main() {
     const pricingClientSource = readFileSync("src/app/(dashboard)/pricing/pricing-client.tsx", "utf8");
     const dashboardPageSource = readFileSync("src/app/(dashboard)/dashboard/page.tsx", "utf8");
     const bannerComponentSource = readFileSync("src/components/billing/grant-expiry-banner.tsx", "utf8");
+    const editorShellSource = readFileSync("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", "utf8");
+    const postPhaseSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
+    const postPhaseMobileSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "utf8");
 
     assert.match(dashboardPageSource, /GrantExpiryBanner/, "/dashboard renders GrantExpiryBanner");
     assert.match(pricingPageSource, /resolveUserExpiringGrantBanner/, "/pricing resolves expiringGrant on server");
     assert.match(pricingClientSource, /GrantExpiryBanner/, "/pricing renders GrantExpiryBanner");
+    assert.match(editorShellSource, /GrantExpiryBanner/, "/video-editor renders GrantExpiryBanner");
+    assert.match(postPhaseSource, /GrantExpiryBanner/, "PostPhase renders GrantExpiryBanner on post-export");
+    assert.match(postPhaseMobileSource, /GrantExpiryBanner/, "PostPhaseMobile renders GrantExpiryBanner on post-export");
+    assert.match(bannerComponentSource, /grant_expiry_banner_viewed/, "GrantExpiryBanner emits impression telemetry");
     assert.doesNotMatch(
       bannerComponentSource,
       /฿\s*\d[\d,]*\s*\/\s*ปี|ต่อปี/,
@@ -54,6 +61,7 @@ async function main() {
       { prisma },
       {
         GRANT_BANNER_LINK,
+        GRANT_BANNER_MAX_DAYS,
         GRANT_EXPIRY_REMINDER_KINDS,
         grantBannerCopy,
         grantDeliveryStatus,
@@ -81,6 +89,7 @@ async function main() {
     assert.equal(grantExpiryReminderLink("d3"), "/pricing?source=grant_expiry_d3");
     assert.equal(grantExpiryReminderLink("d1"), "/pricing?source=grant_expiry_d1");
     assert.equal(GRANT_BANNER_LINK, "/pricing?source=grant_banner");
+    assert.equal(GRANT_BANNER_MAX_DAYS, 14, "HERO-103: GRANT alumni banner window covers 14 days");
     assert.equal(
       grantBannerCopy("PRO", 5),
       "สิทธิ์คูปองเรียน PRO ของคุณจะหมดในอีก 5 วัน — ต่อสิทธิ์ต่อเนื่องเพื่อเก็บโปรเจกต์และแบรนด์ทั้งหมดไว้ใช้งานต่อ",
@@ -247,6 +256,9 @@ async function main() {
     // Eligible user at d5 (in 7-day banner window, NOT due for cron d7/d3/d1) + d10 (outside banner window)
     await seedGrantUser({ id: "grant-d5-banner-only", daysLeft: 5, plan: "PRO" });
     await seedGrantUser({ id: "grant-d10-not-yet", daysLeft: 10, plan: "PRO" });
+
+    // Outside 14-day banner window (day 15): neither cron email nor in-app banner
+    await seedGrantUser({ id: "grant-d15-not-yet", daysLeft: 15, plan: "PRO" });
 
     // Stacked-grant user: Grant 1 expires in 3 days (d3), stacked Grant 2 extends to 33 days!
     await seedGrantUser({ id: "grant-stacked", daysLeft: 3, plan: "PRO", couponId: couponPro30.id });
@@ -415,6 +427,7 @@ async function main() {
       "grant-excluded-internal",
       "grant-d5-banner-only",
       "grant-d10-not-yet",
+      "grant-d15-not-yet",
     ]) {
       assert.equal(
         notifications.some((n) => n.userId === suppressedId),
@@ -620,7 +633,12 @@ async function main() {
       1,
     );
 
-    // ── 8. In-App Expiring Banner Resolver (`<= 7` days + Suppression) ───────
+    // ── 8. In-App Expiring Banner Resolver (`<= 14` days + Suppression) ──────
+    const d10Banner = await resolveUserExpiringGrantBanner("grant-d10-not-yet", NOW);
+    assert.ok(d10Banner, "HERO-103: unpaid GRANT user with 10 days left sees 14-day expiring banner");
+    assert.equal(d10Banner.plan, "PRO");
+    assert.equal(d10Banner.daysLeft, 10);
+
     const d5Banner = await resolveUserExpiringGrantBanner("grant-d5-banner-only", NOW);
     assert.ok(d5Banner, "unpaid GRANT user with 5 days left sees expiring banner");
     assert.equal(d5Banner.plan, "PRO");
@@ -639,7 +657,7 @@ async function main() {
 
     // Suppressed / out-of-window users see NO banner
     for (const noBannerUserId of [
-      "grant-d10-not-yet",
+      "grant-d15-not-yet",
       "grant-stacked",
       "grant-suppressed-stripe-sub",
       "grant-suppressed-cash",

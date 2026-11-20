@@ -73,7 +73,8 @@ import {
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
-import { fetchMe } from "@/lib/use-me";
+import { fetchMe, type MeData } from "@/lib/use-me";
+import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
 import { useEditorDiagnostics } from "./useEditorDiagnostics";
 
@@ -172,6 +173,7 @@ export function EditorV2Shell() {
   // that stringified the error envelope — this holds the parsed facts so the modal can
   // show the Thai reason plus the route out (upgrade, and top-up when credits are live).
   const [quotaModal, setQuotaModal] = useState<QuotaExceededInfo | null>(null);
+  const [expiringGrant, setExpiringGrant] = useState<MeData["expiringGrant"]>(null);
   // "ใช้เสียง Gemini แทน" switches voiceEngine (React state, applies next render) then
   // must resubmit — this ref+effect defers the resubmit until p.voiceEngine actually
   // reflects "gemini", since calling submit() synchronously would still close over the
@@ -206,6 +208,7 @@ export function EditorV2Shell() {
         const onPath = data?.firstClipPath === true;
         setFirstClipPath(onPath);
         setFirstClipPathReason(data?.firstClipPathReason ?? (onPath ? "on_path" : "not_paid_equivalent"));
+        setExpiringGrant(data?.expiringGrant ?? null);
       })
       .catch(() => {
         if (alive) {
@@ -785,6 +788,12 @@ export function EditorV2Shell() {
         <QuotaStatus variant="chip" refreshKey={job.phase === "done" ? 1 : 0} />
       </div>
 
+      {expiringGrant && !emptyProjectState && !isRendering && job.phase !== "done" ? (
+        <div className="shrink-0 px-5 pt-2.5">
+          <GrantExpiryBanner grant={expiringGrant} surface="editor" compact />
+        </div>
+      ) : null}
+
       {firstClipPath && !emptyProjectState && !isRendering && job.phase !== "done" && job.phase !== "failed" ? (
         <div
           className="shrink-0 px-7 py-2.5 text-[13px]"
@@ -839,9 +848,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} expiringGrant={expiringGrant} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} expiringGrant={expiringGrant} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView
@@ -852,6 +861,7 @@ export function EditorV2Shell() {
                 ? resumeExportEditSnapshot
                 : () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!)
               : undefined}
+            expiringGrant={expiringGrant}
             downloadFilename={downloadFilename}
           />
         )
@@ -1221,10 +1231,11 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
   );
 }
 
-function ExportedView({ job, onNewProject, onEditPreview, downloadFilename }: {
+function ExportedView({ job, onNewProject, onEditPreview, expiringGrant, downloadFilename }: {
   job: V2JobState;
   onNewProject: () => void;
   onEditPreview?: () => void;
+  expiringGrant?: MeData["expiringGrant"];
   downloadFilename: string;
 }) {
   const videoUrl = job.output?.videoUrl ?? "";
@@ -1233,6 +1244,11 @@ function ExportedView({ job, onNewProject, onEditPreview, downloadFilename }: {
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex w-[520px] max-w-[92vw] flex-col items-center gap-4 text-center">
         <FirstClipExportedViewSignal />
+        {expiringGrant ? (
+          <div className="w-full">
+            <GrantExpiryBanner grant={expiringGrant} surface="post-export" compact />
+          </div>
+        ) : null}
         <div className="flex items-center gap-2">
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>

@@ -31,6 +31,12 @@ export interface MeData {
   hasStripeSubscription?: boolean;
   trialStartedAt?: string | null;
   trialEndsAt?: string | null;
+  expiringGrant?: {
+    plan: "PRO" | "BUSINESS";
+    expiresAt: string;
+    daysLeft: number;
+    canConvertCardImmediately?: boolean;
+  } | null;
   internalAiTester?: boolean;
   heroAiBeta?: boolean;
   heroAiImageEligible?: boolean;

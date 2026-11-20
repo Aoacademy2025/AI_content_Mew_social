@@ -15,6 +15,7 @@ import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlem
 import { resolveFirstClipPath, resolveFirstClipProgress } from "@/lib/first-clip-path.server";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 import { promptpayMonthlyEnabled } from "@/lib/promptpay-monthly";
+import { resolveUserExpiringGrantBanner } from "@/lib/grant-expiry-reminders.server";
 
 export async function GET() {
   try {
@@ -67,10 +68,19 @@ export async function GET() {
     const managedKieOn = managedKieLaunchOn();
     const internalAiTester = isInternalAiTester(authUser);
     const heroAiBeta = isHeroAiBetaUser(authUser);
+    const canHaveExpiringGrant =
+      authUser.role !== "ADMIN"
+      && !authUser.suspended
+      && authUser.plan !== "FREE"
+      && !(
+        authUser.stripeSubscriptionId
+        && (authUser.subStatus === "active" || authUser.subStatus === "trialing")
+        && !authUser.cancelAtPeriodEnd
+      );
     // Public-launch eligibility (Task 5 consumes this for the editor's Hero AI
     // Image UI): beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS (active
     // trial included — see isHeroAiImageEligible's doc comment for why).
-    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance, firstClipPath, managedStockAccess] = await Promise.all([
+    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance, firstClipPath, managedStockAccess, expiringGrant] = await Promise.all([
       resolvePaidEquivalentEntitlement(authUser.id),
       resolveHeroAiImageAccess(authUser),
       resolveHeroScriptAccess(authUser),
@@ -83,6 +93,9 @@ export async function GET() {
         hasOwnPexelsKey: Boolean(authUser.pexelsKey),
         hasOwnPixabayKey: Boolean(authUser.pixabayKey),
       }),
+      canHaveExpiringGrant
+        ? resolveUserExpiringGrantBanner(authUser.id).catch(() => null)
+        : Promise.resolve(null),
     ]);
     // Day-one dashboard stepper (#305): only accounts still on the path need the
     // extra project-status read, so nobody else pays for it on this hot route.
@@ -191,6 +204,7 @@ export async function GET() {
         windowStartedAt: starterAllowance.windowStartedAt.toISOString(),
         windowEndsAt: starterAllowance.windowEndsAt.toISOString(),
       } : null,
+      expiringGrant,
       ...minuteFields,
     }, {
       headers: {
