@@ -50,8 +50,8 @@ export default function CreateVideoDoc() {
       </Section>
 
       <Section title="B-roll & เสียง" icon={<Layers className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}>
-        <p>B-roll เปลี่ยนคลิปทุก <strong>3–5 วินาที</strong> จับคู่กับเนื้อหาแต่ละช่วงอัตโนมัติ ดึงจากคลังสต็อกฟรี (Pexels / Pixabay)</p>
-        <p>เลือกเสียงพากย์ได้ 2 แบบ: <strong>Gemini</strong> (ค่าเริ่มต้น ระบบจัดการให้) หรือ <strong>ElevenLabs</strong> (ต้องมี voiceId ของเสียงที่เลือก)</p>
+        <p>B-roll เปลี่ยนคลิปทุก <strong>3–5 วินาที</strong> จับคู่กับเนื้อหาแต่ละช่วงอัตโนมัติ มีทั้งคลังวิดีโอสต็อก (ระบบเตรียมไว้ให้แล้ว ไม่ต้องใส่คีย์เอง), ภาพประกอบ AI และฉากแอนิเมชัน Motion B-Roll</p>
+        <p>เลือกเสียงพากย์ได้ทั้ง <strong>เสียง AI ของระบบ</strong> (ค่าเริ่มต้น พร้อมใช้ทันที) หรือ <strong>ElevenLabs</strong> (ตัวเลือกเสริมสำหรับผู้ที่มีบัญชี ElevenLabs ของตัวเอง)</p>
       </Section>
 
       <Section title="เคล็ดลับ" icon={<Lightbulb className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}>

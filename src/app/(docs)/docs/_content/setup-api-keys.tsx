@@ -5,50 +5,45 @@ import { SetupApiKeysGeminiNote } from "./setup-api-keys-gemini-note";
 
 export const meta: DocMeta = {
   slug: "setup-api-keys",
-  title: "ตั้งค่าคีย์ API",
-  category: "เริ่มต้น",
-  order: 20,
-  keywords: ["key", "api key", "pexels", "pixabay", "elevenlabs", "heygen", "gemini", "settings", "คีย์", "ตั้งค่า"],
-  summary: "ระบบจัดการ Gemini ให้แล้ว — ใส่แค่ Pexels/Pixabay + optional ElevenLabs/HeyGen",
+  title: "เชื่อมต่อบริการเสริม (ไม่จำเป็นต้องใส่)",
+  category: "แผน & การใช้งาน",
+  order: 65,
+  keywords: ["key", "api key", "pexels", "pixabay", "elevenlabs", "heygen", "gemini", "settings", "คีย์", "ตั้งค่า", "บริการเสริม"],
+  summary: "สมัครแล้วทำคลิปได้ทันทีโดยไม่ต้องใส่คีย์ — หน้านี้สำหรับผู้ที่อยากต่อ ElevenLabs, HeyGen หรือคลังสต็อกส่วนตัวเพิ่ม",
 };
 
 export default function SetupApiKeysDoc() {
   return (
     <div className="space-y-5">
       <Callout kind="info">
-        <strong>ระบบจัดการ Gemini ให้แล้ว</strong> — ไม่ต้องใส่ Gemini key เอง ใช้งานฟีเจอร์หลัก (สคริปต์, ซับไทย, เสียง Gemini) ได้ทันทีโดยไม่ต้องหา key เพิ่ม
+        <strong>ไม่ต้องใส่ API Key ก็ใช้งานได้ครบทันที</strong> — สมัครแล้วเริ่มสร้างวิดีโอได้เลย ระบบจัดการ AI, เสียงพากย์, ซับไทย และคลังวิดีโอ/ภาพประกอบ B-roll (Pexels / Pixabay) ไว้ให้ครบแล้ว
       </Callout>
 
       <Section
-        title="คีย์ที่ต้องใส่เอง"
+        title="บริการเสริม (เลือกใส่เฉพาะที่อยากใช้เพิ่ม)"
         icon={<KeyRound className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}
       >
-        <p>คีย์ต่อไปนี้ยังต้องไปขอเองแล้วนำมาวางที่หน้า Settings — ใช้สำหรับฟีเจอร์ที่ระบบไม่ได้จัดการให้</p>
-
-        <Callout kind="warn">
-          <strong>จำเป็น:</strong> ต้องมี Pexels หรือ Pixabay อย่างน้อย 1 ตัว (สำหรับ B-roll)
-        </Callout>
-        <ApiRow
-          name="Pexels"
-          desc="ดึงคลิป B-roll สต็อกมาประกอบวิดีโอ"
-          link="https://www.pexels.com/api/"
-        />
-        <ApiRow
-          name="Pixabay"
-          desc="ดึงคลิป B-roll สต็อกมาประกอบวิดีโอ"
-          link="https://pixabay.com/api/docs/"
-        />
-        <Callout kind="tip">ใส่ Pexels <strong>หรือ</strong> Pixabay อย่างน้อย 1 ตัวก็พอ ไม่จำเป็นต้องใส่ทั้งคู่</Callout>
+        <p>คีย์ด้านล่างเป็น<strong>ตัวเลือกเสริมทั้งหมด</strong> ไม่จำเป็นต้องใส่เพื่อเริ่มทำคลิป ใส่เฉพาะเมื่ออยากใช้ฟีเจอร์เพิ่มเติมจากบัญชีภายนอกของคุณเอง</p>
 
         <ApiRow
-          name="ElevenLabs"
-          desc="โคลนเสียง/เสียงพรีเมียม — ไม่ใส่ = ใช้เสียง Gemini แทน"
+          name="ElevenLabs (ตัวเลือกเสริม)"
+          desc="โคลนเสียง / เสียงพากย์พรีเมียม — ไม่ใส่ = ใช้เสียง AI ของระบบได้ทันที"
           link="https://elevenlabs.io"
         />
         <ApiRow
-          name="HeyGen"
-          desc="สร้างพิธีกร AI (avatar) — ไม่ใส่ = ได้วิดีโอเสียง + B-roll ปกติ"
+          name="HeyGen (ตัวเลือกเสริม)"
+          desc="สร้างพิธีกร AI (Avatar) — ไม่ใส่ = ได้วิดีโอเสียงพากย์ + B-roll ปกติ"
           link="https://app.heygen.com"
+        />
+        <ApiRow
+          name="Pexels ส่วนตัว (ไม่จำเป็น)"
+          desc="ระบบมีคลังสต็อกกลางให้ใช้อยู่แล้ว — ใส่เฉพาะกรณีอยากผูกโควตา Pexels ส่วนตัวเพิ่ม"
+          link="https://www.pexels.com/api/"
+        />
+        <ApiRow
+          name="Pixabay ส่วนตัว (ไม่จำเป็น)"
+          desc="ระบบมีคลังสต็อกกลางให้ใช้อยู่แล้ว — ใส่เฉพาะกรณีอยากผูกโควตา Pixabay ส่วนตัวเพิ่ม"
+          link="https://pixabay.com/api/docs/"
         />
       </Section>
 
