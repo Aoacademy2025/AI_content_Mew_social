@@ -20,7 +20,7 @@ export default function TroubleshootingDoc() {
         </Callout>
 
         <Callout kind="warn">
-          <strong>B-roll หาคลิปไม่เจอ / ขึ้น error</strong> — เช็คว่าใส่ Pexels หรือ Pixabay key แล้ว (ใส่ทั้งสองตัวยิ่งหาคลิปได้หลากหลาย)
+          <strong>B-roll หาคลิปไม่ตรงใจ / ขึ้น error</strong> — ไม่ต้องใส่คีย์ Pexels หรือ Pixabay เอง (ระบบเตรียมคลังสต็อกกลางไว้ให้แล้ว) ลองสลับใช้ภาพประกอบ AI / Motion B-Roll หรือกดเปลี่ยน B-roll เฉพาะฉากในหน้า Editor ได้ทันที (หากอยากใช้โควตาคลังสต็อกส่วนตัวเพิ่ม ค่อยใส่คีย์ใน Settings)
         </Callout>
 
         <Callout kind="info">
