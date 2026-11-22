@@ -246,6 +246,72 @@ export const DEFAULT_THEME_BRAND_CI: Record<MotionThemeId, MotionBrandCi> = {
   },
 };
 
+export const MOTION_NEW_THEME_IDS = [
+  "paper-cutout-doc",
+  "social-chat-sim",
+  "apple-bento-glass",
+] as const satisfies readonly MotionThemeId[];
+
+export const MOTION_FEATURED_THEME_IDS = [
+  "paper-cutout-doc",
+  "social-chat-sim",
+  "apple-bento-glass",
+  "doodle-explainer",
+] as const satisfies readonly MotionThemeId[];
+
+const NEW_MOTION_THEME_SET = new Set<string>(MOTION_NEW_THEME_IDS);
+
+export function isNewMotionTheme(id: unknown): boolean {
+  return typeof id === "string" && NEW_MOTION_THEME_SET.has(id);
+}
+
+export type FeaturedMotionThemeEntry = MotionThemeCatalogEntry & {
+  shortLabel: string;
+  tagline: string;
+  isNew: boolean;
+  palette: readonly [string, string, string];
+};
+
+const FEATURED_MOTION_THEME_COPY: Record<
+  (typeof MOTION_FEATURED_THEME_IDS)[number],
+  { shortLabel: string; tagline: string }
+> = {
+  "paper-cutout-doc": {
+    shortLabel: "Paper Cutout",
+    tagline: "ตัดแปะสารคดี + ไฮไลต์สด",
+  },
+  "social-chat-sim": {
+    shortLabel: "Social Chat",
+    tagline: "แชตเด้ง + แจ้งเตือนไวรัล",
+  },
+  "apple-bento-glass": {
+    shortLabel: "Apple Bento",
+    tagline: "การ์ดกระจก + ตัวเลขวิ่ง",
+  },
+  "doodle-explainer": {
+    shortLabel: "Doodle Explainer",
+    tagline: "การ์ตูนหัวขาวเดินเรื่อง",
+  },
+};
+
+export function featuredMotionThemes(): readonly FeaturedMotionThemeEntry[] {
+  return MOTION_FEATURED_THEME_IDS.map((id) => {
+    const base = MOTION_THEMES.find((theme) => theme.id === id);
+    if (!base) {
+      throw new Error(`Missing featured motion theme in MOTION_THEMES: ${id}`);
+    }
+    const brand = DEFAULT_THEME_BRAND_CI[id];
+    const copy = FEATURED_MOTION_THEME_COPY[id];
+    return {
+      ...base,
+      shortLabel: copy.shortLabel,
+      tagline: copy.tagline,
+      isNew: isNewMotionTheme(id),
+      palette: [brand.backgroundColor, brand.primaryColor, brand.accentColor] as const,
+    };
+  });
+}
+
 export const MOTION_TEMPLATE_CATALOG: readonly MotionTemplateCatalogEntry[] = [
   {
     id: "doodle.hook-character",

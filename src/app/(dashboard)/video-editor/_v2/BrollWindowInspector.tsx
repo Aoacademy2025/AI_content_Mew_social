@@ -45,6 +45,7 @@ import {
   MOTION_THEMES,
   buildMotionBrollUri,
   isMotionBrollUri,
+  isNewMotionTheme,
   motionTemplate,
   motionTemplatesForTheme,
   normalizeMotionTemplateConfig,
@@ -151,7 +152,8 @@ function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
 }
 
-type Tab = "search" | "motion" | "upload" | "ai";
+export type BrollInspectorTab = "search" | "motion" | "upload" | "ai";
+type Tab = BrollInspectorTab;
 type SearchCandidate = { id: string; provider: "pexels" | "pixabay"; thumb: string; videoUrl: string; duration: number; title: string };
 
 function MotionInspectorThumbnail({
@@ -346,6 +348,9 @@ export function BrollWindowInspector({
   starterImageAllowance,
   brollRegionPreference,
   projectStylePack,
+  initialTab,
+  initialMotionThemeId,
+  initialMotionRequestKey,
 }: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
@@ -355,6 +360,9 @@ export function BrollWindowInspector({
   starterImageAllowance?: StarterImageAllowance;
   brollRegionPreference?: BrollRegionPreference;
   projectStylePack?: ProjectStylePack | null;
+  initialTab?: BrollInspectorTab | null;
+  initialMotionThemeId?: MotionThemeId | null;
+  initialMotionRequestKey?: number;
 }) {
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
@@ -363,7 +371,9 @@ export function BrollWindowInspector({
   const span = index != null ? spans.find((s) => s.index === index) ?? null : null;
 
   // ── per-window form state — reset whenever the selected window changes ──────
-  const [tab, setTab] = useState<Tab>(fullBrollEditEnabled ? "search" : "ai");
+  const [tab, setTab] = useState<Tab>(
+    fullBrollEditEnabled && initialTab ? initialTab : fullBrollEditEnabled ? "search" : "ai",
+  );
   const [searchKeyword, setSearchKeyword] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -389,8 +399,12 @@ export function BrollWindowInspector({
   const [pendingRerollRequestId, setPendingRerollRequestId] = useState<string | null>(null);
   const autoRecoveryAttemptRef = useRef<string | null>(null);
 
-  const [motionThemeFilter, setMotionThemeFilter] = useState<MotionThemeId>("doodle-explainer");
-  const [selectedMotionTemplateId, setSelectedMotionTemplateId] = useState<MotionTemplateId>("doodle.hook-character");
+  const [motionThemeFilter, setMotionThemeFilter] = useState<MotionThemeId>(
+    initialMotionThemeId ?? "doodle-explainer",
+  );
+  const [selectedMotionTemplateId, setSelectedMotionTemplateId] = useState<MotionTemplateId>(
+    motionTemplatesForTheme(initialMotionThemeId ?? "doodle-explainer")[0]?.id ?? "doodle.hook-character",
+  );
   const [motionMascot, setMotionMascot] = useState<MotionMascotId>("stickman-scarf");
   const [motionHeader, setMotionHeader] = useState("");
   const [motionTitle, setMotionTitle] = useState("");
@@ -429,13 +443,16 @@ export function BrollWindowInspector({
         const parsedId = parseMotionTemplateIdFromUri(staged?.src ?? rawEntry?.src);
         return parsedId ? normalizeMotionTemplateConfig({ templateId: parsedId }) : null;
       })();
+    const forcedTab = fullBrollEditEnabled && initialTab ? initialTab : null;
+    const forcedMotionTheme = fullBrollEditEnabled && initialMotionThemeId ? initialMotionThemeId : null;
 
     setTab(
-      initialMotion
-        ? "motion"
-        : fullBrollEditEnabled
-          ? "search"
-          : "ai",
+      forcedTab ??
+        (initialMotion
+          ? "motion"
+          : fullBrollEditEnabled
+            ? "search"
+            : "ai"),
     );
     setSearchLoading(false);
     setSearchError(null);
@@ -451,9 +468,13 @@ export function BrollWindowInspector({
     setShowCustomPrompt(false);
     setSearchKeyword(seedSearchKeyword(rawEntry?.keyword));
 
-    if (initialMotion) {
+    const initialMotionTheme = initialMotion
+      ? (initialMotion.themeId ?? motionTemplate(initialMotion.templateId)?.themeId ?? "doodle-explainer")
+      : null;
+
+    if (initialMotion && (!forcedMotionTheme || initialMotionTheme === forcedMotionTheme)) {
       const tpl = motionTemplate(initialMotion.templateId);
-      setMotionThemeFilter(initialMotion.themeId ?? tpl?.themeId ?? "doodle-explainer");
+      setMotionThemeFilter(initialMotionTheme ?? "doodle-explainer");
       setSelectedMotionTemplateId(initialMotion.templateId);
       setMotionMascot(initialMotion.mascot ?? initialMotion.props?.mascot ?? "stickman-scarf");
       setMotionHeader(initialMotion.headerText ?? tpl?.defaultProps.headerText ?? "");
@@ -463,9 +484,11 @@ export function BrollWindowInspector({
       setMotionLeft(initialMotion.leftText ?? tpl?.defaultProps.leftText ?? "");
       setMotionRight(initialMotion.rightText ?? tpl?.defaultProps.rightText ?? "");
     } else if (span && index != null) {
+      const targetTheme = forcedMotionTheme ?? motionThemeFilter;
+      if (forcedMotionTheme) setMotionThemeFilter(forcedMotionTheme);
       const posIdx = Math.max(0, spans.findIndex((s) => s.index === index));
       const planned = planMotionSceneForWindow({
-        themeId: motionThemeFilter,
+        themeId: targetTheme,
         windowIndex: posIdx,
         totalWindows: Math.max(1, spans.length),
         captionText: captionTextForSpan(span),
@@ -483,6 +506,31 @@ export function BrollWindowInspector({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullBrollEditEnabled, index]);
+
+  useEffect(() => {
+    if (!fullBrollEditEnabled || index == null || !span) return;
+    if (initialTab === "motion") setTab("motion");
+    if (!initialMotionThemeId) return;
+    setMotionThemeFilter(initialMotionThemeId);
+    const posIdx = Math.max(0, spans.findIndex((s) => s.index === index));
+    const planned = planMotionSceneForWindow({
+      themeId: initialMotionThemeId,
+      windowIndex: posIdx,
+      totalWindows: Math.max(1, spans.length),
+      captionText: captionTextForSpan(span),
+      keyword: typeof rawEntry?.keyword === "string" ? rawEntry.keyword : undefined,
+      brandCi: currentBrandCi(),
+      mascot: motionMascot,
+    });
+    setSelectedMotionTemplateId(planned.templateId);
+    setMotionHeader(planned.headerText ?? "");
+    setMotionTitle(planned.title ?? "");
+    setMotionSubtitle(planned.subtitle ?? "");
+    setMotionBadge(planned.badgeText ?? "");
+    setMotionLeft(planned.leftText ?? "");
+    setMotionRight(planned.rightText ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullBrollEditEnabled, initialTab, initialMotionThemeId, initialMotionRequestKey]);
 
   useEffect(() => {
     if (!sceneRerollEnabled && tab === "ai" && fullBrollEditEnabled) setTab("search");
@@ -1242,7 +1290,7 @@ export function BrollWindowInspector({
               {
                 value: "motion",
                 label: "โมชัน / Doodle",
-                title: "สร้างฉากเคลื่อนไหว Doodle / Cue Step Board / HyperFrames พร้อม Brand CI (ฟรี 0 เครดิต)",
+                title: "สร้างฉากเคลื่อนไหว Paper Cutout / Social Chat / Apple Bento / Doodle พร้อม Brand CI (ฟรี 0 เครดิต)",
               },
               { value: "upload", label: "อัปโหลด" },
               {
@@ -1282,7 +1330,7 @@ export function BrollWindowInspector({
                   Motion Style + Brand CI (0 เครดิต)
                 </span>
                 <span style={{ fontSize: 11, color: color.textSecondary, lineHeight: 1.5 }}>
-                  เลือกธีม Doodle, Cue Step Board หรือ HyperFrames แล้วล็อกสไตล์ทั้งคลิป หรือปรับเฉพาะฉากนี้
+                  เลือกธีม Paper Cutout, Social Chat, Apple Bento, Doodle หรือ Cue Step Board แล้วล็อกสไตล์ทั้งคลิป หรือปรับเฉพาะฉากนี้
                 </span>
               </div>
               <Chip selected>{ed.cfg.fontFamily}</Chip>
@@ -1292,11 +1340,20 @@ export function BrollWindowInspector({
             <div className="grid grid-cols-1 gap-1.5">
               {MOTION_THEMES.map((theme) => {
                 const active = motionThemeFilter === theme.id;
+                const isNew = isNewMotionTheme(theme.id);
                 return (
                   <button
                     key={theme.id}
                     type="button"
-                    onClick={() => setMotionThemeFilter(theme.id)}
+                    data-motion-theme-id={theme.id}
+                    data-motion-theme-new={isNew ? "true" : undefined}
+                    onClick={() => {
+                      setMotionThemeFilter(theme.id);
+                      const firstTpl = motionTemplatesForTheme(theme.id)[0];
+                      if (firstTpl && motionTemplate(selectedMotionTemplateId)?.themeId !== theme.id) {
+                        setSelectedMotionTemplateId(firstTpl.id);
+                      }
+                    }}
                     className="flex items-center justify-between gap-2 text-left"
                     style={{
                       padding: "8px 10px",
@@ -1307,8 +1364,26 @@ export function BrollWindowInspector({
                     }}
                   >
                     <div className="flex min-w-0 flex-col gap-0.5">
-                      <span style={{ fontSize: 12, fontWeight: 600, color: color.text }}>
-                        {theme.thaiLabel}
+                      <span className="flex flex-wrap items-center gap-1.5" style={{ fontSize: 12, fontWeight: 600, color: color.text }}>
+                        <span>{theme.thaiLabel}</span>
+                        {isNew && (
+                          <span
+                            data-motion-new-badge="true"
+                            style={{
+                              padding: "1px 6px",
+                              borderRadius: radius.pill,
+                              background: color.selectedBg,
+                              border: `1px solid ${color.selectedBorder}`,
+                              color: color.primary300,
+                              fontSize: 9.5,
+                              fontWeight: 600,
+                              lineHeight: 1.4,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ใหม่
+                          </span>
+                        )}
                       </span>
                       <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.35 }}>
                         {theme.description}
