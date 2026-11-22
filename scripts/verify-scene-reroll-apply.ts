@@ -366,6 +366,153 @@ async function main() {
     "a failed completion keeps its exact derivative recoverable",
   );
 
+  // HERO-107 Case A: project-look / Styled Video Template source job has
+  // projectVisualContextJson set but contentPreflightId: null (0 preflights/beats).
+  // prepareAppliedSceneRerollAssets must allow beatId: null and still enforce
+  // ownership, settled-candidate, and atomic derivative consumption.
+  const projectLookProject = await prisma.editorProject.create({
+    data: { userId: owner.id, title: "Project Look No Preflight" },
+  });
+  const projectLookContextJson = JSON.stringify({
+    schemaVersion: 2,
+    source: "project-look",
+    visualFormatId: "cinematic-realism",
+    recipeVersion: "cinematic-realism-v2",
+    treatment: "สารคดีใช้งานจริง",
+    treatmentPin: {
+      presetId: "practical-documentary",
+      version: "v1",
+      source: "creator",
+    },
+    brandVisualLanguage: null,
+  });
+  const projectLookSourceJob = await prisma.videoJob.create({
+    data: {
+      userId: owner.id,
+      projectId: projectLookProject.id,
+      status: "done",
+      contentPreflightId: null,
+      projectVisualContextJson: projectLookContextJson,
+      inputJson: JSON.stringify({ mode: "script" }),
+    },
+  });
+  const projectLookImageJob = await prisma.aiGenerationJob.create({
+    data: {
+      userId: owner.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image-turbo",
+      status: "completed",
+      chargeState: "settled",
+      productSurface: "scene_reroll",
+      outputUrl: "/api/renders/project-look-scene-1.webp",
+      inputJson: JSON.stringify({ videoJobId: projectLookSourceJob.id, sceneIndex: 1 }),
+    },
+  });
+  const projectLookDerivative = await prisma.sceneRerollDerivative.create({
+    data: {
+      userId: owner.id,
+      imageJobId: projectLookImageJob.id,
+      sourceVideoJobId: projectLookSourceJob.id,
+      sceneIndex: 1,
+      src: "/api/stocks/project-look-scene-1.mp4",
+    },
+  });
+  const projectLookPromotions = await prepareAppliedSceneRerollAssets({
+    userId: owner.id,
+    sourceVideoJobId: projectLookSourceJob.id,
+    edits: [{
+      index: 1,
+      src: projectLookDerivative.src,
+      replacementKind: "ai",
+      imageJobId: projectLookImageJob.id,
+    }],
+  });
+  assert.deepEqual(projectLookPromotions, [{
+    derivativeId: projectLookDerivative.id,
+    userId: owner.id,
+    sourceVideoJobId: projectLookSourceJob.id,
+    sceneIndex: 1,
+    src: projectLookDerivative.src,
+    beatId: null,
+    outputUrl: projectLookImageJob.outputUrl!,
+    imageJobId: projectLookImageJob.id,
+    identityKey: null,
+  }], "project-look job without ContentPreflight prepares cleanly with beatId: null");
+  const projectLookChild = await prisma.videoJob.create({
+    data: { userId: owner.id, projectId: projectLookProject.id, status: "processing", inputJson: "{}" },
+  });
+  await finishJobWithTransition(projectLookChild.id, { videoUrl: "/api/renders/project-look-applied.mp4" }, {
+    onTransition: ({ tx, job }) => commitAppliedSceneRerollAssetsInTransaction(tx, {
+      appliedVideoJobId: job.id,
+      promotions: projectLookPromotions,
+    }),
+  });
+  assert.equal(
+    (await prisma.videoJob.findUniqueOrThrow({ where: { id: projectLookChild.id } })).status,
+    "done",
+  );
+  const consumedProjectLookDerivative = await prisma.sceneRerollDerivative.findUniqueOrThrow({
+    where: { id: projectLookDerivative.id },
+  });
+  assert.equal(consumedProjectLookDerivative.status, "applied");
+  assert.equal(consumedProjectLookDerivative.appliedVideoJobId, projectLookChild.id);
+  assert.ok(consumedProjectLookDerivative.appliedAt instanceof Date);
+
+  // HERO-107 Case B: source job with contentPreflightId set (referencing a preflight)
+  // but missing/unresolvable beat must still fail closed.
+  const preflightMissingBeatSourceJob = await prisma.videoJob.create({
+    data: {
+      userId: owner.id,
+      projectId: project.id,
+      status: "done",
+      contentPreflightId: preflight.id,
+      projectVisualContextJson: projectLookContextJson,
+      inputJson: JSON.stringify({ mode: "script" }),
+    },
+  });
+  const missingBeatImageJob = await prisma.aiGenerationJob.create({
+    data: {
+      userId: owner.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image-turbo",
+      status: "completed",
+      chargeState: "settled",
+      productSurface: "scene_reroll",
+      outputUrl: "/api/renders/missing-beat-scene-5.webp",
+      inputJson: JSON.stringify({ videoJobId: preflightMissingBeatSourceJob.id, sceneIndex: 5 }),
+    },
+  });
+  const missingBeatDerivative = await prisma.sceneRerollDerivative.create({
+    data: {
+      userId: owner.id,
+      imageJobId: missingBeatImageJob.id,
+      sourceVideoJobId: preflightMissingBeatSourceJob.id,
+      sceneIndex: 5,
+      src: "/api/stocks/missing-beat-scene-5.mp4",
+    },
+  });
+  await assert.rejects(
+    prepareAppliedSceneRerollAssets({
+      userId: owner.id,
+      sourceVideoJobId: preflightMissingBeatSourceJob.id,
+      edits: [{
+        index: 5,
+        src: missingBeatDerivative.src,
+        replacementKind: "ai",
+        imageJobId: missingBeatImageJob.id,
+      }],
+    }),
+    /Applied Scene Reroll has no durable Visual Beat/,
+    "source job bound to a ContentPreflight with a missing Visual Beat must fail closed",
+  );
+  assert.equal(
+    (await prisma.sceneRerollDerivative.findUniqueOrThrow({ where: { id: missingBeatDerivative.id } })).status,
+    "ready",
+    "rejected preflight-bound reroll leaves the derivative unconsumed",
+  );
+
   console.log("verify-scene-reroll-apply: PASS deliberate Apply promotion, source binding, no eager route link");
 }
 
