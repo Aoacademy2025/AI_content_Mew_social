@@ -111,7 +111,7 @@ export async function prepareAppliedSceneRerollAssets(
   })));
   const sourceJob = await prisma.videoJob.findFirst({
     where: { id: input.sourceVideoJobId, userId: input.userId },
-    select: { inputJson: true, outputJson: true, contentPreflightId: true, projectVisualContextJson: true },
+    select: { inputJson: true, outputJson: true, contentPreflightId: true },
   });
   const cutawaySource = cutawayTimelineSourceFromJob(sourceJob ?? {});
   for (const { edit, derivative } of inspected) {
@@ -183,8 +183,12 @@ export async function prepareAppliedSceneRerollAssets(
         }
         prompt = null;
       }
+      // A durable Visual Beat only exists when the source job is bound to a ContentPreflight.
+      // Jobs with projectVisualContextJson alone (e.g. project-look / Styled Video Templates)
+      // have no ContentPreflight or ProjectVisualBeat rows, so beat promotion is skipped while
+      // derivative ownership, settled candidate, and atomic consumption invariants still apply.
       const requiresDurableBeat = dependencies !== defaultDependencies
-        || Boolean(sourceJob?.contentPreflightId || sourceJob?.projectVisualContextJson);
+        || Boolean(sourceJob?.contentPreflightId);
       if (!prompt && requiresDurableBeat) {
         throw new Error("Applied Scene Reroll has no durable Visual Beat");
       }
