@@ -67,9 +67,14 @@ async function main() {
 
     assert.equal(canCreateMcpTokenForUser(freeUser), true, "verified FREE user can create MCP token");
     assert.equal(canInvokeMcpTool(freeUser, "FREE", "get_current_user"), true);
+    assert.equal(canInvokeMcpTool(freeUser, "FREE", "list_brand_profiles"), true, "read-only brand profile discovery allowed for starter trial");
+    assert.equal(canInvokeMcpTool({ ...freeUser, suspended: true }, "FREE", "list_brand_profiles"), false, "ineligible FREE user remains blocked from list_brand_profiles");
     assert.equal(canInvokeMcpTool(freeUser, "FREE", "prepare_video_job"), true);
     assert.equal(canInvokeMcpTool(freeUser, "FREE", "create_video_job"), true);
     assert.equal(canInvokeMcpTool(freeUser, "FREE", "generate_hero_script"), false, "advanced script tool stays PRO/BUSINESS");
+    assert.equal(canInvokeMcpTool(freeUser, "FREE", "create_upload_url"), false, "media upload tool stays PRO/BUSINESS");
+    assert.equal(canInvokeMcpTool(freeUser, "FREE", "batch_edit_video"), false, "batch edit tool stays PRO/BUSINESS");
+    assert.equal(canInvokeMcpTool(freeUser, "FREE", "export_video"), false, "export tool stays PRO/BUSINESS");
     assert.equal(canInvokeMcpTool(freeUser, "FREE", "replace_broll_window"), false, "edit tools stay PRO/BUSINESS");
 
     const initialStatus = await getMcpStarterTrialStatus(freeUser);

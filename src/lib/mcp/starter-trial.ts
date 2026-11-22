@@ -26,6 +26,7 @@ export const MCP_UPGRADE_NEXT =
 export const MCP_STARTER_TRIAL_ALLOWED_TOOLS = new Set<string>([
   "get_current_user",
   "get_video_options",
+  "list_brand_profiles",
   "prepare_video_job",
   "get_video_quote",
   "create_video_job",
