@@ -39,7 +39,7 @@ export interface PipelineCaller {
     deadlineMs?: number;
   }): Promise<T>;
   patch<T>(path: string, body: unknown): Promise<T>;
-  get<T>(path: string): Promise<T>;
+  get<T>(path: string, opts?: { retries?: number; signal?: AbortSignal }): Promise<T>;
 }
 
 export class PipelineHttpError extends Error {
@@ -220,7 +220,10 @@ function statusFromPipelineError(error: unknown): number | null {
 }
 
 /** Retry transport errors + 5xx (NOT 4xx). 4xx are in-band errors (missing_key/quota) — never retry. */
-export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<T> {
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts: { retries?: number; sleep?: (ms: number) => Promise<void>; signal?: AbortSignal } = {},
+): Promise<T> {
   const retries = opts.retries ?? 2;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let lastErr: unknown;
@@ -228,6 +231,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
     try { return await fn(); }
     catch (e) {
       lastErr = e;
+      if (opts.signal?.aborted) throw e;
       const status = statusFromPipelineError(e);
       const retriable = status === null || status >= 500; // transport error (no status) or 5xx
       if (!retriable || attempt === retries) throw e;
@@ -266,12 +270,12 @@ export function pipelineCaller(userId: string, videoJobId?: string): PipelineCal
       });
       const text = await res.text();
       return decodePipelineResponse<T>(method, path, res.status, text);
-    }, { retries: opts?.retries });
+    }, { retries: opts?.retries, signal: opts?.signal });
   }
   return {
     post: (path, body, opts) => req("POST", path, body, opts),
     patch: (path, body) => req("PATCH", path, body),
-    get: (path) => req("GET", path),
+    get: (path, opts) => req("GET", path, undefined, opts),
   };
 }
 

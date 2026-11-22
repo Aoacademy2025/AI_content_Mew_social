@@ -1,5 +1,5 @@
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-video-options.ts
-import { getVideoOptions } from "../src/lib/mcp/video-options";
+import { getVideoOptions, VIDEO_OPTIONS_FETCH_TIMEOUT_MS } from "../src/lib/mcp/video-options";
 import type { PipelineCaller } from "../src/lib/mcp/pipeline-client";
 
 let passed = 0;
@@ -141,6 +141,110 @@ async function main() {
     if (prevFlag === undefined) delete process.env.MANAGED_STOCK; else process.env.MANAGED_STOCK = prevFlag;
     if (prevPexels === undefined) delete process.env.MANAGED_PEXELS_API_KEY; else process.env.MANAGED_PEXELS_API_KEY = prevPexels;
     if (prevPixabay === undefined) delete process.env.MANAGED_PIXABAY_API_KEY; else process.env.MANAGED_PIXABAY_API_KEY = prevPixabay;
+  }
+
+  // HERO-110: bounded per-call timeout guards slow upstream fetches without stalling get_video_options
+  assert(VIDEO_OPTIONS_FETCH_TIMEOUT_MS === 5_000, "HERO-110: default per-call timeout is 5,000ms");
+  {
+    const observedSignals: Record<string, AbortSignal | undefined> = {};
+    const makeHangingCaller = (hangPath: string, rejectLateAfterMs?: number): PipelineCaller => ({
+      async get<T>(path: string, opts?: { retries?: number; signal?: AbortSignal }): Promise<T> {
+        observedSignals[path] = opts?.signal;
+        if (path === hangPath) {
+          return new Promise<T>((_resolve, reject) => {
+            if (rejectLateAfterMs !== undefined) {
+              const t = setTimeout(() => reject(new Error("late upstream failure")), rejectLateAfterMs);
+              t.unref?.();
+            }
+          });
+        }
+        return mock().get<T>(path);
+      },
+      post: async <T>() => ({} as T),
+      patch: async <T>() => ({} as T),
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Hanging HeyGen avatar fetch degrades gracefully while music + voices still return
+      const startHeygen = Date.now();
+      const timedOutHeygen = await getVideoOptions(
+        makeHangingCaller("/api/heygen/my-avatars", 80),
+        u,
+        [],
+        { fetchTimeoutMs: 40 },
+      );
+      const heygenElapsed = Date.now() - startHeygen;
+      assert(heygenElapsed < 300, `HERO-110: hanging HeyGen fetch returns promptly (${heygenElapsed}ms)`);
+      assert(
+        !Array.isArray(timedOutHeygen.avatars)
+          && (timedOutHeygen.avatars as { error?: string; note?: string }).error === "timeout"
+          && Boolean((timedOutHeygen.avatars as { note?: string }).note?.includes("savedAvatarId")),
+        "HERO-110: hanging HeyGen fetch degrades to {error:'timeout', note} preserving savedAvatarId guidance",
+      );
+      assert(
+        timedOutHeygen.avatarsMeta.selection === "avatar catalog unavailable" && timedOutHeygen.savedAvatarId === "av1",
+        "HERO-110: hanging HeyGen preserves avatarsMeta fallback and savedAvatarId",
+      );
+      assert(
+        "byMood" in timedOutHeygen.music && Array.isArray(timedOutHeygen.voices.elevenlabs),
+        "HERO-110: hanging HeyGen does not disrupt healthy music or ElevenLabs sections",
+      );
+      assert(
+        observedSignals["/api/heygen/my-avatars"]?.aborted === true,
+        "HERO-110: timeout aborts the AbortSignal passed to caller.get",
+      );
+
+      // Hanging ElevenLabs voices fetch degrades gracefully with Thai voiceId fallback note
+      const startEleven = Date.now();
+      const timedOutEleven = await getVideoOptions(
+        makeHangingCaller("/api/elevenlabs/voices"),
+        u,
+        [],
+        { fetchTimeoutMs: 40 },
+      );
+      const elevenElapsed = Date.now() - startEleven;
+      assert(elevenElapsed < 300, `HERO-110: hanging ElevenLabs fetch returns promptly (${elevenElapsed}ms)`);
+      assert(
+        !Array.isArray(timedOutEleven.voices.elevenlabs)
+          && (timedOutEleven.voices.elevenlabs as { error?: string; note?: string }).error === "timeout"
+          && Boolean((timedOutEleven.voices.elevenlabs as { note?: string }).note?.includes("voiceId")),
+        "HERO-110: hanging ElevenLabs fetch degrades to {error:'timeout', note} preserving Thai voiceId fallback",
+      );
+      assert(
+        "byMood" in timedOutEleven.music && Array.isArray(timedOutEleven.avatars),
+        "HERO-110: hanging ElevenLabs does not disrupt healthy music or HeyGen sections",
+      );
+
+      // Hanging /api/music degrades gracefully while avatars + voices still return
+      const startMusic = Date.now();
+      const timedOutMusic = await getVideoOptions(
+        makeHangingCaller("/api/music"),
+        u,
+        [],
+        { fetchTimeoutMs: 40 },
+      );
+      const musicElapsed = Date.now() - startMusic;
+      assert(musicElapsed < 300, `HERO-110: hanging /api/music fetch returns promptly (${musicElapsed}ms)`);
+      assert(
+        !("byMood" in timedOutMusic.music)
+          && (timedOutMusic.music as { error?: string; note?: string }).error === "timeout"
+          && Boolean((timedOutMusic.music as { note?: string }).note?.includes("bgmFile")),
+        "HERO-110: hanging /api/music degrades to {error:'timeout', note} preserving bgmFile mood guidance",
+      );
+      assert(
+        Array.isArray(timedOutMusic.avatars) && Array.isArray(timedOutMusic.voices.elevenlabs),
+        "HERO-110: hanging /api/music does not disrupt healthy HeyGen or ElevenLabs sections",
+      );
+
+      // Wait past late rejection window to verify no unhandled rejection leaks
+      await new Promise((r) => setTimeout(r, 100));
+      assert(unhandled.length === 0, "HERO-110: late upstream rejection after timeout causes no unhandledRejection");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   }
 
   console.log(`\n${passed} assertions passed ✅`);

@@ -12,8 +12,50 @@ import { MOTION_MASCOT_IDS, MOTION_TEMPLATES, MOTION_THEMES } from "@/lib/motion
 export const MEDIA_SOURCE_QUESTION = "อยากใช้ภาพประกอบแบบไหน: สต็อก, Hero AI Image, AutoMix หรือให้ AI ที่คุณคุยอยู่สร้าง/หาภาพและวิดีโอแล้วนำเข้าให้?";
 export const MEDIA_TOOL_UNAVAILABLE = "เครื่องมือที่เชื่อมต่ออยู่ยังสร้างหรือค้นหาสื่อนี้ไม่ได้ คุณส่งไฟล์/ลิงก์ให้ผม หรือเลือกแหล่งสื่ออื่นได้";
 
-async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
-  try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
+export const VIDEO_OPTIONS_FETCH_TIMEOUT_MS = 5_000;
+
+class VideoOptionsTimeoutError extends Error {
+  constructor() {
+    super("timeout");
+    this.name = "VideoOptionsTimeoutError";
+  }
+}
+
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = Promise.resolve().then(() => fn(controller.signal));
+  // Absorb late rejections after a timeout race so they never become unhandled rejections.
+  work.catch(() => {});
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new VideoOptionsTimeoutError());
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function safe<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutNote?: string,
+): Promise<T | { error: string; note?: string }> {
+  try {
+    return await withTimeout(fn, timeoutMs);
+  } catch (e) {
+    if (e instanceof VideoOptionsTimeoutError) {
+      return timeoutNote ? { error: "timeout", note: timeoutNote } : { error: "timeout" };
+    }
+    return { error: e instanceof Error ? e.message : "failed" };
+  }
 }
 
 const MCP_AVATAR_OPTION_LIMIT = 24;
@@ -66,48 +108,70 @@ export async function getVideoOptions(
   // is a DB/server module this pure, caller+plain-fields function never imports) and passes
   // them through so get_video_options stays easy to unit test without a database.
   subtitleBrands: McpActiveBrandProfileSummary[] = [],
+  opts?: { fetchTimeoutMs?: number },
 ) {
   const managedStock = isManagedStockConfiguredFromEnv();
-  // Fetch the (slow, external) sources concurrently so the wizard isn't blocked ~30s+ serially.
+  const fetchTimeoutMs =
+    typeof opts?.fetchTimeoutMs === "number" && Number.isFinite(opts.fetchTimeoutMs) && opts.fetchTimeoutMs > 0
+      ? opts.fetchTimeoutMs
+      : VIDEO_OPTIONS_FETCH_TIMEOUT_MS;
+  // Fetch the (slow, external) sources concurrently with a bounded per-call timeout
+  // so a slow HeyGen/ElevenLabs response degrades gracefully instead of stalling the tool.
   const [music, avatars, elevenlabs] = await Promise.all([
-    safe(async () => {
-      const r = await caller.get<{
-        tracks: { id: string; title: string; filename: string }[];
-        userTracks?: { id: string; title: string; filename: string }[];
-      }>("/api/music");
-      const allTracks: BgmTrack[] = [
-        ...(r.tracks ?? []).map((t) => ({ title: t.title, bgmFile: `/music/${t.filename}` })),
-        ...(r.userTracks ?? []).map((t) => ({ title: t.title, bgmFile: `/api/music/${t.filename}` })),
-      ];
-      // Present music as MOODS, not filenames — in chat the user can't see a dropdown.
-      // Ask them a vibe, then pass it (mood word / title / path) as bgmFile; the server
-      // resolves it (see bgm-resolve.ts). create_video_job also accepts a mood word directly.
-      return {
-        byMood: moodBuckets(allTracks),
-        howToChoose: `ถาม user ว่าอยากได้เพลงแนวไหน (${moodMenu()}) แล้วส่งเป็น bgmFile ตอน create_video_job — ส่งชื่อแนว ("ชิล"/"ดราม่า"), ชื่อเพลง, หรือ path ก็ได้ ระบบ resolve ให้. ไม่อยากได้เพลงก็ไม่ต้องส่ง bgmFile`,
-      };
-    }),
+    safe(
+      async (signal) => {
+        const r = await caller.get<{
+          tracks: { id: string; title: string; filename: string }[];
+          userTracks?: { id: string; title: string; filename: string }[];
+        }>("/api/music", { retries: 0, signal });
+        const allTracks: BgmTrack[] = [
+          ...(r.tracks ?? []).map((t) => ({ title: t.title, bgmFile: `/music/${t.filename}` })),
+          ...(r.userTracks ?? []).map((t) => ({ title: t.title, bgmFile: `/api/music/${t.filename}` })),
+        ];
+        // Present music as MOODS, not filenames — in chat the user can't see a dropdown.
+        // Ask them a vibe, then pass it (mood word / title / path) as bgmFile; the server
+        // resolves it (see bgm-resolve.ts). create_video_job also accepts a mood word directly.
+        return {
+          byMood: moodBuckets(allTracks),
+          howToChoose: `ถาม user ว่าอยากได้เพลงแนวไหน (${moodMenu()}) แล้วส่งเป็น bgmFile ตอน create_video_job — ส่งชื่อแนว ("ชิล"/"ดราม่า"), ชื่อเพลง, หรือ path ก็ได้ ระบบ resolve ให้. ไม่อยากได้เพลงก็ไม่ต้องส่ง bgmFile`,
+        };
+      },
+      fetchTimeoutMs,
+      `โหลดรายการเพลงไม่ทันเวลา — ยังส่งชื่อแนวเพลง (${moodMenu()}) เป็น bgmFile ตอน create_video_job ได้ หรือไม่ต้องส่ง bgmFile หากไม่อยากได้เพลง`,
+    ),
     user.heygenKey
-      ? safe(async () => {
-          // MCP uses the same completed private-look catalog as editor v2. The
-          // compaction below remains a fail-safe for duplicate or unusually large
-          // private catalogs and rejects any accidental public row defensively.
-          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean; supported_api_engines?: HeyGenAvatarEngine[] }[] }>("/api/heygen/my-avatars");
-          return (r.avatars ?? []).map((a) => ({
-            avatarId: a.avatar_id,
-            name: a.avatar_name,
-            preview: a.preview_image_url ?? null,
-            isPublic: a.is_public === true,
-            ...(a.supported_api_engines ? { supportedEngines: a.supported_api_engines } : {}),
-          }));
-        })
+      ? safe(
+          async (signal) => {
+            // MCP uses the same completed private-look catalog as editor v2. The
+            // compaction below remains a fail-safe for duplicate or unusually large
+            // private catalogs and rejects any accidental public row defensively.
+            const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean; supported_api_engines?: HeyGenAvatarEngine[] }[] }>("/api/heygen/my-avatars", { retries: 0, signal });
+            return (r.avatars ?? []).map((a) => ({
+              avatarId: a.avatar_id,
+              name: a.avatar_name,
+              preview: a.preview_image_url ?? null,
+              isPublic: a.is_public === true,
+              ...(a.supported_api_engines ? { supportedEngines: a.supported_api_engines } : {}),
+            }));
+          },
+          fetchTimeoutMs,
+          "ดึงรายชื่อ Avatar จาก HeyGen ไม่ทันเวลา — savedAvatarId ที่เซฟไว้ยังใช้งานได้ หรือเลือกสร้างคลิปแบบไม่ใช้ Avatar",
+        )
       : Promise.resolve({ needsKey: true }),
     user.elevenlabsKey
       ? (async () => {
           try {
-            const r = await caller.get<{ voices: { voice_id: string; name: string }[] }>("/api/elevenlabs/voices");
-            return (r.voices ?? []).map((v) => ({ voiceId: v.voice_id, name: v.name }));
+            return await withTimeout(async (signal) => {
+              const r = await caller.get<{ voices: { voice_id: string; name: string }[] }>("/api/elevenlabs/voices", { retries: 0, signal });
+              return (r.voices ?? []).map((v) => ({ voiceId: v.voice_id, name: v.name }));
+            }, fetchTimeoutMs);
           } catch (e) {
+            if (e instanceof VideoOptionsTimeoutError) {
+              return {
+                error: "timeout",
+                note: "ดึงรายชื่อเสียง ElevenLabs ไม่ทันเวลา — voiceId ที่เซฟไว้/ผู้ใช้ใส่เองยังใช้สร้างเสียงได้",
+              };
+            }
             // A voices-list failure (e.g. a TTS-only ElevenLabs key returns 401 on /v1/voices)
             // does NOT mean the key is broken — TTS with the saved/given voiceId may still work.
             return { error: e instanceof Error ? e.message : "failed", note: "ดึงรายชื่อเสียง ElevenLabs ไม่ได้ (key อาจมีสิทธิ์แค่ TTS ไม่มีสิทธิ์ list) — voiceId ที่เซฟไว้/ผู้ใช้ใส่เองยังใช้สร้างเสียงได้" };

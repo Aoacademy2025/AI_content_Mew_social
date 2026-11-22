@@ -7,7 +7,8 @@ import { prisma } from "../src/lib/prisma";
 import {
   generateMcpToken, hashMcpToken, createMcpToken, isMcpPatToken,
   resolveMcpToken, revokeMcpToken, listMcpTokens, countActiveMcpTokens,
-  MCP_TOKEN_LAST_USED_THROTTLE_MS,
+  MCP_TOKEN_LAST_USED_THROTTLE_MS, MCP_TOKEN_LAST_USED_CACHE_MAX,
+  resetMcpTokenLastUsedCache,
 } from "../src/lib/mcp/token";
 import { resolveMcpPrincipal, mcpAccessAllowed } from "../src/lib/mcp/auth";
 
@@ -46,16 +47,18 @@ async function main() {
   assert(hashMcpToken(raw) !== raw, "hash differs from plaintext");
 
   // create + resolve + lastUsedAt throttle
+  resetMcpTokenLastUsedCache();
+  assert(MCP_TOKEN_LAST_USED_CACHE_MAX === 1_000, "in-process lastUsedAt throttle cache is bounded to 1,000 entries");
   const pro = await mkUser({ plan: "PRO" });
   const { token } = await createMcpToken(pro.id, "MacBook");
   const t0 = 1_700_000_000_000;
-  const firstResolved = await resolveMcpToken(token, { includeUser: true, nowMs: t0 });
+  const firstResolved = await resolveMcpToken(token, { includeUser: true, nowMs: t0, awaitLastUsedTouch: true });
   assert(firstResolved?.userId === pro.id, "resolveMcpToken maps a fresh token to its owner");
   assert(firstResolved?.user?.id === pro.id, "resolveMcpToken(includeUser) joins owner row in 1 query");
   const afterFirst = (await listMcpTokens(pro.id))[0].lastUsedAt;
   assert(afterFirst?.getTime() === t0, "first resolveMcpToken populates lastUsedAt immediately");
 
-  await resolveMcpToken(token, { nowMs: t0 + MCP_TOKEN_LAST_USED_THROTTLE_MS - 1 });
+  await resolveMcpToken(token, { nowMs: t0 + MCP_TOKEN_LAST_USED_THROTTLE_MS - 1, awaitLastUsedTouch: true });
   const afterWithinWindow = (await listMcpTokens(pro.id))[0].lastUsedAt;
   assert(
     afterWithinWindow?.getTime() === t0,
@@ -63,12 +66,87 @@ async function main() {
   );
 
   const t1 = t0 + MCP_TOKEN_LAST_USED_THROTTLE_MS;
-  await resolveMcpToken(token, { nowMs: t1 });
+  await resolveMcpToken(token, { nowMs: t1, awaitLastUsedTouch: true });
   const afterWindowElapsed = (await listMcpTokens(pro.id))[0].lastUsedAt;
   assert(
     afterWindowElapsed?.getTime() === t1,
     "resolveMcpToken refreshes lastUsedAt once 60s throttle window has elapsed",
   );
+
+  // HERO-110: in-memory throttle deduplicates concurrent writes + non-blocking DB touch
+  {
+    const { token: concurrentToken } = await createMcpToken(pro.id, "ConcurrentClient");
+    let touchCalls = 0;
+    let releaseSlowWrite!: () => void;
+    const slowWriteGate = new Promise<void>((resolve) => {
+      releaseSlowWrite = resolve;
+    });
+    const tConcurrent = 1_700_001_000_000;
+    const startMs = Date.now();
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        resolveMcpToken(concurrentToken, {
+          nowMs: tConcurrent,
+          touchLastUsed: async () => {
+            touchCalls += 1;
+            await slowWriteGate;
+          },
+        }),
+      ),
+    );
+    const elapsedMs = Date.now() - startMs;
+    assert(
+      results.every((r) => r?.userId === pro.id),
+      "HERO-110: all concurrent resolveMcpToken calls resolve owner while DB touch is slow",
+    );
+    assert(
+      elapsedMs < 250,
+      `HERO-110: resolveMcpToken does not block auth on slow lastUsedAt write (${elapsedMs}ms)`,
+    );
+    assert(
+      touchCalls === 1,
+      `HERO-110: concurrent requests for same PAT trigger exactly 1 lastUsedAt write (got ${touchCalls})`,
+    );
+    releaseSlowWrite();
+
+    // Still throttled in memory before 60s even though the simulated hook didn't update SQLite
+    await resolveMcpToken(concurrentToken, {
+      nowMs: tConcurrent + MCP_TOKEN_LAST_USED_THROTTLE_MS - 1,
+      touchLastUsed: async () => {
+        touchCalls += 1;
+      },
+    });
+    assert(
+      touchCalls === 1,
+      "HERO-110: in-memory throttle still suppresses writes within 60s even when DB lastUsedAt is stale",
+    );
+
+    // Rejecting touchLastUsed must never break auth or cause an unhandled rejection
+    const rejectedEvents: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      rejectedEvents.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const afterWindow = await resolveMcpToken(concurrentToken, {
+        nowMs: tConcurrent + MCP_TOKEN_LAST_USED_THROTTLE_MS,
+        touchLastUsed: async () => {
+          touchCalls += 1;
+          throw new Error("SQLITE_BUSY: database is locked");
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      assert(afterWindow?.userId === pro.id, "HERO-110: rejecting lastUsedAt write still returns valid token");
+      assert(touchCalls === 2, "HERO-110: throttle expires after 60s and allows next touch attempt");
+      assert(rejectedEvents.length === 0, "HERO-110: rejecting fire-and-forget lastUsedAt write causes no unhandledRejection");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    // Revoke cleans up the test token so countActiveMcpTokens assertion below stays exact
+    const concurrentRow = (await listMcpTokens(pro.id)).find((row) => row.name === "ConcurrentClient");
+    assert(Boolean(concurrentRow && (await revokeMcpToken(pro.id, concurrentRow.id))), "HERO-110: cleanup concurrent test token");
+  }
 
   assert((await countActiveMcpTokens(pro.id)) === 1, "countActiveMcpTokens = 1 after first token");
   assert((await resolveMcpToken("heroai_pat_bogus")) === null, "unknown token → null");
