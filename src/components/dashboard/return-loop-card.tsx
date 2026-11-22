@@ -115,7 +115,7 @@ export function ReturnLoopCard() {
     : "โปรเจกต์วิดีโอล่าสุด";
   const finished = project.status === "exported";
 
-  function trackClick(target: "primary" | "previous") {
+  function trackClick(target: "primary" | "previous" | "new_clip") {
     trackEvent("return_loop_clicked", {
       properties: {
         target,
@@ -183,6 +183,18 @@ export function ReturnLoopCard() {
               style={{ color: VIOLET_LIGHT }}
             >
               {action.secondaryLabel}
+            </Link>
+          )}
+          {!finished && !action.secondaryHref && (
+            <Link
+              href="/video-editor?ui=v2&empty=1"
+              prefetch
+              onClick={() => trackClick("new_clip")}
+              data-testid="return-loop-new-clip"
+              className="inline-flex min-h-11 items-center justify-center rounded-xl border px-4 py-2 text-[12px] font-semibold transition-colors hover:bg-violet-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400"
+              style={{ color: VIOLET_LIGHT, borderColor: "rgba(139,92,246,.30)" }}
+            >
+              + เริ่มคลิปใหม่
             </Link>
           )}
         </div>

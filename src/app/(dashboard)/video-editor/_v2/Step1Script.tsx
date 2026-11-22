@@ -6,8 +6,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { PenLine, Clapperboard, GripVertical, Crown, Sparkles } from "lucide-react";
+import { PenLine, Clapperboard, GripVertical, Crown, Sparkles, NotebookPen } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
@@ -15,6 +16,8 @@ import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { activeStylePacks } from "@/lib/style-pack-catalog";
+import { FIRST_CLIP_STARTERS, shouldApplyFirstClipStarterScript } from "@/lib/first-clip-starter";
+import { trackEvent } from "@/lib/client-telemetry";
 
 const CLIP_CUTAWAY_ON = process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1";
 
@@ -97,6 +100,16 @@ export function Step1Script({
     next.splice(to, 0, moved);
     p.setScript(next.join("\n"));
     setSelectedSeg(to);
+  }
+
+  function handleInsertSampleScript() {
+    const sample = FIRST_CLIP_STARTERS[0];
+    if (!sample || !shouldApplyFirstClipStarterScript(p.script)) return;
+    p.setScript(sample.script);
+    trackEvent("step1_empty_starter_clicked", {
+      properties: { kind: "sample_script" },
+    });
+    toast.success("ใส่สคริปต์ตัวอย่าง 30 วิให้แล้ว — แก้ข้อความหรือกดถัดไปได้เลย");
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
@@ -519,6 +532,53 @@ export function Step1Script({
                 : "Enter = ขึ้นเซ็กเมนต์ใหม่"}
             </span>
           </div>
+          {p.mode === "script" && !lines.length && (
+            <div
+              data-testid="step1-empty-starter-strip"
+              className="mx-4 mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5"
+              style={{
+                background: "rgba(139,92,246,.07)",
+                border: `1px solid ${color.selectedBorder}`,
+              }}
+            >
+              <span className="w-full text-[11.5px] sm:mr-1 sm:w-auto" style={{ color: color.textSecondary }}>
+                ยังไม่มีสคริปต์? เริ่มไวใน 1 คลิก:
+              </span>
+              <button
+                type="button"
+                data-testid="step1-sample-script-btn"
+                onClick={handleInsertSampleScript}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[12px] font-semibold transition-all hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400"
+                style={{
+                  background: "linear-gradient(180deg,#8B66F8,#6C4CF4)",
+                  color: "#fff",
+                  cursor: "pointer",
+                  border: "none",
+                }}
+              >
+                <Sparkles size={13} strokeWidth={2} aria-hidden="true" />
+                ลองสคริปต์ตัวอย่าง 30 วิ (1 คลิก)
+              </button>
+              <Link
+                href="/hero-script"
+                data-testid="step1-ai-script-link"
+                onClick={() => {
+                  trackEvent("step1_empty_starter_clicked", {
+                    properties: { kind: "hero_script" },
+                  });
+                }}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[12px] font-semibold transition-colors hover:bg-violet-500/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400"
+                style={{
+                  background: color.cardBg,
+                  border: `1px solid ${color.selectedBorder}`,
+                  color: color.primary300,
+                }}
+              >
+                <NotebookPen size={13} strokeWidth={2} aria-hidden="true" />
+                ให้ AI เขียนสคริปต์ให้
+              </Link>
+            </div>
+          )}
           <textarea
             value={p.script}
             onChange={(e) => p.setScript(e.target.value)}
