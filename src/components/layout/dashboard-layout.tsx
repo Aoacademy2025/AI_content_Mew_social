@@ -49,13 +49,14 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   // both shells (issue #303: two mounts meant a dismissal on one surface did not
   // silence the other).
   const shell = pathname === "/video-editor" ? (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
-      {/* Overlay keeps the editor's h-screen geometry unchanged while ensuring
-          users who work only in the editor still receive launch announcements. */}
-      <div className="absolute inset-x-0 top-0 z-[300]">
-        <ProductUpdateBanner />
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      {/* Render announcement banner in normal flow (shrink-0) above the editor
+          workspace so it never overlaps the /video-editor topbar, project picker,
+          or step indicator. */}
+      <ProductUpdateBanner />
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {children}
       </div>
-      {children}
     </div>
   ) : (
     <div className="flex h-screen flex-col overflow-hidden bg-background">

@@ -149,9 +149,9 @@ check(!updateBanner.includes("SURFACE_PATHS") && updateBanner.includes('pathname
   "untargeted announcements surface across authenticated product pages but stay out of admin");
 const dashboardLayout = source("src/components/layout/dashboard-layout.tsx");
 check(dashboardLayout.includes('pathname === "/video-editor"')
-    && dashboardLayout.includes('className="absolute inset-x-0 top-0 z-[300]"')
+    && !dashboardLayout.includes('className="absolute inset-x-0 top-0 z-[300]"')
     && dashboardLayout.includes("<ProductUpdateBanner />"),
-  "full-screen Video Editor receives announcements without changing editor geometry");
+  "full-screen Video Editor receives announcements in normal flow without overlapping the editor topbar");
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} ${passed} launch checks passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
