@@ -16,6 +16,7 @@ import {
   Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Trash2, Type, Undo2,
 } from "lucide-react";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
+import { featuredMotionThemes, type MotionThemeId } from "@/lib/motion-broll-catalog";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
 import {
@@ -191,6 +192,8 @@ export function PostPhaseMobile({
   const [layersOpen, setLayersOpen] = useState(false);
   const [musicOpen, setMusicOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [motionLaunch, setMotionLaunch] = useState<{ themeId: MotionThemeId; requestKey: number } | null>(null);
+  const featuredMotionList = useMemo(() => featuredMotionThemes(), []);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
   const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -211,6 +214,31 @@ export function PostPhaseMobile({
     .length;
   // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
   const brollSpans = ed.brollTimelineSpans;
+  const canQuickLaunchMotion = fullBrollEditEnabled && brollSpans.length > 0;
+
+  useEffect(() => {
+    if (ed.selectedWindow == null) setMotionLaunch(null);
+  }, [ed.selectedWindow]);
+
+  function handleQuickLaunchMotionTheme(themeId: MotionThemeId) {
+    if (!canQuickLaunchMotion || ed.applyingWindows) return;
+    const targetSpan =
+      (ed.selectedWindow != null ? brollSpans.find((s) => s.index === ed.selectedWindow) : null) ??
+      brollSpans.find((s) => ed.timeMs >= s.startMs && ed.timeMs < s.endMs) ??
+      brollSpans[0];
+    if (!targetSpan) return;
+    trackEvent("motion_broll_quick_cta_clicked", {
+      properties: { themeId, surface: "post-phase-mobile" },
+    });
+    setStyleOpen(false);
+    setEditOpen(false);
+    setHeadlineOpen(false);
+    setLogoOpen(false);
+    setLayersOpen(false);
+    setMusicOpen(false);
+    setMotionLaunch((prev) => ({ themeId, requestKey: (prev?.requestKey ?? 0) + 1 }));
+    ed.setSelectedWindow(targetSpan.index);
+  }
 
   useEffect(() => {
     if (!logoOpen) return;
@@ -606,7 +634,10 @@ export function PostPhaseMobile({
                 return (
                   <button
                     key={s.index}
-                    onClick={() => ed.setSelectedWindow(s.index)}
+                    onClick={() => {
+                      setMotionLaunch(null);
+                      ed.setSelectedWindow(s.index);
+                    }}
                     className="flex shrink-0 flex-col items-start gap-1 text-left"
                     style={{
                       padding: "8px 12px", minWidth: 96, borderRadius: radius.card,
@@ -627,6 +658,111 @@ export function PostPhaseMobile({
                 );
               })}
             </div>
+            {canQuickLaunchMotion && (
+              <section
+                aria-label="Motion B-Roll กราฟิกขยับได้ (ใหม่)"
+                data-motion-discovery-strip="post-phase-mobile"
+                className="mt-2.5 flex flex-col gap-2"
+                style={{
+                  borderRadius: radius.card,
+                  padding: "10px 11px",
+                  background: "rgba(255,255,255,.025)",
+                  border: `1px solid ${color.cardBorder}`,
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5" style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+                    <Sparkles size={12} strokeWidth={1.8} style={{ color: color.primary300 }} />
+                    Motion B-Roll กราฟิกขยับได้ (ใหม่)
+                  </span>
+                  <span
+                    style={{
+                      padding: "1px 6px",
+                      borderRadius: radius.pill,
+                      background: color.selectedBg,
+                      border: `1px solid ${color.selectedBorder}`,
+                      color: color.primary300,
+                      fontSize: 9.5,
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    ฟรี 0 เครดิต
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {featuredMotionList.map((theme) => {
+                    const active = ed.selectedWindow != null && motionLaunch?.themeId === theme.id;
+                    return (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        data-motion-quick-theme-id={theme.id}
+                        aria-pressed={active}
+                        disabled={Boolean(ed.applyingWindows)}
+                        onClick={() => handleQuickLaunchMotionTheme(theme.id)}
+                        className="flex flex-col items-start justify-center gap-0.5 text-left"
+                        style={{
+                          minHeight: 44,
+                          borderRadius: radius.control,
+                          padding: "8px 10px",
+                          background: active ? color.selectedBg : color.cardBg,
+                          border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                          cursor: ed.applyingWindows ? "wait" : "pointer",
+                          opacity: ed.applyingWindows ? 0.6 : 1,
+                        }}
+                      >
+                        <div className="flex w-full items-center justify-between gap-1">
+                          <span className="flex min-w-0 items-center gap-1">
+                            <span className="truncate" style={{ font: `500 12px ${font.heading}`, color: color.text }}>
+                              {theme.shortLabel}
+                            </span>
+                            {theme.isNew && (
+                              <span
+                                data-motion-new-badge="true"
+                                style={{
+                                  padding: "0px 5px",
+                                  borderRadius: radius.pill,
+                                  background: color.selectedBg,
+                                  border: `1px solid ${color.selectedBorder}`,
+                                  color: color.primary300,
+                                  fontSize: 8.5,
+                                  fontWeight: 600,
+                                  lineHeight: 1.45,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ใหม่
+                              </span>
+                            )}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
+                            {theme.palette.map((hex, idx) => (
+                              <span
+                                key={`${theme.id}-${idx}`}
+                                style={{
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: 999,
+                                  background: hex,
+                                  border: "1px solid rgba(255,255,255,.22)",
+                                }}
+                              />
+                            ))}
+                          </span>
+                        </div>
+                        <span
+                          className="w-full truncate"
+                          style={{ fontSize: 10, color: active ? color.primary300 : color.textFaint }}
+                        >
+                          {active ? "เปิดแผงแล้ว" : theme.tagline}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -1213,6 +1349,9 @@ export function PostPhaseMobile({
           starterImageAllowance={starterImageAllowance}
           brollRegionPreference={brollRegionPreference}
           projectStylePack={projectStylePack}
+          initialTab={motionLaunch ? "motion" : null}
+          initialMotionThemeId={motionLaunch?.themeId ?? null}
+          initialMotionRequestKey={motionLaunch?.requestKey ?? 0}
         />
       )}
     </div>
