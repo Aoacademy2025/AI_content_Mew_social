@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import {
-  Palette, FileText, Video, Crown, Building2, ArrowRight,
-  Loader2, AlertTriangle, Clapperboard, BookOpen,
+  Video, Crown, Building2, ArrowRight,
+  Loader2, AlertTriangle, Clapperboard, NotebookPen, SwatchBook,
   Activity, Users, Ticket, WandSparkles,
 } from "lucide-react";
 import Link from "next/link";
@@ -50,6 +50,7 @@ const ME_FALLBACK = {
   minutesLimit: null,
   minutesUsed: null,
   heroScriptAllowed: false,
+  heroScriptPreview: false,
 } as const;
 
 function daysLeft(isoDate: string): number {
@@ -64,30 +65,16 @@ function statusStyle(s: string): React.CSSProperties {
   return { color: "var(--ui-text-muted)", background: "var(--ui-badge-neutral-bg)", border: "1px solid var(--ui-badge-neutral-border)" };
 }
 
-function UsageBar({ count, limit }: { count: number; limit: number | null }) {
-  if (!limit) return null;
-  const pct = Math.min((count / limit) * 100, 100);
-  const warn = pct >= 80;
-  return (
-    <div className="mt-4 space-y-1.5">
-      <div className="flex justify-between text-[10px] font-mono" style={{ color: "var(--ui-text-muted)" }}>
-        <span>{count} / {limit}</span>
-        {/* warn = amber (semantic warning), otherwise violet */}
-        <span style={{ color: warn ? "#FBBF24" : VIOLET_LIGHT }}>{Math.round(pct)}%</span>
-      </div>
-      <div className="h-1 w-full overflow-hidden rounded-full" style={{ background: "var(--ui-divider)" }}>
-        <div className="h-full rounded-full transition-all" style={{
-          width: `${pct}%`,
-          background: warn ? "#FBBF24" : VIOLET_GRAD,
-        }} />
-      </div>
-    </div>
-  );
+function videoStatusLabel(s: string): string {
+  if (s === "COMPLETED") return "เสร็จแล้ว";
+  if (s === "PROCESSING") return "กำลังสร้าง";
+  if (s === "FAILED") return "ไม่สำเร็จ";
+  return s;
 }
 
 /** Flat violet quick-action launcher card. */
-function QuickCard({ label, desc, href, Icon }: {
-  label: string; desc: string; href: string; Icon: React.ElementType;
+function QuickCard({ label, desc, href, Icon, badge }: {
+  label: string; desc: string; href: string; Icon: React.ElementType; badge?: string;
 }) {
   return (
     <Link
@@ -101,7 +88,14 @@ function QuickCard({ label, desc, href, Icon }: {
         <Icon className="h-[18px] w-[18px]" style={{ color: VIOLET }} strokeWidth={2.1} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold" style={{ color: "var(--ui-text-primary)" }}>{label}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="truncate text-[13px] font-semibold" style={{ color: "var(--ui-text-primary)" }}>{label}</p>
+          {badge && (
+            <span className="flex h-4 shrink-0 items-center rounded-full bg-violet-500 px-1.5 text-[9px] font-bold leading-none text-white">
+              {badge}
+            </span>
+          )}
+        </div>
         <p className="mt-0.5 text-[11px]" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
       </div>
       <ArrowRight
@@ -137,6 +131,7 @@ export default function DashboardPage() {
     minutesLimit: number | null;
     minutesUsed: number | null;
     heroScriptAllowed: boolean;
+    heroScriptPreview: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -157,6 +152,7 @@ export default function DashboardPage() {
         minutesLimit: typeof d?.minutesLimit === "number" ? d.minutesLimit : null,
         minutesUsed: typeof d?.minutesUsed === "number" ? d.minutesUsed : null,
         heroScriptAllowed: d?.heroScriptAllowed === true,
+        heroScriptPreview: d?.heroScriptPreview === true,
       });
     }).catch(() => setMe(ME_FALLBACK));
   }, []);
@@ -181,6 +177,8 @@ export default function DashboardPage() {
   const isPaid = isPro || isBusiness;
   const isActiveTrial = Boolean(trialEndsAt && new Date(trialEndsAt).getTime() > Date.now());
   const planLabel = isActiveTrial ? "ทดลอง PRO" : isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
+  const showHeroScriptCard = me?.heroScriptAllowed === true || me?.heroScriptPreview === true;
+  const returningQuickCardCount = 3 + (showHeroScriptCard ? 1 : 0) + (internalAiTester ? 1 : 0);
 
   const atStyleLimit = !isPaid && stats ? stats.styleCount >= (stats.limits?.styles ?? Infinity) : false;
   const atContentLimit = !isPaid && stats ? stats.contentCount >= (stats.limits?.contents ?? Infinity) : false;
@@ -238,7 +236,7 @@ export default function DashboardPage() {
                   : { background: "var(--ui-badge-neutral-bg)", color: "var(--ui-text-muted)", border: "1px solid var(--ui-badge-neutral-border)" };
                 return (
                   <span className="rounded-md px-2 py-0.5 text-[10px] font-mono font-semibold" style={pillStyle}>
-                    {d > 0 ? `${d}d remaining` : "Expired"}
+                    {d > 0 ? `เหลือ ${d} วัน` : "หมดอายุแล้ว"}
                   </span>
                 );
               })()}
@@ -254,11 +252,11 @@ export default function DashboardPage() {
             : "เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม"}
         </p>
 
-        {/* Expiring GRANT coupon banner — final 7 days of unpaid workshop/course grant (HERO-99) */}
+        {/* Expiring GRANT coupon banner — final 14 days of unpaid workshop/course grant (HERO-99 / HERO-103) */}
         <GrantExpiryBanner grant={stats?.expiringGrant} surface="dashboard" />
 
-        {/* Founder-urgency banner — non-paid users only, while founding seats remain */}
-        <DashboardFounderBanner plan={stats?.plan} />
+        {/* Founder-urgency banner — non-paid users only, suppressed when GrantExpiryBanner is active (HERO-115) */}
+        {!stats?.expiringGrant && <DashboardFounderBanner plan={stats?.plan} />}
 
         {/* Key setup checklist + first-login wizard (self-gating) */}
         <DashboardOnboarding firstClipPath={showFirstClip} />
@@ -309,17 +307,41 @@ export default function DashboardPage() {
           </div>
         ) : !showLegacyBlocks ? null : (
           <div
-            className={internalAiTester
+            className={returningQuickCardCount >= 4
               ? "ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
               : "ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-3"}
             style={{ animationDelay: "120ms" }}
           >
-            <QuickCard label="Video Editor" desc="Timeline editor" href="/video-editor" Icon={Clapperboard} />
+            <QuickCard
+              label="สร้างวิดีโอใหม่"
+              desc="วางสคริปต์แล้วสร้างคลิปพร้อมซับ & B-roll"
+              href="/video-editor"
+              Icon={Clapperboard}
+            />
+            {showHeroScriptCard && (
+              <QuickCard
+                label="เขียนสคริปต์ AI"
+                desc="คิดฮุกและเขียนบทคลิปสั้นใน 1 นาที"
+                href="/hero-script"
+                Icon={NotebookPen}
+                badge={!me?.heroScriptAllowed ? "PRO" : undefined}
+              />
+            )}
+            <QuickCard
+              label="แบรนด์ของฉัน"
+              desc="ตั้งโทนสี ซับ และภาพประจำช่อง"
+              href="/brands"
+              Icon={SwatchBook}
+            />
+            <QuickCard
+              label="คลังวิดีโอ"
+              desc="ดูและดาวน์โหลดคลิปที่ส่งออกแล้ว"
+              href="/videos"
+              Icon={Video}
+            />
             {internalAiTester && (
               <QuickCard label="AI Studio" desc="สร้างภาพและเสียง" href="/ai-studio" Icon={WandSparkles} />
             )}
-            <QuickCard label="Gallery" desc="ดู renders เก่า" href="/videos" Icon={Video} />
-            <QuickCard label="วิธีใช้งาน" desc="คู่มือ & สอนใช้ทีละขั้น" href="/docs" Icon={BookOpen} />
           </div>
         )}
 
@@ -339,86 +361,67 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* USER-only: stats grid (hidden while the First-Clip stepper owns the page) */}
+        {/* USER-only: Videos count stat card (hidden while the First-Clip stepper owns the page; legacy /style removed in HERO-115) */}
         {!isAdmin && showLegacyBlocks && (
-          <div className="ve-rise mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2" style={{ animationDelay: "160ms" }}>
-            {[
-              { label: "Styles", count: stats?.styleCount ?? 0, limit: stats?.limits?.styles ?? null, icon: Palette, href: "/style" },
-              { label: "Videos", count: stats?.videoCount ?? 0, limit: null as number | null, icon: Video, href: "/videos" },
-            ].map(({ label, count, limit, icon: Icon, href }) => (
-              <Link key={href} href={href} className="ve-card ve-card-hover block rounded-xl p-6">
-                <div className="mb-5 flex items-start justify-between">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.15em]" style={{ color: "var(--ui-text-muted)" }}>{label}</p>
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px]"
-                    style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}>
-                    <Icon className="h-[18px] w-[18px]" style={{ color: VIOLET }} strokeWidth={2.1} />
-                  </div>
+          <div className="ve-rise mb-8" style={{ animationDelay: "160ms" }}>
+            <Link href="/videos" className="ve-card ve-card-hover block rounded-xl p-6" style={{ minHeight: 44 }}>
+              <div className="mb-5 flex items-start justify-between">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.15em]" style={{ color: "var(--ui-text-muted)" }}>
+                  Videos
+                </p>
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px]"
+                  style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}>
+                  <Video className="h-[18px] w-[18px]" style={{ color: VIOLET }} strokeWidth={2.1} />
                 </div>
-                {loading ? null : (
-                  <p className="text-[44px] font-bold leading-none tracking-tight tabular-nums"
-                    style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>{count}</p>
-                )}
-                <UsageBar count={count} limit={limit} />
-                {/* No "Pro only feature" here: FREE renders too (clip cap in plan-limits.ts). */}
-              </Link>
-            ))}
+              </div>
+              {loading ? null : (
+                <p className="text-[44px] font-bold leading-none tracking-tight tabular-nums"
+                  style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
+                  {stats?.videoCount ?? 0}
+                </p>
+              )}
+              {/* No "Pro only feature" here: FREE renders too (clip cap in plan-limits.ts). */}
+            </Link>
           </div>
         )}
 
-        {/* Recent activity — both roles, only when data exists */}
-        {((stats?.recentContents?.length ?? 0) > 0 || (stats?.recentVideos?.length ?? 0) > 0) && (
-          <div className="ve-rise mb-8 grid gap-4 md:grid-cols-2" style={{ animationDelay: "200ms" }}>
-            {(stats?.recentContents?.length ?? 0) > 0 && (
-              <div className="ve-card rounded-xl p-6">
-                <div className="mb-4 flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-3.5 w-3.5" style={{ color: VIOLET_LIGHT }} />
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.15em]" style={{ color: "var(--ui-text-secondary)" }}>Recent Content</p>
-                  </div>
-                  <Link href="/content" className="group flex items-center gap-1 text-[11px] font-semibold transition-colors" style={{ color: VIOLET_LIGHT }}>
-                    View all <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-                  </Link>
+        {/* Recent videos — both roles, only when data exists (legacy /content removed in HERO-115) */}
+        {(stats?.recentVideos?.length ?? 0) > 0 && (
+          <div className="ve-rise mb-8" style={{ animationDelay: "200ms" }}>
+            <div className="ve-card rounded-xl p-6">
+              <div className="mb-4 flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
+                <div className="flex items-center gap-2">
+                  <Video className="h-3.5 w-3.5" style={{ color: VIOLET_LIGHT }} />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.15em]" style={{ color: "var(--ui-text-secondary)" }}>Recent Videos</p>
                 </div>
-                <div className="space-y-0.5">
-                  {stats!.recentContents.map((c) => (
-                    <Link key={c.id} href="/content">
-                      <div className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-[rgba(139,92,246,.06)]">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: VIOLET_TILE_BORDER }} />
-                        <p className="flex-1 truncate text-[13px]" style={{ color: "var(--ui-text-secondary)" }}>{c.headline || "Untitled"}</p>
-                        <p className="shrink-0 text-[10px] font-mono" style={{ color: "var(--ui-text-muted)" }}>
-                          {new Date(c.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        </p>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
+                <Link href="/videos" className="group flex min-h-[44px] items-center gap-1 px-2 text-[11px] font-semibold transition-colors" style={{ color: VIOLET_LIGHT }}>
+                  ดูทั้งหมด <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+                </Link>
               </div>
-            )}
-            {(stats?.recentVideos?.length ?? 0) > 0 && (
-              <div className="ve-card rounded-xl p-6">
-                <div className="mb-4 flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
-                  <div className="flex items-center gap-2">
-                    <Video className="h-3.5 w-3.5" style={{ color: VIOLET_LIGHT }} />
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.15em]" style={{ color: "var(--ui-text-secondary)" }}>Recent Videos</p>
-                  </div>
-                  <Link href="/videos" className="group flex items-center gap-1 text-[11px] font-semibold transition-colors" style={{ color: VIOLET_LIGHT }}>
-                    View all <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+              <div className="space-y-0.5">
+                {stats!.recentVideos.map((v) => (
+                  <Link
+                    key={v.id}
+                    href="/videos"
+                    className="group flex min-h-[44px] items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-[rgba(139,92,246,.06)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400"
+                  >
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: VIOLET_TILE_BORDER }} />
+                    <p className="flex-1 truncate text-[13px] transition-colors group-hover:text-[var(--ui-text-primary)]" style={{ color: "var(--ui-text-secondary)" }}>
+                      {v.content?.headline || (v.script ? v.script.slice(0, 40) + "…" : "วิดีโอ " + new Date(v.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" }))}
+                    </p>
+                    <span className="shrink-0 rounded-md px-2 py-0.5 text-[10px] font-semibold" style={statusStyle(v.status)}>
+                      {v.status === "PROCESSING" && <Loader2 className="mr-1 inline h-2.5 w-2.5 animate-spin" />}
+                      {videoStatusLabel(v.status)}
+                    </span>
+                    <ArrowRight
+                      className="h-3.5 w-3.5 shrink-0 transition-transform group-hover:translate-x-0.5 group-hover:text-[#B9A6FF]"
+                      style={{ color: "var(--ui-text-muted)" }}
+                      aria-hidden="true"
+                    />
                   </Link>
-                </div>
-                <div className="space-y-0.5">
-                  {stats!.recentVideos.map((v) => (
-                    <div key={v.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5">
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: VIOLET_TILE_BORDER }} />
-                      <p className="flex-1 truncate text-[13px]" style={{ color: "var(--ui-text-secondary)" }}>{v.content?.headline || (v.script ? v.script.slice(0, 40) + "…" : "วิดีโอ " + new Date(v.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" }))}</p>
-                      <span className="shrink-0 rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider" style={statusStyle(v.status)}>
-                        {v.status === "PROCESSING" && <Loader2 className="mr-1 inline h-2.5 w-2.5 animate-spin" />}
-                        {v.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                ))}
               </div>
-            )}
+            </div>
           </div>
         )}
 
