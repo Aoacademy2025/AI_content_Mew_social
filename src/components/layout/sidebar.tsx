@@ -29,6 +29,8 @@ interface SidebarProps {
   role?: "ADMIN" | "USER";
   collapsed?: boolean;
   onToggle?: () => void;
+  /** Invoked when a nav or CTA link is clicked (used by MobileSidebar to auto-close). */
+  onNavigate?: () => void;
   initialPlan?: string;
   initialName?: string;
   sessionLoaded?: boolean;
@@ -47,39 +49,37 @@ type SidebarNavItem = {
   badge?: number;
   /** Small text pill (e.g. "ใหม่") instead of the numeric unread-count badge. */
   badgeText?: string;
+  /** Visual section grouping for non-admin navigation. */
+  group?: "create" | "tools";
 };
 
-// USER (non-admin) — one lean list, no section labels.
+// USER (non-admin) — grouped into primary creation vs tools/account.
 // Legacy items (Styles /style, Content /content, Video Creator /video-creator)
 // are intentionally removed from nav; their routes/pages still work if visited directly.
 const userNavItems: SidebarNavItem[] = [
-  { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
-  // Writing comes before editing in the user flow — kept directly above Video Editor.
-  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
-  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
-  { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
-  { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
-  { title: "Gallery",      href: "/videos",        icon: Video },
-  { title: "ต่อ AI Agent (MCP)", href: "/mcp",     icon: Terminal, badgeText: "ใหม่" },
-  { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
-  { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
-  { title: "Pricing",      href: "/pricing",       icon: CreditCard },
-  { title: "Settings",     href: "/settings",      icon: Settings },
+  { title: "Dashboard",          href: "/dashboard",     icon: LayoutDashboard, group: "create" },
+  { title: "Video Editor",       href: "/video-editor",  icon: Clapperboard,    group: "create" },
+  { title: "เขียนสคริปต์ AI",    href: "/hero-script",   icon: NotebookPen,     group: "create" },
+  { title: "แบรนด์ของฉัน",       href: "/brands",        icon: SwatchBook,      group: "create" },
+  { title: "AI Studio",          href: "/ai-studio",     icon: WandSparkles,    group: "create" },
+  { title: "Gallery",            href: "/videos",        icon: Video,           group: "create" },
+  { title: "ต่อ AI Agent (MCP)", href: "/mcp",           icon: Terminal,        badgeText: "ใหม่", group: "tools" },
+  { title: "Pricing",            href: "/pricing",       icon: CreditCard,      group: "tools" },
+  { title: "Settings",           href: "/settings",      icon: Settings,        group: "tools" },
+  { title: "วิธีใช้งาน",          href: "/docs",          icon: BookOpen,        group: "tools" },
+  { title: "อัปเดต",             href: "/updates",       icon: Megaphone,       group: "tools" },
 ];
 
-// ADMIN — two labeled groups. Admins reach Docs via the topbar link and Pricing
-// directly, so those are omitted here (matches the approved mockup).
+// ADMIN — studio items + five Thai admin groups.
 const adminStudioItems: SidebarNavItem[] = [
-  { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
-  // Writing comes before editing in the user flow — kept directly above Video Editor
-  // (same placement as userNavItems; admins are allowlist-gated too, see internalItemsOnly).
-  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
-  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
-  { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
-  { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
-  { title: "Gallery",      href: "/videos",        icon: Video },
-  { title: "ต่อ AI Agent (MCP)", href: "/mcp",     icon: Terminal, badgeText: "ใหม่" },
-  { title: "Settings",     href: "/settings",      icon: Settings },
+  { title: "Dashboard",          href: "/dashboard",     icon: LayoutDashboard },
+  { title: "Video Editor",       href: "/video-editor",  icon: Clapperboard },
+  { title: "เขียนสคริปต์ AI",    href: "/hero-script",   icon: NotebookPen },
+  { title: "แบรนด์ของฉัน",       href: "/brands",        icon: SwatchBook },
+  { title: "AI Studio",          href: "/ai-studio",     icon: WandSparkles },
+  { title: "Gallery",            href: "/videos",        icon: Video },
+  { title: "ต่อ AI Agent (MCP)", href: "/mcp",           icon: Terminal, badgeText: "ใหม่" },
+  { title: "Settings",           href: "/settings",      icon: Settings },
 ];
 // Admin nav — five Thai groups (ADR 0062: each admin surface answers one
 // question; /admin is "how is today going", money lives only on /admin/revenue).
@@ -125,7 +125,7 @@ function SectionLabel({
   );
 }
 
-export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, touchTargets = false }: SidebarProps) {
+export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, onNavigate, touchTargets = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { signOut } = useClerk();
@@ -258,6 +258,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         ? { ...item, badgeText: "PRO" }
         : item);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
+  const userCreateItems = userItems.filter((item) => item.group !== "tools");
+  const userToolsItems = userItems.filter((item) => item.group === "tools");
   const adminItems = internalItemsOnly(adminStudioItems);
 
   function renderNavItem(item: SidebarNavItem) {
@@ -304,6 +306,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
           if (item.href === "/mcp") {
             trackEvent("mcp_menu_clicked", { properties: { plan } });
           }
+          onNavigate?.();
         }}
         className={cn(
           "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
@@ -430,13 +433,13 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             </DropdownMenuLabel>
             <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
             <DropdownMenuItem asChild className="cursor-pointer">
-              <Link href="/settings">
+              <Link href="/settings" onClick={() => onNavigate?.()}>
                 <Settings className="mr-2 h-4 w-4" />
                 Settings
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild className="cursor-pointer">
-              <Link href="/settings?tab=billing">
+              <Link href="/settings?tab=billing" onClick={() => onNavigate?.()}>
                 <CreditCard className="mr-2 h-4 w-4" />
                 Billing
               </Link>
@@ -489,7 +492,12 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             )}
           </>
         ) : (
-          userItems.map(renderNavItem)
+          <>
+            <SectionLabel collapsed={collapsed}>สร้างงาน</SectionLabel>
+            {userCreateItems.map(renderNavItem)}
+            <SectionLabel collapsed={collapsed} withDivider>เครื่องมือ &amp; บัญชี</SectionLabel>
+            {userToolsItems.map(renderNavItem)}
+          </>
         )}
       </nav>
 
@@ -502,10 +510,13 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
           >
             {onFirstClipJourney ? (
               <Link href="/video-editor" prefetch={true}
-                onClick={() => trackEvent("first_clip_cta_clicked", {
-                  step: firstClipState,
-                  properties: { step: firstClipState, surface: "sidebar" },
-                })}
+                onClick={() => {
+                  trackEvent("first_clip_cta_clicked", {
+                    step: firstClipState,
+                    properties: { step: firstClipState, surface: "sidebar" },
+                  });
+                  onNavigate?.();
+                }}
                 className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold text-white transition-all hover:brightness-110"
                 style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
                 <span>⚡</span>
@@ -513,12 +524,15 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
               </Link>
             ) : isActiveTrial ? (
               <Link href="/pricing?source=sidebar" prefetch={true}
+                onClick={() => onNavigate?.()}
                 className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
                 style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
                 สมัคร PRO
               </Link>
             ) : !isPaid ? (
-              <Link href="/settings?tab=billing" className="block w-full rounded-2xl overflow-hidden relative group"
+              <Link href="/pricing?source=sidebar" prefetch={true}
+                onClick={() => onNavigate?.()}
+                className="block w-full rounded-2xl overflow-hidden relative group"
                 style={{ background: "linear-gradient(145deg, #0f0f18, #16102a)", border: "1px solid rgba(139,92,246,0.25)", boxShadow: "0 0 24px rgba(109,40,217,0.15)" }}>
                 {/* glow top */}
                 <div className="absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(167,139,250,0.6), transparent)" }} />
@@ -547,15 +561,16 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
                   <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-[11px] font-bold text-white transition-all group-hover:brightness-110"
                     style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
                     <span>⚡</span>
-                    <span>Upgrade to Pro</span>
+                    <span>อัปเกรดเป็น PRO</span>
                   </div>
                 </div>
               </Link>
             ) : isPro ? (
-              <Link href="/settings?tab=billing"
+              <Link href="/pricing?source=sidebar&plan=BUSINESS" prefetch={true}
+                onClick={() => onNavigate?.()}
                 className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
                 style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
-                Upgrade to Business
+                อัปเกรดเป็น Business
               </Link>
             ) : <div />}
           </FadeSwap>
@@ -569,6 +584,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
           </button>
           <Link
             href="/updates"
+            onClick={() => onNavigate?.()}
             className="flex items-center justify-between rounded-lg px-2 py-1.5 text-[11px] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
             style={{ color: "var(--ui-text-muted)" }}
           >
