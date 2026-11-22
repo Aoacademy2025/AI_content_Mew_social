@@ -188,3 +188,60 @@ export function assessReportedRunpodImageCost(input: {
     reason: "Fully-loaded RunPod image COGS is within target",
   };
 }
+
+function describeErrorCause(cause: unknown, depth = 0): string | null {
+  if (!cause || depth > 4) return null;
+  if (typeof cause === "string") {
+    const trimmed = cause.trim();
+    return trimmed || null;
+  }
+  if (typeof cause !== "object") return null;
+
+  const record = cause as {
+    code?: unknown;
+    message?: unknown;
+    errors?: unknown;
+    cause?: unknown;
+  };
+  const code = typeof record.code === "string" ? record.code.trim() : "";
+  const message = cause instanceof Error
+    ? cause.message.trim()
+    : typeof record.message === "string"
+      ? record.message.trim()
+      : "";
+
+  if (code && message) {
+    return message.includes(code) ? message : `${code}: ${message}`;
+  }
+  if (code) return code;
+  if (message) return message;
+
+  if (Array.isArray(record.errors)) {
+    for (const nested of record.errors) {
+      const described = describeErrorCause(nested, depth + 1);
+      if (described) return described;
+    }
+  }
+  if (record.cause && record.cause !== cause) {
+    return describeErrorCause(record.cause, depth + 1);
+  }
+  return null;
+}
+
+export function formatRunpodBillingError(
+  error: unknown,
+  fallback = "RunPod billing sync failed",
+): string {
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    return trimmed || fallback;
+  }
+  if (!(error instanceof Error)) return fallback;
+
+  const base = error.message.trim() || fallback;
+  const causeDetail = describeErrorCause((error as Error & { cause?: unknown }).cause);
+  if (causeDetail && !base.includes(causeDetail)) {
+    return `${base} (cause: ${causeDetail})`;
+  }
+  return base;
+}

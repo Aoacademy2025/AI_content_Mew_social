@@ -3,6 +3,7 @@ import { prisma } from "../src/lib/prisma";
 import {
   getActiveRunpodImageCostSnapshot,
   getRunpodImageCostSnapshot,
+  runRunpodImageCostSync,
   syncRunpodImageBilling,
 } from "../src/lib/runpod-image-cost.server";
 import { resolveAiImageCost } from "../src/lib/ai-image-ledger-report";
@@ -225,6 +226,131 @@ async function main() {
   assert.equal(active.costBahtPerImage, 0.20125);
   assert.equal(active.status, "healthy");
   assert.equal(active.admitted, true);
+
+  // HERO-108: On runpod-public, the hourly cost-sync cron must skip the private
+  // rest.runpod.io billing endpoint and report the active attempt-based snapshot.
+  let publicSyncFetchCalls = 0;
+  const publicSync = await runRunpodImageCostSync({
+    now,
+    windowDays: 1,
+    fetchImpl: async () => {
+      publicSyncFetchCalls += 1;
+      throw new Error("rest.runpod.io must not be fetched on runpod-public");
+    },
+  });
+  assert.equal(publicSyncFetchCalls, 0);
+  assert.equal(publicSync.event, "runpod-image-cost-sync");
+  assert.equal("skippedPrivateBillingSync" in publicSync && publicSync.skippedPrivateBillingSync, true);
+  if (!("skippedPrivateBillingSync" in publicSync)) {
+    assert.fail("expected public-route sync payload");
+  }
+  assert.equal(publicSync.providerRoute, "runpod-public");
+  assert.equal(publicSync.costSource, "provider_reported_attempts");
+  assert.equal(publicSync.endpointId, publicEndpointId);
+  assert.equal(publicSync.costBahtPerImage, 0.20125);
+  assert.equal(publicSync.targetBahtPerImage, 0.90);
+  assert.equal(publicSync.hardLimitBahtPerImage, 1.08);
+  assert.equal(publicSync.deliveredImages, 20);
+  assert.equal(publicSync.totalAttempts, 23);
+  assert.equal(publicSync.pricedAttempts, 23);
+  assert.equal(publicSync.costCoverage, "complete");
+  assert.equal(publicSync.status, "healthy");
+  assert.equal(publicSync.admitted, true);
+  assert.ok(publicSync.lastCostReportedAt);
+  assert.equal(
+    await prisma.runpodBillingSync.findUnique({ where: { endpointId: publicEndpointId } }),
+    null,
+    "runpod-public sync must not create a private billing sync row",
+  );
+
+  // Non-admitted public-route snapshots still surface admitted=false for exit code 2.
+  process.env.HERO_RUNPOD_COST_TARGET_BAHT = "0.05";
+  process.env.HERO_RUNPOD_COST_HARD_LIMIT_BAHT = "0.10";
+  const publicHardStop = await runRunpodImageCostSync({
+    now,
+    windowDays: 1,
+    fetchImpl: async () => {
+      publicSyncFetchCalls += 1;
+      throw new Error("rest.runpod.io must not be fetched on runpod-public");
+    },
+  });
+  assert.equal(publicSyncFetchCalls, 0);
+  assert.equal(publicHardStop.status, "hard_stop");
+  assert.equal(publicHardStop.admitted, false);
+  process.env.HERO_RUNPOD_COST_TARGET_BAHT = "0.90";
+  process.env.HERO_RUNPOD_COST_HARD_LIMIT_BAHT = "1.08";
+
+  // On runpod-custom, runRunpodImageCostSync must still call syncRunpodImageBilling
+  // and surface underlying fetch error.cause details on network/DNS failures.
+  const customSyncEndpointId = "runpod-cost-custom-sync-endpoint";
+  process.env.AI_STUDIO_Z_IMAGE_ROUTE = "custom";
+  process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID = customSyncEndpointId;
+  process.env.RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH = "config/ai-workflows/z-image-turbo.json";
+  let customSyncFetchCalls = 0;
+  const customSync = await runRunpodImageCostSync({
+    start,
+    end: now,
+    now,
+    windowDays: 1,
+    fetchImpl: async (request) => {
+      customSyncFetchCalls += 1;
+      const url = new URL(String(request));
+      assert.equal(url.hostname, "rest.runpod.io");
+      assert.equal(url.searchParams.get("endpointId"), customSyncEndpointId);
+      return new Response(JSON.stringify([{
+        amount: 0.15,
+        gpuTypeId: "NVIDIA A40",
+        time: bucketStart.toISOString(),
+        timeBilledMs: 120_000,
+      }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  assert.equal(customSyncFetchCalls, 1);
+  assert.equal("skippedPrivateBillingSync" in customSync, false);
+  assert.equal(customSync.endpointId, customSyncEndpointId);
+  if ("skippedPrivateBillingSync" in customSync) {
+    assert.fail("expected custom-route sync payload");
+  }
+  assert.equal(customSync.rowsSeen, 1);
+  assert.equal(customSync.billedUsd, 0.15);
+  assert.ok(customSync.lastSuccessfulSyncAt);
+
+  const dnsFailure = new TypeError("fetch failed", {
+    cause: Object.assign(new Error("getaddrinfo ENOTFOUND rest.runpod.io"), {
+      code: "ENOTFOUND",
+    }),
+  });
+  await assert.rejects(
+    () => runRunpodImageCostSync({
+      start,
+      end: now,
+      now,
+      windowDays: 1,
+      fetchImpl: async () => {
+        customSyncFetchCalls += 1;
+        throw dnsFailure;
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /fetch failed/);
+      assert.match(error.message, /ENOTFOUND/);
+      assert.match(error.message, /rest\.runpod\.io/);
+      return true;
+    },
+  );
+  assert.equal(customSyncFetchCalls, 2);
+  const failedSyncRow = await prisma.runpodBillingSync.findUniqueOrThrow({
+    where: { endpointId: customSyncEndpointId },
+  });
+  assert.match(failedSyncRow.lastError ?? "", /ENOTFOUND/);
+  assert.match(failedSyncRow.lastError ?? "", /rest\.runpod\.io/);
+  await prisma.runpodBillingBucket.deleteMany({ where: { endpointId: customSyncEndpointId } });
+  await prisma.runpodBillingSync.deleteMany({ where: { endpointId: customSyncEndpointId } });
+  process.env.AI_STUDIO_Z_IMAGE_ROUTE = "public";
 
   const priorCustomEndpointId = "runpod-cost-prior-custom-endpoint";
   await prisma.aiGenerationJob.create({

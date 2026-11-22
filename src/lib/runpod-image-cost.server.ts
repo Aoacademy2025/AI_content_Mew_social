@@ -3,7 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getCostRates } from "@/lib/cost-rates";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
-import { runpodImageModelConfig } from "@/lib/runpod-serverless";
+import { runpodImageModelConfig, type RunpodImageModelConfig } from "@/lib/runpod-serverless";
 import {
   assessReportedRunpodImageCost,
   assessRunpodImageCost,
@@ -11,6 +11,7 @@ import {
   DEFAULT_RUNPOD_IMAGE_COST_MIN_SAMPLE,
   DEFAULT_RUNPOD_IMAGE_COST_STALE_MS,
   DEFAULT_RUNPOD_IMAGE_COST_TARGET_BAHT,
+  formatRunpodBillingError,
   type RunpodImageCostPolicy,
   type RunpodImageCostStatus,
 } from "@/lib/runpod-image-cost";
@@ -251,7 +252,7 @@ export async function syncRunpodImageBilling(input: {
       billedTimeMs: records.reduce((sum, row) => sum + row.timeBilledMs, 0),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "RunPod billing sync failed";
+    const message = formatRunpodBillingError(error, "RunPod billing sync failed");
     await prisma.runpodBillingSync.upsert({
       where: { endpointId },
       create: {
@@ -267,6 +268,9 @@ export async function syncRunpodImageBilling(input: {
         lastError: message.slice(0, 500),
       },
     }).catch(() => {});
+    if (error instanceof Error && message !== error.message) {
+      throw new Error(message, { cause: error });
+    }
     throw error;
   }
 }
@@ -548,4 +552,103 @@ export async function assertRunpodImageCostAdmission(
   const snapshot = await getRunpodImageCostSnapshot({ endpointId });
   if (!snapshot.admitted) throw new RunpodImageCostGuardError(snapshot);
   return snapshot;
+}
+
+function resolveActiveRunpodZImageConfig(): RunpodImageModelConfig | null {
+  const zImageModel = AI_IMAGE_MODELS.find((model) => model.id === "z-image-turbo");
+  if (!zImageModel) return null;
+  return runpodImageModelConfig(zImageModel);
+}
+
+export type RunpodImageCostSyncResult =
+  | {
+    event: "runpod-image-cost-sync";
+    skippedPrivateBillingSync: true;
+    providerRoute: ActiveRunpodImageCostSnapshot["providerRoute"];
+    costSource: ActiveRunpodImageCostSnapshot["costSource"];
+    endpointId: string;
+    costBahtPerImage: number | null;
+    targetBahtPerImage: number;
+    hardLimitBahtPerImage: number;
+    deliveredImages: number;
+    totalAttempts: number | null;
+    pricedAttempts: number | null;
+    costCoverage: ActiveRunpodImageCostSnapshot["costCoverage"];
+    status: RunpodImageCostStatus;
+    admitted: boolean;
+    lastCostReportedAt: string | null;
+  }
+  | {
+    event: "runpod-image-cost-sync";
+    endpointId: string;
+    start: string;
+    end: string;
+    rowsSeen: number;
+    billedUsd: number;
+    billedTimeMs: number;
+    costBahtPerImage: number | null;
+    targetBahtPerImage: number;
+    hardLimitBahtPerImage: number;
+    deliveredImages: number;
+    status: RunpodImageCostStatus;
+    admitted: boolean;
+    lastSuccessfulSyncAt: string | null;
+  };
+
+export async function runRunpodImageCostSync(input: {
+  endpointId?: string;
+  start?: Date;
+  end?: Date;
+  now?: Date;
+  windowDays?: number;
+  fetchImpl?: typeof fetch;
+} = {}): Promise<RunpodImageCostSyncResult> {
+  const config = resolveActiveRunpodZImageConfig();
+  if (config?.route === "runpod-public") {
+    const snapshot = await getActiveRunpodImageCostSnapshot({
+      now: input.now,
+      windowDays: input.windowDays,
+    });
+    return {
+      event: "runpod-image-cost-sync",
+      skippedPrivateBillingSync: true,
+      providerRoute: snapshot.providerRoute,
+      costSource: snapshot.costSource,
+      endpointId: snapshot.endpointId,
+      costBahtPerImage: snapshot.costBahtPerImage,
+      targetBahtPerImage: snapshot.targetBahtPerImage,
+      hardLimitBahtPerImage: snapshot.hardLimitBahtPerImage,
+      deliveredImages: snapshot.deliveredImages,
+      totalAttempts: snapshot.totalAttempts,
+      pricedAttempts: snapshot.pricedAttempts,
+      costCoverage: snapshot.costCoverage,
+      status: snapshot.status,
+      admitted: snapshot.admitted,
+      lastCostReportedAt: snapshot.lastCostReportedAt,
+    };
+  }
+
+  const endpointId = input.endpointId ?? config?.endpointId;
+  const synced = await syncRunpodImageBilling({
+    endpointId,
+    start: input.start,
+    end: input.end,
+    fetchImpl: input.fetchImpl,
+  });
+  const snapshot = await getRunpodImageCostSnapshot({
+    endpointId: synced.endpointId,
+    now: input.now,
+    windowDays: input.windowDays,
+  });
+  return {
+    event: "runpod-image-cost-sync",
+    ...synced,
+    costBahtPerImage: snapshot.costBahtPerImage,
+    targetBahtPerImage: snapshot.targetBahtPerImage,
+    hardLimitBahtPerImage: snapshot.hardLimitBahtPerImage,
+    deliveredImages: snapshot.deliveredImages,
+    status: snapshot.status,
+    admitted: snapshot.admitted,
+    lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
+  };
 }
