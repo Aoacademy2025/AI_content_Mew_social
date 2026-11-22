@@ -2,16 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Menu, Plus } from "lucide-react";
 import { NotificationBell } from "@/components/layout/notification-bell";
-
-const navLinks = [
-  { title: "วิธีใช้งาน", href: "/docs" },
-];
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
+  const isOnVideoEditor = pathname === "/video-editor" || pathname.startsWith("/video-editor/");
 
   return (
     <div
@@ -21,13 +17,14 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         borderBottom: "1px solid var(--ui-nav-border)",
       }}
     >
-      {/* Left — hamburger (mobile) + brand + links */}
+      {/* Left — hamburger (mobile) + brand */}
       <div className="flex items-center gap-1">
         {onMenuClick && (
           <button
+            type="button"
             onClick={onMenuClick}
             aria-label="เปิดเมนู"
-            className="mr-2 flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-white/5 lg:hidden"
+            className="-ml-1.5 mr-1 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-white/5 lg:hidden"
             style={{ color: "var(--ui-text-secondary)" }}
           >
             <Menu className="h-5 w-5" />
@@ -35,7 +32,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         )}
         <Link
           href="/dashboard"
-          className="group flex items-center gap-2.5 mr-6 transition-opacity hover:opacity-90"
+          className="group flex items-center gap-2.5 mr-4 transition-opacity hover:opacity-90"
           aria-label="Hero AI Creator Studio"
         >
           <span
@@ -60,30 +57,24 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
             Hero AI
           </span>
         </Link>
-
-        {navLinks.map(({ title, href }) => {
-          const isActive = pathname === href || pathname.startsWith(href.split("?")[0]);
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={cn(
-                "rounded-md px-3 py-1 text-sm font-medium transition-colors",
-                isActive
-                  ? "font-semibold"
-                  : "hover:bg-black/5 dark:hover:bg-white/5"
-              )}
-              style={{ color: isActive ? "var(--ui-text-primary)" : "var(--ui-text-secondary)" }}
-            >
-              {title}
-            </Link>
-          );
-        })}
       </div>
 
-      {/* Right — actions. Account hub now lives in the sidebar user header;
-          the dashboard topbar-right is the notification bell only. */}
-      <div className="flex items-center gap-2">
+      {/* Right — primary creation CTA + notification bell */}
+      <div className="flex items-center gap-2 sm:gap-3">
+        {!isOnVideoEditor && (
+          <Link
+            href="/video-editor"
+            prefetch={true}
+            className="inline-flex min-h-[36px] sm:min-h-[38px] items-center justify-center gap-1.5 rounded-xl px-3 sm:px-3.5 text-xs sm:text-[13px] font-semibold text-white transition-all hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60"
+            style={{
+              background: "linear-gradient(180deg,#8B66F8,#6C4CF4)",
+              boxShadow: "0 2px 12px rgba(108,76,244,0.35)",
+            }}
+          >
+            <Plus className="h-4 w-4 shrink-0" />
+            <span>สร้างคลิปใหม่</span>
+          </Link>
+        )}
         <NotificationBell />
       </div>
     </div>

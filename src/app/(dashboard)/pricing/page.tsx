@@ -45,6 +45,7 @@ export default async function PricingPage({
     payment?: string;
     source?: string;
     period?: string;
+    cycle?: string;
     method?: string;
     plan?: string;
   }>;
@@ -61,6 +62,11 @@ export default async function PricingPage({
   // reader (e.g. the past-due banner link); `plan` only matters for the cancel-return
   // banner. Flag off -> promptpayMonthlyOffered() short-circuits before any config/DB read.
   const cancelReturn = parseCancelReturnParams(params);
+  // HERO-113: also accept `?cycle=annual|monthly` (used by HERO-111 checkout recovery links)
+  // when `?period=` is absent, strictly whitelisted to the two billing periods.
+  const resolvedPreferredPeriod =
+    cancelReturn.period
+    ?? (params.cycle === "annual" || params.cycle === "monthly" ? params.cycle : null);
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
       <div className="relative z-10">
@@ -87,7 +93,7 @@ export default async function PricingPage({
           expiringGrant={viewerContext.expiringGrant}
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
-          preferredPeriod={cancelReturn.period ?? null}
+          preferredPeriod={resolvedPreferredPeriod}
           minuteQuotaEnabled={process.env.MINUTE_QUOTA === "1"}
           // #348 — the promise on the trial band is only shown when the billing
           // code actually keeps the remaining days. Same helper the server uses.
