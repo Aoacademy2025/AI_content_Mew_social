@@ -295,6 +295,7 @@ export function PostPhaseMobile({
   function openStyle() {
     setEditOpen(false);
     setHeadlineOpen(false);
+    setMusicOpen(false);
     setLogoOpen(false);
     setLayersOpen(false);
     setStyleOpen(true);
@@ -514,9 +515,28 @@ export function PostPhaseMobile({
 
       <div
         data-mobile-editor-actions="true"
-        className="flex shrink-0 gap-2 px-3.5 py-2"
-        style={{ background: color.bgTimeline, borderBottom: `1px solid ${color.cardBorder}` }}
+        className="flex shrink-0 items-center gap-2 overflow-x-auto px-3.5 py-2"
+        style={{
+          background: color.bgTimeline,
+          borderBottom: `1px solid ${color.cardBorder}`,
+          WebkitOverflowScrolling: "touch",
+        }}
       >
+        <button
+          type="button"
+          data-mobile-editor-action="style"
+          aria-haspopup="dialog"
+          aria-expanded={styleOpen}
+          onClick={openStyle}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
+          style={mobileEditorActionStyle}
+        >
+          <Sparkles size={15} aria-hidden="true" />
+          <span>สไตล์</span>
+          {ed.activeTemplateId && (
+            <span aria-label="เลือกเทมเพลตแล้ว" style={{ width: 7, height: 7, borderRadius: "50%", background: color.primary300 }} />
+          )}
+        </button>
         <button
           ref={headlineTriggerRef}
           type="button"
@@ -524,6 +544,7 @@ export function PostPhaseMobile({
           aria-haspopup="dialog"
           aria-expanded={headlineOpen}
           onClick={openHeadline}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
           style={mobileEditorActionStyle}
         >
           <Type size={16} aria-hidden="true" />
@@ -536,6 +557,7 @@ export function PostPhaseMobile({
           type="button"
           data-mobile-editor-action="subtitle"
           onClick={() => openEdit(ed.activeIdx >= 0 ? ed.activeIdx : ed.selected)}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
           style={mobileEditorActionStyle}
         >
           <Pencil size={15} aria-hidden="true" />
@@ -548,6 +570,7 @@ export function PostPhaseMobile({
           aria-haspopup="dialog"
           aria-expanded={logoOpen}
           onClick={openLogo}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
           style={mobileEditorActionStyle}
         >
           <ImageIcon size={16} aria-hidden="true" />
@@ -570,6 +593,7 @@ export function PostPhaseMobile({
           aria-haspopup="dialog"
           aria-expanded={musicOpen}
           onClick={openMusic}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
           style={mobileEditorActionStyle}
         >
           <Music2 size={16} aria-hidden="true" />
@@ -585,6 +609,7 @@ export function PostPhaseMobile({
           aria-haspopup="dialog"
           aria-expanded={layersOpen}
           onClick={openLayers}
+          className="shrink-0 min-h-[44px] min-w-[68px] whitespace-nowrap"
           style={mobileEditorActionStyle}
         >
           <Layers3 size={16} aria-hidden="true" />
@@ -1437,12 +1462,15 @@ const snapBtnStyle: React.CSSProperties = {
 const mobileEditorActionStyle: React.CSSProperties = {
   minHeight: 44,
   flex: 1,
-  minWidth: 0,
+  flexShrink: 0,
+  flexBasis: "auto",
+  minWidth: 68,
+  whiteSpace: "nowrap",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
   gap: 5,
-  padding: "7px 5px",
+  padding: "7px 10px",
   borderRadius: radius.control,
   border: `1px solid ${color.cardBorder}`,
   background: "rgba(255,255,255,.045)",

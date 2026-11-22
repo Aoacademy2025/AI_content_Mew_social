@@ -563,7 +563,7 @@ export function EditorV2Shell() {
   return (
     <div
       {...editorDiagnostics}
-      className={`${v2FontClass} flex h-screen flex-col`}
+      className={`${v2FontClass} flex h-full min-h-0 flex-1 flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
       {p.projectInitialization !== "ready" && !emptyProjectState && p.recovery.status === "none" ? (
