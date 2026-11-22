@@ -12,13 +12,18 @@ import {
   sendDueLapsedPayerReminders,
   sendDuePaidActivationReminders,
 } from "@/lib/dormant-payers.server";
+import {
+  sendDueCheckoutRecoveryReminders,
+  type CheckoutRecoveryRun,
+} from "@/lib/checkout-recovery-reminder.server";
 
 export const runtime = "nodejs";
 
 // GET /api/cron/renewal-reminders  (daily, Bearer CRON_SECRET)
 // Reminds the manual-renew cohort (one-time / PromptPay — no auto-renew subscription) before their plan lapses.
-// Also carries the HERO-33 past_due +3-day follow-up and HERO-99 GRANT coupon expiry sweep (d7/d3/d1)
-// so no new PM2 app is needed. Fault-isolated so a GRANT sweep error never aborts cash renewal reminders.
+// Also carries the HERO-33 past_due +3-day follow-up, HERO-99 GRANT coupon expiry sweep (d7/d3/d1),
+// and HERO-111 failed/abandoned checkout recovery sweep so no new PM2 app is needed.
+// Fault-isolated so secondary sweep errors never abort cash renewal reminders.
 // Fails CLOSED if CRON_SECRET is unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -44,6 +49,16 @@ export async function GET(req: Request) {
   const paidActivation = await sendDuePaidActivationReminders(now);
   const lapsedPayer = await sendDueLapsedPayerReminders(now);
 
+  let checkoutRecovery: CheckoutRecoveryRun | null = null;
+  let checkoutRecoveryError: string | null = null;
+  try {
+    checkoutRecovery = await sendDueCheckoutRecoveryReminders(now);
+  } catch (error) {
+    checkoutRecoveryError =
+      error instanceof Error ? error.message : "checkout_recovery_sweep_failed";
+    console.error("[cron/renewal-reminders] checkout-recovery sweep failed:", error);
+  }
+
   writeCronHeartbeat("renewal-reminders");
   return NextResponse.json({
     ...renewal,
@@ -64,5 +79,9 @@ export async function GET(req: Request) {
     paidActivationSent: paidActivation.sent,
     lapsedPayerChecked: lapsedPayer.checked,
     lapsedPayerSent: lapsedPayer.sent,
+    checkoutRecoveryChecked: checkoutRecovery?.checked ?? 0,
+    checkoutRecoverySent: checkoutRecovery?.sent ?? 0,
+    checkoutRecoveryFailed: checkoutRecovery?.failed ?? 0,
+    ...(checkoutRecoveryError ? { checkoutRecoveryError } : {}),
   });
 }
