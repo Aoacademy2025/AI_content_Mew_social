@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   assessRunpodImageCost,
+  formatRunpodBillingError,
   normalizeRunpodImageCostPolicy,
 } from "../src/lib/runpod-image-cost";
 
@@ -72,5 +73,23 @@ const stale = assessRunpodImageCost({
 });
 assert.equal(stale.status, "stale");
 assert.equal(stale.admitted, false);
+
+const dnsCause = Object.assign(new Error("getaddrinfo ENOTFOUND rest.runpod.io"), {
+  code: "ENOTFOUND",
+});
+const formattedDns = formatRunpodBillingError(new TypeError("fetch failed", { cause: dnsCause }));
+assert.equal(formattedDns, "fetch failed (cause: getaddrinfo ENOTFOUND rest.runpod.io)");
+assert.equal(
+  formatRunpodBillingError(new Error(formattedDns, { cause: new TypeError("fetch failed", { cause: dnsCause }) })),
+  formattedDns,
+);
+
+const timeoutCause = Object.assign(new Error("Connect Timeout Error"), {
+  code: "UND_ERR_CONNECT_TIMEOUT",
+});
+assert.equal(
+  formatRunpodBillingError(new TypeError("fetch failed", { cause: timeoutCause })),
+  "fetch failed (cause: UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)",
+);
 
 console.log("verify-runpod-image-cost: ALL PASS");
