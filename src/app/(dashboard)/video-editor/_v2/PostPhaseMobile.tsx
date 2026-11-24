@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { brollTimelineLabel } from "@/lib/broll-window-ux";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Trash2, Type, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Music2, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Trash2, Type, Undo2, Volume2, VolumeX,
 } from "lucide-react";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
 import { featuredMotionThemes, type MotionThemeId } from "@/lib/motion-broll-catalog";
@@ -425,6 +425,8 @@ export function PostPhaseMobile({
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
             onPause={() => ed.setPlaying(false)}
+            onVolumeChange={(e) => ed.onPreviewVideoVolumeChange(e.currentTarget)}
+            onLoadedMetadata={ed.syncPreviewVideoAudio}
             onError={onPreviewError}
             className="h-full w-full object-cover"
           />
@@ -524,6 +526,27 @@ export function PostPhaseMobile({
               </div>
             </div>
             <span style={{ fontSize: 11, color: color.textSecondary, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmtMs(durationMs)}</span>
+            <button
+              type="button"
+              data-preview-mute-toggle="mobile"
+              onClick={ed.togglePreviewMute}
+              aria-label={ed.previewMuted ? "เปิดเสียง" : "ปิดเสียง"}
+              aria-pressed={ed.previewMuted}
+              title={ed.previewMuted ? "เปิดเสียงพรีวิว" : "ปิดเสียงพรีวิว"}
+              className="flex shrink-0 items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: "50%",
+                background: ed.previewMuted ? "rgba(251,191,36,.12)" : "rgba(255,255,255,.08)",
+                border: `1px solid ${ed.previewMuted ? "rgba(251,191,36,.35)" : color.cardBorder}`,
+                color: ed.previewMuted ? color.warning : color.text,
+                cursor: "pointer",
+                outlineColor: color.primary300,
+              }}
+            >
+              {ed.previewMuted ? <VolumeX size={16} aria-hidden="true" /> : <Volume2 size={16} aria-hidden="true" />}
+            </button>
           </div>
         )}
       </div>
@@ -1378,6 +1401,7 @@ export function PostPhaseMobile({
         <LayerVisibilityControls
           hasAvatar={hasAvatar}
           hasLogo={ed.layerAvailability.logo}
+          isUploadedPresenter={ed.isUploadedPresenter}
           visibility={ed.layerVisibility}
           availability={ed.layerAvailability}
           disabled={busy || ed.logo.saving}

@@ -135,6 +135,76 @@ export function previewListenerLevel(intent: PreviewListenerIntent): number {
   return intent.muted ? 0 : unitLevel(intent.volume);
 }
 
+/** Shared preview audio UI state (Desktop + Mobile, both normal preview and BGM override). */
+export type PreviewAudioState = {
+  muted: boolean;
+  volume: number;
+  lastAudibleVolume: number;
+};
+
+export const DEFAULT_PREVIEW_AUDIO_STATE: PreviewAudioState = {
+  muted: false,
+  volume: 1,
+  lastAudibleVolume: 1,
+};
+
+/** Toggle mute/unmute; unmuting from volume 0 restores the last audible volume (fallback 1). */
+export function togglePreviewAudioMute(state: PreviewAudioState): PreviewAudioState {
+  const currentVolume = unitLevel(state.volume);
+  const lastAudible = state.lastAudibleVolume > 0 ? unitLevel(state.lastAudibleVolume) : 1;
+  if (state.muted || currentVolume === 0) {
+    const nextVolume = currentVolume > 0 ? currentVolume : lastAudible;
+    return { muted: false, volume: nextVolume, lastAudibleVolume: nextVolume };
+  }
+  return { muted: true, volume: currentVolume, lastAudibleVolume: currentVolume };
+}
+
+/** Set preview volume (0–1); dragging to 0 mutes while remembering the last audible level, and > 0 unmutes. */
+export function setPreviewAudioVolume(state: PreviewAudioState, rawVolume: number): PreviewAudioState {
+  const volume = unitLevel(rawVolume);
+  const lastAudible = state.lastAudibleVolume > 0 ? unitLevel(state.lastAudibleVolume) : 1;
+  if (volume === 0) {
+    return { muted: true, volume: 0, lastAudibleVolume: lastAudible };
+  }
+  return { muted: false, volume, lastAudibleVolume: volume };
+}
+
+/** Sync shared preview audio state from an observed `<video>` or BGM listener intent change. */
+export function applyObservedPreviewAudio(
+  prev: PreviewAudioState,
+  observed: PreviewListenerIntent,
+): PreviewAudioState {
+  const volume = unitLevel(observed.volume);
+  const lastAudible = prev.lastAudibleVolume > 0 ? unitLevel(prev.lastAudibleVolume) : 1;
+  if (prev.muted && !observed.muted && volume === 0) {
+    return { muted: false, volume: lastAudible, lastAudibleVolume: lastAudible };
+  }
+  const muted = observed.muted || volume === 0;
+  return {
+    muted,
+    volume,
+    lastAudibleVolume: volume > 0 ? volume : lastAudible,
+  };
+}
+
+/**
+ * Normalize a `<video>` `volumechange` reading while `useBackgroundMusicPreview` is active.
+ * Tracks `lastVideoVolume` so iOS Safari's read-only `video.volume === 1` never looks like a user
+ * volume drag and never unmutes an explicit mute intent.
+ */
+export function normalizeObservedVideoListenerIntent(input: {
+  current: PreviewListenerIntent;
+  observedMuted: boolean;
+  observedVolume: number;
+  lastVideoVolume: number;
+}): PreviewListenerIntent {
+  const volumeChanged = Math.abs(input.observedVolume - input.lastVideoVolume) > 1e-4;
+  return {
+    muted: input.observedMuted,
+    volume: unitLevel(volumeChanged ? input.observedVolume : input.current.volume),
+  };
+}
+
 type TimedSpan = { startMs?: unknown; endMs?: unknown };
 
 function validSpans(spans: readonly TimedSpan[] | null | undefined): SpeechSegment[] {

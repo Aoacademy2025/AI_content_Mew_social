@@ -42,3 +42,17 @@ export function resolveEditorPreviewVideoUrl(input: {
   }
   return input.renderedVideoUrl;
 }
+
+export function avatarLayerUnavailableReason(input: {
+  isUploadedPresenter?: boolean;
+  surface?: "panel" | "timeline";
+}): string {
+  if (input.isUploadedPresenter) {
+    return input.surface === "timeline"
+      ? "คลิปพิธีกรที่อัปโหลดรวมอยู่ในวิดีโอแล้ว จึงปิดแยกจาก Timeline ไม่ได้"
+      : "คลิปพิธีกรที่อัปโหลดรวมอยู่ในวิดีโอแล้ว จึงปิดแยกไม่ได้";
+  }
+  return input.surface === "timeline"
+    ? "วิดีโอนี้รวมอวตารไว้แล้ว จึงปิดแยกจาก Timeline ไม่ได้"
+    : "วิดีโองานเก่านี้รวมอวตารไว้แล้ว จึงปิดแยกไม่ได้";
+}

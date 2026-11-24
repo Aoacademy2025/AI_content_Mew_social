@@ -24,7 +24,10 @@ import {
 } from "@/lib/broll-timeline-boundary";
 import { AVATAR_FADE_DURATION_SEC } from "@/lib/avatar-fade";
 import { nextTimelineScrollLeft } from "./timeline-wheel-scroll";
-import type { EditableEditorLayer } from "@/lib/editor-layer-visibility";
+import {
+  avatarLayerUnavailableReason,
+  type EditableEditorLayer,
+} from "@/lib/editor-layer-visibility";
 import {
   MAX_HEADLINE_HOOK_DURATION_MS,
   MIN_HEADLINE_HOOK_DURATION_MS,
@@ -53,7 +56,7 @@ export function TimelinePanel({
   captions, onCaptionsChange, onUndo, onRedo, canUndo, canRedo,
   selected, onSelect, onEditCaption,
   videoRef, timeMs, durationMs, onScrub,
-  config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
+  config, hasAvatar, isUploadedPresenter = false, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, brollTimelineSpans, onSelectBrollWindow, onBrollBoundaryChange,
   editedWindowIndices, disabledWindowIndices, selectedWindowIndex,
   layerVisibility, layerAvailability, onLayerVisibilityChange,
@@ -78,6 +81,7 @@ export function TimelinePanel({
   onScrub?: (ms: number) => void;
   config: Record<string, unknown> | null;
   hasAvatar: boolean;
+  isUploadedPresenter?: boolean;
   avatarMode: string | null;
   avatarIntroMs: number;
   avatarTailMs: number;
@@ -344,7 +348,7 @@ export function TimelinePanel({
     const available = layer ? layerAvailability[layer] : false;
     const disabled = layerControlsDisabled || !available;
     const unavailableTitle = layer === "avatar"
-      ? "วิดีโอนี้รวมอวตารไว้แล้ว จึงปิดแยกจาก Timeline ไม่ได้"
+      ? avatarLayerUnavailableReason({ isUploadedPresenter, surface: "timeline" })
       : "เลเยอร์นี้ยังไม่พร้อมใช้งาน";
     return (
     <div className="flex shrink-0 items-center gap-1.5 pl-2" style={{ width: LABEL_W, fontSize: 10, color: color.textSecondary }}>
