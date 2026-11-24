@@ -650,6 +650,9 @@ function mountEditorShell(input: {
         shouldApplyFirstClipStarterScript: () => false,
       };
     }
+    if (specifier === "@/lib/use-dynamic-thai-loanwords") {
+      return { useDynamicThaiLoanwords: () => 0 };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {

@@ -1037,6 +1037,9 @@ async function verifyEditorV2ShellBlockedRenderGuards(): Promise<void> {
     if (specifier === "@/lib/first-clip-starter") {
       return { findFirstClipStarter: () => undefined, shouldApplyFirstClipStarterScript: () => false };
     }
+    if (specifier === "@/lib/use-dynamic-thai-loanwords") {
+      return { useDynamicThaiLoanwords: () => 0 };
+    }
     throw new Error(`Unexpected EditorV2Shell import: ${specifier}`);
   };
 
