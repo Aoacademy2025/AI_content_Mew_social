@@ -6,16 +6,21 @@
 import { readFileSync } from "node:fs";
 
 import {
+  applyObservedPreviewAudio,
   backgroundMusicTrackPath,
   baseBackgroundMusicEdit,
   bgmGainAt,
   DEFAULT_BGM_VOLUME,
+  DEFAULT_PREVIEW_AUDIO_STATE,
   DUCK_RATIO,
   loopedPositionSec,
   nextPreviewListenerIntent,
   normalizeBackgroundMusicEdit,
+  normalizeObservedVideoListenerIntent,
   previewListenerLevel,
+  setPreviewAudioVolume,
   speechSegments,
+  togglePreviewAudioMute,
 } from "../src/lib/background-music";
 import { normalizeWebPendingEdit } from "../src/app/(dashboard)/video-editor/_v2/pending-edit-view";
 
@@ -171,6 +176,95 @@ console.log("W8) desktop + mobile panels");
   check("controls offer no-music, volume 0-100 and the ducking toggle",
     /ไม่ใส่เพลง/.test(controls) && /max=\{100\}/.test(controls) && /ลดเสียงเพลงตอนพูด/.test(controls));
   check("controls offer a way back to the rendered music", /ใช้เพลงเดิมของคลิป/.test(controls));
+}
+
+console.log("W9) preview sound controls on desktop + mobile and BGM mute/unmute intent (HERO-122)");
+{
+  const initial = DEFAULT_PREVIEW_AUDIO_STATE;
+  check("default preview audio starts unmuted at full volume", initial.muted === false && initial.volume === 1 && previewListenerLevel(initial) === 1);
+
+  const lowered = setPreviewAudioVolume(initial, 0.65);
+  check("setting volume keeps unmuted and updates lastAudibleVolume", !lowered.muted && lowered.volume === 0.65 && lowered.lastAudibleVolume === 0.65);
+
+  const muted = togglePreviewAudioMute(lowered);
+  check("toggling mute silences output while preserving volume for restore", muted.muted === true && muted.volume === 0.65 && previewListenerLevel(muted) === 0);
+
+  const unmuted = togglePreviewAudioMute(muted);
+  check("toggling unmute restores previous audible volume", unmuted.muted === false && unmuted.volume === 0.65 && previewListenerLevel(unmuted) === 0.65);
+
+  const draggedZero = setPreviewAudioVolume(lowered, 0);
+  check("dragging volume to 0 mutes while keeping lastAudibleVolume", draggedZero.muted === true && draggedZero.volume === 0 && draggedZero.lastAudibleVolume === 0.65);
+
+  const unmutedFromZero = togglePreviewAudioMute(draggedZero);
+  check("unmuting from volume 0 restores last audible volume instead of staying silent", unmutedFromZero.muted === false && unmutedFromZero.volume === 0.65);
+
+  const draggedUpWhileMuted = setPreviewAudioVolume(muted, 0.4);
+  check("dragging volume above 0 while muted automatically unmutes", draggedUpWhileMuted.muted === false && draggedUpWhileMuted.volume === 0.4);
+
+  const observedZero = applyObservedPreviewAudio(lowered, { muted: false, volume: 0 });
+  check("observed native volume=0 maps to muted state", observedZero.muted === true && observedZero.volume === 0 && observedZero.lastAudibleVolume === 0.65);
+
+  const observedUnmuteAtZero = applyObservedPreviewAudio(observedZero, { muted: false, volume: 0 });
+  check("observed native unmute from volume 0 restores last audible level", observedUnmuteAtZero.muted === false && observedUnmuteAtZero.volume === 0.65);
+
+  // Explicit mute/unmute intent during active BGM preview (including iOS read-only video.volume === 1)
+  const bgmMutedDesktopObserved = normalizeObservedVideoListenerIntent({
+    current: { muted: true, volume: 0.6 },
+    observedMuted: true,
+    observedVolume: 0.6,
+    lastVideoVolume: 0.6,
+  });
+  const bgmMutedDesktop = nextPreviewListenerIntent({ muted: true, volume: 0.6 }, bgmMutedDesktopObserved);
+  check("BGM hook re-mute keeps explicit mute intent on desktop", bgmMutedDesktop.muted === true && bgmMutedDesktop.volume === 0.6);
+
+  const bgmMutedIosObserved = normalizeObservedVideoListenerIntent({
+    current: { muted: true, volume: 0.6 },
+    observedMuted: true,
+    observedVolume: 1,
+    lastVideoVolume: 1,
+  });
+  const bgmMutedIos = nextPreviewListenerIntent({ muted: true, volume: 0.6 }, bgmMutedIosObserved);
+  check("iOS read-only video.volume=1 does not falsely unmute an explicit mute during BGM preview", bgmMutedIos.muted === true && bgmMutedIos.volume === 0.6);
+
+  const bgmNativeDragObserved = normalizeObservedVideoListenerIntent({
+    current: { muted: true, volume: 0.6 },
+    observedMuted: true,
+    observedVolume: 0.8,
+    lastVideoVolume: 0.6,
+  });
+  const bgmNativeDrag = nextPreviewListenerIntent({ muted: true, volume: 0.6 }, bgmNativeDragObserved);
+  check("real desktop native volume drag during BGM preview unmutes to the new volume", bgmNativeDrag.muted === false && bgmNativeDrag.volume === 0.8);
+
+  const bgmHookSrc = read(`${V2}/useBackgroundMusicPreview.ts`);
+  const editorSrc = read(`${V2}/usePostPhaseEditor.ts`);
+  const desktop = read(`${V2}/PostPhase.tsx`);
+  const mobile = read(`${V2}/PostPhaseMobile.tsx`);
+
+  check("useBackgroundMusicPreview accepts explicit listenerIntent, syncs changes back, and guards fallback transitions",
+    /listenerIntent\?:\s*PreviewListenerIntent/.test(bgmHookSrc)
+    && /onListenerIntentChange\?:/.test(bgmHookSrc)
+    && /normalizeObservedVideoListenerIntent\(/.test(bgmHookSrc)
+    && /holdingVideoMuted/.test(bgmHookSrc));
+  check("usePostPhaseEditor exposes shared preview audio controls synced with BGM preview",
+    /previewMuted:\s*previewAudio\.muted/.test(editorSrc)
+    && /previewVolume:\s*previewAudio\.volume/.test(editorSrc)
+    && /togglePreviewMute/.test(editorSrc)
+    && /setPreviewVolume/.test(editorSrc)
+    && /listenerIntent:\s*previewListenerIntent/.test(editorSrc));
+  check("desktop PostPhase renders accessible mute/unmute button and volume slider beside preview",
+    /data-preview-mute-toggle="desktop"/.test(desktop)
+    && /data-preview-volume-slider="desktop"/.test(desktop)
+    && /Volume2/.test(desktop)
+    && /VolumeX/.test(desktop)
+    && /ed\.previewMuted \? "เปิดเสียง" : "ปิดเสียง"/.test(desktop)
+    && /onVolumeChange=\{\(e\) => ed\.onPreviewVideoVolumeChange\(e\.currentTarget\)\}/.test(desktop));
+  check("mobile PostPhaseMobile renders 44x44 accessible mute/unmute button in the transport bar",
+    /data-preview-mute-toggle="mobile"/.test(mobile)
+    && /Volume2/.test(mobile)
+    && /VolumeX/.test(mobile)
+    && /ed\.previewMuted \? "เปิดเสียง" : "ปิดเสียง"/.test(mobile)
+    && /data-preview-mute-toggle="mobile"[\s\S]{0,600}width:\s*44[\s\S]{0,40}height:\s*44/.test(mobile)
+    && /onVolumeChange=\{\(e\) => ed\.onPreviewVideoVolumeChange\(e\.currentTarget\)\}/.test(mobile));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

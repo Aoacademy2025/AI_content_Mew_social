@@ -10,7 +10,7 @@
  */
 
 import {
-  ArrowDownToLine, CheckCircle2, Download, Loader2, Move, Pencil, Plus, Redo2, Sparkles, Trash2, Undo2,
+  ArrowDownToLine, CheckCircle2, Download, Loader2, Move, Pencil, Plus, Redo2, Sparkles, Trash2, Undo2, Volume2, VolumeX,
 } from "lucide-react";
 import { toast } from "sonner";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
@@ -446,91 +446,163 @@ export function PostPhase({
         </aside>
 
         {/* ── กลาง: preview + ซับสด ── */}
-        <main className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4" style={{ background: color.bg0 }}>
-          <div
-            className="relative"
-            data-video-preview-frame="true"
-            style={{ height: "min(100%, 640px)", aspectRatio: "9/16", containerType: "size" }}
-          >
-            <video
-              ref={ed.videoRef}
-              src={ed.previewVideoUrl}
-              controls
-              playsInline
-              onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
-              onPlay={() => ed.setPlaying(true)}
-              onPause={() => ed.setPlaying(false)}
-              onError={onPreviewError}
-              className="h-full w-full object-cover"
-              style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
-            />
-            <StagedBrollPreview
-              timeMs={ed.timeMs}
-              playing={ed.playing}
-              spans={ed.brollTimelineSpans}
-              edits={ed.windowEdits}
-            />
-            <LogoOverlayPreview
-              value={logoOverlay}
-              asset={ed.logo.asset}
-              visible={ed.layerVisibility.logo}
-            />
-            <HeadlineHookPreview
-              hook={ed.headlineHook}
-              totalDurationMs={ed.totalDurationMs}
-              videoRef={ed.videoRef}
-              playing={ed.playing}
-              onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
-            />
-            <StatCardPreview
-              cards={ed.plannedStatCards}
-              videoRef={ed.videoRef}
-              timeMs={ed.timeMs}
-              playing={ed.playing}
-              fontFamily={ed.cfg.fontFamily}
-            />
-            {ed.layerVisibility.subtitles && (
-              /* เส้นไกด์ตำแหน่งซับ */
-              <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
-            )}
-            {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
-            <V2CaptionOverlay
-              captions={ed.layerVisibility.subtitles ? ed.captions : []}
-              overrides={ed.overrides}
-              cfg={ed.cfg}
-              videoRef={ed.videoRef}
-              playing={ed.playing}
-              onVerticalPos={(p) => ed.set("verticalPos", p)}
-              suppressUntilMs={ed.subtitleSuppressionEndMs}
-            />
-            {ed.adjustingAvatar && ed.canAdjustAvatar && ed.preview && (
-              <AvatarAdjustOverlay
-                avatarId={ed.preview.avatarModel!}
-                avatarMode={ed.preview.avatarMode!}
-                introSecs={ed.preview.avatarIntroSecs ?? 5}
-                tailSecs={ed.preview.avatarTailSecs ?? 5}
-                avatarVideoUrl={ed.preview.avatarVideoUrl!}
-                tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-                bgVideoUrl={ed.compositeBaseUrl!}
-                logoOverlay={logoOverlay}
-                logoAsset={ed.logo.asset}
-                logoVisible={ed.layerVisibility.logo}
-                jobId={job.jobId}
-                onClose={() => ed.setAdjustingAvatar(false)}
-                onDone={(url) => {
-                  ed.setBaseUrl(url);
-                  ed.setAdjustingAvatar(false);
-                  const v = ed.videoRef.current;
-                  if (v) { v.load(); v.currentTime = 0; }
-                }}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2.5 overflow-hidden p-4" style={{ background: color.bg0 }}>
+          <div className="flex min-h-0 w-full flex-1 items-center justify-center">
+            <div
+              className="relative"
+              data-video-preview-frame="true"
+              style={{ height: "min(100%, 640px)", aspectRatio: "9/16", containerType: "size" }}
+            >
+              <video
+                ref={ed.videoRef}
+                src={ed.previewVideoUrl}
+                controls
+                playsInline
+                onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
+                onPlay={() => ed.setPlaying(true)}
+                onPause={() => ed.setPlaying(false)}
+                onVolumeChange={(e) => ed.onPreviewVideoVolumeChange(e.currentTarget)}
+                onLoadedMetadata={ed.syncPreviewVideoAudio}
+                onError={onPreviewError}
+                className="h-full w-full object-cover"
+                style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
               />
-            )}
-            {(ed.exp.phase === "burning" || ed.exp.phase === "saving") && (
-              <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(10,10,16,.55)", borderRadius: radius.cardLg }}>
-                <Loader2 size={22} className="animate-spin" color={color.primary300} />
-              </div>
-            )}
+              <StagedBrollPreview
+                timeMs={ed.timeMs}
+                playing={ed.playing}
+                spans={ed.brollTimelineSpans}
+                edits={ed.windowEdits}
+              />
+              <LogoOverlayPreview
+                value={logoOverlay}
+                asset={ed.logo.asset}
+                visible={ed.layerVisibility.logo}
+              />
+              <HeadlineHookPreview
+                hook={ed.headlineHook}
+                totalDurationMs={ed.totalDurationMs}
+                videoRef={ed.videoRef}
+                playing={ed.playing}
+                onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+              />
+              <StatCardPreview
+                cards={ed.plannedStatCards}
+                videoRef={ed.videoRef}
+                timeMs={ed.timeMs}
+                playing={ed.playing}
+                fontFamily={ed.cfg.fontFamily}
+              />
+              {ed.layerVisibility.subtitles && (
+                /* เส้นไกด์ตำแหน่งซับ */
+                <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+              )}
+              {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
+              <V2CaptionOverlay
+                captions={ed.layerVisibility.subtitles ? ed.captions : []}
+                overrides={ed.overrides}
+                cfg={ed.cfg}
+                videoRef={ed.videoRef}
+                playing={ed.playing}
+                onVerticalPos={(p) => ed.set("verticalPos", p)}
+                suppressUntilMs={ed.subtitleSuppressionEndMs}
+              />
+              {ed.adjustingAvatar && ed.canAdjustAvatar && ed.preview && (
+                <AvatarAdjustOverlay
+                  avatarId={ed.preview.avatarModel!}
+                  avatarMode={ed.preview.avatarMode!}
+                  introSecs={ed.preview.avatarIntroSecs ?? 5}
+                  tailSecs={ed.preview.avatarTailSecs ?? 5}
+                  avatarVideoUrl={ed.preview.avatarVideoUrl!}
+                  tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
+                  bgVideoUrl={ed.compositeBaseUrl!}
+                  logoOverlay={logoOverlay}
+                  logoAsset={ed.logo.asset}
+                  logoVisible={ed.layerVisibility.logo}
+                  jobId={job.jobId}
+                  onClose={() => ed.setAdjustingAvatar(false)}
+                  onDone={(url) => {
+                    ed.setBaseUrl(url);
+                    ed.setAdjustingAvatar(false);
+                    const v = ed.videoRef.current;
+                    if (v) { v.load(); v.currentTime = 0; }
+                  }}
+                />
+              )}
+              {(ed.exp.phase === "burning" || ed.exp.phase === "saving") && (
+                <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(10,10,16,.55)", borderRadius: radius.cardLg }}>
+                  <Loader2 size={22} className="animate-spin" color={color.primary300} />
+                </div>
+              )}
+            </div>
           </div>
+          {!ed.adjustingAvatar && (
+            <div
+              data-preview-audio-controls="desktop"
+              className="flex shrink-0 items-center gap-2.5 px-3 py-1.5"
+              style={{
+                borderRadius: radius.pill,
+                background: color.bg1,
+                border: `1px solid ${ed.previewMuted ? "rgba(251,191,36,.32)" : color.cardBorder}`,
+              }}
+            >
+              <button
+                type="button"
+                data-preview-mute-toggle="desktop"
+                onClick={ed.togglePreviewMute}
+                aria-label={ed.previewMuted ? "เปิดเสียง" : "ปิดเสียง"}
+                aria-pressed={ed.previewMuted}
+                title={ed.previewMuted ? "เปิดเสียงพรีวิว" : "ปิดเสียงพรีวิว"}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{
+                  background: ed.previewMuted ? "rgba(251,191,36,.12)" : "rgba(255,255,255,.06)",
+                  border: `1px solid ${ed.previewMuted ? "rgba(251,191,36,.35)" : color.cardBorder}`,
+                  color: ed.previewMuted ? color.warning : color.text,
+                  cursor: "pointer",
+                  outlineColor: color.primary300,
+                }}
+              >
+                {ed.previewMuted ? <VolumeX size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
+              </button>
+              <input
+                type="range"
+                data-preview-volume-slider="desktop"
+                min={0}
+                max={100}
+                step={1}
+                value={ed.previewMuted ? 0 : Math.round(ed.previewVolume * 100)}
+                onChange={(e) => ed.setPreviewVolume(Number(e.target.value) / 100)}
+                aria-label="ระดับเสียงพรีวิว"
+                style={{ width: 92, accentColor: color.primary500, cursor: "pointer" }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: ed.previewMuted ? color.warning : color.textSecondary,
+                  fontVariantNumeric: "tabular-nums",
+                  minWidth: 44,
+                  textAlign: "right",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {ed.previewMuted ? "ปิดเสียง" : `${Math.round(ed.previewVolume * 100)}%`}
+              </span>
+              {ed.backgroundMusic.changed && ed.backgroundMusic.available && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: "1px 7px",
+                    borderRadius: radius.pill,
+                    background: "rgba(244,114,182,.12)",
+                    border: "1px solid rgba(244,114,182,.30)",
+                    color: color.trackMusic,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  เพลงใหม่
+                </span>
+              )}
+            </div>
+          )}
         </main>
 
         {/* ── ขวา: พาดหัว / ซับ / โลโก้ / เพลง ── */}
@@ -1212,6 +1284,7 @@ export function PostPhase({
         disabledWindowIndices={brollEditEnabled ? disabledWindowIndices : undefined}
         selectedWindowIndex={brollEditEnabled ? ed.selectedWindow : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}
+        isUploadedPresenter={ed.isUploadedPresenter}
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}

@@ -10,7 +10,7 @@
 
 import { externalWindowStates } from "@/lib/external-media";
 import { webPendingWindowEdits, refreshPendingWindowMedia } from "./pending-edit-view";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   DEFAULT_V2_SUB, FONTS_LIST, buildV2BurnConfig,
@@ -120,9 +120,15 @@ import {
   type SubtitleDraftState,
 } from "./subtitle-draft-storage";
 import {
+  applyObservedPreviewAudio,
   baseBackgroundMusicEdit,
+  DEFAULT_PREVIEW_AUDIO_STATE,
+  setPreviewAudioVolume,
   speechSegments,
+  togglePreviewAudioMute,
   type BackgroundMusicEdit,
+  type PreviewAudioState,
+  type PreviewListenerIntent,
 } from "@/lib/background-music";
 import { useBackgroundMusicPreview } from "./useBackgroundMusicPreview";
 
@@ -522,11 +528,32 @@ export function usePostPhaseEditor(
     () => speechSegments({ words: preview?.words, captions: preview?.captions }),
     [preview?.captions, preview?.words],
   );
+  const [previewAudio, setPreviewAudio] = useState<PreviewAudioState>(DEFAULT_PREVIEW_AUDIO_STATE);
+  const bgmPreviewActive = Boolean(changedMusic && musicVoiceSrc);
+  const previewListenerIntent = useMemo<PreviewListenerIntent>(
+    () => ({ muted: previewAudio.muted, volume: previewAudio.volume }),
+    [previewAudio.muted, previewAudio.volume],
+  );
+  const handleBgmListenerIntentChange = useCallback((next: PreviewListenerIntent) => {
+    setPreviewAudio((prev) => {
+      const updated = applyObservedPreviewAudio(prev, next);
+      if (
+        updated.muted === prev.muted
+        && Math.abs(updated.volume - prev.volume) <= 1e-4
+        && Math.abs(updated.lastAudibleVolume - prev.lastAudibleVolume) <= 1e-4
+      ) {
+        return prev;
+      }
+      return updated;
+    });
+  }, []);
   useBackgroundMusicPreview({
     videoRef,
     music: changedMusic,
     voiceSrc: musicVoiceSrc,
     segments: musicSegments,
+    listenerIntent: previewListenerIntent,
+    onListenerIntentChange: handleBgmListenerIntentChange,
   });
 
   function setBackgroundMusic(patch: Partial<BackgroundMusicEdit>) {
@@ -1399,6 +1426,7 @@ export function usePostPhaseEditor(
     preview.avatarVideoUrl && compositeBaseUrl && preview.avatarMode &&
     (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
   );
+  const isUploadedPresenter = preview?.avatarModel === "upload-cutaway";
   const hasAvatar = Boolean(preview?.avatarModel && preview.avatarModel !== "none");
   const canToggleAvatar = canToggleAvatarLayer({
     hasAvatar,
@@ -1425,6 +1453,66 @@ export function usePostPhaseEditor(
     avatarBaseVideoUrl: compositeBaseUrl,
     avatarVisible: effectiveLayerVisibility.avatar,
   });
+
+  function applyDirectVideoAudio(next: PreviewAudioState) {
+    if (bgmPreviewActive) return;
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.muted !== next.muted) video.muted = next.muted;
+    if (Math.abs(video.volume - next.volume) > 1e-4) {
+      try {
+        video.volume = next.volume;
+      } catch {
+        // read-only volume (e.g. iOS Safari)
+      }
+    }
+  }
+
+  function syncPreviewVideoAudio() {
+    applyDirectVideoAudio(previewAudio);
+  }
+
+  function togglePreviewMute() {
+    const next = togglePreviewAudioMute(previewAudio);
+    setPreviewAudio(next);
+    applyDirectVideoAudio(next);
+  }
+
+  function setPreviewVolume(volume: number) {
+    const next = setPreviewAudioVolume(previewAudio, volume);
+    setPreviewAudio(next);
+    applyDirectVideoAudio(next);
+  }
+
+  function onPreviewVideoVolumeChange(video: HTMLVideoElement) {
+    if (bgmPreviewActive) return;
+    const observed = { muted: video.muted, volume: video.volume };
+    setPreviewAudio((prev) => {
+      const next = applyObservedPreviewAudio(prev, observed);
+      if (
+        next.muted === prev.muted
+        && Math.abs(next.volume - prev.volume) <= 1e-4
+        && Math.abs(next.lastAudibleVolume - prev.lastAudibleVolume) <= 1e-4
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (bgmPreviewActive) return;
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.muted !== previewAudio.muted) video.muted = previewAudio.muted;
+    if (Math.abs(video.volume - previewAudio.volume) > 1e-4) {
+      try {
+        video.volume = previewAudio.volume;
+      } catch {
+        // read-only volume (e.g. iOS Safari)
+      }
+    }
+  }, [bgmPreviewActive, exp.phase, previewAudio.muted, previewAudio.volume, previewVideoUrl]);
 
   function setLayerEnabled(layer: EditableEditorLayer, enabled: boolean) {
     if (!layerAvailability[layer]) return;
@@ -2289,8 +2377,15 @@ export function usePostPhaseEditor(
       .map(w => `ช่วง ${w.index + 1}: ต้องใส่ภาพหรือวิดีโอก่อนส่งออก`).join(" · ") || null,
     layerVisibility: editorLayerVisibility,
     layerAvailability,
+    isUploadedPresenter,
     setLayerEnabled,
     previewVideoUrl,
+    previewMuted: previewAudio.muted,
+    previewVolume: previewAudio.volume,
+    togglePreviewMute,
+    setPreviewVolume,
+    onPreviewVideoVolumeChange,
+    syncPreviewVideoAudio,
     headlineHook: resolvedHeadlineHook,
     totalDurationMs,
     headlineSourceText,

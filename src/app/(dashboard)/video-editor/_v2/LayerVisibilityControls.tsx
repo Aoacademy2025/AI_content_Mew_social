@@ -1,7 +1,10 @@
 "use client";
 
 import { Eye, EyeOff } from "lucide-react";
-import type { EditableEditorLayer } from "@/lib/editor-layer-visibility";
+import {
+  avatarLayerUnavailableReason,
+  type EditableEditorLayer,
+} from "@/lib/editor-layer-visibility";
 import { color, font, radius } from "./tokens";
 
 type LayerState = Record<EditableEditorLayer, boolean>;
@@ -9,6 +12,8 @@ type LayerState = Record<EditableEditorLayer, boolean>;
 export function LayerVisibilityControls({
   hasAvatar,
   hasLogo,
+  isUploadedPresenter = false,
+  avatarUnavailableReason,
   visibility,
   availability,
   disabled = false,
@@ -16,6 +21,8 @@ export function LayerVisibilityControls({
 }: {
   hasAvatar: boolean;
   hasLogo: boolean;
+  isUploadedPresenter?: boolean;
+  avatarUnavailableReason?: string;
   visibility: LayerState;
   availability: LayerState;
   disabled?: boolean;
@@ -31,9 +38,11 @@ export function LayerVisibilityControls({
     ...(hasAvatar ? [{
       id: "avatar" as const,
       label: "อวตาร",
-      description: "ภาพพิธีกร AI",
+      description: isUploadedPresenter ? "คลิปพิธีกรที่อัปโหลด" : "ภาพพิธีกร AI",
       color: color.trackAvatar,
-      unavailableReason: "วิดีโองานเก่านี้รวมอวตารไว้แล้ว จึงปิดแยกไม่ได้",
+      unavailableReason:
+        avatarUnavailableReason
+        ?? avatarLayerUnavailableReason({ isUploadedPresenter, surface: "panel" }),
     }] : []),
     {
       id: "subtitles",
@@ -115,17 +124,17 @@ export function LayerVisibilityControls({
                 aria-hidden="true"
                 className="relative h-7 w-12 shrink-0 rounded-full"
                 style={{
-                  background: enabled && available ? color.primary500 : "rgba(255,255,255,.10)",
-                  border: `1px solid ${enabled && available ? color.selectedBorderStrong : color.cardBorder}`,
+                  background: enabled ? color.primary500 : "rgba(255,255,255,.10)",
+                  border: `1px solid ${enabled ? color.selectedBorderStrong : color.cardBorder}`,
                   transition: "background 150ms ease, border-color 150ms ease",
                 }}
               >
                 <span
                   className="absolute top-1/2 h-5 w-5 rounded-full"
                   style={{
-                    left: enabled && available ? 25 : 3,
+                    left: enabled ? 25 : 3,
                     transform: "translateY(-50%)",
-                    background: enabled && available ? "#FFFFFF" : color.textFaint,
+                    background: enabled ? "#FFFFFF" : color.textFaint,
                     boxShadow: "0 1px 4px rgba(0,0,0,.35)",
                     transition: "left 150ms ease",
                   }}

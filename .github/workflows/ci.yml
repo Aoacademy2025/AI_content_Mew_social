@@ -127,8 +127,11 @@ jobs:
       - name: Verify post-phase subtitle draft persistence, restore, and rebase guard (HERO-116)
         run: npm run verify:subtitle-draft-recovery
 
-      - name: Verify Post phase background music change + ducking (EP5 U7, HERO-71)
+      - name: Verify Post phase background music change + ducking (EP5 U7, HERO-71, HERO-122)
         run: npm run verify:editor-background-music
+
+      - name: Verify Post phase layer visibility controls (HERO-122)
+        run: npm run verify:editor-layer-visibility
 
       - name: Verify project menu (Agent-created Project label, T9)
         run: npm run verify:project-menu
