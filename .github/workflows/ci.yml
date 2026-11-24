@@ -365,6 +365,8 @@ jobs:
         run: npm run verify:brands-ci
       - name: Brand Library lint
         run: npm run lint:brands
+      - name: Verify Brand render CTA guard and pending confirmation UX (HERO-118)
+        run: npm run verify:brand-render-cta-guard
 
       - name: Verify the SQLite slow-transaction timer fires
         run: npm run verify:prisma-options && npm run verify:prisma-slow-tx

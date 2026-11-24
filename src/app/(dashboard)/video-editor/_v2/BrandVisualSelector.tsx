@@ -62,6 +62,13 @@ type PendingChange =
   | { kind: "look"; formatId: ActiveVisualFormatId; treatmentPresetId: TreatmentPresetId; label: string; existingImageCount: number; quotedCredits: number }
   | { kind: "pack"; packId: StylePackId | null; label: string; existingImageCount: number; quotedCredits: number }
   | { kind: "profile"; profileId: string; revisionId?: string; label: string; existingImageCount: number; quotedCredits: number };
+export type BrandVisualPendingConfirmation = {
+  kind: PendingChange["kind"];
+  label: string;
+  existingImageCount: number;
+  quotedCredits: number;
+  jumpToConfirmation: () => void;
+};
 
 const TARGET_CLIP_COUNT_SETTLE_MS = 300;
 
@@ -80,14 +87,16 @@ function PendingChangeConfirmation({
   changing,
   onConfirm,
   onCancel,
+  containerRef,
 }: {
   p: V2Project;
   pending: PendingChange;
   changing: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  containerRef?: { current: HTMLDivElement | null };
 }) {
-  return <div aria-live="polite" className="mt-3 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}>
+  return <div ref={containerRef} data-brand-pending-confirmation="true" aria-live="polite" className="mt-3 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}>
     <div className="flex gap-2">
       <ImageIcon size={15} color={color.warning} className="mt-0.5 shrink-0" />
       <div>
@@ -103,8 +112,18 @@ function PendingChangeConfirmation({
   </div>;
 }
 
+function isAbortError(caught: unknown): boolean {
+  return Boolean(
+    caught
+    && typeof caught === "object"
+    && "name" in caught
+    && (caught as { name?: unknown }).name === "AbortError",
+  );
+}
+
 async function payload(response: Response) {
-  const body = await response.json().catch(() => ({}));
+  const raw = await response.json().catch(() => ({}));
+  const body = raw && typeof raw === "object" ? raw : {};
   return { response, body };
 }
 
@@ -126,11 +145,13 @@ export function BrandVisualSelector({
   onPreflightStatusChange,
   onPolicyWarningsChange,
   onSelectionBlockedChange,
+  onPendingConfirmationChange,
 }: {
   p: V2Project;
   onPreflightStatusChange?: (status: BrandVisualPreflightStatus) => void;
   onPolicyWarningsChange?: (warnings: SceneContentPolicyWarning[]) => void;
   onSelectionBlockedChange?: (blocked: boolean) => void;
+  onPendingConfirmationChange?: (pending: BrandVisualPendingConfirmation | null) => void;
 }) {
   const [formats, setFormats] = useState<VisualFormat[]>([]);
   const [treatmentPresets, setTreatmentPresets] = useState<TreatmentOption[]>([]);
@@ -147,7 +168,17 @@ export function BrandVisualSelector({
   const [pending, setPending] = useState<PendingChange | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [libraryAuthorized, setLibraryAuthorized] = useState(false);
+  const [scrollPendingNonce, setScrollPendingNonce] = useState(0);
   const lastSyncedTemplateIdRef = useRef<ActiveStylePackId | null | undefined>(undefined);
+  const mountedRef = useRef(true);
+  const mutationSeqRef = useRef(0);
+  const previousProjectIdRef = useRef<string | null | undefined>(p.projectId);
+  const sectionRef = useRef<HTMLElement>(null);
+  const pendingConfirmationRef = useRef<HTMLDivElement>(null);
+
+  function isCurrentMutation(mutationId: number): boolean {
+    return mountedRef.current && mutationSeqRef.current === mutationId;
+  }
 
   const narrative = p.script.trim();
   const canLoadWithoutNarrative = p.mode === "upload";
@@ -346,12 +377,91 @@ export function BrandVisualSelector({
   }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, settledTargetClipCount, settledSceneContentPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      mutationSeqRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (previousProjectIdRef.current === p.projectId) return;
+    previousProjectIdRef.current = p.projectId;
+    mutationSeqRef.current += 1;
+    lastSyncedTemplateIdRef.current = undefined;
+    setPending(null);
+    setChanging(false);
+  }, [p.projectId]);
+
+  useEffect(() => {
+    if ((!canRenderPersistedVisual || (!narrative && !canLoadWithoutNarrative)) && pending !== null) {
+      setPending(null);
+    }
+  }, [canLoadWithoutNarrative, canRenderPersistedVisual, narrative, pending]);
+
+  useEffect(() => {
     onSelectionBlockedChange?.(changing || pending !== null);
   }, [changing, onSelectionBlockedChange, pending]);
 
   useEffect(() => () => {
     onSelectionBlockedChange?.(false);
   }, [onSelectionBlockedChange]);
+
+  useEffect(() => {
+    if (!pending) return;
+    if (pending.kind !== "profile" && !expanded) return;
+    const target = pendingConfirmationRef.current ?? sectionRef.current;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [expanded, pending, scrollPendingNonce]);
+
+  useEffect(() => {
+    if (!pending) {
+      onPendingConfirmationChange?.(null);
+      return;
+    }
+    onPendingConfirmationChange?.({
+      kind: pending.kind,
+      label: pending.label,
+      existingImageCount: pending.existingImageCount,
+      quotedCredits: pending.quotedCredits,
+      jumpToConfirmation: () => {
+        if (pending.kind === "look" || pending.kind === "pack") {
+          setExpanded(true);
+        }
+        setScrollPendingNonce((value) => value + 1);
+      },
+    });
+  }, [onPendingConfirmationChange, pending]);
+
+  useEffect(() => () => {
+    onPendingConfirmationChange?.(null);
+  }, [onPendingConfirmationChange]);
+
+  async function clearSyncedStylePack(projectId: string) {
+    const mutationId = ++mutationSeqRef.current;
+    setChanging(true);
+    try {
+      const res = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}/visual-context`, {
+        method: "DELETE",
+      }));
+      if (!isCurrentMutation(mutationId)) return;
+      if (res.response.ok && res.body.cleared) {
+        p.setHasPersistedVisualPin(false);
+        p.setHasAdmittedVisualPin(false);
+        p.setProjectStylePack(null);
+        setContext(null);
+        if (shouldLoadVisualContext) {
+          await loadContext();
+        }
+      }
+    } catch {
+      // Background auto-sync clear: swallow network errors so changing always unlocks in finally.
+    } finally {
+      if (isCurrentMutation(mutationId)) setChanging(false);
+    }
+  }
 
   useEffect(() => {
     if (!p.projectId || !canManageBrandVisual || changing || pending !== null || loading) return;
@@ -380,23 +490,7 @@ export function BrandVisualSelector({
     }
     if (lastSyncedTemplateIdRef.current !== undefined && currentPackId !== null) {
       lastSyncedTemplateIdRef.current = null;
-      setChanging(true);
-      void fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
-        method: "DELETE",
-      })
-        .then(payload)
-        .then(async (res) => {
-          if (res.response.ok && res.body.cleared) {
-            p.setHasPersistedVisualPin(false);
-            p.setHasAdmittedVisualPin(false);
-            p.setProjectStylePack(null);
-            setContext(null);
-            if (shouldLoadVisualContext) {
-              await loadContext();
-            }
-          }
-        })
-        .finally(() => setChanging(false));
+      void clearSyncedStylePack(p.projectId);
     } else {
       lastSyncedTemplateIdRef.current = null;
     }
@@ -424,52 +518,70 @@ export function BrandVisualSelector({
   ) {
     if (!p.projectId) return;
     if (!treatmentPresetId && !canChooseFormatBeforeTranscript) return;
-    setChanging(true); setPending(null);
-    const requestBody = treatmentPresetId
-      ? {
-          look: { visualFormatId: formatId, treatmentPresetId },
-          deferTreatmentUntilPreflight: !treatmentPresetId,
-          applyMode,
-          preflightId: preflight?.id,
+    const mutationId = ++mutationSeqRef.current;
+    setChanging(true);
+    setPending(null);
+    try {
+      const requestBody = treatmentPresetId
+        ? {
+            look: { visualFormatId: formatId, treatmentPresetId },
+            deferTreatmentUntilPreflight: !treatmentPresetId,
+            applyMode,
+            preflightId: preflight?.id,
+          }
+        : {
+            look: { visualFormatId: formatId },
+            deferTreatmentUntilPreflight: !treatmentPresetId,
+            applyMode,
+            preflightId: preflight?.id,
+          };
+      const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      }));
+      if (!isCurrentMutation(mutationId)) return;
+      if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
+        if (treatmentPresetId) {
+          setPending({
+            kind: "look",
+            formatId,
+            treatmentPresetId,
+            label: treatmentPresets.find((item) => item.id === treatmentPresetId)?.label ?? treatmentPresetId,
+            existingImageCount: result.body.existingImageCount,
+            quotedCredits: result.body.quotedCredits,
+          });
+          setExpanded(true);
+        } else {
+          toast.error(result.body.error || "โปรเจกต์นี้มีผลวิเคราะห์เดิม กรุณาโหลดข้อมูลล่าสุดก่อนเปลี่ยนแนวภาพ");
         }
-      : {
-          look: { visualFormatId: formatId },
-          deferTreatmentUntilPreflight: !treatmentPresetId,
-          applyMode,
-          preflightId: preflight?.id,
-        };
-    const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    }));
-    if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
-      if (treatmentPresetId) {
-        setPending({ kind: "look", formatId, treatmentPresetId, label: treatmentPresets.find((item) => item.id === treatmentPresetId)?.label ?? treatmentPresetId, existingImageCount: result.body.existingImageCount, quotedCredits: result.body.quotedCredits });
-        setExpanded(true);
+      } else if (!result.response.ok) {
+        toast.error(result.body.error || "เปลี่ยนแนวภาพไม่สำเร็จ");
       } else {
-        toast.error(result.body.error || "โปรเจกต์นี้มีผลวิเคราะห์เดิม กรุณาโหลดข้อมูลล่าสุดก่อนเปลี่ยนแนวภาพ");
+        const look = result.body.look;
+        setContext({
+          source: "project-look",
+          visualFormatId: formatId,
+          treatment: typeof look?.treatment === "string" ? look.treatment : treatment,
+          treatmentPin: look?.treatmentPin,
+        });
+        p.setHasPersistedVisualPin(true);
+        lastSyncedTemplateIdRef.current = null;
+        if (p.templateId !== null) p.setTemplateId(undefined);
+        // Choosing a format or a narrative style unlinks the ready-made style
+        // SERVER-side, so the panel must re-read what is actually pinned. Without
+        // this the summary keeps naming the old style, Step 2 keeps printing
+        // "จากคลิปนี้", and the per-window search keeps sending its stock mood.
+        await loadContext();
+        toast.success(applyMode === "regenerate-all" ? "บันทึกแนวภาพแล้ว — รอคุณยืนยันฉากที่จะสร้างใหม่" : "บันทึกแนวภาพของคลิปนี้แล้ว");
       }
-    } else if (!result.response.ok) {
-      toast.error(result.body.error || "เปลี่ยนแนวภาพไม่สำเร็จ");
-    } else {
-      const look = result.body.look;
-      setContext({
-        source: "project-look",
-        visualFormatId: formatId,
-        treatment: typeof look?.treatment === "string" ? look.treatment : treatment,
-        treatmentPin: look?.treatmentPin,
-      });
-      p.setHasPersistedVisualPin(true);
-      lastSyncedTemplateIdRef.current = null;
-      if (p.templateId !== null) p.setTemplateId(undefined);
-      // Choosing a format or a narrative style unlinks the ready-made style
-      // SERVER-side, so the panel must re-read what is actually pinned. Without
-      // this the summary keeps naming the old style, Step 2 keeps printing
-      // "จากคลิปนี้", and the per-window search keeps sending its stock mood.
-      await loadContext();
-      toast.success(applyMode === "regenerate-all" ? "บันทึกแนวภาพแล้ว — รอคุณยืนยันฉากที่จะสร้างใหม่" : "บันทึกแนวภาพของคลิปนี้แล้ว");
+    } catch (caught) {
+      if (isCurrentMutation(mutationId) && !isAbortError(caught)) {
+        toast.error("เปลี่ยนแนวภาพไม่สำเร็จ กรุณาลองอีกครั้ง");
+      }
+    } finally {
+      if (isCurrentMutation(mutationId)) setChanging(false);
     }
-    setChanging(false);
   }
 
   /** Choosing a ready-made style for THIS clip. It travels the same Project
@@ -502,59 +614,72 @@ export function BrandVisualSelector({
       if (!p.projectStylePack || !keptFormatId || !keptTreatmentPresetId) return;
       look = { look: { visualFormatId: keptFormatId, treatmentPresetId: keptTreatmentPresetId, stylePackId: null } };
     }
-    setChanging(true); setPending(null);
-    let result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...look, applyMode, preflightId: preflight?.id }),
-    }));
-    if (
-      result.response.status === 409
-      && result.body.code === "PREFLIGHT_ID_REQUIRED"
-      && typeof result.body.currentPreflightId === "string"
-    ) {
-      result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+    const mutationId = ++mutationSeqRef.current;
+    setChanging(true);
+    setPending(null);
+    try {
+      let result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...look, applyMode, preflightId: result.body.currentPreflightId }),
+        body: JSON.stringify({ ...look, applyMode, preflightId: preflight?.id }),
       }));
-    }
-    if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
-      // Unlinking is a look change too: it must offer the same all-or-cancel
-      // confirmation, never a dead-end error the creator cannot act on.
-      setPending({
-        kind: "pack",
-        packId,
-        label: packId
-          ? stylePacks.find((pack) => pack.id === packId)?.thaiLabel ?? packId
-          : "กำหนดเอง",
-        existingImageCount: result.body.existingImageCount,
-        quotedCredits: result.body.quotedCredits,
-      });
-      setExpanded(true);
-    } else if (!result.response.ok) {
-      toast.error(result.body.error || "เปลี่ยนสไตล์ของคลิปนี้ไม่สำเร็จ");
-    } else {
-      const nextActivePack = packId && isActiveStylePackId(packId) ? packId : null;
-      lastSyncedTemplateIdRef.current = nextActivePack;
-      if (options?.syncTemplate !== false) {
-        if (nextActivePack && p.templateId !== nextActivePack) {
-          p.selectVideoTemplate(nextActivePack);
-        } else if (packId === null && p.templateId !== null) {
-          p.setTemplateId(undefined);
+      if (!isCurrentMutation(mutationId)) return;
+      if (
+        result.response.status === 409
+        && result.body.code === "PREFLIGHT_ID_REQUIRED"
+        && typeof result.body.currentPreflightId === "string"
+      ) {
+        result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...look, applyMode, preflightId: result.body.currentPreflightId }),
+        }));
+        if (!isCurrentMutation(mutationId)) return;
+      }
+      if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
+        // Unlinking is a look change too: it must offer the same all-or-cancel
+        // confirmation, never a dead-end error the creator cannot act on.
+        setPending({
+          kind: "pack",
+          packId,
+          label: packId
+            ? stylePacks.find((pack) => pack.id === packId)?.thaiLabel ?? packId
+            : "กำหนดเอง",
+          existingImageCount: result.body.existingImageCount,
+          quotedCredits: result.body.quotedCredits,
+        });
+        setExpanded(true);
+      } else if (!result.response.ok) {
+        if (!options?.silentToast) {
+          toast.error(result.body.error || "เปลี่ยนสไตล์ของคลิปนี้ไม่สำเร็จ");
+        }
+      } else {
+        const nextActivePack = packId && isActiveStylePackId(packId) ? packId : null;
+        lastSyncedTemplateIdRef.current = nextActivePack;
+        if (options?.syncTemplate !== false) {
+          if (nextActivePack && p.templateId !== nextActivePack) {
+            p.selectVideoTemplate(nextActivePack);
+          } else if (packId === null && p.templateId !== null) {
+            p.setTemplateId(undefined);
+          }
+        }
+        p.setHasPersistedVisualPin(true);
+        setPackPickerOpen(false);
+        // The authoritative style — including the exact footage mood the
+        // per-window search must send back — is only known to the server, so the
+        // panel re-reads it instead of guessing from the card that was tapped.
+        await loadContext();
+        if (!options?.silentToast) {
+          toast.success(packId ? "ใช้สไตล์นี้กับคลิปนี้แล้ว" : "คลิปนี้กำหนดแนวภาพเองแล้ว");
         }
       }
-      p.setHasPersistedVisualPin(true);
-      setPackPickerOpen(false);
-      // The authoritative style — including the exact footage mood the
-      // per-window search must send back — is only known to the server, so the
-      // panel re-reads it instead of guessing from the card that was tapped.
-      await loadContext();
-      if (!options?.silentToast) {
-        toast.success(packId ? "ใช้สไตล์นี้กับคลิปนี้แล้ว" : "คลิปนี้กำหนดแนวภาพเองแล้ว");
+    } catch (caught) {
+      if (isCurrentMutation(mutationId) && !isAbortError(caught) && !options?.silentToast) {
+        toast.error("เปลี่ยนสไตล์ของคลิปนี้ไม่สำเร็จ กรุณาลองอีกครั้ง");
       }
+    } finally {
+      if (isCurrentMutation(mutationId)) setChanging(false);
     }
-    setChanging(false);
   }
 
   async function pinProfile(
@@ -563,50 +688,70 @@ export function BrandVisualSelector({
     revisionId?: string,
   ) {
     if (!p.projectId) return;
-    setChanging(true); setPending(null);
-    if (!await p.flushPendingProjectDraft()) {
-      toast.error("บันทึกข้อมูลโปรเจกต์ล่าสุดไม่สำเร็จ กรุณาลองใหม่ก่อนเลือกแบรนด์");
-      setChanging(false);
-      return;
-    }
-    const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/brand-revision`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profileId, revisionId, applyMode, preflightId: preflight?.id }),
-    }));
-    if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
-      setPending({ kind: "profile", profileId, revisionId, label: profiles.find((item) => item.id === profileId)?.name ?? "แบรนด์นี้", existingImageCount: result.body.existingImageCount, quotedCredits: result.body.quotedCredits });
-      setExpanded(true);
-    } else if (!result.response.ok) {
-      toast.error(result.body.error || "เลือกแบรนด์ไม่สำเร็จ");
-    } else {
-      p.setHasPersistedVisualPin(true);
-      const accepted = result.body.project
-        && typeof result.body.project === "object"
-        && p.acceptAuthoritativeProjectSnapshot(result.body.project as Record<string, unknown>);
-      if (!accepted) {
-        // The draft was flushed before the atomic Brand pin, so the server is
-        // authoritative and already durable. Replaying Revision defaults through
-        // public setters here creates a second autosave lineage and can turn one
-        // rolling-deploy mismatch into an invalid local draft. Reload the exact
-        // saved project instead; this preserves both the upload and the Brand pin.
-        trackEvent("brand_profile_snapshot_recovery", {
-          category: "error",
-          step: "editor.step2",
-          status: "error",
-          properties: {
-            projectId: p.projectId,
-            profileId,
-            responseHadProject: Boolean(result.body.project),
-          },
-        });
-        toast.error("บันทึกแบรนด์แล้ว กำลังโหลดข้อมูลโปรเจกต์ล่าสุด");
-        setChanging(false);
-        window.location.reload();
+    const mutationId = ++mutationSeqRef.current;
+    setChanging(true);
+    setPending(null);
+    try {
+      if (!await p.flushPendingProjectDraft()) {
+        if (isCurrentMutation(mutationId)) {
+          toast.error("บันทึกข้อมูลโปรเจกต์ล่าสุดไม่สำเร็จ กรุณาลองใหม่ก่อนเลือกแบรนด์");
+        }
         return;
       }
-      toast.success("คลิปนี้ใช้แนวภาพของแบรนด์ที่เลือกแล้ว");
-      await loadContext();
+      if (!isCurrentMutation(mutationId)) return;
+      const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/brand-revision`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profileId, revisionId, applyMode, preflightId: preflight?.id }),
+      }));
+      if (!isCurrentMutation(mutationId)) return;
+      if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
+        setPending({
+          kind: "profile",
+          profileId,
+          revisionId,
+          label: profiles.find((item) => item.id === profileId)?.name ?? "แบรนด์นี้",
+          existingImageCount: result.body.existingImageCount,
+          quotedCredits: result.body.quotedCredits,
+        });
+        setExpanded(true);
+      } else if (!result.response.ok) {
+        toast.error(result.body.error || "เลือกแบรนด์ไม่สำเร็จ");
+      } else {
+        p.setHasPersistedVisualPin(true);
+        const accepted = result.body.project
+          && typeof result.body.project === "object"
+          && p.acceptAuthoritativeProjectSnapshot(result.body.project as Record<string, unknown>);
+        if (!accepted) {
+          // The draft was flushed before the atomic Brand pin, so the server is
+          // authoritative and already durable. Replaying Revision defaults through
+          // public setters here creates a second autosave lineage and can turn one
+          // rolling-deploy mismatch into an invalid local draft. Reload the exact
+          // saved project instead; this preserves both the upload and the Brand pin.
+          trackEvent("brand_profile_snapshot_recovery", {
+            category: "error",
+            step: "editor.step2",
+            status: "error",
+            properties: {
+              projectId: p.projectId,
+              profileId,
+              responseHadProject: Boolean(result.body.project),
+            },
+          });
+          toast.error("บันทึกแบรนด์แล้ว กำลังโหลดข้อมูลโปรเจกต์ล่าสุด");
+          window.location.reload();
+          return;
+        }
+        toast.success("คลิปนี้ใช้แนวภาพของแบรนด์ที่เลือกแล้ว");
+        await loadContext();
+      }
+    } catch (caught) {
+      if (isCurrentMutation(mutationId) && !isAbortError(caught)) {
+        toast.error("เลือกแบรนด์ไม่สำเร็จ กรุณาลองอีกครั้ง");
+      }
+    } finally {
+      if (isCurrentMutation(mutationId)) setChanging(false);
     }
-    setChanging(false);
   }
 
   if (!canRenderPersistedVisual) return null;
@@ -677,7 +822,7 @@ export function BrandVisualSelector({
     }
     setExpanded((value) => !value);
   };
-  return <section className="shrink-0" style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
+  return <section className="shrink-0" ref={sectionRef} style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
     <div className="flex min-h-14 w-full flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
       <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
       <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แบรนด์ของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{showInitialLoading ? "กำลังอ่านเนื้อหา…" : selectedBrandProfile ? `${selectedBrandProfile.name} · ${visualSummary} · รุ่น ${selectedBrandProfile.revisionNumber}${context?.source === "project-look" ? " · ปรับเฉพาะคลิปนี้" : ""}` : visualSelectionEnabled ? visualSummary : "เลือกแบรนด์แบบรวดเร็ว แล้วเลือกระดับ B-roll ด้านล่าง"}</span></span>
@@ -729,7 +874,7 @@ export function BrandVisualSelector({
         ><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen || profile.legacyVisualFormat || profile.activeRevisionNumber <= 0} style={{ background: color.bg1 }}>{profile.name} · รุ่น {profile.activeRevisionNumber}{profile.legacyVisualFormat ? " (รุ่นเดิม · เลือกใช้กับงานใหม่ไม่ได้)" : profile.frozen ? " (อ่านอย่างเดียว)" : profile.activeRevisionNumber <= 0 ? " (ต้องนำเข้าก่อน)" : ""}</option>)}</select>
         {!preflightReadyForSelection && <span id="brand-profile-analysis-help" style={{ color: error ? color.dangerText : color.textFaint, fontSize: 10, lineHeight: 1.45 }}>{error ? "ยังเลือกแบรนด์ไม่ได้ เพราะผลวิเคราะห์ของเนื้อหาปัจจุบันยังไม่พร้อม กดลองวิเคราะห์อีกครั้งด้านบน" : "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์"}</span>}
       </label>
-      {pending?.kind === "profile" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {pending?.kind === "profile" && <PendingChangeConfirmation containerRef={pendingConfirmationRef} p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {canAdoptLatestRevision && selectedLibraryProfile?.activeRevisionId && <button type="button" disabled={changing} onClick={() => void pinProfile(selectedLibraryProfile.id, undefined, selectedLibraryProfile.activeRevisionId ?? undefined)} className="mt-2 min-h-9 rounded-lg px-3 text-left" style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>ใช้รุ่นล่าสุดกับคลิปนี้ · รุ่น {selectedLibraryProfile.activeRevisionNumber}</button>}
     </div>}
     {visualSelectionEnabled && expanded && <div id="brand-visual-options" className="border-t px-4 py-4" style={{ borderColor: color.cardBorder }}>
@@ -771,8 +916,8 @@ export function BrandVisualSelector({
         {canManageBrandVisual && preflight && selectedActiveFormat && treatmentChoices && <div className="mt-3 rounded-xl p-3" style={{ border: `1px solid ${color.cardBorder}`, background: "rgba(255,255,255,.025)" }}><p style={{ color: color.textSecondary, font: `500 11px ${font.heading}` }}>แนวเล่าเรื่องของคลิปนี้</p><p className="mt-1" style={{ color: color.textFaint, fontSize: 10, lineHeight: 1.45 }}>คำแนะนำหลักและทางเลือกใกล้เคียงมาจากภาพรวมของเนื้อหาทั้งคลิป</p><div className="mt-2 grid gap-2 sm:grid-cols-3">{visibleTreatmentChoices.map((choice) => { const isSelected = selectedTreatmentPresetId === choice.id; return <button key={choice.id} type="button" disabled={changing} onClick={() => void applyLook(selectedActiveFormat.id, choice.id)} className="min-h-10 rounded-lg px-3 text-left" style={{ border: `1px solid ${isSelected ? color.info : color.cardBorder}`, background: isSelected ? "rgba(56,189,248,.09)" : "rgba(255,255,255,.025)", color: isSelected ? color.infoText : color.textSecondary, fontSize: 10.5, fontWeight: isSelected ? 700 : 500 }}>{choice.role === "recommended" ? "แนะนำหลัก · " : choice.role === "alternative" ? "ทางเลือก · " : ""}{choice.label}</button>; })}</div><button type="button" onClick={() => setShowAllTreatments((value) => !value)} className="mt-2 min-h-8 px-1" style={{ color: color.infoText, fontSize: 10.5, fontWeight: 600 }}>{showAllTreatments ? "ดูคำแนะนำใกล้เคียง" : "ดูทั้งหมด"}</button></div>}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} ฉาก · การวิเคราะห์ไม่ใช้สิทธิ์หรือเครดิต</span><span className="flex flex-wrap gap-3">{canManageBrandVisual && !p.starterAiImageAllowance?.eligible && <Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}${preflight?.id ? `&preflightId=${encodeURIComponent(preflight.id)}` : ""}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.infoText, fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link>}<Link href={p.projectId ? `/brands?returnProjectId=${encodeURIComponent(p.projectId)}` : "/brands"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการแบรนด์ของฉัน</Link></span></div>
       </>}
-      {pending?.kind === "look" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
-      {pending?.kind === "pack" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {pending?.kind === "look" && <PendingChangeConfirmation containerRef={pendingConfirmationRef} p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {pending?.kind === "pack" && <PendingChangeConfirmation containerRef={pendingConfirmationRef} p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: color.dangerText }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
     </div>}
   </section>;

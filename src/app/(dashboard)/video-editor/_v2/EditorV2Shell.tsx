@@ -334,6 +334,11 @@ export function EditorV2Shell() {
   }
 
   async function handleRender() {
+    if (editorBlocked) {
+      setReceiptOpen(false);
+      toast.error("โปรเจกต์กำลังโหลดหรือซิงค์ข้อมูล — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
+      return;
+    }
     if (!p.canRunProjectOperation()) {
       toast.error("โปรเจกต์กำลังกู้คืน/โหลด — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
       return;
@@ -349,7 +354,11 @@ export function EditorV2Shell() {
   // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
   // can't fire submit twice before React re-renders the disabled button.
   async function handleConfirmRender(confirmedMeteredMinutes: number) {
-    if (!p.canRunProjectOperation()) return;
+    if (editorBlocked || !p.canRunProjectOperation()) {
+      setReceiptOpen(false);
+      toast.error("โปรเจกต์กำลังโหลดหรือซิงค์ข้อมูล — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
+      return;
+    }
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setConfirmSubmitting(true);
@@ -567,8 +576,20 @@ export function EditorV2Shell() {
       style={{ background: color.bg0, color: color.text }}
     >
       {p.projectInitialization !== "ready" && !emptyProjectState && p.recovery.status === "none" ? (
-        <div role="status" aria-live="polite" className="sr-only">
-          กำลังเตรียมโปรเจกต์
+        <div
+          role="status"
+          aria-live="polite"
+          data-editor-syncing-banner="true"
+          className="flex shrink-0 items-center justify-center gap-2 px-4 py-2 text-[12px]"
+          style={{
+            background: "rgba(56,189,248,.10)",
+            borderBottom: "1px solid rgba(56,189,248,.24)",
+            color: color.infoText,
+            fontFamily: font.body,
+          }}
+        >
+          <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" />
+          <span>กำลังเตรียมโปรเจกต์ — ระบบกำลังโหลดและซิงค์ข้อมูลล่าสุด รอสักครู่ก่อนเริ่มเรนเดอร์</span>
         </div>
       ) : null}
       <div
@@ -869,7 +890,11 @@ export function EditorV2Shell() {
             setStep(0);
           }}
           onRegenerate={() => {
-            if (!p.canRunProjectOperation()) return;
+            if (editorBlocked || !p.canRunProjectOperation()) {
+              setReceiptOpen(false);
+              toast.error("โปรเจกต์กำลังโหลดหรือซิงค์ข้อมูล — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
+              return;
+            }
             setRegenerationProjectId(p.projectId);
             setReceiptOpen(true);
           }}
