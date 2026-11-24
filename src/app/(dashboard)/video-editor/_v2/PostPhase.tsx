@@ -57,6 +57,7 @@ import { BackgroundMusicControls } from "./BackgroundMusicControls";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
+import { SubtitleDraftRestoreBanner } from "./SubtitleDraftRestoreBanner";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
 import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
@@ -258,6 +259,11 @@ export function PostPhase({
           {ed.pendingEditBanner}
         </div>
       )}
+      <SubtitleDraftRestoreBanner
+        draft={ed.restorableSubtitleDraft}
+        onRestore={ed.restoreSubtitleDraft}
+        onDiscard={ed.discardSubtitleDraft}
+      />
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
