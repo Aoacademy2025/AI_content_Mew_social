@@ -32,6 +32,8 @@ import {
   type MotionTemplateConfig,
 } from "../lib/motion-broll-catalog";
 import { useWebfontGate } from "./webfont-gate";
+import { setDynamicLoanwords } from "../lib/thai-loanwords";
+import { setDynamicCompounds } from "../lib/thai-compounds";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -646,7 +648,12 @@ export function ShortVideoComposition({
   backgroundColors,
   brollTransition,
   awaitWebfonts = false,
+  thaiWordBreaks,
 }: ShortVideoConfig) {
+  if (thaiWordBreaks) {
+    setDynamicLoanwords(thaiWordBreaks.loanwords, thaiWordBreaks.denylist);
+    setDynamicCompounds(thaiWordBreaks.compounds, thaiWordBreaks.denylist);
+  }
   const { fps, durationInFrames } = useVideoConfig();
   // EP5 #11: the last window set to "cut" ends the video on a hard cut instead of the fade.
   const endsOnCut = bgVideos.length > 0 && brollCutAfter(bgVideos.slice(-1), brollTransition)[0] === true;

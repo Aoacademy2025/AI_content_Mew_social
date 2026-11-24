@@ -124,10 +124,19 @@ export interface KeywordPopupItem {
   tag?: "hook" | "body" | "cta";
 }
 
+export interface ThaiWordBreakOverrides {
+  loanwords: string[];
+  compounds: string[];
+  denylist: string[];
+}
+
 export interface SubtitleOverlayConfig {
   videoUrl: string;
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
+  /** DB-backed dynamic Thai loanwords/compounds/denylist hydrated before render so
+   *  Chromium line-breaking matches MCP worker and Editor V2 (fail-open to static seeds). */
+  thaiWordBreaks?: ThaiWordBreakOverrides;
   /** EP5 backlog #14: hold the last frame for this many extra frames after
    *  `durationInFrames - tailHoldFrames` (0/absent = today's behaviour exactly — the video
    *  plays to its own end and stops there, no freeze). Already folded into `durationInFrames`
@@ -200,6 +209,9 @@ export interface ShortVideoConfig {
   /** Preview stills only (get_preview_frame): hold the frame until the webfonts have loaded
    *  (src/remotion/webfont-gate.ts). Exports never set it, so they render exactly as before. */
   awaitWebfonts?: boolean;
+  /** DB-backed dynamic Thai loanwords/compounds/denylist hydrated before render so
+   *  Chromium line-breaking matches MCP worker and Editor V2 (fail-open to static seeds). */
+  thaiWordBreaks?: ThaiWordBreakOverrides;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */

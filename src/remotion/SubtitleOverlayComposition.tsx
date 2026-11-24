@@ -10,6 +10,8 @@ import { AnimatedSubtitle } from "./ShortVideoComposition";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 import { StatCardOverlay } from "./StatCardOverlay";
 import { useWebfontGate } from "./webfont-gate";
+import { setDynamicLoanwords } from "../lib/thai-loanwords";
+import { setDynamicCompounds } from "../lib/thai-compounds";
 
 // Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — burn output must use
 // the same font files (and weights) as the editor preview.
@@ -42,7 +44,12 @@ export function SubtitleOverlayComposition({
   logoOverlay,
   tailHoldFrames = 0,
   awaitWebfonts = false,
+  thaiWordBreaks,
 }: SubtitleOverlayConfig) {
+  if (thaiWordBreaks) {
+    setDynamicLoanwords(thaiWordBreaks.loanwords, thaiWordBreaks.denylist);
+    setDynamicCompounds(thaiWordBreaks.compounds, thaiWordBreaks.denylist);
+  }
   const { width, height, fps, durationInFrames } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   // Preview stills only; exports never set awaitWebfonts (no delayRender, no extra link props).

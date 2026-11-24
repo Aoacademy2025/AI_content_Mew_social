@@ -79,6 +79,7 @@ import { isActiveStylePackId } from "@/lib/style-pack-catalog";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
 import { findFirstClipStarter, shouldApplyFirstClipStarterScript } from "@/lib/first-clip-starter";
 import { useEditorDiagnostics } from "./useEditorDiagnostics";
+import { useDynamicThaiLoanwords } from "@/lib/use-dynamic-thai-loanwords";
 
 // Which submit path a missing-key error interrupted, so the retry (after saving a key,
 // or after switching to Gemini) re-runs exactly that path — mirrors v1's
@@ -86,6 +87,9 @@ import { useEditorDiagnostics } from "./useEditorDiagnostics";
 type RetryAction = { kind: "render" } | { kind: "confirm"; minutes: number };
 
 export function EditorV2Shell() {
+  // Hydrate DB-backed dynamic Thai loanwords & approved compounds so V2 subtitle
+  // preview + manual split match the MCP worker and Remotion burn-in.
+  useDynamicThaiLoanwords();
   const p = useV2Project();
   // T8 (ADR 0064, G21): a standalone load of the project's Pending Edit Draft, scoped to the
   // job the Post phase currently opens. Kept independent of useV2Project's own bootstrap/autosave

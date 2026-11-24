@@ -76,6 +76,7 @@
     "ops:recover-heygen-timeout": "tsx scripts/recover-heygen-timeout.ts",
     "verify:clip-charge": "tsx scripts/verify-clip-charge.ts",
     "verify:loanword-miner": "tsx scripts/verify-loanword-miner.ts",
+    "verify:compound-auto-review": "tsx scripts/verify-compound-auto-review.ts",
     "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
     "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
     "verify:hero-image-scene-brief": "tsx scripts/verify-hero-image-scene-brief.ts",

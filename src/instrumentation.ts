@@ -120,6 +120,16 @@ export async function register() {
     } catch (e) {
       console.error("[instrumentation] Failed to load server Gemini key from DB:", e);
     }
+
+    // Dynamic Thai loanwords & approved compounds: hydrate from SiteConfig on boot
+    // and keep refreshed every 10 min so server-side TTS/script/caption routes use
+    // the exact same active word-break set as the MCP worker.
+    try {
+      const { startLoanwordRefresh } = await import("@/lib/thai-loanwords-runtime");
+      startLoanwordRefresh();
+    } catch (e) {
+      console.error("[instrumentation] Failed to start dynamic loanword refresh:", e);
+    }
   } else if (process.env.NEXT_RUNTIME === "edge") {
     await import("../sentry.edge.config");
   }
