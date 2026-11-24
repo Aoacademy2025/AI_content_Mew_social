@@ -10,6 +10,7 @@ import { selectAcousticSubtitleClock } from "@/lib/acoustic-subtitle-selection";
 import { mergeUncertainCaptionCards, mergeShortAcousticCards } from "@/lib/acoustic-subtitle-clock";
 import { buildPartialAlignmentClock } from "@/lib/mcp/partial-alignment";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
 import { SUBTITLE_VERIFY_RESPONSE_MARGIN_MS } from "@/lib/transcribe-deadline";
@@ -2638,7 +2639,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     } else {
       tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
         "/api/videos/tts-gemini",
-        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede", ...(input.geminiVoiceStyle ? { style: input.geminiVoiceStyle } : {}) },
+        { text: narrationText, voiceName: resolveGeminiVoiceId(input.geminiVoiceName || user.geminiVoiceName), ...(input.geminiVoiceStyle ? { style: input.geminiVoiceStyle } : {}) },
       );
     }
     const prepareGeneratedTts = async (

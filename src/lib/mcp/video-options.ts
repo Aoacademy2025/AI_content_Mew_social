@@ -1,6 +1,6 @@
 import { EXTERNAL_MEDIA_DISCLOSURE, currentQuotePricing } from "./video-quote";
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GEMINI_VOICES, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
 import { HEYGEN_EXTERNAL_COST_DISCLOSURE, HEYGEN_ENGINE_LABELS, type HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 import { DEFAULT_V2_SUB, V2_QUICK_STYLES } from "@/app/(dashboard)/video-editor/_v2/subtitle-style";
@@ -218,7 +218,7 @@ export async function getVideoOptions(
     voices: {
       gemini: GEMINI_VOICES,
       elevenlabs,
-      savedGemini: user.geminiVoiceName ?? "Aoede",
+      savedGemini: resolveGeminiVoiceId(user.geminiVoiceName),
       savedElevenlabs: user.elevenlabsVoiceId ?? null,
     },
     templates,

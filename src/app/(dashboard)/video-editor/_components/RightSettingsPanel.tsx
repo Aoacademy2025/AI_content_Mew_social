@@ -5,7 +5,7 @@ import { normalizedBox } from "@/lib/avatar-layout";
 import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GEMINI_VOICES, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import type { Caption, StepState, SubPreset, SubTextEffect } from "./types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "./constants";
 import { renderSubEl } from "./subtitle-renderer";
@@ -338,7 +338,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
               {p.ttsProvider === "gemini" && (
                 <div className="mt-2">
                   <div className="text-[10px] text-slate-600 mb-1">Gemini Voice</div>
-                  <select value={p.geminiVoiceName} onChange={e => p.setGeminiVoiceName(e.target.value)}
+                  <select value={resolveGeminiVoiceId(p.geminiVoiceName)} onChange={e => p.setGeminiVoiceName(e.target.value)}
                     className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-2 py-1.5 text-[11px] text-slate-300 outline-none">
                     {GEMINI_VOICES.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
                   </select>

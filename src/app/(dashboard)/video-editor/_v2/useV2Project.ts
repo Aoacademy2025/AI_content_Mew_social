@@ -6,6 +6,7 @@ import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAcces
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
+import { DEFAULT_GEMINI_VOICE, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import { isActiveStylePackId, type ActiveStylePackId, type MusicMood } from "@/lib/style-pack-catalog";
 import { isBrollTransition, type BrollTransition } from "@/lib/broll-window-style";
@@ -338,9 +339,7 @@ async function loadAccountVideoDefaults(): Promise<AccountVideoDefaults> {
   const data = await res.json();
   return {
     voiceEngine: visibleTtsProvider(data?.ttsProvider),
-    geminiVoiceName: typeof data?.geminiVoiceName === "string" && data.geminiVoiceName.trim()
-      ? data.geminiVoiceName.trim()
-      : "Aoede",
+    geminiVoiceName: resolveGeminiVoiceId(data?.geminiVoiceName),
     voiceId: typeof data?.elevenlabsVoiceId === "string" ? data.elevenlabsVoiceId.trim() : "",
     avatarId: typeof data?.heygenAvatarId === "string" ? data.heygenAvatarId.trim() : "",
   };
@@ -492,6 +491,7 @@ export function useV2Project() {
   const effectiveDraftRef = useRef<V2Draft>({});
   const d = draftRef.current;
   const accountDraftDefaultsAllowedRef = useRef(true);
+  const hasHydratedDraftRef = useRef(false);
   const trustedResumeDraftRef = useRef<V2Draft | null>(null);
   const projectIdStorageKeyRef = useRef(PROJECT_ID_KEY);
   const bootstrapGenerationRef = useRef(0);
@@ -662,7 +662,7 @@ export function useV2Project() {
     parseTtsProvider(d.voiceEngine), "voiceEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(
-    d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+    d.geminiVoiceName ?? DEFAULT_GEMINI_VOICE, "geminiVoiceName", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [geminiVoiceStyle, setGeminiVoiceStyle, setGeminiVoiceStyleRaw] = useUserDraftState(
     d.geminiVoiceStyle ?? "neutral", "geminiVoiceStyle", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
@@ -1050,6 +1050,7 @@ export function useV2Project() {
 
   function applyDraft(next: V2Draft) {
     draftRef.current = next;
+    hasHydratedDraftRef.current = true;
     // T9 (ADR 0063): read-only pass-through. Only "mcp" survives — any other value
     // (a tampered local draft, a future/renamed origin) is dropped, never carried forward.
     effectiveDraftRef.current = withUserDraftField(
@@ -1070,7 +1071,11 @@ export function useV2Project() {
     }
     if (next.brollSource) setBrollSourceRaw(next.brollSource);
     if (next.voiceEngine) setVoiceEngineRaw(parseTtsProvider(next.voiceEngine));
-    if (next.geminiVoiceName !== undefined) setGeminiVoiceNameRaw(next.geminiVoiceName);
+    setGeminiVoiceNameRaw(
+      typeof next.geminiVoiceName === "string" && next.geminiVoiceName.trim()
+        ? next.geminiVoiceName.trim()
+        : DEFAULT_GEMINI_VOICE,
+    );
     if (next.geminiVoiceStyle !== undefined) setGeminiVoiceStyleRaw(resolveGeminiVoiceStyle(next.geminiVoiceStyle).id);
     if (next.voiceId !== undefined) setVoiceIdRaw(next.voiceId);
     if (next.omniVoiceId !== undefined) setOmniVoiceIdRaw(next.omniVoiceId);
@@ -1345,6 +1350,7 @@ export function useV2Project() {
     bootstrapGenerationRef.current += 1;
     bootstrapAbortControllerRef.current?.abort();
     bootstrapAbortControllerRef.current = null;
+    accountDraftDefaultsAllowedRef.current = false;
     trustedResumeDraftRef.current = null;
     clearProjectRecoveryData(archivedProjectId);
     currentProjectIdRef.current = null;
@@ -1420,6 +1426,7 @@ export function useV2Project() {
       : null;
     if (pendingLocal && !rebasedLocal) return false;
     invalidateLocalChoiceRequest();
+    accountDraftDefaultsAllowedRef.current = false;
     trustedResumeDraftRef.current = null;
     applyDraft((rebasedLocal?.draft ?? candidate.draft) as V2Draft);
     const tracker = initializeAutosaveLineage(currentId, candidate);
@@ -1675,6 +1682,7 @@ export function useV2Project() {
       ...(inherited ? { logoOverlay: inherited } : {}),
     };
     draftRef.current = nextDraft;
+    hasHydratedDraftRef.current = true;
     lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
     lastHandledSaveRevisionRef.current = saveRevision;
     latestQueuedSaveRef.current = { projectId: null, revision: null };
@@ -2040,13 +2048,14 @@ export function useV2Project() {
         }
       }
 
-      await Promise.resolve();
-      if (!isCurrentBootstrap()) return;
       const localDraft = urlProjectId && urlProjectId !== storedProjectId
         ? null
         : storedLocalDraft;
       const hasLocalDraft = localDraft !== null;
       if (hasLocalDraft) accountDraftDefaultsAllowedRef.current = false;
+
+      await Promise.resolve();
+      if (!isCurrentBootstrap()) return;
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         let accountDefault: LogoOverlayConfig | null;
@@ -2286,6 +2295,7 @@ export function useV2Project() {
         return;
       }
       if (!stillCurrentChoice()) return;
+      accountDraftDefaultsAllowedRef.current = false;
       applyDraft(savedCandidate.draft as V2Draft);
       trustedResumeDraftRef.current = null;
       applyServerProjectMetadata(savedProject!);
@@ -2322,6 +2332,7 @@ export function useV2Project() {
     ) return;
     invalidateLocalChoiceRequest();
     setRecoveryState({ ...conflict, resolving: "server", error: null });
+    accountDraftDefaultsAllowedRef.current = false;
     applyDraft(conflict.server.draft as V2Draft);
     trustedResumeDraftRef.current = null;
     if (!initializeAutosaveLineage(projectId, conflict.server)) return;
@@ -2369,23 +2380,29 @@ export function useV2Project() {
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
-    authenticatedFetch("/api/user/video-settings").then(r => r.json()).then(s => {
-      if (s.tts38Beta === true) setTts38Beta(true);
-      if (!accountDraftDefaultsAllowedRef.current) return;
-      const hadDraft = Object.keys(draftRef.current).length > 0;
-      if (!hadDraft) {
-        if (s.heygenAvatarId) setAvatarIdRaw(s.heygenAvatarId);
-        if (s.elevenlabsVoiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
-        setVoiceEngineRaw(visibleTtsProvider(s.ttsProvider));
-        if (s.geminiVoiceName) setGeminiVoiceNameRaw(s.geminiVoiceName);
-      } else {
-        // เติมเฉพาะช่องที่ draft ไม่มีค่า
-        if (s.heygenAvatarId && !draftRef.current.avatarId) setAvatarIdRaw(s.heygenAvatarId);
-        if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
-      }
-    }).catch(() => {});
+    let cancelled = false;
+    authenticatedFetch("/api/user/video-settings")
+      .then(r => (r.ok ? r.json() : null))
+      .then(s => {
+        if (cancelled || !s) return;
+        if (s.tts38Beta === true) setTts38Beta(true);
+        if (!accountDraftDefaultsAllowedRef.current) return;
+        const hadDraft = hasHydratedDraftRef.current || Object.keys(draftRef.current).length > 0;
+        if (!hadDraft) {
+          if (s.heygenAvatarId) setAvatarIdRaw(s.heygenAvatarId);
+          if (s.elevenlabsVoiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
+          setVoiceEngineRaw(visibleTtsProvider(s.ttsProvider));
+          if (typeof s.geminiVoiceName === "string" && s.geminiVoiceName.trim()) {
+            setGeminiVoiceNameRaw(resolveGeminiVoiceId(s.geminiVoiceName));
+          }
+        } else {
+          // เติมเฉพาะช่องที่ draft ไม่มีค่า
+          if (s.heygenAvatarId && !draftRef.current.avatarId) setAvatarIdRaw(s.heygenAvatarId);
+          if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
+        }
+      }).catch(() => {});
     fetchClientJson<V2Usage>("/api/videos/usage").then(r => r.ok ? r.data : null).then(u => {
-      if (u) setUsage(u);
+      if (!cancelled && u) setUsage(u);
     }).catch(() => {});
     const applyMe = (m: Awaited<ReturnType<typeof fetchMe>>) => {
       const accountId = typeof m?.id === "string" && m.id ? m.id : null;
@@ -2454,7 +2471,6 @@ export function useV2Project() {
     // request fails, so one dropped /api/user/me used to leave the whole editor
     // on FREE defaults for the life of the tab. Ask again instead; each retry
     // forces past the module TTL so it is a real request, not the failed cache.
-    let cancelled = false;
     const loadMe = (attempt: number) => {
       fetchMe(attempt > 0).then(m => {
         if (cancelled) return;

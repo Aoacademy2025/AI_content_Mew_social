@@ -16,4 +16,26 @@ export const GEMINI_VOICES = [
   { id: "Sadachbia",     label: "Sadachbia",     gender: "Male",   style: "Lively" },
 ] as const;
 
-export type GeminiVoiceId = typeof GEMINI_VOICES[number]["id"];
+export type GeminiVoice = (typeof GEMINI_VOICES)[number];
+export type GeminiVoiceId = GeminiVoice["id"];
+
+/** Single shared default Gemini voice across UI pickers, drafts, and backend TTS. */
+export const DEFAULT_GEMINI_VOICE: GeminiVoiceId = "Aoede";
+
+const DEFAULT_GEMINI_VOICE_ENTRY: GeminiVoice =
+  GEMINI_VOICES.find((voice) => voice.id === DEFAULT_GEMINI_VOICE) ?? GEMINI_VOICES[0];
+
+/** Resolve a saved or requested Gemini voice to its catalog entry, falling back to Aoede (never GEMINI_VOICES[0]). */
+export function resolveGeminiVoice(voiceName: unknown): GeminiVoice {
+  if (typeof voiceName === "string") {
+    const trimmed = voiceName.trim();
+    const match = GEMINI_VOICES.find((voice) => voice.id === trimmed);
+    if (match) return match;
+  }
+  return DEFAULT_GEMINI_VOICE_ENTRY;
+}
+
+/** Resolve a saved or requested Gemini voice id, falling back to DEFAULT_GEMINI_VOICE ("Aoede"). */
+export function resolveGeminiVoiceId(voiceName: unknown): GeminiVoiceId {
+  return resolveGeminiVoice(voiceName).id;
+}

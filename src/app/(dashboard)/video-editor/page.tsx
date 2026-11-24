@@ -22,6 +22,7 @@ import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 import { isManagedStockClientEnabled } from "@/lib/managed-stock";
+import { DEFAULT_GEMINI_VOICE, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { QuotaStatus } from "@/components/quota-status";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
@@ -291,7 +292,7 @@ function LegacyVideoEditorPage() {
   // ── TTS / Voice ───────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>("gemini");
   const [voiceId, setVoiceId] = useState("");
-  const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  const [geminiVoiceName, setGeminiVoiceName] = useState<string>(DEFAULT_GEMINI_VOICE);
   const [omniVoiceId, setOmniVoiceId] = useState("voice_01");
 
   // ── Stock ─────────────────────────────────────────────────────────────
@@ -657,7 +658,7 @@ function LegacyVideoEditorPage() {
       if (d.heygenAvatarId) setAvatarId(d.heygenAvatarId);
       if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
       setTtsProvider(visibleTtsProvider(d.ttsProvider));
-      if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+      if (d.geminiVoiceName) setGeminiVoiceName(resolveGeminiVoiceId(d.geminiVoiceName));
     }).catch(() => {});
     // (/api/music fetch moved into useBgm)
 
@@ -853,7 +854,7 @@ function LegacyVideoEditorPage() {
     // TTS
     setTtsProvider("gemini");
     setVoiceId("");
-    setGeminiVoiceName("Aoede");
+    setGeminiVoiceName(DEFAULT_GEMINI_VOICE);
 
     // Video + captions
     setVideoUrl("");
@@ -1626,7 +1627,7 @@ function LegacyVideoEditorPage() {
       setStep("tts", "running", "Gemini TTS...");
       const res = await fetch("/api/videos/tts-gemini", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: narrationText, voiceName: geminiVoiceName }),
+        body: JSON.stringify({ text: narrationText, voiceName: resolveGeminiVoiceId(geminiVoiceName) }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();

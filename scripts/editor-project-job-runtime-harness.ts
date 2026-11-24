@@ -13,6 +13,7 @@ import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as firstClipPathModule from "../src/lib/first-clip-path";
 import * as mcpChainKeyModule from "../src/lib/mcp/chain-key";
 import * as geminiVoiceStylesModule from "../src/lib/gemini-voice-styles";
+import * as geminiVoicesModule from "../src/lib/gemini-voices";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
 // HERO-42: the real module, not a hand-written stand-in — it is pure and has no
 // React or server dependency, so the harness exercises the actual source mapping.
@@ -884,6 +885,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
     if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
+    if (specifier === "@/lib/gemini-voices") return geminiVoicesModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -1068,6 +1070,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
     if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
+    if (specifier === "@/lib/gemini-voices") return geminiVoicesModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -1244,6 +1247,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     if (specifier === "./export-edit-state") return exportEditStateModule;
     if (specifier === "./broll-source") return brollSourceModule;
+    if (specifier === "@/lib/gemini-voices") return geminiVoicesModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {

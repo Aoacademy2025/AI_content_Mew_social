@@ -12,7 +12,7 @@ import {
   CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
   Music2, Upload, X, Check,
 } from "lucide-react";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { DEFAULT_GEMINI_VOICE, GEMINI_VOICES, resolveGeminiVoice, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
@@ -373,7 +373,7 @@ export default function ShortVideoPage() {
   const cleanScript = preprocessScript(script);
   const [voiceId, setVoiceId] = useState("");
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
-  const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  const [geminiVoiceName, setGeminiVoiceName] = useState<string>(DEFAULT_GEMINI_VOICE);
   // Speaking-emotion preset (beta-gated UI below; default neutral = today's behavior).
   const [geminiVoiceStyle, setGeminiVoiceStyle] = useState("neutral");
   const [tts38Beta, setTts38Beta] = useState(false);
@@ -548,7 +548,7 @@ export default function ShortVideoPage() {
       if (d.heygenAvatarId) setAvatarId(d.heygenAvatarId);
       if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
-      if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+      if (d.geminiVoiceName) setGeminiVoiceName(resolveGeminiVoiceId(d.geminiVoiceName));
       if (d.tts38Beta === true) setTts38Beta(true);
     }).catch(() => {});
 
@@ -940,7 +940,7 @@ export default function ShortVideoPage() {
       const ttsRes = await fetch("/api/videos/tts-gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanScript, voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
+        body: JSON.stringify({ text: cleanScript, voiceName: resolveGeminiVoiceId(geminiVoiceName), ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
         signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
@@ -2922,7 +2922,7 @@ export default function ShortVideoPage() {
                       <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Gemini Voice</p>
                       <div className="relative">
                         <select
-                          value={geminiVoiceName}
+                          value={resolveGeminiVoiceId(geminiVoiceName)}
                           onChange={e => handleSetGeminiVoiceName(e.target.value)}
                           className="w-full h-10 px-3 pr-8 rounded-lg text-sm text-white font-medium appearance-none cursor-pointer"
                           style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)", outline: "none" }}>
@@ -2952,8 +2952,8 @@ export default function ShortVideoPage() {
                       )}
                       {/* Selected voice info + preview */}
                       {(() => {
-                        const v = GEMINI_VOICES.find(x => x.id === geminiVoiceName);
-                        return v ? (
+                        const v = resolveGeminiVoice(geminiVoiceName);
+                        return (
                           <div className="rounded-lg px-3 py-2.5 flex items-center gap-3" style={{ background: "hsl(190 100% 50% / 0.05)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
                             <Mic className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
                             <div className="flex-1 min-w-0">
@@ -2968,7 +2968,7 @@ export default function ShortVideoPage() {
                                   const res = await fetch("/api/videos/tts-gemini", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
+                                    body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceName: resolveGeminiVoiceId(geminiVoiceName), ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }),
                                   });
                                   const data = await res.json();
                                   if (res.ok) {
@@ -2987,7 +2987,7 @@ export default function ShortVideoPage() {
                               Preview
                             </button>
                           </div>
-                        ) : null;
+                        );
                       })()}
                     </>
                   )}

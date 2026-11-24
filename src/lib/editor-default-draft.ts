@@ -22,6 +22,7 @@ import {
 } from "@/lib/editor-layer-visibility";
 import { scriptTargetDuration } from "@/lib/narration-target";
 import type { TtsProvider } from "@/lib/tts-providers";
+import { DEFAULT_GEMINI_VOICE, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import type { HeyGenAvatarEngine } from "@/lib/heygen-avatar-engine";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
@@ -75,7 +76,7 @@ export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
   clipUrl: "",
   clipDurationSec: 0,
   voiceEngine: "gemini",
-  geminiVoiceName: "Aoede",
+  geminiVoiceName: DEFAULT_GEMINI_VOICE,
   geminiVoiceStyle: "neutral",
   voiceId: "",
   omniVoiceId: "voice_01",
@@ -131,7 +132,9 @@ export function buildScriptHandoffDraft(params: {
     ...(target ? { scriptTargetDurationSec: target } : {}),
     script,
     voiceEngine: accountDefaults?.voiceEngine ?? EDITOR_DEFAULT_DRAFT.voiceEngine,
-    geminiVoiceName: accountDefaults?.geminiVoiceName ?? EDITOR_DEFAULT_DRAFT.geminiVoiceName,
+    geminiVoiceName: accountDefaults?.geminiVoiceName?.trim()
+      ? resolveGeminiVoiceId(accountDefaults.geminiVoiceName)
+      : EDITOR_DEFAULT_DRAFT.geminiVoiceName,
     voiceId: accountDefaults?.voiceId ?? EDITOR_DEFAULT_DRAFT.voiceId,
     avatarId: accountDefaults?.avatarId ?? EDITOR_DEFAULT_DRAFT.avatarId,
     ...(logoOverlay ? { logoOverlay: { ...logoOverlay } } : {}),

@@ -43,6 +43,7 @@ import {
 } from "@/lib/cutaway-plan";
 import { restorePostExportEditorState } from "./export-edit-state";
 import type { BackgroundMusicEdit } from "@/lib/background-music";
+import { resolveGeminiVoiceId } from "@/lib/gemini-voices";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -512,7 +513,7 @@ export function useV2Job(p: V2Project) {
       ...(p.brollTransition ? { brollTransition: p.brollTransition } : {}),
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       voiceProvider: p.voiceEngine,
-      ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
+      ...(p.voiceEngine === "gemini" ? { geminiVoiceName: resolveGeminiVoiceId(p.geminiVoiceName) } : {}),
       ...(p.voiceEngine === "gemini" && p.geminiVoiceStyle && p.geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle: p.geminiVoiceStyle } : {}),
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
