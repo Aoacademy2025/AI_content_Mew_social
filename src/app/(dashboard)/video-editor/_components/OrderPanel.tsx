@@ -4,7 +4,7 @@ import React from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Music, Pause, Play, Upload, X, Film, Check, Sparkles, Shuffle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GEMINI_VOICES, resolveGeminiVoice, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImageProvider } from "./types";
 import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
@@ -572,7 +572,7 @@ export function OrderPanel(p: OrderPanelProps) {
               <div className="mt-2 space-y-1.5 relative" ref={geminiVoiceRef}>
                 <div className="text-[10px] text-slate-600">Gemini Voice</div>
                 {(() => {
-                  const sel = GEMINI_VOICES.find(x => x.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+                  const sel = resolveGeminiVoice(p.geminiVoiceName);
                   const genderChip = (g: string) => g === "Female"
                     ? { label: "หญิง", cls: "bg-pink-500/15 text-pink-300 border-pink-500/30" }
                     : { label: "ชาย", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" };
@@ -616,7 +616,7 @@ export function OrderPanel(p: OrderPanelProps) {
                           </div>
                           <div className="p-1 max-h-56 overflow-y-auto scrollbar-none">
                           {GEMINI_VOICES.filter(v => voiceGenderFilter === "all" || v.gender === voiceGenderFilter).map(v => {
-                            const active = v.id === p.geminiVoiceName;
+                            const active = v.id === sel.id;
                             const chip = genderChip(v.gender);
                             return (
                               <button key={v.id} type="button"
@@ -678,7 +678,7 @@ export function OrderPanel(p: OrderPanelProps) {
             )}
             <VoicePreviewButton
               provider={p.ttsProvider}
-              geminiVoiceName={p.geminiVoiceName}
+              geminiVoiceName={resolveGeminiVoiceId(p.geminiVoiceName)}
               voiceId={p.voiceId}
               omniVoiceId={p.omniVoiceId}
               omniPreviewUrl={selectedOmniVoice?.preview_url}

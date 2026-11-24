@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { elevenLabsSpeechModel } from "@/lib/elevenlabs-model";
 import { validateVideoSettingsPatch } from "@/lib/video-settings";
 import { parseTtsProvider } from "@/lib/tts-providers";
+import { resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 // GET /api/user/video-settings — get saved avatar & voice IDs for current user
@@ -24,7 +25,7 @@ export async function GET() {
       heygenAvatarId: user.heygenAvatarId ?? "",
       elevenlabsVoiceId: user.elevenlabsVoiceId ?? "",
       ttsProvider: parseTtsProvider(user.ttsProvider),
-      geminiVoiceName: user.geminiVoiceName ?? "Aoede",
+      geminiVoiceName: resolveGeminiVoiceId(user.geminiVoiceName),
       elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel),
       // 3.8 + style beta flag for the voice pickers (additive — old clients ignore it).
       tts38Beta: isInternalAiBetaEnabledFor(

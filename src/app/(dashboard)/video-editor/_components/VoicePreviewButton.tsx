@@ -5,6 +5,7 @@ import { Loader2, Pause, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import type { TtsProvider } from "@/lib/tts-providers";
+import { resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
 
 const VOICE_PREVIEW_TEXT = "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ";
@@ -40,8 +41,9 @@ export function VoicePreviewButton({
   const [previewUrl, setPreviewUrl] = React.useState("");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
+  const resolvedGeminiVoice = resolveGeminiVoiceId(geminiVoiceName);
   const voiceKey = provider === "gemini"
-    ? (geminiVoiceStyle === "neutral" ? geminiVoiceName : `${geminiVoiceName}:${geminiVoiceStyle}`)
+    ? (geminiVoiceStyle === "neutral" ? resolvedGeminiVoice : `${resolvedGeminiVoice}:${geminiVoiceStyle}`)
     : provider === "omnivoice"
       ? omniVoiceId
       : voiceId.trim();
@@ -113,7 +115,7 @@ export function VoicePreviewButton({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(provider === "gemini"
-          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }
+          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: resolvedGeminiVoice, ...(geminiVoiceStyle !== "neutral" ? { style: geminiVoiceStyle } : {}) }
           : { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey, languageCode: "th" }),
       });
       const data = await res.json().catch(() => ({} as PreviewResponse)) as PreviewResponse;

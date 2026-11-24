@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { DEFAULT_GEMINI_VOICE, resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
 import { shouldCheckTtsMinuteQuota } from "@/lib/tts-minute-admission";
@@ -205,9 +205,9 @@ export async function POST(req: Request) {
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json().catch(() => null);
-    const { text, voiceName = "Aoede", preview = false } = body ?? {};
+    const { text, voiceName = DEFAULT_GEMINI_VOICE, preview = false } = body ?? {};
     if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
-    const selectedVoice = GEMINI_VOICES.some((v) => v.id === voiceName) ? voiceName : "Aoede";
+    const selectedVoice = resolveGeminiVoiceId(voiceName);
 
     // Get user's Gemini key (managed or BYOK)
     const user = await prisma.user.findUnique({

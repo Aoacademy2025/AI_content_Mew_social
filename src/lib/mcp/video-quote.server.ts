@@ -19,6 +19,7 @@ import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/l
 import { resolveMcpSubtitleDesign } from "./orchestrator-steps";
 import { createDefaultHeadlineHook, resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
+import { resolveGeminiVoiceId } from "@/lib/gemini-voices";
 import { resolveBgm, resolveMusicMoodTrack, isNoneInput } from "./bgm-resolve";
 import { isActiveStylePackId, stylePack, stylePackSubtitlePreset } from "@/lib/style-pack-catalog";
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
@@ -287,7 +288,7 @@ async function resolveQuoteExecution(
       : {
           voiceProvider,
           ...(voiceProvider === "elevenlabs" ? { voiceId, elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel) } : {}),
-          geminiVoiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede",
+          geminiVoiceName: resolveGeminiVoiceId(input.geminiVoiceName || user.geminiVoiceName),
           geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
           ...(input.ttsSpeed !== undefined ? { ttsSpeed: input.ttsSpeed } : {}),
           ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),

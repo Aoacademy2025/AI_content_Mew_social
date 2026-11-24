@@ -6,6 +6,7 @@ import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { decryptKey } from "@/lib/key-crypto";
 import { testElevenLabsKey, testPexelsKey, testPixabayKey } from "@/lib/key-preflight";
 import { interpretKieCreditResponse } from "@/lib/kie-client";
+import { DEFAULT_GEMINI_VOICE } from "@/lib/gemini-voices";
 
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
@@ -59,7 +60,7 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
   const TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-pro-preview-tts"];
   const ttsBody = JSON.stringify({
     contents: [{ parts: [{ text: "hi" }] }],
-    generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } } },
+    generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: DEFAULT_GEMINI_VOICE } } } },
   });
   const ttsResults: string[] = [];
   for (const model of TTS_MODELS) {

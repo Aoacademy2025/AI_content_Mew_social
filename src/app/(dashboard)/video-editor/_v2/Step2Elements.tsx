@@ -13,7 +13,7 @@ import {
   Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2, Type,
   Play, Pause,
 } from "lucide-react";
-import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { GEMINI_VOICES, resolveGeminiVoice } from "@/lib/gemini-voices";
 import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
 import {
   BROLL_REGION_OPTIONS,
@@ -228,7 +228,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       : p.brollSource === "none"
         ? FILL_YOURSELF_TITLE
         : "สต็อกฟรี";
-  const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+  const geminiVoice = resolveGeminiVoice(p.geminiVoiceName);
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
     ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
@@ -320,7 +320,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       await p.saveAccountVideoDefaults({
         elevenlabsVoiceId: p.voiceId,
         ttsProvider: p.voiceEngine,
-        geminiVoiceName: p.geminiVoiceName,
+        geminiVoiceName: geminiVoice.id,
       });
       toast.success("บันทึกเสียงเริ่มต้นแล้ว — โปรเจกต์ใหม่จะใช้เสียงนี้");
     } catch {
@@ -773,7 +773,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             text={cleanForCount(p.script)}
             targetSec={p.scriptTargetDurationSec}
             voiceEngine={p.useAvatar ? "avatar" : p.voiceEngine}
-            voiceName={p.geminiVoiceName}
+            voiceName={geminiVoice.id}
           />
           <Segmented<V2VoiceEngine>
             value={p.voiceEngine}
@@ -865,7 +865,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </span>
             {p.voiceEngine !== "omnivoice" && (
               <span className="w-[132px] shrink-0 self-center max-[360px]:col-span-2 max-[360px]:w-full">
-                <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} geminiVoiceStyle={p.geminiVoiceStyle} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
+                <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={geminiVoice.id} geminiVoiceStyle={p.geminiVoiceStyle} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
               </span>
             )}
           </Card>
@@ -874,7 +874,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <label className="flex flex-col gap-1.5">
                 <span style={{ fontSize: 12, color: color.textSecondary }}>เลือกเสียง Gemini</span>
                 <select
-                  value={p.geminiVoiceName}
+                  value={geminiVoice.id}
                   onChange={(e) => p.setGeminiVoiceName(e.target.value)}
                   className="min-h-11 w-full max-w-[280px]"
                   style={{

@@ -214,6 +214,9 @@ jobs:
       - name: Verify brand voice picker failure messages (HERO-32)
         run: npm run verify:brand-voice-catalog
 
+      - name: Verify Gemini voice fallback default and reload persistence (HERO-119)
+        run: npm run verify:voice-picker-persistence
+
       - name: Verify Dormant Payers list and day-3 first-clip nudge (HERO-34)
         run: npm run verify:dormant-payers
 
