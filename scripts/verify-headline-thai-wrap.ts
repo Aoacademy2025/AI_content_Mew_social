@@ -472,6 +472,7 @@ async function verifyInChromium(): Promise<void> {
       lines: string[];
       overflowsAnchor: boolean;
       scrollWidth: number;
+      clientWidth: number;
       anchorWidth: number;
       wordBreak: string;
       overflowWrap: string;
@@ -534,6 +535,7 @@ async function verifyInChromium(): Promise<void> {
               lines: lines.map((line) => line.replace(/[\u2060\u200B]/gu, "")),
               overflowsAnchor,
               scrollWidth: Math.round(p.scrollWidth),
+              clientWidth: Math.round(p.clientWidth),
               anchorWidth: Math.round(anchorRect.width),
               wordBreak: cs.wordBreak,
               overflowWrap: cs.overflowWrap,
@@ -571,7 +573,7 @@ async function verifyInChromium(): Promise<void> {
             );
             check(
               !para.overflowsAnchor,
-              `Chromium ${mode}@${scale} (${fixture.preset}, fs=${fontSize ?? "auto"}, ${kind}): stays inside 88% container (${para.scrollWidth}px <= ${para.anchorWidth}px)`,
+              `Chromium ${mode}@${scale} (${fixture.preset}, fs=${fontSize ?? "auto"}, ${kind}): stays inside 88% container (scroll=${para.scrollWidth}px, client=${para.clientWidth}px, anchor=${para.anchorWidth}px, lines=${JSON.stringify(para.lines)})`,
             );
             for (const term of fixture.protectedTerms) {
               if (!raw.includes(term)) continue;

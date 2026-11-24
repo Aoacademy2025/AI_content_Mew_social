@@ -118,9 +118,6 @@ jobs:
       - name: Verify stat cards preview parity and live match count (HERO-117)
         run: npm run verify:stat-cards-preview
 
-      - name: Verify Headline Hook Thai word-break protection (HERO-121)
-        run: npm run verify:headline-thai-wrap
-
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
@@ -464,6 +461,7 @@ jobs:
           # whether the composition's Google webfont arrived before the single screenshot
           # (Remotion does not wait for a <link> stylesheet; without any Thai font the text is blank).
           sudo apt-get install -y --no-install-recommends fonts-thai-tlwg
+          npm run verify:headline-thai-wrap
           npm run verify:mcp-preview-frame
           npm run verify:mcp-clip-import-job
           # Approved external media exercises real ffprobe/normalization.
