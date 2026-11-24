@@ -118,6 +118,9 @@ jobs:
       - name: Verify stat cards preview parity and live match count (HERO-117)
         run: npm run verify:stat-cards-preview
 
+      - name: Verify Headline Hook Thai word-break protection (HERO-121)
+        run: npm run verify:headline-thai-wrap
+
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 

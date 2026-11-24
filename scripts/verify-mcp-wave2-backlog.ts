@@ -177,7 +177,7 @@ async function main() {
       check(
         `HeadlineHookView renders preset=${preset} with data-headline-hook-preset`,
         html.includes(`data-headline-hook-preset="${preset}"`)
-          && html.includes("หยุดเลื่อน! 3 เทคนิคเพิ่มยอดวิว"),
+          && html.replace(/[\u2060\u200B]/gu, "").includes("หยุดเลื่อน! 3 เทคนิคเพิ่มยอดวิว"),
       );
     }
 
