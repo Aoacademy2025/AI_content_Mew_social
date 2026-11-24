@@ -1,8 +1,13 @@
-// Daily: mine new Thai loanwords from the last ~26h of prod scripts, auto-apply
-// them via SiteConfig, notify admins. Reversible via the store's denylist.
-//   Pass 1 — dictionary-oracle (dict words ICU mis-splits). Always runs.
-//   Pass 2 — LLM (dict-independent recall, the ~72% Pass 1 can't reach). Runs only
+// Daily: mine new Thai loanwords & native compounds from the last ~26h of prod scripts,
+// auto-apply safe entries via SiteConfig, and notify admins. Reversible via denylist.
+//   Pass 1 — dictionary-oracle loanwords (dict words ICU mis-splits). Always runs.
+//   Pass 2 — LLM loanwords (dict-independent recall, the ~72% Pass 1 can't reach). Runs only
 //            when a server Gemini key is set; auto-applies only guard-passing words.
+//   Pass 3 — native compounds (dict words ICU splits into all-real fragments) →
+//            Deterministic Safety Guard + Gemini AI Reviewer:
+//              - safe + genuine fixed compound → auto-approved into `compounds` (undoable)
+//              - unsafe / non-compound noise   → auto-rejected into `denylist`
+//              - genuinely borderline          → kept in `pendingCompounds` for human check
 //   DATABASE_URL=... npx tsx scripts/cron-mine-loanwords.ts
 import "dotenv/config";
 import * as fs from "fs";
@@ -11,8 +16,18 @@ import { prisma } from "../src/lib/prisma";
 import { THAI_LOANWORDS } from "../src/lib/thai-loanwords";
 import { THAI_COMPOUNDS } from "../src/lib/thai-compounds";
 import { mineLoanwords, mineCompoundCandidates, loadThaiDict } from "../src/lib/loanword-mining";
-import { readLoanwordStore, writeLoanwordStore, mergeStore, addPendingCompounds } from "../src/lib/thai-loanwords-runtime";
-import { mineWithLlm, rankCompoundsWithLlm } from "../src/lib/loanword-llm-miner";
+import {
+  readLoanwordStore,
+  writeLoanwordStore,
+  mergeStore,
+  applyCompoundReview,
+} from "../src/lib/thai-loanwords-runtime";
+import { mineWithLlm } from "../src/lib/loanword-llm-miner";
+import {
+  buildDictStraddleIndex,
+  COMPOUND_REVIEW_JSON_SCHEMA,
+  reviewCompoundsWithLlm,
+} from "../src/lib/compound-review";
 import { getServerGeminiKey } from "../src/lib/server-keys";
 import { geminiGenerateText } from "../src/lib/gemini";
 import { notifyAdmins } from "../src/lib/notifications";
@@ -52,38 +67,91 @@ async function main() {
   const newWords = [...dictWords, ...llmWords];
   let next = mergeStore({ ...store, lastRunAt: new Date().toISOString(), lastAdded: newWords }, newWords);
 
-  // Pass 3 — native-compound candidates (dict words ICU splits into all-real fragments).
-  // SUBJECTIVE → goes to a pending-review bucket, NEVER auto-merged (unlike loanwords).
-  // `already` includes everything known so we don't re-surface approved/denied/pending
-  // words or anything the loanword passes just added this run.
+  // Pass 3 — native-compound candidates + deterministic safety guard + AI auto-review.
   const alreadyCompounds = new Set<string>([
     ...THAI_LOANWORDS, ...THAI_COMPOUNDS,
     ...next.words, ...(next.compounds ?? []), ...next.denylist, ...(next.pendingCompounds ?? []),
   ]);
-  let compoundCands = mineCompoundCandidates(scripts, dict, alreadyCompounds, { minLen: 4, cap: COMPOUND_CAP }).map((c) => c.word);
-  // Optional LLM ranking (server key only): keep only genuine compounds to cut review noise.
-  if (serverKey && compoundCands.length > 0) {
-    compoundCands = await rankCompoundsWithLlm(compoundCands, (p) => geminiGenerateText(serverKey, p, 1024, 0));
+  const rawCompoundCands = mineCompoundCandidates(scripts, dict, alreadyCompounds, { minLen: 4, cap: COMPOUND_CAP }).map((c) => c.word);
+
+  const straddleIndex = buildDictStraddleIndex(dict);
+  const reviewedCompounds = rawCompoundCands.length > 0
+    ? await reviewCompoundsWithLlm(rawCompoundCands, {
+        straddleIndex,
+        batchSize: 35,
+        callLlm: serverKey
+          ? (p) => geminiGenerateText(serverKey, p, 2048, 0, {
+              responseMimeType: "application/json",
+              responseJsonSchema: COMPOUND_REVIEW_JSON_SCHEMA,
+            })
+          : null,
+      })
+    : [];
+
+  next = {
+    ...next,
+    lastCompoundRunAt: new Date().toISOString(),
+    lastCompoundsFound: rawCompoundCands,
+  };
+  let compoundSummary = { approved: 0, rejected: 0, keptForReview: 0, source: "cron" as const };
+  if (reviewedCompounds.length > 0) {
+    const applied = applyCompoundReview(next, reviewedCompounds, { source: "cron" });
+    next = applied.store;
+    compoundSummary = applied.summary;
   }
-  next = addPendingCompounds({ ...next, lastCompoundRunAt: new Date().toISOString(), lastCompoundsFound: compoundCands }, compoundCands);
 
   await writeLoanwordStore(next);
 
-  console.log(`[mine-loanwords] scripts=${scripts.length} dict=${dictWords.length} llm=${llmWords.length} added=[${newWords.join(",")}] compound-candidates=${compoundCands.length} [${compoundCands.join(",")}]`);
-  await prisma.telemetryEvent.create({ data: { name: "loanwords.mined", category: "pipeline", source: "server", value: newWords.length, properties: JSON.stringify({ dict: dictWords, llm: llmWords, scripts: scripts.length }) } });
-  await prisma.telemetryEvent.create({ data: { name: "compounds.mined", category: "pipeline", source: "server", value: compoundCands.length, properties: JSON.stringify({ candidates: compoundCands, scripts: scripts.length }) } });
+  const autoApproved = reviewedCompounds.filter((r) => r.decision === "approve").map((r) => r.word);
+  const keptReview = reviewedCompounds.filter((r) => r.decision === "review").map((r) => r.word);
+  const autoRejected = reviewedCompounds.filter((r) => r.decision === "reject").map((r) => r.word);
+
+  console.log(
+    `[mine-loanwords] scripts=${scripts.length} dict=${dictWords.length} llm=${llmWords.length} added=[${newWords.join(",")}] ` +
+    `compounds: raw=${rawCompoundCands.length} approved=[${autoApproved.join(",")}] rejected=${autoRejected.length} review=[${keptReview.join(",")}]`,
+  );
+  await prisma.telemetryEvent.create({
+    data: {
+      name: "loanwords.mined",
+      category: "pipeline",
+      source: "server",
+      value: newWords.length,
+      properties: JSON.stringify({ dict: dictWords, llm: llmWords, scripts: scripts.length }),
+    },
+  });
+  await prisma.telemetryEvent.create({
+    data: {
+      name: "compounds.mined",
+      category: "pipeline",
+      source: "server",
+      value: rawCompoundCands.length,
+      properties: JSON.stringify({
+        candidates: rawCompoundCands,
+        approved: autoApproved,
+        rejectedCount: autoRejected.length,
+        review: keptReview,
+        scripts: scripts.length,
+      }),
+    },
+  });
   if (newWords.length > 0) {
     await notifyAdmins({
       type: "ERROR_SYSTEM",
       title: `เพิ่มคำตัดซับใหม่ ${newWords.length} คำ`,
-      body: `ระบบเจอ loanword ที่ตัดผิดจากงานวันนี้และเพิ่มเข้าระบบแล้ว — dict: ${dictWords.join(", ") || "—"} · LLM: ${llmWords.join(", ") || "—"} — ถ้าคำไหนไม่ถูก เพิ่มลง denylist ใน SiteConfig["thaiLoanwordsAuto"]`,
+      body: `ระบบเจอ loanword ที่ตัดผิดจากงานวันนี้และเพิ่มเข้าระบบแล้ว — dict: ${dictWords.join(", ") || "—"} · LLM: ${llmWords.join(", ") || "—"} — จัดการ/ถอนได้ที่ /admin/loanwords`,
     });
   }
-  if (compoundCands.length > 0) {
+  if (autoApproved.length > 0 || keptReview.length > 0) {
+    const parts: string[] = [];
+    if (autoApproved.length > 0) parts.push(`AI อนุมัติอัตโนมัติ ${autoApproved.length} คำ (${autoApproved.join(", ")})`);
+    if (autoRejected.length > 0) parts.push(`ตัดคำเสี่ยง/ไม่ใช่คำประสมออก ${autoRejected.length} คำ`);
+    if (keptReview.length > 0) parts.push(`เหลือก้ำกึ่งรอตรวจ ${keptReview.length} คำ (${keptReview.join(", ")})`);
     await notifyAdmins({
       type: "ERROR_SYSTEM",
-      title: `คำประสมรอตรวจ ${compoundCands.length} คำ`,
-      body: `ระบบเจอ "คำประสมไทย" ที่อาจถูกตัดผิด (${compoundCands.join(", ")}) — คำพวกนี้ต้องให้คนอนุมัติก่อน (ไม่ auto-apply เหมือน loanword). เข้าไปกด อนุมัติ/ปฏิเสธ ที่ /admin/loanwords หัวข้อ "คำประสมรอตรวจ"`,
+      title: keptReview.length > 0
+        ? `คำประสม: AI อนุมัติ ${autoApproved.length} · รอตรวจ ${keptReview.length} คำ`
+        : `AI อนุมัติคำประสมใหม่ ${autoApproved.length} คำ`,
+      body: `${parts.join(" · ")} — ตรวจสอบหรือถอนย้อนหลังได้ที่ /admin/loanwords`,
     });
   }
 }

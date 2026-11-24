@@ -5,6 +5,7 @@ import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { signalRemotionAacPriming } from "@/lib/render/aac-priming";
 import { normalizeFinalAudioLoudness } from "@/lib/render/loudness-normalize";
+import { readLoanwordStore } from "@/lib/thai-loanwords-runtime";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
 import {
@@ -306,10 +307,26 @@ export async function runRender(
     : isAvatarMode
     ? "AvatarComposition"
     : "VideoComposition";
+  // Hydrate DB-backed dynamic Thai loanwords + approved compounds into Remotion
+  // inputProps so headless Chromium line-breaking matches MCP worker & Editor V2.
+  // Fail-open: if the DB read fails, Remotion uses the bundled static seeds.
+  let thaiWordBreaks: { loanwords: string[]; compounds: string[]; denylist: string[] } | undefined;
+  if (isSubtitleOverlay || isShortVideo) {
+    try {
+      const store = await readLoanwordStore();
+      thaiWordBreaks = {
+        loanwords: store.words,
+        compounds: store.compounds ?? [],
+        denylist: store.denylist,
+      };
+    } catch (e) {
+      console.warn("[Render] failed to load dynamic Thai word breaks (using static seeds):", e instanceof Error ? e.message : e);
+    }
+  }
   const inputProps = isSubtitleOverlay
-    ? resolvedSubtitleConfig
+    ? { ...resolvedSubtitleConfig, ...(thaiWordBreaks && !resolvedSubtitleConfig?.thaiWordBreaks ? { thaiWordBreaks } : {}) }
     : isShortVideo
-    ? { ...resolvedShortConfig, watermark: watermark ?? false }
+    ? { ...resolvedShortConfig, watermark: watermark ?? false, ...(thaiWordBreaks && !resolvedShortConfig?.thaiWordBreaks ? { thaiWordBreaks } : {}) }
     : isAvatarMode
     ? {
         avatarVideoUrl,

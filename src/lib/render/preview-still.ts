@@ -323,10 +323,30 @@ export async function renderPreviewStill(input: {
     browser = opened;
     if (timedOut) throw new PreviewDeadlineError();
     const envVariables = remotionEnvVariables();
+    let effectiveInputProps = input.inputProps;
+    if (
+      (input.compositionId === "ShortVideoComposition" || input.compositionId === "SubtitleOverlayComposition")
+      && !effectiveInputProps.thaiWordBreaks
+    ) {
+      try {
+        const { readLoanwordStore } = await import("@/lib/thai-loanwords-runtime");
+        const store = await readLoanwordStore();
+        effectiveInputProps = {
+          ...effectiveInputProps,
+          thaiWordBreaks: {
+            loanwords: store.words,
+            compounds: store.compounds ?? [],
+            denylist: store.denylist,
+          },
+        };
+      } catch {
+        // fail-open: bundled static seeds remain active
+      }
+    }
     const selected = await selectComposition({
       serveUrl: input.serveUrl,
       id: input.compositionId,
-      inputProps: input.inputProps,
+      inputProps: effectiveInputProps,
       puppeteerInstance: opened,
       envVariables,
       chromiumOptions: CHROMIUM_OPTIONS,
@@ -339,7 +359,7 @@ export async function renderPreviewStill(input: {
       composition,
       serveUrl: input.serveUrl,
       frame: input.frame,
-      inputProps: input.inputProps,
+      inputProps: effectiveInputProps,
       imageFormat: "jpeg",
       jpegQuality: PREVIEW_STILL_JPEG_QUALITY,
       scale: PREVIEW_STILL_SCALE,

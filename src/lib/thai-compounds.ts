@@ -44,6 +44,11 @@ export const THAI_COMPOUNDS: string[] = [
 // thai-loanwords.ts setDynamicLoanwords. The shared denylist removes an entry (static or
 // approved) from the active set. loanwordSpans reads getActiveCompounds() per call.
 let _activeCompounds: string[] = [...THAI_COMPOUNDS];
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 export function setDynamicCompounds(approved: string[] = [], denylist: string[] = []): void {
   const deny = new Set(Array.isArray(denylist) ? denylist : []);
   const seen = new Set<string>();
@@ -53,7 +58,7 @@ export function setDynamicCompounds(approved: string[] = [], denylist: string[] 
     seen.add(w);
     out.push(w);
   }
-  _activeCompounds = out;
+  if (!sameStringArray(_activeCompounds, out)) _activeCompounds = out;
 }
 export function getActiveCompounds(): string[] {
   return _activeCompounds;

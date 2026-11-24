@@ -195,6 +195,8 @@ function ensureSegmentedCacheFresh() {
   const activeCompounds = getActiveCompounds();
   if (cachedLoanwordsRef !== activeLoanwords || cachedCompoundsRef !== activeCompounds) {
     segmentedThaiDisplayCache.clear();
+    displayLineBreakCache.clear();
+    tokenLinesCache.clear();
     cachedLoanwordsRef = activeLoanwords;
     cachedCompoundsRef = activeCompounds;
   }
@@ -405,6 +407,7 @@ export function chooseBalancedLineBreak(text: string, oneLineBudget: number): nu
  */
 export function applyDisplayLineBreak(text: string, size: number): string {
   if (text.includes("\n")) return text;
+  ensureSegmentedCacheFresh();
   const cacheKey = `${size}\u0000${text}`;
   const cached = displayLineBreakCache.get(cacheKey);
   if (cached !== undefined) return cached;
@@ -512,6 +515,7 @@ const tokenLinesCache = new Map<string, TokenLine[]>();
 const TOKEN_LINES_CACHE_MAX = 256;
 
 function tokenLines(text: string): TokenLine[] {
+  ensureSegmentedCacheFresh();
   const cached = tokenLinesCache.get(text);
   if (cached) return cached;
   const result = splitManualLines(text).map((line) => ({

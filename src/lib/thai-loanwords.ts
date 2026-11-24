@@ -102,6 +102,11 @@ export const THAI_LOANWORDS: string[] = [
 // web editor; getActiveLoanwords is the single list everything else consumes. Cached:
 // recomputed only when setDynamicLoanwords runs (loanwordSpans reads it per call).
 let _active: string[] = [...THAI_LOANWORDS];
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 export function setDynamicLoanwords(words: string[], denylist: string[] = []): void {
   const deny = new Set(Array.isArray(denylist) ? denylist : []);
   const seen = new Set<string>();
@@ -111,7 +116,7 @@ export function setDynamicLoanwords(words: string[], denylist: string[] = []): v
     seen.add(w);
     out.push(w);
   }
-  _active = out;
+  if (!sameStringArray(_active, out)) _active = out;
 }
 export function getActiveLoanwords(): string[] {
   return _active;
