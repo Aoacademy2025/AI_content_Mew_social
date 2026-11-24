@@ -8,6 +8,7 @@ const routeSource = fs.readFileSync(
   "utf8",
 );
 const runnerSource = fs.readFileSync(path.join(repoRoot, "scripts/cleanup-videos.js"), "utf8");
+const cronHttpSource = fs.readFileSync(path.join(repoRoot, "scripts/lib/cron-http.js"), "utf8");
 const videosRouteSource = fs.readFileSync(path.join(repoRoot, "src/app/api/videos/route.ts"), "utf8");
 const stocksRouteSource = fs.readFileSync(path.join(repoRoot, "src/app/api/stocks/route.ts"), "utf8");
 const fetchStockRouteSource = fs.readFileSync(
@@ -74,9 +75,16 @@ assert.doesNotMatch(routeSource, /videosDeleted/, "legacy cleanup response must 
 // The one-shot PM2 wrapper may only authenticate and call the route. It must not
 // acquire file/DB deletion capabilities of its own.
 assert.match(runnerSource, /\/api\/cron\/cleanup-videos/, "PM2 wrapper must keep calling the authenticated route");
-assert.match(runnerSource, /authorization:\s*`Bearer \$\{SECRET\}`/, "PM2 wrapper must keep bearer authentication");
+assert.match(runnerSource, /runCronHttp/, "PM2 wrapper must delegate to the shared single-settled cron HTTP runner");
+assert.match(
+  cronHttpSource,
+  /authorization:\s*`Bearer \$\{secret\}`/i,
+  "shared cron HTTP runner must keep bearer authentication",
+);
 assert.doesNotMatch(runnerSource, /\b(?:unlink|rm|rmdir)(?:Sync)?\b/, "PM2 wrapper must not delete files directly");
 assert.doesNotMatch(runnerSource, /(?:Prisma|prisma\.)/, "PM2 wrapper must not delete database rows directly");
+assert.doesNotMatch(cronHttpSource, /\b(?:unlink|rm|rmdir)(?:Sync)?\b/, "shared cron HTTP runner must not delete files directly");
+assert.doesNotMatch(cronHttpSource, /(?:Prisma|prisma\.)/, "shared cron HTTP runner must not delete database rows directly");
 
 // Read/list request paths must not become an unreviewed lifecycle mechanism.
 // They may hide expired or missing records from a response, but only the PR2

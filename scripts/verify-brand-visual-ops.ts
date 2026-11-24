@@ -78,6 +78,7 @@ for (const pinWritingRoute of [
 const watchdog = readFileSync("scripts/ops-watchdog.sh", "utf8");
 const localMonitor = readFileSync("scripts/local-prod-monitor.sh", "utf8");
 const reconcileScript = readFileSync("scripts/reconcile-ai-images.js", "utf8");
+const cronHttpHelper = readFileSync("scripts/lib/cron-http.js", "utf8");
 
 assert.match(watchdog, /reconcile-ai-images:900/, "money reconciliation heartbeat must be monitored");
 assert.match(
@@ -87,6 +88,11 @@ assert.match(
 );
 assert.match(
   reconcileScript,
+  /runCronHttp/,
+  "reconcile-ai-images launcher must use the shared single-settled cron HTTP runner",
+);
+assert.match(
+  cronHttpHelper,
   /statusCode\s*>=\s*200[\s\S]*statusCode\s*<\s*300/,
   "cron wrapper must accept only a successful 2xx response",
 );

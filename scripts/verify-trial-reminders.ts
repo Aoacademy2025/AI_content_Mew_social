@@ -255,9 +255,9 @@ check("both channels emit trial_reminder_sent",
   /channel: "notification"/.test(serverModule) && /channel: "email"/.test(serverModule));
 
 const ecosystem = readFileSync(resolve("ecosystem.config.js"), "utf8");
-check("PM2 runs trial-reminders daily at 10:00 as a one-shot cron", (() => {
+check("PM2 runs trial-reminders daily at 10:15 Asia/Bangkok (03:15 UTC) as a one-shot cron", (() => {
   const block = ecosystem.slice(ecosystem.indexOf('name: "trial-reminders"'));
-  return block.includes('cron_restart: "0 10 * * *"')
+  return block.includes('cron_restart: "15 3 * * *"')
     && /autorestart: false/.test(block.slice(0, 400))
     && block.includes("scripts/trial-reminders.js");
 })());

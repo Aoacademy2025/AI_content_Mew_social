@@ -72,12 +72,15 @@ check("invalid disk thresholds fail safe to 80%", () => {
   assert.strictEqual(normalizeDiskThreshold(101), 80);
   assert.strictEqual(normalizeDiskThreshold("75"), 75);
 });
-check("cron launcher retries non-2xx responses and exits nonzero", () => {
+check("cron launcher delegates to shared single-settled runner that exits nonzero on non-2xx", () => {
   const launcher = readFileSync(path.join(process.cwd(), "scripts/disk-watch.js"), "utf8");
-  assert.match(launcher, /statusCode\s*>=\s*200/);
-  assert.match(launcher, /statusCode\s*<\s*300/);
-  assert.match(launcher, /HTTP \$\{statusCode\}/);
-  assert.match(launcher, /process\.exit\(1\)/);
+  const helper = readFileSync(path.join(process.cwd(), "scripts/lib/cron-http.js"), "utf8");
+  assert.match(launcher, /runCronHttp/);
+  assert.match(launcher, /\/api\/cron\/disk-watch/);
+  assert.match(helper, /statusCode\s*>=\s*200/);
+  assert.match(helper, /statusCode\s*<\s*300/);
+  assert.match(helper, /HTTP \$\{statusCode\}/);
+  assert.match(helper, /process\.exit\(1\)/);
 });
 
 for (const [name, fn] of checks) {
