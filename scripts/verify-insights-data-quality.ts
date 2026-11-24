@@ -5,10 +5,14 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_WEB_VITALS_SAMPLE_RATE,
   WEB_VITALS_MEASUREMENT_VERSION,
   createWebVitalReporter,
+  parseWebVitalSampleRate,
+  shouldSampleWebVital,
   summarizeWebVitals,
 } from "../src/lib/web-vitals-telemetry";
+import { filterTelemetryBatchForIngest } from "../src/lib/telemetry-ingest-filter";
 import { shouldEmitPipelineStepStarted } from "../src/lib/pipeline-telemetry";
 
 let passed = 0;
@@ -104,6 +108,101 @@ const providerSource = readFileSync("src/components/telemetry/telemetry-provider
 ok(/onCLS/.test(providerSource) && /onINP/.test(providerSource), "official web-vitals owns CLS windows and INP interaction selection");
 ok(/createWebVitalReporter\(vitalsPath, navigationId/.test(providerSource), "Web Vitals are pinned to the document's initial path");
 ok(/navigationId/.test(providerSource), "Web Vitals carry a document navigation id");
+ok(!/reportAllChanges:\s*true/.test(providerSource), "HERO-128: Web Vitals omit reportAllChanges:true so intermediate shifts do not spam SQLite");
+ok(/trackEventsBatch/.test(providerSource), "HERO-128: TelemetryProvider batches settled Web Vitals into one request");
+
+// HERO-128: deterministic Web Vital sampling bounds + ingest noise filtering
+ok(parseWebVitalSampleRate(undefined) === DEFAULT_WEB_VITALS_SAMPLE_RATE, "default Web Vital sample rate is 20%");
+ok(parseWebVitalSampleRate("0.5") === 0.5 && parseWebVitalSampleRate("2") === DEFAULT_WEB_VITALS_SAMPLE_RATE, "sample rate parser clamps invalid values");
+ok(shouldSampleWebVital("nav-1", 0) === false && shouldSampleWebVital("nav-1", 1) === true, "0% drops all and 100% keeps all");
+let sampledCount = 0;
+let sampledNavId = "";
+let unsampledNavId = "";
+for (let i = 0; i < 1000; i++) {
+  const id = `nav-sample-${i}`;
+  const kept = shouldSampleWebVital(id, DEFAULT_WEB_VITALS_SAMPLE_RATE);
+  if (kept) {
+    sampledCount += 1;
+    if (!sampledNavId) sampledNavId = id;
+  } else if (!unsampledNavId) {
+    unsampledNavId = id;
+  }
+}
+ok(sampledCount > 140 && sampledCount < 260, `20% deterministic hash keeps ~200/1000 navigations (got ${sampledCount})`);
+ok(Boolean(sampledNavId) && Boolean(unsampledNavId), "found deterministic sampled and unsampled navigationIds");
+
+const filteredBatch = filterTelemetryBatchForIngest(
+  [
+    {
+      name: "frontend_error",
+      category: "error",
+      source: "client",
+      path: "/",
+      properties: { message: "Script error.", errorName: "ErrorEvent", stack: null },
+    },
+    {
+      name: "frontend_error",
+      category: "error",
+      source: "client",
+      path: "/register",
+      properties: { message: "Script error", errorName: "ErrorEvent" },
+    },
+    {
+      name: "frontend_error",
+      category: "error",
+      source: "client",
+      path: "/video-editor",
+      properties: {
+        message: "Minified React error #185",
+        errorName: "Error",
+        stack: "Error: Minified React error #185 | at app:///_next/static/chunks/editor.js:1:1",
+      },
+    },
+    {
+      name: "frontend_error",
+      category: "error",
+      source: "client",
+      path: "/pricing",
+      properties: { message: "checkout_failed", errorName: "Error" },
+    },
+    {
+      name: "web_vital",
+      category: "performance",
+      source: "client",
+      path: "/",
+      properties: { metric: "LCP", navigationId: sampledNavId },
+    },
+    {
+      name: "web_vital",
+      category: "performance",
+      source: "client",
+      path: "/",
+      properties: { metric: "LCP", navigationId: unsampledNavId },
+    },
+    {
+      name: "page_viewed",
+      category: "product",
+      source: "client",
+      path: "/dashboard",
+    },
+  ],
+  { webVitalSampleRate: DEFAULT_WEB_VITALS_SAMPLE_RATE },
+);
+ok(
+  filteredBatch.length === 4
+    && filteredBatch.some((e) => e.name === "frontend_error" && e.properties?.message === "Minified React error #185")
+    && filteredBatch.some((e) => e.name === "frontend_error" && e.properties?.message === "checkout_failed")
+    && filteredBatch.some((e) => e.name === "web_vital" && e.properties?.navigationId === sampledNavId)
+    && filteredBatch.some((e) => e.name === "page_viewed"),
+  "HERO-128: ingest filter drops opaque Script error. & unsampled web_vital while keeping editor/checkout errors, sampled web_vital, and product events",
+);
+
+const telemetryRouteSource = readFileSync("src/app/api/telemetry/route.ts", "utf8");
+ok(
+  telemetryRouteSource.indexOf("filterTelemetryBatchForIngest(") > -1
+    && telemetryRouteSource.indexOf("filterTelemetryBatchForIngest(") < telemetryRouteSource.indexOf("recordTelemetryBatch("),
+  "HERO-128: POST /api/telemetry runs ingest filter before writing to SQLite",
+);
 
 const insightsSource = readFileSync("src/app/api/admin/insights/route.ts", "utf8");
 ok(/dedupePipelineLifecycleRows/.test(insightsSource), "Insights de-duplicates lifecycle events by pipeline/job");

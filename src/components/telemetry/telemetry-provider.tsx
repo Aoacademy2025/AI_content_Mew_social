@@ -3,9 +3,14 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { onCLS, onINP, onLCP } from "web-vitals";
-import { trackEvent } from "@/lib/client-telemetry";
+import { trackEvent, trackEventsBatch } from "@/lib/client-telemetry";
 import { isThirdPartyFrontendNoise } from "@/lib/frontend-error-noise";
-import { createWebVitalReporter } from "@/lib/web-vitals-telemetry";
+import {
+  createWebVitalReporter,
+  parseWebVitalSampleRate,
+  shouldSampleWebVital,
+  type WebVitalTelemetryEvent,
+} from "@/lib/web-vitals-telemetry";
 
 function errorSignature(value: string) {
   let hash = 0;
@@ -111,20 +116,52 @@ export function TelemetryProvider() {
         : `nav_${Math.round(performance.timeOrigin)}_${Math.random().toString(36).slice(2)}`
     );
     navigationIdRef.current = navigationId;
+
+    // HERO-128: sample document navigations deterministically (default 20%) and
+    // batch settled LCP/CLS/INP reports into a single beacon instead of writing
+    // every intermediate change as its own SQLite transaction.
+    const sampleRate = parseWebVitalSampleRate(process.env.NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE);
+    if (!shouldSampleWebVital(navigationId, sampleRate)) return;
+
+    const pending: WebVitalTelemetryEvent[] = [];
+    const flush = () => {
+      if (pending.length === 0) return;
+      const batch = pending.splice(0, pending.length);
+      trackEventsBatch(
+        batch.map((event) => ({
+          name: "web_vital",
+          options: {
+            category: "performance",
+            path: event.path,
+            value: event.value,
+            properties: event.properties,
+          },
+        })),
+      );
+    };
+
     const report = createWebVitalReporter(vitalsPath, navigationId, (event) => {
-      trackEvent("web_vital", {
-        category: "performance",
-        path: event.path,
-        value: event.value,
-        properties: event.properties,
-      });
+      pending.push(event);
+      if (pending.length >= 3) flush();
     });
 
-    // The library owns CLS session windows, INP interaction selection, BFCache and lifecycle reports.
-    // Repeated lifecycle callbacks are idempotent in the reporter and aggregation boundary.
-    onLCP(report, { reportAllChanges: true });
-    onCLS(report, { reportAllChanges: true });
-    onINP(report, { reportAllChanges: true });
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    // Final settled lifecycle reports only (default reportAllChanges=false so each
+    // document emits at most one LCP, CLS, and INP instead of 10-15 intermediate updates).
+    onLCP(report);
+    onCLS(report);
+    onINP(report);
+
+    return () => {
+      flush();
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   return null;

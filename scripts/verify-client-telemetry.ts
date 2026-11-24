@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getTelemetrySessionId, trackEvent } from "../src/lib/client-telemetry";
+import { getTelemetrySessionId, trackEvent, trackEventsBatch } from "../src/lib/client-telemetry";
 
 // HERO-86: storage access can throw at the getter, before getItem/setItem run.
 const saved = new Map(["window", "navigator", "fetch"].map((key) => [
@@ -58,6 +58,17 @@ async function main() {
     assert.equal(writes, 1, "the session is only created once");
     trackEvent("page_viewed");
     assert.equal(JSON.parse(await payloads.pop()!.text()).sessionId, first);
+    checks++;
+
+    // HERO-128: batched client telemetry sends multiple metrics in a single beacon.
+    trackEventsBatch([
+      { name: "web_vital", options: { category: "performance", path: "/dashboard", value: 1200, properties: { metric: "LCP" } } },
+      { name: "web_vital", options: { category: "performance", path: "/dashboard", value: 0.02, properties: { metric: "CLS" } } },
+    ]);
+    const batchPayload = JSON.parse(await payloads.pop()!.text()) as { events: Array<{ name: string; sessionId: string }> };
+    assert.equal(batchPayload.events.length, 2, "batch sends both events in one request");
+    assert.equal(batchPayload.events[0].name, "web_vital");
+    assert.equal(batchPayload.events[0].sessionId, first);
     checks++;
 
     // A browser whose delivery fails must still tolerate denied storage.

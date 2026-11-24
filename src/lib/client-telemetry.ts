@@ -78,10 +78,8 @@ export function sanitizeClientTelemetryProperties(properties?: Record<string, un
   return cleanValue(properties) as Record<string, unknown>;
 }
 
-export function trackEvent(name: string, options: TelemetryOptions = {}) {
-  if (!hasBrowser() || !name) return;
-
-  const payload = {
+function buildClientTelemetryPayload(name: string, options: TelemetryOptions = {}) {
+  return {
     sessionId: getTelemetrySessionId(),
     name,
     category: options.category ?? "product",
@@ -93,9 +91,10 @@ export function trackEvent(name: string, options: TelemetryOptions = {}) {
     value: Number.isFinite(options.value) ? options.value : undefined,
     properties: sanitizeClientTelemetryProperties(options.properties),
   };
+}
 
+function sendTelemetryBody(body: string) {
   try {
-    const body = JSON.stringify(payload);
     if (navigator.sendBeacon) {
       const blob = new Blob([body], { type: "application/json" });
       if (navigator.sendBeacon("/api/telemetry", blob)) return;
@@ -110,4 +109,21 @@ export function trackEvent(name: string, options: TelemetryOptions = {}) {
   } catch {
     // Telemetry must never block the creator workflow.
   }
+}
+
+export function trackEvent(name: string, options: TelemetryOptions = {}) {
+  if (!hasBrowser() || !name) return;
+  sendTelemetryBody(JSON.stringify(buildClientTelemetryPayload(name, options)));
+}
+
+export function trackEventsBatch(
+  items: ReadonlyArray<{ name: string; options?: TelemetryOptions }>,
+) {
+  if (!hasBrowser() || items.length === 0) return;
+  const events = items
+    .filter((item) => Boolean(item.name))
+    .slice(0, 20)
+    .map((item) => buildClientTelemetryPayload(item.name, item.options));
+  if (events.length === 0) return;
+  sendTelemetryBody(JSON.stringify({ events }));
 }
