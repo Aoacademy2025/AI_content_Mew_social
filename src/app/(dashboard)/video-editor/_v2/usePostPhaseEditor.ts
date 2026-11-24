@@ -60,6 +60,7 @@ import {
 } from "@/lib/headline-hook";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { clampTailHoldMs } from "@/lib/tail-hold";
+import { planEditorStatCards } from "@/lib/stat-cards";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
   buildLogoTelemetryProperties,
@@ -1844,6 +1845,24 @@ export function usePostPhaseEditor(
     onNewProject();
   }
 
+  const subtitleSuppressionEndMs = headlineHookEndMs(resolvedHeadlineHook, totalDurationMs);
+  const statCardsPlan = useMemo(
+    () => planEditorStatCards({
+      captions,
+      enabled: Boolean(cfg.statCards),
+      subtitlesVisible: effectiveLayerVisibility.subtitles,
+      headlineHookEndMs: subtitleSuppressionEndMs,
+      accentColor: cfg.accentColor,
+    }),
+    [
+      captions,
+      cfg.statCards,
+      cfg.accentColor,
+      effectiveLayerVisibility.subtitles,
+      subtitleSuppressionEndMs,
+    ],
+  );
+
   return {
     preview,
     logo,
@@ -1861,7 +1880,10 @@ export function usePostPhaseEditor(
     headlineHook: resolvedHeadlineHook,
     totalDurationMs,
     headlineSourceText,
-    subtitleSuppressionEndMs: headlineHookEndMs(resolvedHeadlineHook, totalDurationMs),
+    subtitleSuppressionEndMs,
+    plannedStatCards: statCardsPlan.activeCards,
+    detectedStatCards: statCardsPlan.detectedCards,
+    statCardsStatus: statCardsPlan.status,
     headlineSuggestions,
     headlineSuggestionState,
     headlineSuggestionError,

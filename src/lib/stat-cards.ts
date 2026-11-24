@@ -140,3 +140,93 @@ export function planStatCardsForCaptions(
 
   return cards;
 }
+
+export const STAT_CARD_DEFAULT_TOP_PERCENT = 18;
+
+export const STAT_CARD_ZERO_MATCH_HINT =
+  "ขึ้นอัตโนมัติเฉพาะซับที่มีตัวเลข เช่น 300%, 5 เท่า, 10,000 บาท";
+
+export type StatCardToggleStatus = {
+  count: number;
+  hasMatches: boolean;
+  badgeText: string;
+  helperText: string | null;
+};
+
+export type EditorStatCardsPlanInput = {
+  captions: readonly StatCaptionInput[];
+  enabled: boolean;
+  subtitlesVisible?: boolean;
+  headlineHookEndMs?: number;
+  accentColor?: string;
+};
+
+export type EditorStatCardsPlan = {
+  /** All stat cards that qualify from the current captions and headline hook timing. */
+  detectedCards: StatCardItem[];
+  /** Stat cards that should render in preview and export (empty when toggle or subtitle layer is off). */
+  activeCards: StatCardItem[];
+  /** Live toggle feedback computed from `detectedCards`. */
+  status: StatCardToggleStatus;
+};
+
+/**
+ * Finds the active stat card at `timeMs` using the same `[startMs, endMs)` interval check
+ * in both Remotion `StatCardOverlay` and the Web Editor `StatCardPreview`.
+ */
+export function findActiveStatCard(
+  cards: readonly StatCardItem[],
+  timeMs: number,
+): StatCardItem | null {
+  if (!cards || cards.length === 0 || !Number.isFinite(timeMs)) return null;
+  return cards.find((card) => timeMs >= card.startMs && timeMs < card.endMs) ?? null;
+}
+
+/**
+ * Formats the live match-count status shown beside/under the Stat Cards toggle.
+ */
+export function formatStatCardToggleStatus(
+  plannedCards: readonly StatCardItem[],
+): StatCardToggleStatus {
+  const count = plannedCards.length;
+  if (count > 0) {
+    return {
+      count,
+      hasMatches: true,
+      badgeText: `พบ ${count} จุด`,
+      helperText: null,
+    };
+  }
+  return {
+    count: 0,
+    hasMatches: false,
+    badgeText: "ไม่พบตัวเลขในซับ",
+    helperText: STAT_CARD_ZERO_MATCH_HINT,
+  };
+}
+
+/**
+ * Plans stat cards for the Web Editor using the exact same `planStatCardsForCaptions` planner
+ * that Remotion runs during export, while also computing the live match count regardless of
+ * whether the toggle is currently enabled.
+ */
+export function planEditorStatCards({
+  captions,
+  enabled,
+  subtitlesVisible = true,
+  headlineHookEndMs = 0,
+  accentColor = "#FFE500",
+}: EditorStatCardsPlanInput): EditorStatCardsPlan {
+  const resolvedAccent = accentColor || "#FFE500";
+  const detectedCards = planStatCardsForCaptions(captions, {
+    enabled: true,
+    headlineHookEndMs,
+    accentColor: resolvedAccent,
+  });
+  const activeCards = enabled && subtitlesVisible ? detectedCards : [];
+  return {
+    detectedCards,
+    activeCards,
+    status: formatStatCardToggleStatus(detectedCards),
+  };
+}

@@ -51,6 +51,7 @@ import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { HeadlineHookControls } from "./HeadlineHookControls";
 import { HeadlineHookPreview } from "./HeadlineHookPreview";
+import { StatCardPreview, StatCardToggleBadge, StatCardToggleHint } from "./StatCardPreview";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { BackgroundMusicEdit } from "@/lib/background-music";
 import { BackgroundMusicControls } from "./BackgroundMusicControls";
@@ -474,6 +475,13 @@ export function PostPhase({
               videoRef={ed.videoRef}
               playing={ed.playing}
               onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+            />
+            <StatCardPreview
+              cards={ed.plannedStatCards}
+              videoRef={ed.videoRef}
+              timeMs={ed.timeMs}
+              playing={ed.playing}
+              fontFamily={ed.cfg.fontFamily}
             />
             {ed.layerVisibility.subtitles && (
               /* เส้นไกด์ตำแหน่งซับ */
@@ -1010,6 +1018,10 @@ export function PostPhase({
                   style={{ accentColor: color.primary500 }}
                 />{" "}
                 การ์ดสถิติอัตโนมัติ
+                <StatCardToggleBadge
+                  status={ed.statCardsStatus}
+                  enabled={Boolean(ed.cfg.statCards)}
+                />
               </label>
               <label className="flex cursor-pointer items-center gap-1.5">
                 <input
@@ -1024,6 +1036,11 @@ export function PostPhase({
                 <input type="range" min={1} max={8} value={ed.cfg.outlineSize} onChange={(e) => ed.set("outlineSize", Number(e.target.value))} className="flex-1" style={{ accentColor: color.primary500 }} />
               )}
             </div>
+            <StatCardToggleHint
+              status={ed.statCardsStatus}
+              enabled={Boolean(ed.cfg.statCards)}
+              subtitlesVisible={ed.layerVisibility.subtitles}
+            />
           </section>
 
           <section className="flex flex-col gap-2">

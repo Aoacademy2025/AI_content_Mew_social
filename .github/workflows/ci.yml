@@ -115,6 +115,9 @@ jobs:
       - name: Verify Card Line Budget (caption core)
         run: npm run verify:card-line-budget
 
+      - name: Verify stat cards preview parity and live match count (HERO-117)
+        run: npm run verify:stat-cards-preview
+
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
