@@ -49,7 +49,11 @@ import { PRESET_WEIGHTS, type MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import type { SceneContentPolicyWarning } from "@/lib/scene-content-policy";
-import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
+import {
+  BrandVisualSelector,
+  type BrandVisualPendingConfirmation,
+  type BrandVisualPreflightStatus,
+} from "./BrandVisualSelector";
 import { trackEvent } from "@/lib/client-telemetry";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
@@ -237,6 +241,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [brandPreflightStatus, setBrandPreflightStatus] = useState<BrandVisualPreflightStatus>("idle");
   const [brandPolicyWarnings, setBrandPolicyWarnings] = useState<SceneContentPolicyWarning[]>([]);
   const [brandSelectionBlocked, setBrandSelectionBlocked] = useState(false);
+  const [brandPendingConfirmation, setBrandPendingConfirmation] = useState<BrandVisualPendingConfirmation | null>(null);
   // R7: gates readiness for an AI-image brollSource — only reachable once the
   // pin/account is ADMITTED, so this reads the admitted predicate, not the
   // bare pin.
@@ -378,6 +383,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           onPreflightStatusChange={setBrandPreflightStatus}
           onPolicyWarningsChange={setBrandPolicyWarnings}
           onSelectionBlockedChange={setBrandSelectionBlocked}
+          onPendingConfirmationChange={setBrandPendingConfirmation}
         />
 
         {/* 1 · บีโรล */}
@@ -1310,9 +1316,41 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* CTA เดียว — ปุ่มซ่อนบนมือถือ (ย้ายไป sticky footer), แต่ caption ยังโชว์เหนือ footer */}
         <div className="flex flex-col gap-2">
           <div className="max-lg:hidden">{primaryCta}</div>
-          {brandSelectionBlocked
-            ? <span role="status" style={{ fontSize: 10.5, color: color.warningText, textAlign: "center", lineHeight: 1.6 }}>เลือกวิธีใช้ Brand กับภาพเดิม หรือรอให้ระบบบันทึกให้เสร็จก่อนเริ่มเรนเดอร์</span>
-            : brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "แนวภาพยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ หรือกดเรนเดอร์เพื่อให้ระบบลองเตรียมให้อัตโนมัติ" : "กำลังเตรียมแนวภาพ คุณกดเรนเดอร์ได้เลยและระบบจะรอก่อนสร้างภาพ"}</span>}
+          {brandPendingConfirmation ? (
+            <div
+              role="status"
+              data-brand-pending-cta-notice="true"
+              className="flex flex-col gap-2 rounded-xl px-3 py-2.5"
+              style={{
+                background: "rgba(251,191,36,.08)",
+                border: "1px solid rgba(251,191,36,.28)",
+              }}
+            >
+              <span style={{ fontSize: 11, color: color.warningText, lineHeight: 1.55 }}>
+                รอยืนยันการเปลี่ยนเป็น “{brandPendingConfirmation.label}” (มีภาพ AI เดิม {brandPendingConfirmation.existingImageCount} ภาพ) ก่อนเริ่มเรนเดอร์
+              </span>
+              <button
+                type="button"
+                onClick={brandPendingConfirmation.jumpToConfirmation}
+                className="min-h-8 self-start rounded-lg px-3 transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/70"
+                style={{
+                  background: color.warning,
+                  color: color.bg0,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                ไปที่การยืนยัน
+              </button>
+            </div>
+          ) : brandSelectionBlocked ? (
+            <span role="status" style={{ fontSize: 10.5, color: color.warningText, textAlign: "center", lineHeight: 1.6 }}>
+              กำลังบันทึกการตั้งค่า Brand รอสักครู่ก่อนเริ่มเรนเดอร์
+            </span>
+          ) : (
+            brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "แนวภาพยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ หรือกดเรนเดอร์เพื่อให้ระบบลองเตรียมให้อัตโนมัติ" : "กำลังเตรียมแนวภาพ คุณกดเรนเดอร์ได้เลยและระบบจะรอก่อนสร้างภาพ"}</span>
+          )}
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
             {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
@@ -1324,7 +1362,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
     {/* Sticky bottom CTA — มือถือเท่านั้น, ใช้ handler/label เดียวกับปุ่มใน rail */}
     <div
-      className="lg:hidden sticky bottom-0 z-10"
+      className="lg:hidden sticky bottom-0 z-10 flex flex-col gap-2"
       style={{
         background: color.bg0,
         borderTop: `1px solid ${color.cardBorder}`,
@@ -1333,6 +1371,35 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         WebkitBackdropFilter: "blur(12px)",
       }}
     >
+      {brandPendingConfirmation && (
+        <div
+          role="status"
+          data-brand-pending-mobile-notice="true"
+          className="flex items-center justify-between gap-2 rounded-lg px-2.5 py-2"
+          style={{
+            background: "rgba(251,191,36,.08)",
+            border: "1px solid rgba(251,191,36,.28)",
+          }}
+        >
+          <span className="min-w-0 truncate" style={{ fontSize: 11, color: color.warningText }}>
+            รอยืนยันการเปลี่ยนเป็น “{brandPendingConfirmation.label}”
+          </span>
+          <button
+            type="button"
+            onClick={brandPendingConfirmation.jumpToConfirmation}
+            className="min-h-8 shrink-0 rounded-md px-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/70"
+            style={{
+              background: color.warning,
+              color: color.bg0,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            ไปที่การยืนยัน
+          </button>
+        </div>
+      )}
       {primaryCta}
     </div>
 
