@@ -8,6 +8,11 @@ import {
 import { mapHeygenPollResponse } from "../src/lib/heygen-poll";
 import { customerGenerationErrorCopy } from "../src/lib/customer-generation-error";
 import { customerApiErrorMessage } from "../src/lib/customer-api-error";
+import {
+  brollWindowSearchErrorMessage,
+  brollWindowSearchErrorNeedsApiKeys,
+  brollWindowSelectErrorMessage,
+} from "../src/lib/broll-window-search";
 
 const DEV_TEXT = /MOVIO_|INSUFFICIENT_CREDIT|Insufficient credit|provider_failed|HTTP \d{3}|manual recovery|required 'api' credits/i;
 
@@ -268,5 +273,34 @@ assert.match(previewRecovery, /customerApiErrorMessage/, "Brand Preview must fil
 const postEditor = fs.readFileSync("src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts", "utf8");
 assert.doesNotMatch(postEditor, /throw new Error\(p\.errorMessage \?\?/, "B-roll updates must not echo VideoJob diagnostics");
 assert.match(postEditor, /customerApiErrorMessage/, "B-roll updates must filter API and job failures");
+
+// HERO-120: B-roll stock swap errors must show clear Thai customer copy for disabled/throttled
+// managed stock and never leak raw HTTP status codes or diagnostic payloads.
+const missingStockMsg = brollWindowSearchErrorMessage(400, { error: "missing_key" });
+assert.match(missingStockMsg, /คลังสต็อก/);
+assert.doesNotMatch(missingStockMsg, DEV_TEXT);
+assert.equal(brollWindowSearchErrorNeedsApiKeys({ error: "missing_key" }), true);
+
+const rateLimitedStockMsg = brollWindowSearchErrorMessage(429, { error: "managed_stock_rate_limited" });
+assert.match(rateLimitedStockMsg, /โควต้าชั่วคราว|รอสักครู่/);
+assert.doesNotMatch(rateLimitedStockMsg, DEV_TEXT);
+assert.equal(brollWindowSearchErrorNeedsApiKeys({ error: "managed_stock_rate_limited" }), true);
+
+const monthlyStockMsg = brollWindowSearchErrorMessage(429, { error: "managed_stock_budget_exceeded" });
+assert.match(monthlyStockMsg, /ประจำเดือน/);
+assert.doesNotMatch(monthlyStockMsg, DEV_TEXT);
+assert.equal(brollWindowSearchErrorNeedsApiKeys({ error: "managed_stock_budget_exceeded" }), true);
+
+const sanitizedSearchMsg = brollWindowSearchErrorMessage(502, { message: "provider_failed HTTP 502 upstream" });
+assert.doesNotMatch(sanitizedSearchMsg, DEV_TEXT);
+assert.match(sanitizedSearchMsg, /ค้นหาคลิปสต็อกไม่สำเร็จ/);
+
+const sanitizedSelectMsg = brollWindowSelectErrorMessage(502, { message: "provider_failed HTTP 502" });
+assert.doesNotMatch(sanitizedSelectMsg, DEV_TEXT);
+assert.match(sanitizedSelectMsg, /เปลี่ยนคลิปไม่สำเร็จ/);
+
+const brollInspector = fs.readFileSync("src/app/(dashboard)/video-editor/_v2/BrollWindowInspector.tsx", "utf8");
+assert.match(brollInspector, /brollWindowSearchErrorMessage/, "B-roll search must format errors through the customer-safe helper");
+assert.match(brollInspector, /brollWindowSelectErrorMessage/, "B-roll select must format errors through the customer-safe helper");
 
 console.log("verify-customer-error-copy: ALL PASS");

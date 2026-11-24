@@ -128,6 +128,7 @@
     "verify:hero-script-launch": "npm run verify:hero-script && npm run verify:hero-script-payment && tsx scripts/verify-hero-script-launch-assets.ts && tsx scripts/verify-hero-script-announcement.ts",
     "verify:managed-stock": "tsx scripts/verify-managed-stock.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-managed-stock-server.ts",
     "verify:managed-stock-cache-key": "tsx scripts/verify-managed-stock-cache-key.ts",
+    "verify:broll-swap-managed-stock": "node --conditions=react-server --experimental-test-module-mocks --import tsx scripts/verify-broll-swap-managed-stock.ts",
     "verify:key-tiers": "tsx scripts/verify-key-tiers.ts",
     "verify:mcp-stock-gate": "node --conditions=react-server --import tsx scripts/verify-mcp-stock-gate.ts",
     "verify:mcp-database-busy": "tsx scripts/verify-mcp-database-busy.ts",

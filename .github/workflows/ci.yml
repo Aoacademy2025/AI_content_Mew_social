@@ -355,6 +355,9 @@ jobs:
 
       - name: Verify managed stock key eligibility, caps, monthly ceiling, and throttling
         run: npm run verify:managed-stock
+
+      - name: Verify B-roll swap uses managed stock and select requires no stock key (HERO-120)
+        run: npm run verify:broll-swap-managed-stock
       - name: Verify /brands fits phones and keeps its desktop layout
         run: npm run verify:brands-mobile
 

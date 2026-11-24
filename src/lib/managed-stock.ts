@@ -63,6 +63,15 @@ export const MANAGED_STOCK_ALLOW_PAGE_TWO = false;
 /** Pixabay-first: only reach for Pexels when Pixabay came back thin. */
 export const MANAGED_STOCK_PEXELS_FALLBACK_THRESHOLD = 3;
 
+/** Per-user hourly cap on live (non-cached) managed stock searches in the
+ *  per-window "เปลี่ยนสต็อก" inspector, so one user searching in a tight loop
+ *  cannot exhaust the shared provider buckets for everyone else. Cache hits
+ *  do not consume this budget. Overridable via `MANAGED_STOCK_USER_SEARCHES_PER_HOUR`. */
+export const MANAGED_STOCK_USER_SEARCHES_PER_HOUR_DEFAULT = 30;
+/** Per-request ceiling on live managed provider queries for a single
+ *  `/api/videos/broll-window/search` call (styled + at most one plain degrade). */
+export const MANAGED_STOCK_WINDOW_SEARCH_MAX_QUERIES_PER_REQUEST = 4;
+
 export type ManagedStockEligibilityReason =
   | "eligible"
   | "flag_off"
