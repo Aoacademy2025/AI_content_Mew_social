@@ -2,6 +2,39 @@ export type WebVitalMetric = "LCP" | "CLS" | "INP";
 
 export const WEB_VITALS_MEASUREMENT_VERSION = "web-vitals@6.2.2+report-sequence-v1";
 
+// HERO-128: sample 20% of document navigations deterministically by navigationId.
+// Shared identically between TelemetryProvider (client) and POST /api/telemetry (server)
+// so client-sampled navigations are never double-sampled while stale cached clients
+// still get bounded before touching SQLite.
+export const DEFAULT_WEB_VITALS_SAMPLE_RATE = 0.2;
+
+export function parseWebVitalSampleRate(
+  value: string | undefined,
+  fallback: number = DEFAULT_WEB_VITALS_SAMPLE_RATE,
+): number {
+  if (!value?.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) return fallback;
+  return parsed;
+}
+
+export function shouldSampleWebVital(
+  key: string | null | undefined,
+  sampleRate: number = DEFAULT_WEB_VITALS_SAMPLE_RATE,
+): boolean {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) return false;
+  if (sampleRate >= 1) return true;
+  const normalized = (key ?? "").trim();
+  if (!normalized) return false;
+  // 32-bit FNV-1a hash normalized into [0, 1)
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000 < sampleRate;
+}
+
 type ReportedMetric = {
   name: WebVitalMetric;
   id: string;

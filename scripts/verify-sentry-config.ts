@@ -177,6 +177,15 @@ function main() {
     beforeSendSentryEvent({ message: "checkout failed" }),
     "an error without frames must be kept",
   );
+  assert.strictEqual(
+    beforeSendSentryEvent({ message: "Script error." }),
+    null,
+    "HERO-128: bare cross-origin Script error. without frames must be dropped",
+  );
+  assert(
+    injected("Script error.", ["app:///_next/static/chunks/main-abc.js:1:1"]),
+    "HERO-128: Script error. with first-party app frames must be kept",
+  );
 
   // A visitor's browser failing to reach Clerk's own hosted API. `clerk.<domain>`
   // is a CNAME to Clerk's frontend API on their CDN, so no part of that request

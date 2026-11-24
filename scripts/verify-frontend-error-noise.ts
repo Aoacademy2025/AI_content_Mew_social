@@ -171,7 +171,38 @@ function main() {
     "HERO-89: non-routine error messages must never be dropped even if type is AbortError",
   );
 
-  console.log("verify-frontend-error-noise: 18/18 passed");
+  // HERO-128: bare cross-origin "Script error." with empty stack/filenames must be dropped.
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "ErrorEvent",
+      message: "Script error.",
+      stack: null,
+      filenames: [],
+    }),
+    true,
+    "HERO-128: bare opaque Script error. with no stack or app frame must be noise",
+  );
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "ErrorEvent",
+      message: "Script error",
+      stack: "",
+      filenames: [""],
+    }),
+    true,
+    "HERO-128: bare opaque Script error without trailing period must be noise",
+  );
+  assert.strictEqual(
+    isThirdPartyFrontendNoise({
+      type: "ErrorEvent",
+      message: "Script error.",
+      filenames: ["app:///_next/static/chunks/main-abc.js:1:1"],
+    }),
+    false,
+    "HERO-128: Script error. with an app frame must still be kept",
+  );
+
+  console.log("verify-frontend-error-noise: 21/21 passed");
 }
 
 main();

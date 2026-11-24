@@ -10,6 +10,12 @@
 export const FOREIGN_BROWSER_API =
   /(?:Failed to connect to MetaMask|Java object is gone|Java exception was raised during method invocation|window\.webkit\.messageHandlers|\bEmptyRanges\b)/i;
 
+// HERO-128: cross-origin third-party scripts (pixels, extensions, in-app WebView shims)
+// without CORS headers surface to window.onerror as bare "Script error." with no stack
+// and no first-party frame. Insights already classified these as benign noise, but
+// dropping them before capture/ingest prevents hundreds of unactionable SQLite writes.
+export const OPAQUE_SCRIPT_ERROR = /^Script error\.?$/i;
+
 // HERO-89 (HERO-STUDIO-WEB-20/21/1Z/1V/1W/1T/1S): routine browser AbortController.abort()
 // during job poll completion (`stopPolling()`), autosave timeout/cancelation, or React
 // `useEffect` unmount cleanup surfaces in some browsers as an unhandled rejection with
@@ -66,6 +72,30 @@ function filenamesFromStack(stack: string | null | undefined): string[] {
   return names;
 }
 
+export function isOpaqueCrossOriginScriptError(input: {
+  message?: string | null;
+  stack?: string | null;
+  filenames?: readonly string[] | null;
+}): boolean {
+  const message = String(input.message ?? "").trim();
+  if (!OPAQUE_SCRIPT_ERROR.test(message)) return false;
+
+  const filenames = [
+    ...(input.filenames ?? []),
+    ...filenamesFromStack(input.stack),
+  ]
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (filenames.some((name) => APP_FRAME.test(name))) return false;
+
+  const stack = String(input.stack ?? "").trim();
+  return (
+    stack.length === 0
+    || filenames.length === 0
+    || filenames.every((name) => INJECTED_FRAME_ORIGIN.test(name))
+  );
+}
+
 export function isThirdPartyFrontendNoise(input: {
   message?: string | null;
   type?: string | null;
@@ -76,6 +106,7 @@ export function isThirdPartyFrontendNoise(input: {
   if (isProtectedFrontendAuthError(message)) return false;
   if (isRoutineBrowserAbortNoise({ message, type: input.type })) return true;
   if (FOREIGN_BROWSER_API.test(message)) return true;
+  if (isOpaqueCrossOriginScriptError(input)) return true;
 
   const filenames = [
     ...(input.filenames ?? []),
