@@ -15,6 +15,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { emptyWindowHint, offWindowHint, pickTurnsWindowOn, seedSearchKeyword, windowSourceLabelOverride } from "@/lib/broll-window-ux";
+import {
+  brollWindowSearchErrorMessage,
+  brollWindowSearchErrorNeedsApiKeys,
+  brollWindowSelectErrorMessage,
+} from "@/lib/broll-window-search";
+import { MANAGED_STOCK_BROLL_HINT_HREF } from "@/lib/managed-stock";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -377,6 +383,7 @@ export function BrollWindowInspector({
   const [searchKeyword, setSearchKeyword] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchErrorNeedsKeys, setSearchErrorNeedsKeys] = useState(false);
   const [searchCandidates, setSearchCandidates] = useState<SearchCandidate[] | null>(null);
   const [selectingId, setSelectingId] = useState<string | null>(null);
 
@@ -456,6 +463,7 @@ export function BrollWindowInspector({
     );
     setSearchLoading(false);
     setSearchError(null);
+    setSearchErrorNeedsKeys(false);
     setSearchCandidates(null);
     setSelectingId(null);
     setUploadBusy(false);
@@ -854,6 +862,7 @@ export function BrollWindowInspector({
     if (!kw) return;
     setSearchLoading(true);
     setSearchError(null);
+    setSearchErrorNeedsKeys(false);
     setSearchCandidates(null);
     try {
       const res = await fetch("/api/videos/broll-window/search", {
@@ -871,7 +880,11 @@ export function BrollWindowInspector({
         }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok) { setSearchError(d?.message ?? `ค้นหาไม่สำเร็จ (${res.status})`); return; }
+      if (!res.ok) {
+        setSearchError(brollWindowSearchErrorMessage(res.status, d));
+        setSearchErrorNeedsKeys(brollWindowSearchErrorNeedsApiKeys(d));
+        return;
+      }
       setSearchCandidates(Array.isArray(d?.candidates) ? d.candidates : []);
     } catch {
       setSearchError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -889,7 +902,10 @@ export function BrollWindowInspector({
         body: JSON.stringify({ videoUrl: c.videoUrl, provider: c.provider, keyword: searchKeyword.trim() }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.src) { toast.error(d?.message ?? `เปลี่ยนคลิปไม่สำเร็จ (${res.status})`); return; }
+      if (!res.ok || !d?.src) {
+        toast.error(brollWindowSelectErrorMessage(res.status, d));
+        return;
+      }
       markEdited("stock", d.src, searchKeyword.trim() || undefined, c.title || "สต็อก", d.clipDuration);
     } catch {
       toast.error("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -1599,7 +1615,19 @@ export function BrollWindowInspector({
               {searchLoading ? <Loader2 size={14} className="animate-spin" /> : "ค้นหา"}
             </BtnSecondary>
           </div>
-          {searchError && <span style={{ fontSize: 11.5, color: color.danger }}>{searchError}</span>}
+          {searchError && (
+            <span style={{ fontSize: 11.5, color: color.danger, lineHeight: 1.5 }}>
+              {searchError}
+              {searchErrorNeedsKeys && (
+                <>
+                  {" · "}
+                  <a href={MANAGED_STOCK_BROLL_HINT_HREF} style={{ color: color.link }}>
+                    ตั้งค่า API Keys
+                  </a>
+                </>
+              )}
+            </span>
+          )}
           {searchCandidates && searchCandidates.length === 0 && !searchError && (
             <span style={{ fontSize: 12, color: color.textFaint }}>
               {sceneRerollEnabled && canGenerateAiFromCurrentSource

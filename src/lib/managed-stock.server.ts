@@ -14,6 +14,7 @@ import {
   MANAGED_STOCK_PROVIDERS,
   MANAGED_STOCK_THROTTLED_EVENT,
   MANAGED_STOCK_USED_EVENT,
+  MANAGED_STOCK_USER_SEARCHES_PER_HOUR_DEFAULT,
   stockSearchCacheExpiry,
   stockSearchCacheKey,
   TokenBucket,
@@ -123,6 +124,8 @@ export async function resolveManagedStockAccess(
 // published ceiling so we throttle ourselves before the provider does.
 
 let buckets: Record<ManagedStockProvider, TokenBucket> | null = null;
+const userSearchBuckets = new Map<string, TokenBucket>();
+const USER_SEARCH_BUCKET_PRUNE_THRESHOLD = 1_000;
 
 function managedStockBuckets(): Record<ManagedStockProvider, TokenBucket> {
   if (!buckets) {
@@ -146,6 +149,39 @@ function managedStockBuckets(): Record<ManagedStockProvider, TokenBucket> {
 /** `false` = provider is throttled right now; skip it, never fail the job. */
 export function takeManagedStockToken(provider: ManagedStockProvider, nowMs = Date.now()): boolean {
   return managedStockBuckets()[provider].tryTake(nowMs);
+}
+
+/**
+ * Per-user hourly cap for interactive managed stock searches (`/api/videos/broll-window/search`).
+ * Checked BEFORE the shared provider bucket so one user in a tight loop cannot
+ * starve other customers. Cache hits never call this.
+ */
+export function takeManagedStockUserSearchToken(userId: string, nowMs = Date.now()): boolean {
+  const capacity = readIntEnv(
+    "MANAGED_STOCK_USER_SEARCHES_PER_HOUR",
+    MANAGED_STOCK_USER_SEARCHES_PER_HOUR_DEFAULT,
+    1,
+    500,
+  );
+  let bucket = userSearchBuckets.get(userId);
+  if (!bucket || bucket.capacity !== capacity) {
+    if (userSearchBuckets.size >= USER_SEARCH_BUCKET_PRUNE_THRESHOLD) {
+      for (const [id, existing] of userSearchBuckets) {
+        if (existing.available(nowMs) >= existing.capacity) {
+          userSearchBuckets.delete(id);
+        }
+      }
+    }
+    bucket = new TokenBucket(capacity, 60 * 60 * 1_000, nowMs);
+    userSearchBuckets.set(userId, bucket);
+  }
+  return bucket.tryTake(nowMs);
+}
+
+/** Test seam only — reset in-process provider & per-user token buckets between cases. */
+export function __resetManagedStockBucketsForTests() {
+  buckets = null;
+  userSearchBuckets.clear();
 }
 
 // ── Monthly Pexels budget (Amendment 2026-08-26) ────────────────────────────
@@ -372,6 +408,7 @@ export type ManagedStockUsageStats = {
   provider: ManagedStockProvider;
   queriesUsed: number;
   cacheHits: number;
+  step?: string;
 };
 
 /** A throttle event names WHICH limiter refused: the per-hour/per-minute token
@@ -386,7 +423,7 @@ export async function recordManagedStockUsed(userId: string | null, stats: Manag
     name: MANAGED_STOCK_USED_EVENT,
     category: "product",
     source: "server",
-    step: "fetchStock",
+    step: stats.step ?? "fetchStock",
     status: "done",
     value: stats.queriesUsed,
     properties: {
@@ -402,7 +439,7 @@ export async function recordManagedStockThrottled(userId: string | null, stats: 
     name: MANAGED_STOCK_THROTTLED_EVENT,
     category: "product",
     source: "server",
-    step: "fetchStock",
+    step: stats.step ?? "fetchStock",
     status: "throttled",
     value: stats.queriesUsed,
     properties: {

@@ -13,12 +13,15 @@ import {
   safeUnlink,
 } from "@/lib/broll-asset-lib";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { isAllowedStockUrl } from "@/lib/broll-window-search";
 
-// POST /api/videos/broll-window/select — Phase 2 "เปลี่ยนรูป" tab (Task 7).
-// Downloads the candidate the user picked in /search, re-encodes it Remotion-safe
-// (same pipeline as fetch-stock), and hands back a locally-served src the editor
-// can drop straight into the window's `bgVideos[]` entry. Internal AI testers receive
-// the beta before the NEXT_PUBLIC_BROLL_WINDOW_EDIT public rollout, matching /search.
+// POST /api/videos/broll-window/select — Phase 2 "เปลี่ยนสต็อก" tab (Task 7, HERO-120).
+// Downloads the candidate the user picked in /search from an allow-listed CDN URL,
+// re-encodes it Remotion-safe (same pipeline as fetch-stock), and hands back a
+// locally-served src the editor can drop straight into the window's `bgVideos[]`
+// entry. No stock provider API key is used here — only authenticated users +
+// SSRF hostname allowlist + per-user download rate limit. Internal AI testers
+// receive the beta before NEXT_PUBLIC_BROLL_WINDOW_EDIT opens publicly, matching /search.
 
 export const runtime = "nodejs";
 
@@ -42,24 +45,8 @@ function tryConsumeSelectRate(userId: string, now: number = Date.now()): boolean
   return true;
 }
 
-// Hostname allowlist for the client-supplied `videoUrl` — this value round-trips
-// through the browser (came from /search's response), so it must be re-validated
-// server-side before we fetch it (classic SSRF-via-client-echo). Suffixes are the
-// actual CDN hosts Pexels/Pixabay video files resolve to (e.g. videos.pexels.com,
-// cdn.pixabay.com) plus vimeocdn.com (some Pixabay hits proxy through Vimeo's CDN).
-const ALLOWED_HOST_SUFFIXES = ["pexels.com", "pixabay.com", "vimeocdn.com"];
-
-function isAllowedStockUrl(raw: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "https:") return false;
-  const host = url.hostname.toLowerCase();
-  return ALLOWED_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
-}
+// URL allowlist (`isAllowedStockUrl`) lives in `@/lib/broll-window-search` so the
+// SSRF guard for client-echoed CDN URLs is directly unit-tested too.
 
 // Same derivation as tts/route.ts's ffprobeDurationSec: ffprobe sits next to
 // ffmpeg in the same install (node_modules on Windows, system path on Linux).
@@ -95,13 +82,6 @@ export async function POST(req: Request) {
 
   if (!isAllowedStockUrl(videoUrl)) {
     return NextResponse.json({ error: "invalid_url", message: "ลิงก์วิดีโอนี้ไม่ได้รับอนุญาต" }, { status: 400 });
-  }
-
-  if (!user.pexelsKey && !user.pixabayKey) {
-    return NextResponse.json(
-      { error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll (Settings → API Keys)" },
-      { status: 400 },
-    );
   }
 
   if (!tryConsumeSelectRate(user.id)) {
