@@ -2,6 +2,8 @@ import React from "react";
 import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { baseGraphemeCount, maxCardCharsFor } from "../lib/card-line-budget";
 import { cardCutBoundaries } from "../lib/tts-timing";
+import { getActiveLoanwords, loanwordSpans } from "../lib/thai-loanwords";
+import { getActiveCompounds } from "../lib/thai-compounds";
 import {
   mergeNumericAffixTokens,
   selectHighlightedTokenIndices,
@@ -61,10 +63,19 @@ function getSegmenter(locale: string, granularity: "word" | "grapheme" | "senten
 }
 
 const WORD_JOINER = "\u2060";
+const ZERO_WIDTH_SPACE = "\u200B";
 // At 80–96px, a longer no-break run can exceed the 92% subtitle frame. Eight
 // graphemes is enough for short names such as อัลลัน while keeping long Thai
 // phrases available to ICU wrapping.
 const MAX_PROTECTED_TOKEN_GRAPHEMES = 8;
+// Every real Thai word, loanword (longest curated entry is ~12 graphemes),
+// compound, or bound-prefix unit fits comfortably within 20 graphemes. Longer
+// unsegmented runs (e.g. gibberish "กกกก..." > 20 graphemes) stay open to
+// overflow-wrap safety rather than becoming an artificially giant unbreakable run.
+const MAX_PROTECTED_SEGMENT_GRAPHEMES = 20;
+const THAI_SCRIPT_CHAR = /[\u0E00-\u0E7F]/u;
+const NONSPACING_MARK = /\p{Mn}/u;
+const WIDE_LATIN_CHAR = /[A-Z@#%&+=~_]/;
 
 // ICU/Chromium splits these common Thai compounds into fragments that are not
 // acceptable visual line boundaries (for example ผลก|ระ|ทบ). This list is
@@ -127,6 +138,14 @@ function computeProtectedSpans(value: string): ProtectedSpan[] {
     }
   }
 
+  // Keep active Thai loanwords and curated native compounds intact against
+  // Chromium's ICU line-breaker (e.g. แอดมิน, แชตบอต, แพลตฟอร์ม, อัลกอริทึม,
+  // ขี้เกียจ, เวลางาน). Touching spans remain distinct so adjacent loanwords
+  // can still wrap cleanly between each other.
+  for (const span of loanwordSpans(value)) {
+    addSpan(span.start, span.end);
+  }
+
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
   const merged: ProtectedSpan[] = [];
   for (const span of spans) {
@@ -164,6 +183,158 @@ export function protectSubtitleWordBreaks(value: string): string {
     if (span && current.index >= span.start && next.index < span.end) output += WORD_JOINER;
   }
   return output;
+}
+
+const segmentedThaiDisplayCache = new Map<string, string>();
+const SEGMENTED_THAI_DISPLAY_CACHE_MAX = 256;
+let cachedLoanwordsRef: string[] | null = null;
+let cachedCompoundsRef: string[] | null = null;
+
+function ensureSegmentedCacheFresh() {
+  const activeLoanwords = getActiveLoanwords();
+  const activeCompounds = getActiveCompounds();
+  if (cachedLoanwordsRef !== activeLoanwords || cachedCompoundsRef !== activeCompounds) {
+    segmentedThaiDisplayCache.clear();
+    cachedLoanwordsRef = activeLoanwords;
+    cachedCompoundsRef = activeCompounds;
+  }
+}
+
+function segmentThaiDisplayLine(line: string): string {
+  if (!THAI_SCRIPT_CHAR.test(line)) return line;
+  const graphemeSegmenter = getSegmenter("th", "grapheme");
+  if (!graphemeSegmenter) return line;
+
+  const protectedSpans = computeProtectedSpans(line);
+  const safeCuts = cardCutBoundaries(line).filter(
+    (cut) => !protectedSpans.some((span) => cut > span.start && cut < span.end),
+  );
+  const edges = [0, ...safeCuts, line.length];
+  const parts: string[] = [];
+
+  for (let i = 0; i < edges.length - 1; i++) {
+    const seg = line.slice(edges[i], edges[i + 1]);
+    if (!seg) continue;
+    if (!THAI_SCRIPT_CHAR.test(seg)) {
+      parts.push(seg);
+      continue;
+    }
+    const leading = seg.match(/^\s*/u)?.[0] ?? "";
+    const trailing = seg.match(/\s*$/u)?.[0] ?? "";
+    const core = seg.slice(leading.length, seg.length - trailing.length);
+    if (!core) {
+      parts.push(seg);
+      continue;
+    }
+    if (/\s/u.test(core)) {
+      parts.push(leading + protectSubtitleWordBreaks(core) + trailing);
+      continue;
+    }
+    const graphemes = Array.from(graphemeSegmenter.segment(core), (part) => part.segment);
+    if (graphemes.length > 1 && graphemes.length <= MAX_PROTECTED_SEGMENT_GRAPHEMES) {
+      parts.push(leading + graphemes.join(WORD_JOINER) + trailing);
+    } else {
+      parts.push(leading + protectSubtitleWordBreaks(core) + trailing);
+    }
+  }
+
+  let output = "";
+  for (let i = 0; i < parts.length; i++) {
+    const prev = i > 0 ? parts[i - 1] : "";
+    const curr = parts[i];
+    if (
+      i > 0
+      && !/\s$/u.test(prev)
+      && !/^\s/u.test(curr)
+      && (THAI_SCRIPT_CHAR.test(prev) || THAI_SCRIPT_CHAR.test(curr))
+    ) {
+      output += ZERO_WIDTH_SPACE;
+    }
+    output += curr;
+  }
+  return output;
+}
+
+/**
+ * Segment Thai display text along the shared subtitle word/loanword/compound
+ * boundary rules (`Intl.Segmenter` + `cardCutBoundaries` + `computeProtectedSpans`):
+ *   - Joins graphemes inside each safe Thai word/loanword/compound/bound-prefix
+ *     unit with WORD JOINER (U+2060) so Chromium never splits mid-word.
+ *   - Inserts ZERO WIDTH SPACE (U+200B) at safe unspaced Thai word boundaries
+ *     (including between adjacent protected loanwords such as อัลกอริทึม|แพลตฟอร์ม).
+ *   - Preserves manual newlines and every authored character verbatim when
+ *     invisible layout controls (U+2060 / U+200B) are stripped.
+ */
+export function segmentThaiDisplayWordBreaks(value: string): string {
+  if (!value || !THAI_SCRIPT_CHAR.test(value)) return value;
+  ensureSegmentedCacheFresh();
+  const cached = segmentedThaiDisplayCache.get(value);
+  if (cached !== undefined) return cached;
+
+  const result = value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map(segmentThaiDisplayLine)
+    .join("\n");
+
+  if (segmentedThaiDisplayCache.size >= SEGMENTED_THAI_DISPLAY_CACHE_MAX) {
+    const oldest = segmentedThaiDisplayCache.keys().next().value;
+    if (oldest !== undefined) segmentedThaiDisplayCache.delete(oldest);
+  }
+  segmentedThaiDisplayCache.set(value, result);
+  return result;
+}
+
+function estimatedTokenBaseWidth(token: string): number {
+  let width = 0;
+  for (const ch of token.normalize("NFC")) {
+    if (NONSPACING_MARK.test(ch)) continue;
+    if (THAI_SCRIPT_CHAR.test(ch)) {
+      width += 1;
+    } else if (WIDE_LATIN_CHAR.test(ch)) {
+      // Bold uppercase Latin / wide symbols can approach ~1.8x the 0.47em
+      // Thai base glyph estimate used by maxCardCharsFor().
+      width += 1.8;
+    } else {
+      width += 1.35;
+    }
+  }
+  return width;
+}
+
+/**
+ * True only when `value` contains a single unbreakable token (after whitespace
+ * and safe Thai word-boundary segmentation) wider than `oneLineBudget` Thai
+ * base graphemes. Keeps `overflowWrap: "normal"` for normal Thai/mixed text and
+ * activates `overflowWrap: "break-word"` solely as overflow safety for extreme
+ * unbreakable tokens (long unbroken URLs, Latin words, or gibberish runs).
+ */
+export function hasExtremeUnbreakableToken(value: string, oneLineBudget: number): boolean {
+  if (!value.trim() || !Number.isFinite(oneLineBudget) || oneLineBudget <= 0) return false;
+  for (const line of value.replace(/\r\n?/g, "\n").split("\n")) {
+    if (!line.trim()) continue;
+    const hasThai = THAI_SCRIPT_CHAR.test(line);
+    const protectedSpans = hasThai ? computeProtectedSpans(line) : [];
+    const cuts = hasThai
+      ? cardCutBoundaries(line).filter(
+          (cut) => !protectedSpans.some((span) => cut > span.start && cut < span.end),
+        )
+      : [];
+    const edges = [0, ...cuts, line.length];
+    for (let i = 0; i < edges.length - 1; i++) {
+      const piece = line.slice(edges[i], edges[i + 1]);
+      for (const token of piece.split(/\s+/u)) {
+        if (!token) continue;
+        // Hyphens and slashes remain soft-wrap points in non-Thai tokens under
+        // word-break: keep-all; inspect each indivisible sub-run.
+        const subTokens = THAI_SCRIPT_CHAR.test(token) ? [token] : token.split(/[-/]+/u);
+        for (const sub of subTokens) {
+          if (sub && estimatedTokenBaseWidth(sub) > oneLineBudget) return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 // ── Display-time balanced line break (T2, the reported defect) ─────────────────────
