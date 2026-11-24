@@ -5,6 +5,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { isMcpPatToken, resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
 import { canInvokeMcpTool } from "@/lib/mcp/starter-trial";
+import { buildMcpPlanRequiredPayload } from "@/lib/mcp/plan-upgrade-cta";
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError, auditErrorSummary, auditExceptionSummary } from "@/lib/mcp/audit";
@@ -34,9 +35,6 @@ import { createVideoJobInputShape, prepareVideoJobInputShape } from "@/lib/mcp/c
 
 export const runtime = "nodejs";
 
-const UPSELL =
-  "ฟีเจอร์ MCP ใช้ได้เฉพาะแผน PRO หรือ BUSINESS — แผนปัจจุบันยังเข้าถึงไม่ได้ อัปเกรดที่ studio.heroaiengine.com/pricing";
-
 function text(obj: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] };
 }
@@ -46,8 +44,6 @@ function principalFrom(extra: Extra) {
   const e = (extra.authInfo?.extra ?? {}) as { userId?: string; effectivePlan?: string; user?: User; userAgent?: string | null };
   return { userId: e.userId, effectivePlan: e.effectivePlan, user: e.user, userAgent: e.userAgent ?? null };
 }
-
-const UPGRADE_NEXT = "อัปเกรดเป็นแผน PRO หรือ BUSINESS ที่ studio.heroaiengine.com/pricing แล้วลองใหม่";
 
 /** A beta-gate refusal is an access decision: audited like the plan guard's (`denied`). */
 function auditStatusOf(result: unknown): "ok" | "denied" | "error" {
@@ -67,10 +63,9 @@ async function runTool(
   const started = Date.now();
   const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
   if (!userId || !user || !effectivePlan || !canInvokeMcpTool(user, effectivePlan, toolName)) {
-    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: { error: "plan_required" } });
-    return text(opts
-      ? { error: "plan_required", code: "plan_required", message: UPSELL, next: UPGRADE_NEXT }
-      : { error: "plan_required", message: UPSELL });
+    const refusal = buildMcpPlanRequiredPayload({ toolName });
+    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: { error: "plan_required", code: "plan_required" } });
+    return text(refusal);
   }
   try {
     const result = await fn({ userId, user });

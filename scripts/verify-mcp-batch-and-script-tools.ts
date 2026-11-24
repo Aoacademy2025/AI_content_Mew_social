@@ -871,8 +871,13 @@ async function main() {
         topic: "วิธีลดสิวสำหรับคนนอนดึก",
       });
       check(
-        "FREE plan user blocked at MCP guard with G14 plan_required envelope",
-        freeReply.error === "plan_required" && checkFailureEnvelope(freeReply).length === 0,
+        "FREE plan user blocked at MCP guard with G14 plan_required envelope + attributable upgradeUrl (HERO-129)",
+        freeReply.error === "plan_required"
+          && checkFailureEnvelope(freeReply).length === 0
+          && freeReply.upgradeUrl === "https://studio.heroaiengine.com/pricing?source=mcp_plan_required&tool=generate_hero_script"
+          && typeof freeReply.upgradeOffer === "string"
+          && freeReply.upgradeOffer.length > 0
+          && String(freeReply.next).includes(String(freeReply.upgradeUrl)),
         JSON.stringify(freeReply),
       );
 

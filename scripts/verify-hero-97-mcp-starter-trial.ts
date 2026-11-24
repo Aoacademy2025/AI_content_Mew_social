@@ -93,8 +93,14 @@ async function main() {
     });
     assert.equal("error" in heroImageRefusal && heroImageRefusal.code, "plan_required");
     if ("error" in heroImageRefusal) {
-      assert.ok(heroImageRefusal.message.includes(MCP_UPGRADE_URL));
-      assert.ok(heroImageRefusal.next.includes(MCP_UPGRADE_URL));
+      assert.equal(
+        heroImageRefusal.upgradeUrl,
+        `${MCP_UPGRADE_URL}?source=mcp_plan_required&tool=prepare_video_job`,
+        "HERO-129: plan_required returns attributable upgradeUrl",
+      );
+      assert.ok(heroImageRefusal.upgradeOffer && heroImageRefusal.upgradeOffer.length > 0, "HERO-129: plan_required returns upgradeOffer");
+      assert.ok(heroImageRefusal.message.includes(heroImageRefusal.upgradeUrl));
+      assert.ok(heroImageRefusal.next.includes(heroImageRefusal.upgradeUrl));
     }
 
     const elevenRefusal = await prepareVideoQuote(freeUser, {
@@ -144,8 +150,14 @@ async function main() {
     });
     assert.equal("error" in secondAttempt && secondAttempt.code, "plan_required");
     if ("error" in secondAttempt) {
-      assert.ok(secondAttempt.message.includes(MCP_UPGRADE_URL));
-      assert.ok(secondAttempt.next.includes(MCP_UPGRADE_URL));
+      assert.equal(
+        secondAttempt.upgradeUrl,
+        `${MCP_UPGRADE_URL}?source=mcp_plan_required&tool=create_video_job`,
+        "HERO-129: exhausted starter trial returns attributable upgradeUrl for create_video_job",
+      );
+      assert.ok(secondAttempt.upgradeOffer && secondAttempt.upgradeOffer.length > 0);
+      assert.ok(secondAttempt.message.includes(secondAttempt.upgradeUrl));
+      assert.ok(secondAttempt.next.includes(secondAttempt.upgradeUrl));
     }
 
     console.log("PASS verify-hero-97-mcp-starter-trial");

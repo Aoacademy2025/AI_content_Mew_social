@@ -295,7 +295,7 @@ export async function requestVideoJob(user: import("@prisma/client").User, args:
     }
   }
   const { prepareVideoQuote, decideVideoQuote } = await import("./video-quote.server");
-  const prepared = await prepareVideoQuote(user, args);
+  const prepared = await prepareVideoQuote(user, args, { toolName: "create_video_job" });
   if (!("quoteId" in prepared)) return prepared;
   if (parsed.success && parsed.data.resumeJobId) {
     return confirmationRequiredReply(prepared);

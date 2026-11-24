@@ -5,11 +5,18 @@ import { durationCapSecFor, isPaid } from "@/lib/plan-limits";
 import { syncSharedUsageCycle } from "@/lib/usage-limits";
 import { mcpAccessAllowed } from "@/lib/mcp/auth";
 import { quoteFailure, type QuoteFailure } from "@/lib/mcp/video-quote";
+import {
+  buildMcpPlanRequiredUpgradeUrl,
+  buildMcpUpgradeNext,
+  MCP_PRO_UPGRADE_OFFER,
+  MCP_UPGRADE_URL,
+} from "@/lib/mcp/plan-upgrade-cta";
 import type { PrepareVideoJobInput } from "@/lib/mcp/create-video-input";
+
+export { MCP_UPGRADE_URL, buildMcpPlanRequiredUpgradeUrl, MCP_PRO_UPGRADE_OFFER };
 
 export const MCP_STARTER_TRIAL_CLIP_LIMIT = 1;
 export const MCP_STARTER_TRIAL_MAX_DURATION_SEC = durationCapSecFor("FREE");
-export const MCP_UPGRADE_URL = "https://studio.heroaiengine.com/pricing";
 
 export const MCP_PLAN_REQUIRED_MESSAGE =
   `ฟีเจอร์ MCP นี้ใช้ได้เฉพาะแผน PRO หรือ BUSINESS — แผนปัจจุบันยังเข้าถึงไม่ได้ อัปเกรดที่ ${MCP_UPGRADE_URL}`;
@@ -166,8 +173,20 @@ export async function getMcpStarterTrialStatus(
   return getMcpStarterTrialStatusInTransaction(prisma, user, now);
 }
 
-export function starterTrialPlanRequiredFailure(message: string): QuoteFailure {
-  return quoteFailure("plan_required", message, MCP_UPGRADE_NEXT);
+export function starterTrialPlanRequiredFailure(
+  message: string,
+  toolName?: string | null,
+): QuoteFailure {
+  const upgradeUrl = buildMcpPlanRequiredUpgradeUrl(toolName);
+  const attributedMessage = message.includes(MCP_UPGRADE_URL)
+    ? message.replaceAll(MCP_UPGRADE_URL, upgradeUrl)
+    : `${message} อัปเกรดที่ ${upgradeUrl}`;
+  return quoteFailure(
+    "plan_required",
+    attributedMessage,
+    buildMcpUpgradeNext(upgradeUrl),
+    { upgradeUrl, upgradeOffer: MCP_PRO_UPGRADE_OFFER },
+  );
 }
 
 export async function validateMcpStarterTrialQuoteInput(
@@ -175,24 +194,25 @@ export async function validateMcpStarterTrialQuoteInput(
   input: PrepareVideoJobInput,
   durationSeconds: number,
   now: Date = new Date(),
+  toolName: string = "prepare_video_job",
 ): Promise<QuoteFailure | null> {
   const effectivePlan = classifyEntitlement(user, now).effectivePlan;
   if (mcpAccessAllowed(effectivePlan)) return null;
 
   if (!isMcpStarterTrialEligibleUser(user, now)) {
-    return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE, toolName);
   }
 
   const synced = await syncSharedUsageCycle(user.id, now);
   const usedClips = await countStarterMcpRootJobsInTransaction(prisma, user.id);
   if (usedClips >= MCP_STARTER_TRIAL_CLIP_LIMIT) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   const currentUsageCount = synced?.usageCount ?? user.usageCount;
   const currentUsageLimit = synced?.usageLimit ?? user.usageLimit;
   if (currentUsageCount >= currentUsageLimit) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   const neededMinutes = Math.max(1, Math.ceil(durationSeconds / 60));
@@ -202,22 +222,22 @@ export async function validateMcpStarterTrialQuoteInput(
     process.env.MINUTE_QUOTA === "1" &&
     currentMinutesUsed + neededMinutes > currentMinutesLimit
   ) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   const source = input.brollSource ?? "stock";
   if (source !== "stock") {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   const voiceProvider =
     input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
   if (voiceProvider !== "gemini") {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   if (input.avatarMode && input.avatarMode !== "none") {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   if (
@@ -225,15 +245,15 @@ export async function validateMcpStarterTrialQuoteInput(
     input.clipUploadId ||
     (Array.isArray(input.clipUploadIds) && input.clipUploadIds.length > 0)
   ) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   if (input.exportMode === "hold") {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   if (durationSeconds > MCP_STARTER_TRIAL_MAX_DURATION_SEC) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   return null;
@@ -253,32 +273,33 @@ export async function validateMcpStarterTrialConsumptionInTransaction(
     parentQuoteId: string | null;
   },
   now: Date = new Date(),
+  toolName: string = "create_video_job",
 ): Promise<QuoteFailure | null> {
   const effectivePlan = classifyEntitlement(user, now).effectivePlan;
   if (mcpAccessAllowed(effectivePlan)) return null;
 
   if (!isMcpStarterTrialEligibleUser(user, now)) {
-    return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE, toolName);
   }
 
   if (opts.parentQuoteId) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   const usedClips = await countStarterMcpRootJobsInTransaction(tx, user.id);
   if (usedClips >= MCP_STARTER_TRIAL_CLIP_LIMIT) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   if (user.usageCount >= user.usageLimit) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   if (
     process.env.MINUTE_QUOTA === "1" &&
     user.minutesUsed + opts.renderMinutesCeiling > user.minutesLimit
   ) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_EXHAUSTED_MESSAGE, toolName);
   }
 
   if (
@@ -290,7 +311,7 @@ export async function validateMcpStarterTrialConsumptionInTransaction(
     opts.totalHeroCreditCeiling > 0 ||
     opts.renderMinutesCeiling > Math.ceil(MCP_STARTER_TRIAL_MAX_DURATION_SEC / 60)
   ) {
-    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE);
+    return starterTrialPlanRequiredFailure(MCP_STARTER_TRIAL_FEATURE_LOCKED_MESSAGE, toolName);
   }
 
   return null;

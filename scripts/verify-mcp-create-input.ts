@@ -1,5 +1,9 @@
 import { createVideoJobInputSchema } from "../src/lib/mcp/create-video-input";
 import { mcpBrollJobFields, mcpHeroVisualRefusal } from "../src/lib/mcp/broll-source";
+import {
+  buildMcpPlanRequiredPayload,
+  buildMcpPlanRequiredUpgradeUrl,
+} from "../src/lib/mcp/plan-upgrade-cta";
 import { stockVideoProvidersMayBeUsed } from "../src/lib/key-preflight";
 
 let passed = 0;
@@ -89,9 +93,35 @@ check(
 
 const previous = process.env.HERO_AI_IMAGE_PUBLIC;
 process.env.HERO_AI_IMAGE_PUBLIC = "1";
+const heroVisualDenied = mcpHeroVisualRefusal({ canUse: false, reason: "payment_required" }, "hero-ai-image");
 check(
-  mcpHeroVisualRefusal({ canUse: false, reason: "payment_required" }, "hero-ai-image")?.error === "plan_required",
-  "a free account is refused Hero AI Image before a job exists",
+  heroVisualDenied?.error === "plan_required"
+    && heroVisualDenied?.code === "plan_required"
+    && heroVisualDenied?.upgradeUrl === "https://studio.heroaiengine.com/pricing?source=mcp_plan_required&tool=create_video_job"
+    && typeof heroVisualDenied?.upgradeOffer === "string"
+    && heroVisualDenied.upgradeOffer.length > 0
+    && typeof heroVisualDenied?.next === "string"
+    && heroVisualDenied.next.includes(heroVisualDenied.upgradeUrl),
+  "a free account is refused Hero AI Image with attributable absolute upgradeUrl + upgradeOffer (HERO-129)",
+);
+check(
+  buildMcpPlanRequiredUpgradeUrl("batch_edit_video")
+    === "https://studio.heroaiengine.com/pricing?source=mcp_plan_required&tool=batch_edit_video",
+  "HERO-129: buildMcpPlanRequiredUpgradeUrl attaches source=mcp_plan_required and tool param",
+);
+check(
+  buildMcpPlanRequiredUpgradeUrl("../bad tool?&")
+    === "https://studio.heroaiengine.com/pricing?source=mcp_plan_required&tool=badtool",
+  "HERO-129: buildMcpPlanRequiredUpgradeUrl strips unsafe characters from tool param",
+);
+const genericPlanRequired = buildMcpPlanRequiredPayload({ toolName: "export_video" });
+check(
+  genericPlanRequired.error === "plan_required"
+    && genericPlanRequired.code === "plan_required"
+    && genericPlanRequired.upgradeUrl === "https://studio.heroaiengine.com/pricing?source=mcp_plan_required&tool=export_video"
+    && genericPlanRequired.next.includes(genericPlanRequired.upgradeUrl)
+    && genericPlanRequired.message.includes(genericPlanRequired.upgradeUrl),
+  "HERO-129: buildMcpPlanRequiredPayload includes structured upgradeUrl, upgradeOffer, and bilingual next",
 );
 check(
   mcpHeroVisualRefusal({ canUse: true, reason: "eligible" }, "automix") === null,
