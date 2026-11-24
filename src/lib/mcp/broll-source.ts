@@ -4,6 +4,12 @@ import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
   type HeroAiImageAccessDecision,
 } from "@/lib/internal-ai-access";
+import {
+  buildMcpPlanRequiredPayload,
+  buildMcpPlanRequiredUpgradeUrl,
+  buildMcpUpgradeNext,
+  MCP_PRO_UPGRADE_OFFER,
+} from "@/lib/mcp/plan-upgrade-cta";
 
 /** Public MCP names. The worker still receives the editor's stockSource values. */
 export const MCP_BROLL_SOURCES = ["stock", "hero-ai-image", "automix", "external"] as const;
@@ -57,10 +63,34 @@ export function mcpStockKeyRefusal(input: {
 export function mcpHeroVisualRefusal(
   access: Pick<HeroAiImageAccessDecision, "canUse" | "reason">,
   source: McpBrollSource,
-): { error: string; message: string; upgradeUrl?: string; remainingImages?: number } | null {
+  toolName: string = "create_video_job",
+): {
+  error: string;
+  code?: string;
+  message: string;
+  next?: string;
+  upgradeUrl?: string;
+  upgradeOffer?: string;
+  remainingImages?: number;
+} | null {
   if (!mcpBrollUsesHeroImages(source) || access.canUse) return null;
-  if (access.reason === "allowance_exhausted") return HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body;
-  if (process.env.HERO_AI_IMAGE_PUBLIC === "1") return HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body;
+  if (access.reason === "allowance_exhausted") {
+    const upgradeUrl = buildMcpPlanRequiredUpgradeUrl(toolName);
+    return {
+      ...HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body,
+      code: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body.error,
+      next: buildMcpUpgradeNext(upgradeUrl),
+      upgradeUrl,
+      upgradeOffer: MCP_PRO_UPGRADE_OFFER,
+    };
+  }
+  if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+    const upgradeUrl = buildMcpPlanRequiredUpgradeUrl(toolName);
+    return buildMcpPlanRequiredPayload({
+      toolName,
+      message: `${HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body.message} (${upgradeUrl})`,
+    });
+  }
   return {
     error: "beta_only",
     message: source === "automix"

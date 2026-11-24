@@ -64,7 +64,11 @@ const importRequired = () => quoteFailure("presenter_import_required", "ยั�
  * allowance/expiry bookkeeping). Never imports media, creates a VideoJob,
  * calls a provider, or reserves funding. Quota snapshots deliberately do not sync grants;
  * consumption must refresh entitlement/usage and funding before starting. */
-export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): Promise<VideoQuoteReply> {
+export async function prepareVideoQuote(
+  user: User,
+  raw: PrepareVideoJobInput,
+  opts?: { toolName?: string },
+): Promise<VideoQuoteReply> {
   const parsed = prepareVideoJobInputSchema.safeParse(raw);
   if (!parsed.success) return quoteFailure("invalid_input", "ข้อมูลงานไม่ถูกต้อง", "ตรวจชนิดและช่วงค่าตาม schema ของ prepare_video_job");
   if (user.suspended) return quoteFailure("account_suspended", "บัญชีนี้ยังสร้างงานไม่ได้", "ติดต่อฝ่ายช่วยเหลือใน Studio");
@@ -111,7 +115,13 @@ export async function prepareVideoQuote(user: User, raw: PrepareVideoJobInput): 
     if (paced.warning) quoteWarnings = [paced.warning];
   }
   if (!(durationSeconds > 0) || !Number.isFinite(durationSeconds)) return quoteFailure("invalid_input", "ไม่พบเนื้อหาที่ใช้สร้างวิดีโอ", "ส่ง script ที่มีคำพูด หรือคลิปพิธีกรที่นำเข้าสำเร็จแล้ว");
-  const starterTrialRefusal = await validateMcpStarterTrialQuoteInput(user, input, durationSeconds);
+  const starterTrialRefusal = await validateMcpStarterTrialQuoteInput(
+    user,
+    input,
+    durationSeconds,
+    new Date(),
+    opts?.toolName ?? "prepare_video_job",
+  );
   if (starterTrialRefusal) return starterTrialRefusal;
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
   const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);

@@ -9,9 +9,28 @@ import { PRESET_WEIGHTS } from "@/app/(dashboard)/video-editor/_v2/mix-presets";
 export const QUOTE_TTL_MS = 30 * 60 * 1000;
 export const EXTERNAL_MEDIA_DISCLOSURE = "ไม่ใช้ Hero credits สำหรับการสร้างภาพ · การเรนเดอร์ยังใช้นาทีตามแผนหรือเครดิตส่วนเกิน · เครื่องมือภายนอกของคุณอาจมีค่าใช้จ่ายของตัวเอง";
 export type QuoteSource = "stock" | "hero-ai-image" | "automix" | "external";
-export type QuoteFailure = { error: string; code: string; message: string; next: string };
-export function quoteFailure(code: string, message: string, next = "เรียก prepare_video_job เพื่อขอวงเงินใหม่ แล้วให้เจ้าของบัญชียืนยันใน Studio"): QuoteFailure {
-  return { error: code, code, message, next };
+export type QuoteFailure = {
+  error: string;
+  code: string;
+  message: string;
+  next: string;
+  upgradeUrl?: string;
+  upgradeOffer?: string;
+};
+export function quoteFailure(
+  code: string,
+  message: string,
+  next = "เรียก prepare_video_job เพื่อขอวงเงินใหม่ แล้วให้เจ้าของบัญชียืนยันใน Studio",
+  extras?: { upgradeUrl?: string; upgradeOffer?: string },
+): QuoteFailure {
+  return {
+    error: code,
+    code,
+    message,
+    next,
+    ...(extras?.upgradeUrl ? { upgradeUrl: extras.upgradeUrl } : {}),
+    ...(extras?.upgradeOffer ? { upgradeOffer: extras.upgradeOffer } : {}),
+  };
 }
 
 /** Version changes whenever the meaning of a displayed term changes. Prices come from billing. */
