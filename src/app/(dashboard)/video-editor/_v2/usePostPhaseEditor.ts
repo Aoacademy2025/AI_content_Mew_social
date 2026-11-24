@@ -59,6 +59,7 @@ import {
   type HeadlineHookSuggestion,
 } from "@/lib/headline-hook";
 import type { SubmitExportInput, V2JobState } from "./useV2Job";
+import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import { clampTailHoldMs } from "@/lib/tail-hold";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
@@ -101,7 +102,22 @@ import {
   clearPendingBrollApply, readPendingBrollApply, writePendingBrollApply,
   type PendingBrollApply,
 } from "@/lib/broll-apply-recovery";
-import { PENDING_EDIT_BANNER_TEXT, type WebPendingEdit } from "./pending-edit-view";
+import { PENDING_EDIT_BANNER_TEXT, type WebPendingEdit, type WebPendingEditDraft } from "./pending-edit-view";
+import {
+  SUBTITLE_DRAFT_DEBOUNCE_MS,
+  clearSubtitleDraft,
+  cloneSubtitleDraftState,
+  decidePendingEditResyncAction,
+  hasUnsavedSubtitleChanges,
+  readSubtitleDraft,
+  rekeySubtitleDraft,
+  safeSubtitleDraftStorage,
+  subtitleDraftEquals,
+  subtitleDraftKey,
+  writeSubtitleDraft,
+  type StoredSubtitleDraft,
+  type SubtitleDraftState,
+} from "./subtitle-draft-storage";
 import {
   baseBackgroundMusicEdit,
   speechSegments,
@@ -244,6 +260,67 @@ function subtitleConfigFromBrandDefault(
   return { ...config, fontFamily: matchedFont };
 }
 
+function computeInitialSubtitleState(input: {
+  pendingDraft: WebPendingEditDraft | null;
+  editSnapshot: ParsedVideoJobOutput["editSnapshot"];
+  preview: ParsedVideoJobOutput["preview"] | null;
+  initialSubtitleConfig: SubtitleStylePresetConfig | undefined;
+  activeTemplateId: ActiveStylePackId | null;
+}): SubtitleDraftState {
+  const { pendingDraft, editSnapshot, preview, initialSubtitleConfig, activeTemplateId } = input;
+  const captions = (() => {
+    if (pendingDraft?.captions) return cloneCaptions(pendingDraft.captions);
+    const raw = preview?.captions ?? [];
+    const initLen = editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen;
+    if (!editSnapshot?.captions && initLen && initLen !== "sentence" && raw.length > 0) {
+      return regroupCaptions(
+        raw,
+        initLen,
+        preview?.words,
+        preview?.fullText,
+        initialSubtitleConfig?.fontSize ?? DEFAULT_V2_SUB.fontSize,
+      );
+    }
+    return cloneCaptions(raw);
+  })();
+
+  const cfg: V2SubConfig = ((): V2SubConfig => {
+    const hasSavedCfg = Boolean(pendingDraft?.subtitleConfig || editSnapshot?.subtitleConfig);
+    let baseCfg = pendingDraft?.subtitleConfig
+      ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
+      ?? subtitleConfigFromBrandDefault(initialSubtitleConfig);
+    if (!hasSavedCfg && activeTemplateId && isActiveStylePackId(activeTemplateId)) {
+      const pack = stylePack(activeTemplateId);
+      baseCfg = {
+        ...baseCfg,
+        highlightKeywords: pack.highlightKeywords,
+        statCards: pack.statCards,
+        sfxMode: baseCfg.sfxMode ?? pack.sfxMode,
+      };
+    }
+    const previewSfx = (preview?.config as { sfxMode?: unknown } | undefined)?.sfxMode;
+    if (baseCfg.sfxMode === undefined && (previewSfx === "subtle" || previewSfx === "none")) {
+      return { ...baseCfg, sfxMode: previewSfx };
+    }
+    return { ...baseCfg };
+  })();
+
+  const cardLen: V2CardLen = pendingDraft?.cardLen
+    ?? editSnapshot?.cardLen
+    ?? initialSubtitleConfig?.cardLen
+    ?? "sentence";
+  const overrides = cloneOverrides(
+    pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {},
+  );
+  // EP5 backlog #14: hold the last frame N ms after the voice ends (0-3000, default 0 = today's
+  // behaviour exactly). Same "pendingDraft, else editSnapshot, else default" precedence as cfg/
+  // cardLen above — a legacy snapshot without this field reads as 0.
+  const tailHoldMs = clampTailHoldMs(
+    pendingDraft?.tailHoldMs ?? (editSnapshot?.tailHoldMs as number | undefined) ?? 0,
+  );
+  return { captions, overrides, cfg, cardLen, tailHoldMs };
+}
+
 export function usePostPhaseEditor(
   job: V2JobState,
   script: string,
@@ -279,13 +356,12 @@ export function usePostPhaseEditor(
   const preview = job.output?.preview ?? null;
   const editSnapshot = job.output?.editSnapshot;
   const previewTemplateId = (preview?.config as { templateId?: unknown } | undefined)?.templateId;
-  const [activeTemplateId, setActiveTemplateId] = useState<ActiveStylePackId | null>(() => (
-    isActiveStylePackId(initialTemplateId)
-      ? initialTemplateId
-      : isActiveStylePackId(previewTemplateId)
-        ? previewTemplateId
-        : null
-  ));
+  const initialActiveTemplateId: ActiveStylePackId | null = isActiveStylePackId(initialTemplateId)
+    ? initialTemplateId
+    : isActiveStylePackId(previewTemplateId)
+      ? previewTemplateId
+      : null;
+  const [activeTemplateId, setActiveTemplateId] = useState<ActiveStylePackId | null>(initialActiveTemplateId);
   // T8 (ADR 0064, G21): when the Shell already loaded a draft for this exact base job, it wins
   // over the normal source (editSnapshot / the raw preview) for every field it carries. The web
   // never writes back to this draft — only a successful export clears it (G12, server-side).
@@ -293,46 +369,22 @@ export function usePostPhaseEditor(
   const pendingRevisionRef = useRef<number | undefined>(pendingEdit?.revision);
   const appliedPendingRevisionRef = useRef<number | null>(null);
   const appliedPendingMediaRef = useRef<Map<number, WindowEdit>>(new Map());
+  const brollRebasePendingRef = useRef(false);
+  const forceApplyNextPendingEditRef = useRef(false);
   const effectiveFullText = pendingDraft?.fullText ?? preview?.fullText;
   const effectiveWords = pendingDraft?.words ?? preview?.words;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
-  const [captions, setCaptions] = useState<V2Caption[]>(() => {
-    if (pendingDraft?.captions) return pendingDraft.captions;
-    const raw = preview?.captions ?? [];
-    const initLen = editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen;
-    if (!editSnapshot?.captions && initLen && initLen !== "sentence" && raw.length > 0) {
-      return regroupCaptions(
-        raw,
-        initLen,
-        preview?.words,
-        preview?.fullText,
-        initialSubtitleConfig?.fontSize ?? DEFAULT_V2_SUB.fontSize,
-      );
-    }
-    return raw;
-  });
+  const [initialSubtitleState] = useState<SubtitleDraftState>(() => computeInitialSubtitleState({
+    pendingDraft,
+    editSnapshot,
+    preview,
+    initialSubtitleConfig,
+    activeTemplateId: initialActiveTemplateId,
+  }));
+  const [captions, setCaptions] = useState<V2Caption[]>(() => cloneCaptions(initialSubtitleState.captions));
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [cfg, setCfg] = useState<V2SubConfig>(() => {
-    const hasSavedCfg = Boolean(pendingDraft?.subtitleConfig || editSnapshot?.subtitleConfig);
-    let baseCfg = pendingDraft?.subtitleConfig
-      ?? (editSnapshot?.subtitleConfig as V2SubConfig | undefined)
-      ?? subtitleConfigFromBrandDefault(initialSubtitleConfig);
-    if (!hasSavedCfg && activeTemplateId && isActiveStylePackId(activeTemplateId)) {
-      const pack = stylePack(activeTemplateId);
-      baseCfg = {
-        ...baseCfg,
-        highlightKeywords: pack.highlightKeywords,
-        statCards: pack.statCards,
-        sfxMode: baseCfg.sfxMode ?? pack.sfxMode,
-      };
-    }
-    const previewSfx = (preview?.config as { sfxMode?: unknown } | undefined)?.sfxMode;
-    if (baseCfg.sfxMode === undefined && (previewSfx === "subtle" || previewSfx === "none")) {
-      return { ...baseCfg, sfxMode: previewSfx };
-    }
-    return baseCfg;
-  });
+  const [cfg, setCfg] = useState<V2SubConfig>(() => ({ ...initialSubtitleState.cfg }));
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
@@ -348,23 +400,40 @@ export function usePostPhaseEditor(
   const originalCapsRef = useRef<V2Caption[]>(
     pendingDraft?.originalCaptions ?? editSnapshot?.originalCaptions ?? preview?.captions ?? [],
   );
-  const [cardLen, setCardLen] = useState<V2CardLen>(
-    pendingDraft?.cardLen ?? editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen ?? "sentence",
-  );
+  const [cardLen, setCardLen] = useState<V2CardLen>(() => initialSubtitleState.cardLen);
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
-  const [overrides, setOverrides] = useState<V2CardOverrides>(() => (
-    pendingDraft?.captionOverrides ?? editSnapshot?.captionOverrides ?? {}
-  ));
-  // EP5 backlog #14: hold the last frame N ms after the voice ends (0-3000, default 0 = today's
-  // behaviour exactly). Same "pendingDraft, else editSnapshot, else default" precedence as cfg/
-  // cardLen above — a legacy snapshot without this field reads as 0.
-  const [tailHoldMs, setTailHoldMsState] = useState<number>(() => (
-    pendingDraft?.tailHoldMs ?? (editSnapshot?.tailHoldMs as number | undefined) ?? 0
-  ));
+  const [overrides, setOverrides] = useState<V2CardOverrides>(() => cloneOverrides(initialSubtitleState.overrides));
+  const [tailHoldMs, setTailHoldMsState] = useState<number>(() => initialSubtitleState.tailHoldMs);
   function setTailHoldMs(next: number) {
     setTailHoldMsState(clampTailHoldMs(next));
   }
+  // HERO-116 (Phase A1): baseline tracks the last loaded/exported subtitle state so any local
+  // change to captions, overrides, cfg, cardLen, or tailHoldMs arms beforeunload + localStorage
+  // draft persistence, and survives reload, tab drop, B-roll apply, or "แก้ซับต่อ".
+  const [subtitleBaseline, setSubtitleBaseline] = useState<SubtitleDraftState>(() => cloneSubtitleDraftState(initialSubtitleState));
+  const subtitleBaselineRef = useRef<SubtitleDraftState>(subtitleBaseline);
+  subtitleBaselineRef.current = subtitleBaseline;
+  const currentSubtitleState = useMemo<SubtitleDraftState>(
+    () => ({ captions, overrides, cfg, cardLen, tailHoldMs }),
+    [captions, overrides, cfg, cardLen, tailHoldMs],
+  );
+  const currentSubtitleStateRef = useRef<SubtitleDraftState>(currentSubtitleState);
+  currentSubtitleStateRef.current = currentSubtitleState;
+  const hasUnsavedSubtitleEdits = useMemo(
+    () => hasUnsavedSubtitleChanges(currentSubtitleState, subtitleBaseline),
+    [currentSubtitleState, subtitleBaseline],
+  );
+  const hasUnsavedSubtitleEditsRef = useRef<boolean>(hasUnsavedSubtitleEdits);
+  hasUnsavedSubtitleEditsRef.current = hasUnsavedSubtitleEdits;
+  const [restorableSubtitleDraft, setRestorableSubtitleDraft] = useState<StoredSubtitleDraft | null>(null);
+  const restorableSubtitleDraftRef = useRef<StoredSubtitleDraft | null>(null);
+  restorableSubtitleDraftRef.current = restorableSubtitleDraft;
+  const dismissedRestorableDraftRef = useRef(false);
+  const hasEditedSubtitlesInSessionRef = useRef(false);
+  const activeDraftJobIdRef = useRef<string | null>(job.jobId);
+  const draftOwnerRef = useRef({ accountId, projectId });
+  const draftDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef<PendingBrollApply | null>(null);
@@ -640,18 +709,172 @@ export function usePostPhaseEditor(
     [preview],
   );
 
-  // Upload/select results are already server-side assets, but their placement is browser-only
-  // until `applyWindowEdits` succeeds. A refresh/close must therefore use the browser's native
-  // unsaved-changes guard instead of silently orphaning the staged edits.
+  function cancelSubtitleDraftWrite() {
+    if (draftDebounceTimerRef.current !== null) {
+      clearTimeout(draftDebounceTimerRef.current);
+      draftDebounceTimerRef.current = null;
+    }
+  }
+
+  function flushSubtitleDraftNow(overrideJobId?: string | null) {
+    cancelSubtitleDraftWrite();
+    if (!hasUnsavedSubtitleEditsRef.current || restorableSubtitleDraftRef.current) return;
+    const owner = currentApplyOwnerRef.current;
+    const targetJobId = overrideJobId ?? activeDraftJobIdRef.current ?? owner.jobId;
+    writeSubtitleDraft(
+      safeSubtitleDraftStorage(),
+      { accountId: owner.accountId, projectId: owner.projectId, jobId: targetJobId },
+      currentSubtitleStateRef.current,
+    );
+  }
+
+  function clearStoredSubtitleDraft(jobIds: Array<string | null | undefined>) {
+    cancelSubtitleDraftWrite();
+    const storage = safeSubtitleDraftStorage();
+    const owner = currentApplyOwnerRef.current;
+    const seen = new Set<string>();
+    for (const rawId of jobIds) {
+      const id = typeof rawId === "string" ? rawId.trim() : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      clearSubtitleDraft(storage, {
+        accountId: owner.accountId,
+        projectId: owner.projectId,
+        jobId: id,
+      });
+    }
+  }
+
+  // Load any stored local subtitle draft on mount / job change (including reopen after reload,
+  // B-roll recovery, or "แก้ซับต่อ" via resumeExportEditSnapshot). Keep restore explicit via
+  // banner rather than silently overwriting the loaded baseline or server pendingEdit.
   useEffect(() => {
-    if (pendingBrollEditCount === 0) return;
-    const warnAboutPendingBroll = (event: BeforeUnloadEvent) => {
+    const previousOwner = draftOwnerRef.current;
+    const ownerChanged = previousOwner.accountId !== accountId || previousOwner.projectId !== projectId;
+    if (ownerChanged) {
+      cancelSubtitleDraftWrite();
+      dismissedRestorableDraftRef.current = false;
+      hasEditedSubtitlesInSessionRef.current = false;
+      restorableSubtitleDraftRef.current = null;
+      setRestorableSubtitleDraft(null);
+      draftOwnerRef.current = { accountId, projectId };
+      activeDraftJobIdRef.current = job.jobId;
+    }
+
+    const storage = safeSubtitleDraftStorage();
+    const previousJobId = activeDraftJobIdRef.current;
+    if (!ownerChanged && previousJobId && job.jobId && previousJobId !== job.jobId) {
+      if (hasUnsavedSubtitleEditsRef.current && !restorableSubtitleDraftRef.current) {
+        cancelSubtitleDraftWrite();
+        const prevKey = subtitleDraftKey({ accountId, projectId, jobId: previousJobId });
+        const wrote = writeSubtitleDraft(
+          storage,
+          { accountId, projectId, jobId: job.jobId },
+          currentSubtitleStateRef.current,
+          Date.now(),
+          prevKey ? { preserveKeys: [prevKey] } : undefined,
+        );
+        if (wrote) {
+          clearSubtitleDraft(storage, { accountId, projectId, jobId: previousJobId });
+        }
+      } else {
+        rekeySubtitleDraft(storage, { accountId, projectId }, previousJobId, job.jobId);
+      }
+      activeDraftJobIdRef.current = job.jobId;
+    } else if (!activeDraftJobIdRef.current && job.jobId) {
+      activeDraftJobIdRef.current = job.jobId;
+    }
+
+    if (!accountId || !projectId || !job.jobId) return;
+    if (hasUnsavedSubtitleEditsRef.current || dismissedRestorableDraftRef.current) return;
+
+    let stored = readSubtitleDraft(storage, { accountId, projectId, jobId: job.jobId });
+    if (!stored) {
+      // If a B-roll rerender finished on the server while the tab was closed, migrate the
+      // subtitle draft from the verified sourceJobId onto the newly active jobId.
+      const pendingBroll = readPendingBrollApply(brollStorage(), accountId, projectId);
+      if (
+        pendingBroll.kind === "found"
+        && pendingBroll.operation.jobId === job.jobId
+        && pendingBroll.operation.sourceJobId !== job.jobId
+      ) {
+        stored = rekeySubtitleDraft(
+          storage,
+          { accountId, projectId },
+          pendingBroll.operation.sourceJobId,
+          job.jobId,
+        );
+      }
+    }
+
+    if (
+      stored
+      && !subtitleDraftEquals(stored, subtitleBaselineRef.current)
+      && !subtitleDraftEquals(stored, currentSubtitleStateRef.current)
+    ) {
+      restorableSubtitleDraftRef.current = stored;
+      setRestorableSubtitleDraft(stored);
+    } else {
+      restorableSubtitleDraftRef.current = null;
+      setRestorableSubtitleDraft(null);
+    }
+  }, [accountId, projectId, job.jobId]);
+
+  // Debounced per-job localStorage autosave whenever post-phase subtitle state differs from
+  // the loaded baseline. Never overwrites a pending un-restored draft awaiting user choice.
+  useEffect(() => {
+    if (!accountId || !projectId || !job.jobId) return;
+    if (restorableSubtitleDraft !== null) return;
+    if (hasUnsavedSubtitleEdits) {
+      hasEditedSubtitlesInSessionRef.current = true;
+      cancelSubtitleDraftWrite();
+      draftDebounceTimerRef.current = setTimeout(() => {
+        draftDebounceTimerRef.current = null;
+        writeSubtitleDraft(
+          safeSubtitleDraftStorage(),
+          { accountId, projectId, jobId: activeDraftJobIdRef.current ?? job.jobId },
+          currentSubtitleStateRef.current,
+        );
+      }, SUBTITLE_DRAFT_DEBOUNCE_MS);
+      return cancelSubtitleDraftWrite;
+    }
+    if (hasEditedSubtitlesInSessionRef.current) {
+      cancelSubtitleDraftWrite();
+      clearSubtitleDraft(safeSubtitleDraftStorage(), {
+        accountId,
+        projectId,
+        jobId: activeDraftJobIdRef.current ?? job.jobId,
+      });
+    }
+  }, [accountId, projectId, job.jobId, currentSubtitleState, hasUnsavedSubtitleEdits, restorableSubtitleDraft]);
+
+  // Flush any pending debounced subtitle write if the component unmounts while dirty (e.g.,
+  // responsive desktop/mobile switch or transient export-submit unmount).
+  useEffect(() => () => {
+    flushSubtitleDraftNow();
+  }, []);
+
+  // Unsaved-changes guard: staged B-roll edits OR local subtitle/style edits that differ from
+  // the loaded baseline trigger beforeunload, and flush the latest subtitle draft on unload /
+  // mobile pagehide so edits made within the debounce window are never lost.
+  const hasUnsavedChanges = pendingBrollEditCount > 0 || hasUnsavedSubtitleEdits;
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const warnAboutUnsavedChanges = (event: BeforeUnloadEvent) => {
+      flushSubtitleDraftNow();
       event.preventDefault();
       event.returnValue = "";
     };
-    window.addEventListener("beforeunload", warnAboutPendingBroll);
-    return () => window.removeEventListener("beforeunload", warnAboutPendingBroll);
-  }, [pendingBrollEditCount]);
+    const persistOnPageHide = () => {
+      flushSubtitleDraftNow();
+    };
+    window.addEventListener("beforeunload", warnAboutUnsavedChanges);
+    window.addEventListener("pagehide", persistOnPageHide);
+    return () => {
+      window.removeEventListener("beforeunload", warnAboutUnsavedChanges);
+      window.removeEventListener("pagehide", persistOnPageHide);
+    };
+  }, [hasUnsavedChanges]);
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
     if (pendingApplyRef.current) return;
@@ -913,6 +1136,9 @@ export function usePostPhaseEditor(
       && (currentApplyOwnerRef.current.jobId === operation.sourceJobId
         || currentApplyOwnerRef.current.jobId === operation.jobId);
     try {
+      // Flush any debounced subtitle edits under sourceJobId before B-roll submission starts
+      // so a reload during B-roll render can recover them cleanly.
+      flushSubtitleDraftNow(operation.sourceJobId);
       if (!operation.jobId) {
         // Once the project has advanced, replaying a POST could create stale work if the
         // original request never reached the server. Look up only the saved key instead.
@@ -1016,19 +1242,70 @@ export function usePostPhaseEditor(
           // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
           // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
           // style state is untouched — only the source job identity moves forward.
+          brollRebasePendingRef.current = true;
+          const draftStorage = safeSubtitleDraftStorage();
+          const previousDraftJobId = activeDraftJobIdRef.current;
+          if (hasUnsavedSubtitleEditsRef.current && !restorableSubtitleDraftRef.current) {
+            cancelSubtitleDraftWrite();
+            const preserveKeys = [operation.sourceJobId, previousDraftJobId]
+              .map((id) => subtitleDraftKey({ accountId, projectId, jobId: id }))
+              .filter((k): k is string => Boolean(k));
+            const wroteAdopted = writeSubtitleDraft(
+              draftStorage,
+              { accountId, projectId, jobId: newJobId },
+              currentSubtitleStateRef.current,
+              Date.now(),
+              preserveKeys.length > 0 ? { preserveKeys } : undefined,
+            );
+            if (wroteAdopted) {
+              if (operation.sourceJobId && operation.sourceJobId !== newJobId) {
+                clearSubtitleDraft(draftStorage, { accountId, projectId, jobId: operation.sourceJobId });
+              }
+              if (
+                previousDraftJobId
+                && previousDraftJobId !== newJobId
+                && previousDraftJobId !== operation.sourceJobId
+              ) {
+                clearSubtitleDraft(draftStorage, { accountId, projectId, jobId: previousDraftJobId });
+              }
+            }
+          } else {
+            const migrated = rekeySubtitleDraft(
+              draftStorage,
+              { accountId, projectId },
+              operation.sourceJobId,
+              newJobId,
+            );
+            if (
+              migrated
+              && !dismissedRestorableDraftRef.current
+              && !subtitleDraftEquals(migrated, subtitleBaselineRef.current)
+              && !subtitleDraftEquals(migrated, currentSubtitleStateRef.current)
+            ) {
+              restorableSubtitleDraftRef.current = migrated;
+              setRestorableSubtitleDraft(migrated);
+            }
+          }
+          activeDraftJobIdRef.current = newJobId;
           onAdoptJob({
             id: newJobId,
             projectId: p.projectId ?? job.projectId ?? null,
             contentPreflightId: p.contentPreflightId ?? job.contentPreflightId ?? null,
           });
           if (onReloadPendingEdit) {
-            const latest = await onReloadPendingEdit();
-            pendingRevisionRef.current = latest?.revision;
-            // Applying media must not replace the user's local caption/style edits.
-            if (latest) {
-              appliedPendingRevisionRef.current = latest.revision;
-              appliedPendingMediaRef.current = webPendingWindowEdits(latest.draft);
+            try {
+              const latest = await onReloadPendingEdit();
+              pendingRevisionRef.current = latest?.revision;
+              // Applying media must not replace the user's local caption/style edits.
+              if (latest) {
+                appliedPendingRevisionRef.current = latest.revision;
+                appliedPendingMediaRef.current = webPendingWindowEdits(latest.draft);
+              }
+            } finally {
+              brollRebasePendingRef.current = false;
             }
+          } else {
+            brollRebasePendingRef.current = false;
           }
           toast.success("อัปเดตวิดีโอแล้ว");
           pendingApplyRef.current = null;
@@ -1256,27 +1533,63 @@ export function usePostPhaseEditor(
       // The next mutation must not carry the retired draft's CAS revision.
       pendingRevisionRef.current = undefined;
       appliedPendingRevisionRef.current = null;
+      forceApplyNextPendingEditRef.current = false;
       return;
     }
     const incomingMedia = webPendingWindowEdits(pendingEdit.draft);
-    if (appliedPendingRevisionRef.current === pendingEdit.revision) {
+    const resyncAction = decidePendingEditResyncAction({
+      incomingRevision: pendingEdit.revision,
+      appliedRevision: appliedPendingRevisionRef.current,
+      hasUnsavedLocalSubtitles: hasUnsavedSubtitleEditsRef.current,
+      brollRebaseInFlight: brollRebasePendingRef.current
+        || (pendingApplyRef.current !== null && appliedPendingRevisionRef.current !== null),
+      forceApply: forceApplyNextPendingEditRef.current,
+    });
+    if (resyncAction === "refresh-media-only") {
       const previousMedia = appliedPendingMediaRef.current;
       setWindowEditsState(current => refreshPendingWindowMedia(current, previousMedia, incomingMedia));
       appliedPendingMediaRef.current = incomingMedia;
       return;
     }
+    if (resyncAction === "preserve-local-subtitles-rebase") {
+      // HERO-116: a B-roll rebase bumped the server revision while local subtitle edits are
+      // in progress (or while B-roll adoption is completing). Keep local captions/style intact
+      // and only advance the revision + untouched media pointers.
+      const previousMedia = appliedPendingMediaRef.current;
+      setWindowEditsState(current => refreshPendingWindowMedia(current, previousMedia, incomingMedia));
+      appliedPendingMediaRef.current = incomingMedia;
+      appliedPendingRevisionRef.current = pendingEdit.revision;
+      pendingRevisionRef.current = pendingEdit.revision;
+      brollRebasePendingRef.current = false;
+      return;
+    }
+    if (resyncAction === "preserve-local-subtitles") {
+      // HERO-116: an unsolicited revision bump arrived while the creator has unsaved local
+      // subtitle edits. Never silently clobber local captions/style; leave pendingRevisionRef
+      // intact so a true concurrent agent edit is still caught by CAS on export.
+      const previousMedia = appliedPendingMediaRef.current;
+      setWindowEditsState(current => refreshPendingWindowMedia(current, previousMedia, incomingMedia));
+      appliedPendingMediaRef.current = incomingMedia;
+      appliedPendingRevisionRef.current = pendingEdit.revision;
+      return;
+    }
+    forceApplyNextPendingEditRef.current = false;
+    brollRebasePendingRef.current = false;
     appliedPendingMediaRef.current = incomingMedia;
     appliedPendingRevisionRef.current = pendingEdit.revision;
     pendingRevisionRef.current = pendingEdit.revision;
     const draft = pendingEdit.draft;
+    const nextCaptions = cloneCaptions(draft.captions);
+    const nextOverrides = cloneOverrides(draft.captionOverrides);
+    const nextTailHoldMs = clampTailHoldMs(draft.tailHoldMs ?? 0);
     setWindowEditsState(webPendingWindowEdits(draft));
     setBrollTransitionDraft(draft.brollTransition ?? null);
-    setCaptions(cloneCaptions(draft.captions));
+    setCaptions(nextCaptions);
     originalCapsRef.current = cloneCaptions(draft.originalCaptions);
-    committedRef.current = cloneCaptions(draft.captions);
+    committedRef.current = cloneCaptions(nextCaptions);
     setCfg(draft.subtitleConfig);
     setCardLen(draft.cardLen);
-    setOverrides(cloneOverrides(draft.captionOverrides));
+    setOverrides(nextOverrides);
     // Set unconditionally (not `if (draft.headlineHook)`): a discard/reseed can legitimately
     // remove the headline, and the override must follow the draft back to `undefined` instead
     // of keeping the previous revision's stale value.
@@ -1289,6 +1602,33 @@ export function usePostPhaseEditor(
     // an unreviewed web export would then clear the agent's draft with tailHoldMs: 0. Set
     // unconditionally, same reasoning as headlineHook above: absent/legacy reads as 0.
     setTailHoldMsState(clampTailHoldMs(draft.tailHoldMs ?? 0));
+    const nextBaseline = cloneSubtitleDraftState({
+      captions: nextCaptions,
+      overrides: nextOverrides,
+      cfg: draft.subtitleConfig,
+      cardLen: draft.cardLen,
+      tailHoldMs: nextTailHoldMs,
+    });
+    subtitleBaselineRef.current = nextBaseline;
+    setSubtitleBaseline(nextBaseline);
+    if (resyncAction === "apply-forced") {
+      hasUnsavedSubtitleEditsRef.current = false;
+      setRestorableSubtitleDraft((current) => {
+        const next = current && !subtitleDraftEquals(current, nextBaseline) ? current : null;
+        restorableSubtitleDraftRef.current = next;
+        return next;
+      });
+    } else if (!dismissedRestorableDraftRef.current) {
+      const owner = currentApplyOwnerRef.current;
+      const stored = readSubtitleDraft(safeSubtitleDraftStorage(), {
+        accountId: owner.accountId,
+        projectId: owner.projectId,
+        jobId: activeDraftJobIdRef.current ?? owner.jobId,
+      });
+      const nextRestorable = stored && !subtitleDraftEquals(stored, nextBaseline) ? stored : null;
+      restorableSubtitleDraftRef.current = nextRestorable;
+      setRestorableSubtitleDraft(nextRestorable);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the draft identity drives this
   }, [pendingEdit]);
 
@@ -1305,6 +1645,62 @@ export function usePostPhaseEditor(
     setSelected(Math.max(0, Math.min(snapshot.selected, nextCaptions.length - 1)));
     setCardLen(snapshot.cardLen);
     setEditingIdx(null);
+  }
+
+  function restoreSubtitleDraft(): boolean {
+    const draft = restorableSubtitleDraftRef.current;
+    if (!draft) return false;
+    const nextCaptions = cloneCaptions(draft.captions);
+    const nextOverrides = cloneOverrides(draft.overrides);
+    const nextCfg: V2SubConfig = { ...draft.cfg };
+    const nextTailHoldMs = clampTailHoldMs(draft.tailHoldMs);
+    committedRef.current = cloneCaptions(nextCaptions);
+    historyRef.current = { past: [], future: [] };
+    syncHistoryCounts(historyRef.current);
+    setCaptions(nextCaptions);
+    setOverrides(nextOverrides);
+    setCfg(nextCfg);
+    setCardLen(draft.cardLen);
+    setTailHoldMsState(nextTailHoldMs);
+    setSelected((current) => Math.max(0, Math.min(current, Math.max(0, nextCaptions.length - 1))));
+    setEditingIdx(null);
+    dismissedRestorableDraftRef.current = true;
+    hasEditedSubtitlesInSessionRef.current = true;
+    restorableSubtitleDraftRef.current = null;
+    setRestorableSubtitleDraft(null);
+    toast.success("กู้คืนการแก้ไขซับแล้ว");
+    return true;
+  }
+
+  function discardSubtitleDraft() {
+    const pendingBanner = restorableSubtitleDraftRef.current;
+    clearStoredSubtitleDraft([pendingBanner?.jobId, activeDraftJobIdRef.current, job.jobId]);
+    dismissedRestorableDraftRef.current = true;
+    if (pendingBanner !== null) {
+      restorableSubtitleDraftRef.current = null;
+      setRestorableSubtitleDraft(null);
+      if (!hasUnsavedSubtitleEditsRef.current) {
+        hasEditedSubtitlesInSessionRef.current = false;
+      }
+      toast("ทิ้งฉบับร่างซับแล้ว");
+      return;
+    }
+    // Programmatic discard when no banner is shown: revert live subtitle state to baseline
+    // and clear dirty state so beforeunload disarms cleanly.
+    const baseline = cloneSubtitleDraftState(subtitleBaselineRef.current);
+    committedRef.current = cloneCaptions(baseline.captions);
+    historyRef.current = { past: [], future: [] };
+    syncHistoryCounts(historyRef.current);
+    setCaptions(baseline.captions);
+    setOverrides(baseline.overrides);
+    setCfg(baseline.cfg);
+    setCardLen(baseline.cardLen);
+    setTailHoldMsState(baseline.tailHoldMs);
+    setSelected((current) => Math.max(0, Math.min(current, Math.max(0, baseline.captions.length - 1))));
+    setEditingIdx(null);
+    hasUnsavedSubtitleEditsRef.current = false;
+    hasEditedSubtitlesInSessionRef.current = false;
+    toast("ทิ้งฉบับร่างซับแล้ว");
   }
 
   function commitCaptionChange(
@@ -1731,11 +2127,29 @@ export function usePostPhaseEditor(
         if (result.staleRevision) {
           toast.error("AI agent แก้ไขคลิปนี้ไปแล้วระหว่างที่คุณกำลังแก้ — กำลังโหลดฉบับล่าสุดให้ใหม่");
           setExp({ phase: "idle" });
-          await onReloadPendingEdit();
+          forceApplyNextPendingEditRef.current = true;
+          const latest = await onReloadPendingEdit();
+          if (!latest) forceApplyNextPendingEditRef.current = false;
           return;
         }
         throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
       }
+      // Export accepted by the server (durable editSnapshot persisted): clear any browser-local
+      // subtitle draft and reset the baseline so dirty state + beforeunload clear immediately.
+      clearStoredSubtitleDraft([exportSource.jobId, job.jobId, activeDraftJobIdRef.current]);
+      const exportedBaseline = cloneSubtitleDraftState({
+        captions,
+        overrides,
+        cfg,
+        cardLen,
+        tailHoldMs,
+      });
+      subtitleBaselineRef.current = exportedBaseline;
+      hasUnsavedSubtitleEditsRef.current = false;
+      hasEditedSubtitlesInSessionRef.current = false;
+      restorableSubtitleDraftRef.current = null;
+      setSubtitleBaseline(exportedBaseline);
+      setRestorableSubtitleDraft(null);
       // The burned music is the project's music from now on (it may have come from the agent's
       // pending draft, which this export clears without writing the project draft).
       if (exportMusic) onBackgroundMusicChange(exportMusic);
@@ -1934,6 +2348,10 @@ export function usePostPhaseEditor(
     canInsertCaption,
     insertCaptionBlockedReason,
     deleteSelectedCaption,
+    hasUnsavedSubtitleEdits,
+    restorableSubtitleDraft,
+    restoreSubtitleDraft,
+    discardSubtitleDraft,
     exportVideo,
   };
 }

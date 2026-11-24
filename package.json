@@ -195,6 +195,7 @@
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
     "verify:editor-job-runtime": "tsx scripts/verify-editor-project-recovery-hook.ts",
     "verify:editor-pending-draft": "node --conditions=react-server --import tsx scripts/verify-editor-pending-draft.ts",
+    "verify:subtitle-draft-recovery": "tsx scripts/verify-subtitle-draft-recovery.ts",
     "verify:editor-background-music": "tsx scripts/verify-editor-background-music.ts",
     "verify:editor-script-loop": "tsx scripts/verify-editor-script-loop.tsx",
     "verify:editor-script-loop-sensitivity": "tsx scripts/verify-editor-script-loop-sensitivity.ts",

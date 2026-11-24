@@ -59,6 +59,7 @@ import { BackgroundMusicControls } from "./BackgroundMusicControls";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
+import { SubtitleDraftRestoreBanner } from "./SubtitleDraftRestoreBanner";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
 import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
@@ -407,6 +408,12 @@ export function PostPhaseMobile({
           {ed.pendingEditBanner}
         </div>
       )}
+      <SubtitleDraftRestoreBanner
+        draft={ed.restorableSubtitleDraft}
+        onRestore={ed.restoreSubtitleDraft}
+        onDiscard={ed.discardSubtitleDraft}
+        compact
+      />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
