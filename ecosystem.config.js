@@ -270,7 +270,7 @@ module.exports = {
       name: "renewal-reminders",
       cwd: "/var/www/ai-content",
       script: "scripts/renewal-reminders.js",
-      cron_restart: "0 9 * * *", // every day at 9:00 AM — remind PromptPay/one-time users before plan expiry
+      cron_restart: "15 2 * * *", // daily 09:15 Asia/Bangkok (= 02:15 UTC; the box runs UTC, staggered after 02:00 db-backup) — cash renewals, grant expiry, dunning, dormant payers & checkout recovery
       autorestart: false,
       watch: false,
       env: {
@@ -335,7 +335,7 @@ module.exports = {
       name: "trial-expiry",
       cwd: "/var/www/ai-content",
       script: "scripts/trial-expiry.js",
-      cron_restart: "0 8 * * *", // daily 8:00 — revert expired free trials + upgrade prompt
+      cron_restart: "0 1 * * *", // daily 08:00 Asia/Bangkok (= 01:00 UTC; the box runs UTC) — revert expired free trials + upgrade prompt
       autorestart: false,
       watch: false,
       env: {
@@ -346,13 +346,13 @@ module.exports = {
     },
     {
       // Trial lifecycle nudges (issue #299): 2 days left / expiry day / day +3.
-      // Runs AFTER trial-expiry (08:00) so the expiry-day pass sees an already-reverted
-      // user — the trial's end date survives that revert in User.trialEndedAt.
+      // Runs AFTER trial-expiry (08:00 Asia/Bangkok = 01:00 UTC) so the expiry-day pass sees an
+      // already-reverted user — the trial's end date survives that revert in User.trialEndedAt.
       // The route is a no-op unless TRIAL_REMINDERS=1 in the app's .env.
       name: "trial-reminders",
       cwd: "/var/www/ai-content",
       script: "scripts/trial-reminders.js",
-      cron_restart: "0 10 * * *", // daily 10:00 Asia/Bangkok
+      cron_restart: "15 3 * * *", // daily 10:15 Asia/Bangkok (= 03:15 UTC; the box runs UTC, staggered after 03:00 cleanup-videos)
       autorestart: false,
       watch: false,
       env: {
