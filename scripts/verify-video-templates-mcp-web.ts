@@ -342,9 +342,9 @@ async function main() {
     const templates = onOpts.templates as Array<Record<string, unknown>>;
     const templatesHowToChoose = String(onOpts.templatesHowToChoose ?? "");
     check("templatesHowToChoose is non-empty Thai guidance", /[ก-๙]/.test(templatesHowToChoose) && templatesHowToChoose.includes("templateId"));
-    check("templates array exposes all 10 active StylePacks", Array.isArray(templates) && templates.length === 10);
+    check("templates array exposes all 13 active StylePacks", Array.isArray(templates) && templates.length === 13);
     const ids = new Set(templates.map((t) => t.id));
-    check("templates includes shop-review and listicle-fast and excludes pending dharma", ids.has("shop-review") && ids.has("listicle-fast") && !ids.has("dharma"));
+    check("templates includes trending packs (shop-review, listicle-fast, ai-tech-doc, true-crime, self-growth) and excludes pending dharma", ids.has("shop-review") && ids.has("listicle-fast") && ids.has("ai-tech-doc") && ids.has("true-crime") && ids.has("self-growth") && !ids.has("dharma"));
     check(
       "every template option exposes full V2 recipe fields",
       templates.every((t) =>

@@ -82,7 +82,6 @@ const pageSource = [
   readFileSync("src/app/(dashboard)/brands/page.tsx", "utf8"),
   ...componentFiles.map((file) => readFileSync(join(componentsDirectory, file), "utf8")),
 ].join("\n");
-assert.ok(pageSource.includes("สร้างแบรนด์จากค่าที่ใช้อยู่"));
 assert.ok(pageSource.includes("createBrandSetupSeed"));
 assert.ok(readFileSync("src/lib/brand-setup.ts", "utf8").includes("createBrandProfileSeedFromCurrentDefaults"));
 assert.ok(
@@ -104,7 +103,7 @@ assert.ok(
   "the Brand Library composes the shared shadcn primitives",
 );
 
-// ── The default surface asks two things: a name and a Visual Format ─────────
+// ── Zero-typing Studio surface + contextual progressive disclosure ──────────
 assert.ok(pageSource.includes("ชื่อแบรนด์") && pageSource.includes("เช่น Mew Social"));
 assert.ok(
   pageSource.includes("แนวภาพประจำแบรนด์")
@@ -115,10 +114,9 @@ assert.ok(
   "the empty state leads with choosing a style and starting a clip",
 );
 assert.ok(
-  pageSource.includes("ตั้งค่าเพิ่มเติม")
-    && pageSource.includes("สี เสียง ซับ โลโก้ และรายละเอียดแบรนด์ — ไม่กรอกก็ได้")
-    && pageSource.includes("useState(false)"),
-  "everything beyond the two inputs sits inside a collapsed ตั้งค่าเพิ่มเติม section",
+  pageSource.includes("ปรับละเอียดเพิ่มเติม")
+    && pageSource.includes("visual: false"),
+  "advanced controls per tab start collapsed by default (progressive disclosure)",
 );
 assert.ok(
   pageSource.includes("ระบบจะใช้สีเหล่านี้เป็นโทนของภาพ ไม่ใช่วาดเป็นวัตถุในภาพ"),
@@ -135,14 +133,14 @@ assert.ok(
   "withSeedFallbacks() keeps a backward-compatible hidden defaultTreatment for old payloads while the catalog policy owns new choices",
 );
 
-// ── The two retired scene inputs are gone from the form ─────────────────────
-const advancedSource = readFileSync(join(componentsDirectory, "AdvancedSettings.tsx"), "utf8");
+// ── The two retired scene inputs are gone from all authored Brand forms ─────
+const workspaceSource = readFileSync(join(componentsDirectory, "BrandStyleWorkspace.tsx"), "utf8");
 const basicsSource = readFileSync(join(componentsDirectory, "BrandBasicsForm.tsx"), "utf8");
-for (const source of [advancedSource, basicsSource]) {
+for (const source of [workspaceSource, basicsSource]) {
   assert.ok(
     !source.includes("peopleAndSetting") && !source.includes("memorableCues"),
     "จุดจำทางภาพ and คนและสถานที่ are removed from the Brand form (ADR 0006)",
   );
 }
 
-console.log("verify-brand-profile-seed: PASS neutral blank + explicit legacy import + zero-typing setup surface");
+console.log("verify-brand-profile-seed: PASS neutral blank + explicit legacy import + zero-typing studio surface + progressive disclosure");

@@ -21,13 +21,36 @@ import {
   brandVisualPinAdmissionFields,
   type PinAdmission,
 } from "@/lib/brand-visual-pin-admission";
-import { STYLE_PACK_IDS, stylePack, type StylePack, type StylePackId } from "@/lib/style-pack-catalog";
+import {
+  STYLE_PACK_IDS,
+  MUSIC_MOODS,
+  isActiveStylePackId,
+  stylePack,
+  stylePackSubtitlePreset,
+  type ActiveStylePackId,
+  type StylePack,
+  type StylePackId,
+} from "@/lib/style-pack-catalog";
 import { STYLE_PACK_UNAVAILABLE_MESSAGE, applyStylePackToPayload, stylePackOfPayload } from "@/lib/style-pack-apply";
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
+import { BRAND_DEFAULT_BROLL_SOURCES, type BrandDefaultBrollSource, type BrandVideoDefaults } from "@/lib/brand-profile-seed";
+import { BROLL_TRANSITIONS } from "@/lib/broll-window-style";
+import { HEADLINE_HOOK_PRESETS } from "@/lib/headline-hook";
+import {
+  MOTION_MASCOT_IDS,
+  MOTION_THEME_IDS,
+  isMotionMascotId,
+  isMotionThemeId,
+} from "@/lib/motion-broll-catalog";
+import { SFX_MODES } from "@/lib/transition-sfx";
+import {
+  TEMPLATE_TTS_SPEED_BY_PACING,
+  TEMPLATE_VOICE_STYLE_BY_ID,
+} from "@/lib/video-template-apply";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { withTransientDbRetry } from "@/lib/prisma-transient-retry";
-import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
+import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import {
   normalizeSubtitleStylePresetConfig,
   type SubtitleStylePresetConfig,
@@ -102,6 +125,8 @@ function brandProfileBaseSchema(caps: BrandProfileTextCaps) {
     voice: z.object({
       provider: z.string().trim().min(1).max(40),
       voiceId: shortNullable,
+      geminiVoiceStyle: z.string().trim().max(40).nullable().optional(),
+      ttsSpeed: z.number().min(0.85).max(1.25).nullable().optional(),
     }),
     subtitle: z.object({
       presetId: shortNullable,
@@ -117,6 +142,16 @@ function brandProfileBaseSchema(caps: BrandProfileTextCaps) {
       sizePct: z.number().min(1).max(100),
       opacity: z.number().min(0).max(1),
     }),
+    videoDefaults: z.object({
+      musicMood: z.enum(MUSIC_MOODS).nullable().optional(),
+      headlineHookEnabled: z.boolean().optional(),
+      headlineHookPreset: z.enum(HEADLINE_HOOK_PRESETS).nullable().optional(),
+      highlightKeywords: z.boolean().optional(),
+      statCards: z.boolean().optional(),
+      sfxMode: z.enum(SFX_MODES).nullable().optional(),
+      punchZoom: z.boolean().optional(),
+      brollTransition: z.enum(BROLL_TRANSITIONS).nullable().optional(),
+    }).optional(),
   });
 }
 
@@ -205,6 +240,9 @@ function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny
     // look, and at which catalog version, so publish can snapshot it.
     stylePackId: stylePackIdSchema,
     stylePackVersion: z.literal("v1.0.0").nullable().default(null),
+    defaultBrollSource: z.enum(BRAND_DEFAULT_BROLL_SOURCES).optional(),
+    motionThemeId: z.enum(MOTION_THEME_IDS).nullable().optional(),
+    motionMascot: z.enum(MOTION_MASCOT_IDS).nullable().optional(),
     languageMode: z.enum(["defined", "none"]).optional(),
     palette: z.array(paletteColorSchema).min(1).max(6),
     // No `.min(1)`: personality is editable inside ตั้งค่าเพิ่มเติม and a
@@ -350,15 +388,21 @@ function projectDraftRecord(value: string | null): Record<string, unknown> {
 
 /** Materialize the defaults carried by one immutable Brand Revision without
  * replacing the project's authored script or unrelated per-clip settings.
- * This pure seam is shared by Editor pinning and Hero Script handoff. */
+ * This pure seam is shared by Editor pinning, Brand Setup, and Hero Script handoff. */
 export function applyBrandRevisionDefaultsToProjectDraft(input: {
   draft: Record<string, unknown>;
   payload: BrandProfilePayload;
+  aiImageAdmitted?: boolean;
 }): Record<string, unknown> {
   // This seam applies an already-persisted immutable Revision. Historical
   // formats remain readable here even though creator write schemas reject them.
   const payload = storedBrandProfilePayloadSchema.parse(input.payload);
   const next = { ...input.draft };
+  const pack = stylePackOfPayload(payload);
+  const activePack = pack && isActiveStylePackId(pack.id) ? pack : null;
+  const vd = payload.videoDefaults;
+  const aiAdmitted = input.aiImageAdmitted !== false;
+
   const provider = payload.voice.provider;
   if (provider === "gemini" || provider === "elevenlabs" || provider === "omnivoice") {
     next.voiceEngine = provider;
@@ -375,33 +419,93 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
       if (provider === "omnivoice") next.omniVoiceId = voiceId;
     }
   }
-  const subtitle = normalizeSubtitleStylePresetConfig(payload.subtitle.config);
-  if (subtitle) next.brandSubtitleDefault = subtitle;
-  else delete next.brandSubtitleDefault;
+  const resolvedVoiceStyle = payload.voice.geminiVoiceStyle?.trim()
+    || (activePack && isActiveStylePackId(activePack.id) ? TEMPLATE_VOICE_STYLE_BY_ID[activePack.id] : undefined);
+  if (resolvedVoiceStyle) next.geminiVoiceStyle = resolvedVoiceStyle;
+  const resolvedTtsSpeed = typeof payload.voice.ttsSpeed === "number" && Number.isFinite(payload.voice.ttsSpeed)
+    ? payload.voice.ttsSpeed
+    : (pack ? TEMPLATE_TTS_SPEED_BY_PACING[pack.pacing] : undefined);
+  if (resolvedTtsSpeed && resolvedTtsSpeed !== 1) next.ttsSpeed = resolvedTtsSpeed;
+  else delete next.ttsSpeed;
+
   const rawSubtitleConfig = payload.subtitle.config ?? {};
-  const motionThemeId =
-    typeof rawSubtitleConfig.motionThemeId === "string"
-      && rawSubtitleConfig.motionThemeId.trim().length > 0
-      ? rawSubtitleConfig.motionThemeId.trim()
+  const rawMotionTheme = isMotionThemeId(payload.visual.motionThemeId)
+    ? payload.visual.motionThemeId
+    : isMotionThemeId(rawSubtitleConfig.motionThemeId)
+      ? rawSubtitleConfig.motionThemeId
       : null;
-  if (motionThemeId) next.motionThemeId = motionThemeId;
+  const rawMotionMascot = isMotionMascotId(payload.visual.motionMascot)
+    ? payload.visual.motionMascot
+    : isMotionMascotId(rawSubtitleConfig.motionMascot)
+      ? rawSubtitleConfig.motionMascot
+      : null;
+  const defaultBrollSource = payload.visual.defaultBrollSource;
+  const effectiveMotionTheme = defaultBrollSource === "motion"
+    ? (rawMotionTheme ?? "apple-bento-glass")
+    : defaultBrollSource
+      ? null
+      : rawMotionTheme;
+
+  if (effectiveMotionTheme) next.motionThemeId = effectiveMotionTheme;
   else delete next.motionThemeId;
-  const motionMascot =
-    typeof rawSubtitleConfig.motionMascot === "string"
-      && rawSubtitleConfig.motionMascot.trim().length > 0
-      ? rawSubtitleConfig.motionMascot.trim()
-      : null;
-  if (motionMascot) next.motionMascot = motionMascot;
+  if (rawMotionMascot) next.motionMascot = rawMotionMascot;
   else delete next.motionMascot;
+
+  if (defaultBrollSource === "motion") {
+    next.brollSource = "stock";
+    next.mixPreset = "free";
+  } else if (defaultBrollSource === "stock") {
+    next.brollSource = "stock";
+    next.mixPreset = "free";
+  } else if (defaultBrollSource === "automix") {
+    next.brollSource = aiAdmitted ? "automix" : "stock";
+    next.mixPreset = aiAdmitted ? "recommended" : "free";
+  } else if (defaultBrollSource === "kie-image") {
+    next.brollSource = aiAdmitted ? "kie-image" : "stock";
+  }
+
+  const baseSubtitle = normalizeSubtitleStylePresetConfig(rawSubtitleConfig)
+    ?? (pack ? stylePackSubtitlePreset(pack) : null);
+  const resolvedSfxMode = vd?.sfxMode ?? (effectiveMotionTheme ? "subtle" : pack?.sfxMode);
+  if (baseSubtitle) {
+    next.brandSubtitleDefault = {
+      ...baseSubtitle,
+      ...(vd?.highlightKeywords !== undefined
+        ? { highlightKeywords: vd.highlightKeywords }
+        : pack && baseSubtitle.highlightKeywords === undefined
+          ? { highlightKeywords: pack.highlightKeywords }
+          : {}),
+      ...(vd?.statCards !== undefined
+        ? { statCards: vd.statCards }
+        : pack && baseSubtitle.statCards === undefined
+          ? { statCards: pack.statCards }
+          : {}),
+      ...(resolvedSfxMode ? { sfxMode: resolvedSfxMode } : {}),
+    };
+  } else {
+    delete next.brandSubtitleDefault;
+  }
+
+  if (activePack) next.templateId = activePack.id;
+  else delete next.templateId;
+
+  if (resolvedSfxMode) next.sfxMode = resolvedSfxMode;
+  else delete next.sfxMode;
+
+  const resolvedTransition = vd?.brollTransition ?? pack?.brollTransition;
+  if (resolvedTransition) next.brollTransition = resolvedTransition;
+  else delete next.brollTransition;
+
+  const resolvedPunchZoom = vd?.punchZoom ?? pack?.punchZoom;
+  if (resolvedPunchZoom) next.punchZoom = true;
+  else delete next.punchZoom;
+
   const logo = normalizeLogoOverlayConfig(payload.brandMark);
   if (logo) next.logoOverlay = logo;
   else delete next.logoOverlay;
-  // The pack's pacing and music mood are project-level defaults, not per-clip
-  // edits: a Revision without a pack states the editor's own normal pacing and
-  // no music mood rather than leaving a previous Brand's values behind.
-  const pack = stylePackOfPayload(payload);
+
   next.pacing = pack?.pacing ?? "normal";
-  next.musicMoodDefault = pack?.musicMood ?? null;
+  next.musicMoodDefault = vd?.musicMood !== undefined ? vd.musicMood : (pack?.musicMood ?? null);
   return next;
 }
 
@@ -847,6 +951,7 @@ export type McpBrandProfileVisualSummary = {
   treatmentPolicy: "adaptive" | "locked";
   lockedTreatmentPresetId: string | null;
   stylePackId: string | null;
+  defaultBrollSource?: BrandDefaultBrollSource;
   palette: string[];
   personality?: string;
   motionThemeId?: string | null;
@@ -904,8 +1009,16 @@ export async function listActiveBrandProfilesDetailedForMcp(userId: string): Pro
           const { data } = parsed;
           const stylePackId = data.visual.stylePackId ?? null;
           const rawConfig = data.subtitle.config ?? {};
-          const motionThemeId = typeof rawConfig.motionThemeId === "string" ? rawConfig.motionThemeId : null;
-          const motionMascot = typeof rawConfig.motionMascot === "string" ? rawConfig.motionMascot : null;
+          const motionThemeId = isMotionThemeId(data.visual.motionThemeId)
+            ? data.visual.motionThemeId
+            : isMotionThemeId(rawConfig.motionThemeId)
+              ? rawConfig.motionThemeId
+              : null;
+          const motionMascot = isMotionMascotId(data.visual.motionMascot)
+            ? data.visual.motionMascot
+            : isMotionMascotId(rawConfig.motionMascot)
+              ? rawConfig.motionMascot
+              : null;
           return {
             id: profile.id,
             name: data.name || profile.name,
@@ -920,6 +1033,7 @@ export async function listActiveBrandProfilesDetailedForMcp(userId: string): Pro
               treatmentPolicy: data.visual.treatmentPolicy,
               lockedTreatmentPresetId: data.visual.lockedTreatmentPresetId ?? null,
               stylePackId,
+              ...(data.visual.defaultBrollSource ? { defaultBrollSource: data.visual.defaultBrollSource } : {}),
               palette: [...data.visual.palette],
               ...(data.visual.personality ? { personality: data.visual.personality } : {}),
               ...(motionThemeId ? { motionThemeId } : {}),
@@ -952,16 +1066,23 @@ export type McpBrandSubtitleLookup =
       motionThemeId?: string | null;
       motionMascot?: string | null;
       palette?: string[];
+      stylePackId?: ActiveStylePackId | null;
+      defaultBrollSource?: BrandDefaultBrollSource;
+      voice?: {
+        provider: string;
+        voiceId: string | null;
+        geminiVoiceStyle?: string | null;
+        ttsSpeed?: number | null;
+      };
+      videoDefaults?: BrandVideoDefaults;
+      logoOverlay?: LogoOverlayConfig | null;
     }
   | { found: false };
 
-/** Owner-checked, subtitle-style-only read of one Brand Profile for MCP create (T4).
- * A foreign id and an inactive one (not found, unpublished, archived or frozen) both
- * come back `{ found: false }` — indistinguishable, so the caller can never learn
- * whether a brandProfileId exists from the error alone. This never binds voice,
- * visuals or logo: only the active revision's own subtitle preset is read, mirroring
- * `applyBrandRevisionDefaultsToProjectDraft`'s `brandSubtitleDefault` derivation
- * without applying the rest of that function's draft defaults. */
+/** Owner-checked read of one active Brand Profile's reusable Brand Kit defaults
+ * for MCP create/quote. A foreign id and an inactive one (not found, unpublished,
+ * archived or frozen) both come back `{ found: false }` — indistinguishable, so
+ * the caller can never learn whether a brandProfileId exists from the error alone. */
 export async function resolveMcpBrandSubtitleStyle(
   userId: string,
   brandProfileId: string,
@@ -980,15 +1101,51 @@ export async function resolveMcpBrandSubtitleStyle(
     const parsed = storedBrandProfilePayloadSchema.safeParse(JSON.parse(revision.payloadJson));
     if (!parsed.success) return { found: true, style: null };
     const rawConfig = parsed.data.subtitle.config ?? {};
-    const motionThemeId = typeof rawConfig.motionThemeId === "string" ? rawConfig.motionThemeId : null;
-    const motionMascot = typeof rawConfig.motionMascot === "string" ? rawConfig.motionMascot : null;
+    const rawMotionTheme = isMotionThemeId(parsed.data.visual.motionThemeId)
+      ? parsed.data.visual.motionThemeId
+      : isMotionThemeId(rawConfig.motionThemeId)
+        ? rawConfig.motionThemeId
+        : null;
+    const defaultBrollSource = parsed.data.visual.defaultBrollSource;
+    const motionThemeId = defaultBrollSource === "motion"
+      ? (rawMotionTheme ?? "apple-bento-glass")
+      : defaultBrollSource
+        ? null
+        : rawMotionTheme;
+    const motionMascot = isMotionMascotId(parsed.data.visual.motionMascot)
+      ? parsed.data.visual.motionMascot
+      : isMotionMascotId(rawConfig.motionMascot)
+        ? rawConfig.motionMascot
+        : null;
     const palette = Array.isArray(parsed.data.visual?.palette) ? [...parsed.data.visual.palette] : [];
+    const stylePackId = parsed.data.visual.stylePackId && isActiveStylePackId(parsed.data.visual.stylePackId)
+      ? parsed.data.visual.stylePackId
+      : null;
+    let logoOverlay: LogoOverlayConfig | null = null;
+    const normalizedLogo = normalizeLogoOverlayConfig(parsed.data.brandMark);
+    if (normalizedLogo?.enabled && normalizedLogo.assetId) {
+      const ownedAsset = await prisma.brandAsset.findFirst({
+        where: { id: normalizedLogo.assetId, userId, retiredAt: null },
+        select: { id: true },
+      });
+      if (ownedAsset) logoOverlay = normalizedLogo;
+    }
     return {
       found: true,
       style: normalizeSubtitleStylePresetConfig(rawConfig),
       ...(motionThemeId ? { motionThemeId } : {}),
       ...(motionMascot ? { motionMascot } : {}),
       ...(palette.length > 0 ? { palette } : {}),
+      ...(stylePackId ? { stylePackId } : {}),
+      ...(defaultBrollSource ? { defaultBrollSource } : {}),
+      voice: {
+        provider: parsed.data.voice.provider,
+        voiceId: parsed.data.voice.voiceId,
+        ...(parsed.data.voice.geminiVoiceStyle ? { geminiVoiceStyle: parsed.data.voice.geminiVoiceStyle } : {}),
+        ...(parsed.data.voice.ttsSpeed != null ? { ttsSpeed: parsed.data.voice.ttsSpeed } : {}),
+      },
+      ...(parsed.data.videoDefaults ? { videoDefaults: parsed.data.videoDefaults } : {}),
+      ...(logoOverlay ? { logoOverlay } : {}),
     };
   } catch {
     return { found: true, style: null };

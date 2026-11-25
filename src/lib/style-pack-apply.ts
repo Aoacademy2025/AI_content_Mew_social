@@ -1,7 +1,19 @@
 import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
 import { createBlankBrandProfileSeed } from "@/lib/brand-profile-seed";
 import { TREATMENT_PRESET_IDS, type TreatmentPresetId } from "@/lib/brand-treatment-catalog";
-import { STYLE_PACKS, isStylePackId, stylePack, type StylePack } from "@/lib/style-pack-catalog";
+import { isMotionMascotId, isMotionThemeId } from "@/lib/motion-broll-catalog";
+import {
+  STYLE_PACKS,
+  isActiveStylePackId,
+  isStylePackId,
+  stylePack,
+  stylePackSubtitlePreset,
+  type StylePack,
+} from "@/lib/style-pack-catalog";
+import {
+  TEMPLATE_TTS_SPEED_BY_PACING,
+  TEMPLATE_VOICE_STYLE_BY_ID,
+} from "@/lib/video-template-apply";
 
 /** A pack is a one-tap layer over the EXISTING Brand Profile axes (ADR 0058):
  * it resolves Visual Format, narrative treatment, palette, personality,
@@ -41,9 +53,10 @@ function isPackOwnedTone(tone: string): boolean {
 }
 
 /** Apply one pack onto a Brand Profile payload. Pure: the caller's payload is
- * never mutated. Two creator-authored fields win over the pack: a saved
- * subtitle style (`subtitle.presetId`) and a tone the creator wrote themselves
- * (anything `isPackOwnedTone` does not recognise). */
+ * never mutated. Creator-authored choices win over the pack: a saved subtitle
+ * style (`subtitle.presetId`), a tone the creator wrote themselves (anything
+ * `isPackOwnedTone` does not recognise), and any configured Motion B-Roll
+ * theme/mascot (so swapping Style Packs never wipes Motion B-Roll). */
 export function applyStylePackToPayload(
   payload: BrandProfilePayload,
   pack: StylePack,
@@ -52,15 +65,50 @@ export function applyStylePackToPayload(
   const lockedTreatmentPresetId = qualifiedTreatmentPresetId(pack);
   const keepsOwnSubtitle = Boolean(payload.subtitle.presetId);
   const keepsOwnTone = !isPackOwnedTone(payload.script.tone);
+  const existingConfig = payload.subtitle.config ?? {};
+  const preservedMotionTheme = isMotionThemeId(payload.visual.motionThemeId)
+    ? payload.visual.motionThemeId
+    : isMotionThemeId(existingConfig.motionThemeId)
+      ? existingConfig.motionThemeId
+      : null;
+  const preservedMotionMascot = isMotionMascotId(payload.visual.motionMascot)
+    ? payload.visual.motionMascot
+    : isMotionMascotId(existingConfig.motionMascot)
+      ? existingConfig.motionMascot
+      : null;
+  const preservedMotionConfig: Record<string, string> = {};
+  if (preservedMotionTheme) preservedMotionConfig.motionThemeId = preservedMotionTheme;
+  if (preservedMotionMascot) preservedMotionConfig.motionMascot = preservedMotionMascot;
+  const packSubtitle = stylePackSubtitlePreset(pack);
+  const activeVoiceStyle = isActiveStylePackId(pack.id)
+    ? TEMPLATE_VOICE_STYLE_BY_ID[pack.id]
+    : undefined;
+  const packTtsSpeed = TEMPLATE_TTS_SPEED_BY_PACING[pack.pacing];
   return {
     ...payload,
     script: {
       ...payload.script,
       tone: keepsOwnTone ? payload.script.tone : pack.scriptTone,
     },
+    voice: {
+      ...payload.voice,
+      ...(activeVoiceStyle && !payload.voice.geminiVoiceStyle ? { geminiVoiceStyle: activeVoiceStyle } : {}),
+      ...(payload.voice.ttsSpeed == null && packTtsSpeed !== 1 ? { ttsSpeed: packTtsSpeed } : {}),
+    },
     subtitle: keepsOwnSubtitle
-      ? { ...payload.subtitle, config: { ...payload.subtitle.config } }
-      : { ...payload.subtitle, config: { ...pack.subtitle } },
+      ? { ...payload.subtitle, config: { ...existingConfig, ...preservedMotionConfig } }
+      : { ...payload.subtitle, config: { ...packSubtitle, ...preservedMotionConfig } },
+    videoDefaults: {
+      ...payload.videoDefaults,
+      musicMood: pack.musicMood,
+      headlineHookEnabled: true,
+      headlineHookPreset: pack.headlineHookPreset,
+      highlightKeywords: pack.highlightKeywords,
+      statCards: pack.statCards,
+      sfxMode: pack.sfxMode,
+      punchZoom: pack.punchZoom,
+      brollTransition: pack.brollTransition,
+    },
     visual: {
       ...payload.visual,
       stylePackId: pack.id,
@@ -70,6 +118,8 @@ export function applyStylePackToPayload(
       lockedTreatmentPresetId,
       palette: [...pack.palette],
       personality: pack.personality,
+      ...(preservedMotionTheme ? { motionThemeId: preservedMotionTheme } : {}),
+      ...(preservedMotionMascot ? { motionMascot: preservedMotionMascot } : {}),
     },
   };
 }

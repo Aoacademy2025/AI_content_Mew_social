@@ -11,7 +11,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2, Type,
-  Play, Pause,
+  Play, Pause, Wand2,
 } from "lucide-react";
 import { GEMINI_VOICES, resolveGeminiVoice } from "@/lib/gemini-voices";
 import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
@@ -76,6 +76,29 @@ import {
   type ActiveStylePackId,
 } from "@/lib/style-pack-catalog";
 import { visualFormatThaiLabel } from "@/lib/brand-visual-system";
+import {
+  DEFAULT_THEME_BRAND_CI,
+  MOTION_THEMES,
+  isNewMotionTheme,
+  type MotionMascotId,
+  type MotionThemeId,
+} from "@/lib/motion-broll-catalog";
+
+const MOTION_MASCOT_OPTIONS: readonly { id: MotionMascotId; label: string }[] = [
+  { id: "stickman-scarf", label: "ผ้าพันคอ" },
+  { id: "stickman-glasses", label: "แว่นตา" },
+  { id: "stickman-cap", label: "หมวกแก๊ป" },
+  { id: "ai-bot", label: "หุ่น AI" },
+];
+
+const MOTION_THEME_SHORT_LABEL: Record<MotionThemeId, string> = {
+  "doodle-explainer": "Doodle Explainer",
+  "cue-step-board": "Cue Step Board",
+  "hyperframe-kinetic": "HyperFrames Kinetic",
+  "paper-cutout-doc": "Paper Cutout",
+  "social-chat-sim": "Social Chat",
+  "apple-bento-glass": "Apple Bento",
+};
 
 /** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
  *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
@@ -221,13 +244,18 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : p.brollSource === "automix"
       ? "จำนวน B-roll รวม:"
       : "จำนวนคลิปบีโรล:";
-  const customerBrollLabel = p.brollSource === "kie-image"
-    ? "Hero AI Image"
-    : p.brollSource === "automix"
-      ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
-      : p.brollSource === "none"
-        ? FILL_YOURSELF_TITLE
-        : "สต็อกฟรี";
+  const activeMotionThemeLabel = p.motionThemeId
+    ? MOTION_THEME_SHORT_LABEL[p.motionThemeId]
+    : null;
+  const customerBrollLabel = p.motionThemeId
+    ? `Motion B-Roll · ${activeMotionThemeLabel}`
+    : p.brollSource === "kie-image"
+      ? "Hero AI Image"
+      : p.brollSource === "automix"
+        ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
+        : p.brollSource === "none"
+          ? FILL_YOURSELF_TITLE
+          : "สต็อกฟรี";
   const geminiVoice = resolveGeminiVoice(p.geminiVoiceName);
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -244,8 +272,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [brandPendingConfirmation, setBrandPendingConfirmation] = useState<BrandVisualPendingConfirmation | null>(null);
   // R7: gates readiness for an AI-image brollSource — only reachable once the
   // pin/account is ADMITTED, so this reads the admitted predicate, not the
-  // bare pin.
-  const requiresBrandPreflight = (p.brandVisualAllowed || p.hasAdmittedVisualPin)
+  // bare pin. Motion B-Roll generates procedural 60fps graphics (0 AI credits) so
+  // it never blocks on AI image preflight.
+  const requiresBrandPreflight = !p.motionThemeId
+    && (p.brandVisualAllowed || p.hasAdmittedVisualPin)
     && p.mode !== "upload"
     && (
       p.brollSource === "kie-image"
@@ -493,27 +523,54 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               เลือกแหล่งภาพ B-roll (ทำงานตามสไตล์ที่เลือกด้านบน)
             </span>
             <p style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.6 }}>
-              {selectedBrollTemplatePack
-                ? p.brollSource === "kie-image"
-                  ? `สร้างภาพ Hero AI Image ทุกฉากในแนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)} · ${selectedBrollTemplatePack.thaiLabel}" พร้อมแพน/ซูมและซับเข้าชุด · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง`
-                  : p.brollSource === "stock"
-                    ? `คัดวิดีโอสต็อกฟรีตามโทน "${selectedBrollTemplatePack.thaiLabel}" + ตัดฉากแบบ${selectedBrollTemplatePack.brollTransition === "cut" ? "ตัดชน" : "ละลายภาพ"} พร้อมซับและพาดหัวเข้าชุด`
-                    : p.brollSource === "automix"
-                      ? `ผสมวิดีโอสต็อกโทน "${selectedBrollTemplatePack.thaiLabel}" กับภาพ AI แนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)}" ตามสัดส่วนที่เลือก`
-                      : p.brollSource === "none"
-                        ? `เว้นช่อง B-roll ไว้เติมคลิปหรือภาพเองทีละช่วงหลังเรนเดอร์ โดยยังใช้ซับ พาดหัว และเพลงตามสไตล์ "${selectedBrollTemplatePack.thaiLabel}"`
-                        : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"
-                : p.brollSource === "kie-image"
-                  ? "สร้างภาพใหม่ตามเนื้อหาและสไตล์ Brand ที่เลือก แล้วแพนและซูมภาพประกอบเสียงบรรยาย · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง"
-                  : p.brollSource === "stock"
-                    ? "เลือกวิดีโอที่มีอยู่แล้วจากคลังสต็อกตามเนื้อหาและโทน หากต้องการสร้างภาพตามสไตล์ Brand ให้เลือก Hero AI Image"
-                    : p.brollSource === "automix" ? "AutoMix ผสมสต็อกกับภาพ AI ตามสัดส่วนที่เลือก" : p.brollSource === "none" ? FILL_YOURSELF_DESC : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"}
+              {p.motionThemeId
+                ? `สร้างฉาก Motion B-Roll 60fps ธีม "${activeMotionThemeLabel}" คุมสีตามแบรนด์ทุกเฟรม (ฟรี · 0 เครดิต AI) พร้อมซับและเสียงประกอบเข้าชุด`
+                : selectedBrollTemplatePack
+                  ? p.brollSource === "kie-image"
+                    ? `สร้างภาพ Hero AI Image ทุกฉากในแนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)} · ${selectedBrollTemplatePack.thaiLabel}" พร้อมแพน/ซูมและซับเข้าชุด · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง`
+                    : p.brollSource === "stock"
+                      ? `คัดวิดีโอสต็อกฟรีตามโทน "${selectedBrollTemplatePack.thaiLabel}" + ตัดฉากแบบ${selectedBrollTemplatePack.brollTransition === "cut" ? "ตัดชน" : "ละลายภาพ"} พร้อมซับและพาดหัวเข้าชุด`
+                      : p.brollSource === "automix"
+                        ? `ผสมวิดีโอสต็อกโทน "${selectedBrollTemplatePack.thaiLabel}" กับภาพ AI แนว "${visualFormatThaiLabel(selectedBrollTemplatePack.visualFormatId)}" ตามสัดส่วนที่เลือก`
+                        : p.brollSource === "none"
+                          ? `เว้นช่อง B-roll ไว้เติมคลิปหรือภาพเองทีละช่วงหลังเรนเดอร์ โดยยังใช้ซับ พาดหัว และเพลงตามสไตล์ "${selectedBrollTemplatePack.thaiLabel}"`
+                          : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"
+                  : p.brollSource === "kie-image"
+                    ? "สร้างภาพใหม่ตามเนื้อหาและสไตล์ Brand ที่เลือก แล้วแพนและซูมภาพประกอบเสียงบรรยาย · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง"
+                    : p.brollSource === "stock"
+                      ? "เลือกวิดีโอที่มีอยู่แล้วจากคลังสต็อกตามเนื้อหาและโทน หากต้องการสร้างภาพตามสไตล์ Brand ให้เลือก Hero AI Image"
+                      : p.brollSource === "automix" ? "AutoMix ผสมสต็อกกับภาพ AI ตามสัดส่วนที่เลือก" : p.brollSource === "none" ? FILL_YOURSELF_DESC : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"}
             </p>
           </div>
           {/* Customers see the product choices by their public names. Internal admins keep
               the raw beta controls (including the unreleased AI-video source). */}
           {p.isAdmin ? (
-          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+          <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
+            <button
+              type="button"
+              data-broll-motion-card="true"
+              aria-pressed={Boolean(p.motionThemeId)}
+              onClick={() => {
+                p.setMotionThemeId(p.motionThemeId ?? "apple-bento-glass");
+                if (p.brollSource !== "stock") p.setBrollSource("stock");
+              }}
+              className="relative flex flex-col items-start gap-2 text-left"
+              style={{
+                borderRadius: radius.card, padding: "12px 14px",
+                background: p.motionThemeId ? color.selectedBg : color.cardBg,
+                border: `1px solid ${p.motionThemeId ? color.selectedBorder : color.cardBorder}`,
+                cursor: "pointer",
+                transition: "all 150ms ease",
+              }}
+            >
+              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.primary300, border: `1px solid ${color.selectedBorder}`, fontWeight: 500 }}>ฟรี · 0 เครดิต</span>
+              <IconTile size={32}><Wand2 size={16} strokeWidth={1.6} /></IconTile>
+              <span className="flex flex-col">
+                <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>Motion B-Roll</span>
+                <span style={{ fontSize: 10.5, color: color.textFaint }}>กราฟิก 60fps คุมสีแบรนด์ · 6 ธีม</span>
+              </span>
+            </button>
             {BROLL_OPTIONS.map((o) => {
               // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
               const locked = o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie);
@@ -521,12 +578,15 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               const desc = o.value === "kie-image"
                 ? `${o.desc} · ${heroCardFundingLine(p, displaySec)}`
                 : o.desc;
+              const selected = !p.motionThemeId && p.brollSource === o.value;
               return (
                 <button
                   key={o.value}
                   disabled={locked}
                   onClick={() => {
-                    if (locked || p.brollSource === o.value) return;
+                    if (locked) return;
+                    if (p.motionThemeId) p.setMotionThemeId(null);
+                    if (p.brollSource === o.value) return;
                     p.setBrollSource(o.value);
                     // The funding-aware default only applies while the user hasn't touched the count
                     // control themselves — otherwise re-selecting Hero AI Image after
@@ -539,8 +599,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   className="relative flex flex-col items-start gap-2 text-left"
                   style={{
                     borderRadius: radius.card, padding: "12px 14px",
-                    background: p.brollSource === o.value ? color.selectedBg : color.cardBg,
-                    border: `1px solid ${p.brollSource === o.value ? color.selectedBorder : color.cardBorder}`,
+                    background: selected ? color.selectedBg : color.cardBg,
+                    border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
                     cursor: locked ? "not-allowed" : "pointer",
                     opacity: locked ? 0.55 : 1,
                     transition: "all 150ms ease",
@@ -560,6 +620,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 </button>
               );
             })}
+          </div>
+          {p.motionThemeId ? <MotionBrollQuickPicker p={p} /> : null}
           </div>
           ) : (
             <CustomerBrollSourceButtons p={p} durationSec={displaySec} />
@@ -1270,7 +1332,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             {[
               "สร้างเสียง",
               "แบ่งฉากตามเสียง",
-              p.brollSource === "kie-image" ? "สร้าง Hero AI Image" : p.brollSource === "automix" ? "จัด AutoMix" : "หาบีโรล",
+              p.motionThemeId ? "สร้าง Motion B-Roll" : p.brollSource === "kie-image" ? "สร้าง Hero AI Image" : p.brollSource === "automix" ? "จัด AutoMix" : "หาบีโรล",
               "เรนเดอร์วิดีโอ",
             ].map((label, index) => (
               <span key={label} className="flex min-w-0 items-center gap-2">
@@ -1293,7 +1355,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
               <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
-              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · ${p.brollSource === "none" ? "เติมเองทีละช่วง" : "แทรก cutaway"}`} />
+              <SummaryRow label="บีโรล" value={`${p.motionThemeId ? `Motion B-Roll · ${activeMotionThemeLabel}` : p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · ${!p.motionThemeId && p.brollSource === "none" ? "เติมเองทีละช่วง" : "แทรก cutaway"}`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
@@ -1301,7 +1363,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           ) : (
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(scriptEstSec)}`} />
-              <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} />
+              <SummaryRow label="บีโรล" value={p.motionThemeId ? `Motion B-Roll · ${activeMotionThemeLabel}` : p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} />
               <SummaryRow label="เสียง" value={p.voiceEngine === "gemini"
                 ? `Gemini · ${geminiVoice.label}`
                 : p.voiceEngine === "omnivoice"
@@ -1462,16 +1524,19 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
 
   function selectSource(value: "stock" | "kie-image" | "automix" | "none") {
     if (value === "none") {
+      if (p.motionThemeId) p.setMotionThemeId(null);
       if (p.brollSource !== value) p.setBrollSource("none");
       return;
     }
     if (value === "stock") {
+      if (p.motionThemeId) p.setMotionThemeId(null);
       if (p.brollSource === value) return;
       p.setMixPreset("free");
       return;
     }
     if (value === "kie-image") {
       if (!heroImageUnlocked) return showLockedPreview("hero_ai_image");
+      if (p.motionThemeId) p.setMotionThemeId(null);
       if (p.brollSource === value) return;
       p.setBrollSource("kie-image");
       // Hero defaults to 8 and clamps to remaining starter allowance — a fresh
@@ -1485,20 +1550,56 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       return;
     }
     if (!autoMixUnlocked) return showLockedPreview("automix");
+    if (p.motionThemeId) p.setMotionThemeId(null);
     if (p.brollSource === value) return;
     p.setMixPreset(p.mixPreset === "full" ? "full" : "recommended");
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <div className={`grid grid-cols-1 gap-2.5 ${options.length > 3 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        <button
+          type="button"
+          data-broll-motion-card="true"
+          aria-pressed={Boolean(p.motionThemeId)}
+          onClick={() => {
+            p.setMotionThemeId(p.motionThemeId ?? "apple-bento-glass");
+            if (p.brollSource !== "stock") p.setMixPreset("free");
+          }}
+          className="relative flex min-h-11 flex-col items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
+          style={{
+            borderRadius: radius.card,
+            padding: "12px 14px",
+            background: p.motionThemeId ? color.selectedBg : color.cardBg,
+            border: `1px solid ${p.motionThemeId ? color.selectedBorder : color.cardBorder}`,
+            cursor: "pointer",
+            outlineColor: color.primary300,
+            transition: "background 150ms ease, border-color 150ms ease",
+          }}
+        >
+          <span
+            className="absolute right-2.5 top-2 rounded-full px-1.5"
+            style={{
+              fontSize: 9.5,
+              color: color.primary300,
+              border: `1px solid ${color.selectedBorder}`,
+            }}
+          >
+            ฟรี · 0 เครดิต
+          </span>
+          <IconTile size={32}><Wand2 size={16} strokeWidth={1.6} /></IconTile>
+          <span className="flex flex-col pr-14">
+            <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>Motion B-Roll</span>
+            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>กราฟิก 60fps คุมสีแบรนด์ · 6 ธีม</span>
+          </span>
+        </button>
         {options.map((option) => {
           const locked = option.value === "kie-image"
             ? !heroImageUnlocked
             : option.value === "automix"
               ? !autoMixUnlocked
               : false;
-          const selected = p.brollSource === option.value;
+          const selected = !p.motionThemeId && p.brollSource === option.value;
           const badge = option.value === "stock" || option.value === "none"
             ? "ฟรี"
             : option.value === "automix" && p.recommendedAutoMixDefault
@@ -1544,7 +1645,9 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
         })}
       </div>
 
-      {p.brollSource === "stock" && (
+      {p.motionThemeId ? <MotionBrollQuickPicker p={p} /> : null}
+
+      {!p.motionThemeId && p.brollSource === "stock" && (
         <div
           role="status"
           className="flex flex-col gap-1 rounded-xl px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3"
@@ -1562,7 +1665,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
         </div>
       )}
 
-      {autoMixUnlocked && p.brollSource === "automix" && (
+      {!p.motionThemeId && autoMixUnlocked && p.brollSource === "automix" && (
         <div className="flex flex-col gap-2">
           <GroupLabel>สัดส่วน AutoMix</GroupLabel>
           <MixPresetButtons p={p} durationSec={durationSec} />
@@ -1597,6 +1700,112 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
           },
         })}
       />
+    </div>
+  );
+}
+
+function MotionBrollQuickPicker({ p }: { p: V2Project }) {
+  const activeTheme = p.motionThemeId ?? "apple-bento-glass";
+  const activeMascot: MotionMascotId = p.motionMascot ?? "stickman-scarf";
+  return (
+    <div
+      data-motion-broll-picker="true"
+      className="flex flex-col gap-3 rounded-xl px-3.5 py-3"
+      style={{
+        background: "rgba(139,92,246,.06)",
+        border: `1px solid ${color.selectedBorder}`,
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span style={{ font: `600 11.5px ${font.heading}`, color: color.primary300 }}>
+          ธีม Motion B-Roll (0 เครดิต AI · คุมสีตามแบรนด์)
+        </span>
+        <span style={{ fontSize: 10.5, color: color.textFaint }}>
+          เปลี่ยนรายฉากได้อีกหลังเรนเดอร์
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {MOTION_THEMES.map((theme) => {
+          const active = activeTheme === theme.id;
+          const ci = DEFAULT_THEME_BRAND_CI[theme.id];
+          return (
+            <button
+              key={theme.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => p.setMotionThemeId(theme.id)}
+              className="flex flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors"
+              style={{
+                background: active ? color.selectedBg : "rgba(10,10,18,.55)",
+                border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                cursor: "pointer",
+              }}
+            >
+              <div className="flex w-full items-center justify-between gap-1.5">
+                <span className="truncate" style={{ font: `600 11.5px ${font.heading}`, color: color.text }}>
+                  {MOTION_THEME_SHORT_LABEL[theme.id]}
+                </span>
+                {isNewMotionTheme(theme.id) ? (
+                  <span
+                    className="shrink-0 rounded-full px-1.5 py-0.5"
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 600,
+                      color: color.primary300,
+                      background: "rgba(139,92,246,.22)",
+                    }}
+                  >
+                    ใหม่
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-1" aria-hidden="true">
+                {[ci.backgroundColor, ci.primaryColor, ci.accentColor].map((hex, i) => (
+                  <span
+                    key={`${theme.id}-${i}`}
+                    style={{
+                      width: 9,
+                      height: 9,
+                      borderRadius: 999,
+                      background: hex,
+                      border: "1px solid rgba(255,255,255,.25)",
+                    }}
+                  />
+                ))}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span style={{ fontSize: 10.5, color: color.textSecondary }}>
+          คาแรคเตอร์ประจำฉาก (Mascot)
+        </span>
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+          {MOTION_MASCOT_OPTIONS.map((item) => {
+            const active = activeMascot === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => p.setMotionMascot(item.id)}
+                className="min-h-9 rounded-lg px-2.5 py-1.5 text-center transition-colors"
+                style={{
+                  fontSize: 11,
+                  fontWeight: active ? 600 : 500,
+                  color: active ? color.text : color.textSecondary,
+                  background: active ? "rgba(139,92,246,.20)" : "rgba(10,10,18,.55)",
+                  border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                  cursor: "pointer",
+                }}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

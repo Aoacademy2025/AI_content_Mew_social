@@ -10,6 +10,7 @@ import { DEFAULT_GEMINI_VOICE, resolveGeminiVoiceId } from "@/lib/gemini-voices"
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
 import { isActiveStylePackId, type ActiveStylePackId, type MusicMood } from "@/lib/style-pack-catalog";
 import { isBrollTransition, type BrollTransition } from "@/lib/broll-window-style";
+import { isMotionMascotId, isMotionThemeId, type MotionMascotId, type MotionThemeId } from "@/lib/motion-broll-catalog";
 import { isSfxMode, type SfxMode } from "@/lib/transition-sfx";
 import { resolveStep1TemplateDefaults } from "@/lib/video-template-apply";
 import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
@@ -118,6 +119,9 @@ interface V2Draft {
   templateId?: ActiveStylePackId;
   sfxMode?: SfxMode;
   brollTransition?: BrollTransition;
+  /** Brand Kit / Step 2 Motion B-Roll defaults (0 credits, rendered live in Remotion). */
+  motionThemeId?: MotionThemeId | null;
+  motionMascot?: MotionMascotId | null;
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -913,6 +917,20 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  const [motionThemeIdState, setMotionThemeIdFromUser, setMotionThemeIdRaw] = useUserDraftState<MotionThemeId | null>(
+    isMotionThemeId(d.motionThemeId) ? d.motionThemeId : null,
+    "motionThemeId",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [motionMascotState, setMotionMascotFromUser, setMotionMascotRaw] = useUserDraftState<MotionMascotId | null>(
+    isMotionMascotId(d.motionMascot) ? d.motionMascot : null,
+    "motionMascot",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const templatePickedMusicRef = useRef<string | null>(null);
   const selectVideoTemplate = useCallback((nextId: ActiveStylePackId | null) => {
     if (!canAcceptUserMutation()) return;
@@ -1041,6 +1059,8 @@ export function useV2Project() {
       ...(templateIdState ? { templateId: templateIdState } : {}),
       ...(sfxModeState ? { sfxMode: sfxModeState } : {}),
       ...(brollTransitionState ? { brollTransition: brollTransitionState } : {}),
+      ...(motionThemeIdState ? { motionThemeId: motionThemeIdState } : {}),
+      ...(motionMascotState ? { motionMascot: motionMascotState } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -1144,6 +1164,8 @@ export function useV2Project() {
     setTemplateIdRaw(isActiveStylePackId(next.templateId) ? next.templateId : undefined);
     setSfxModeRaw(isSfxMode(next.sfxMode) ? next.sfxMode : undefined);
     setBrollTransitionRaw(isBrollTransition(next.brollTransition) ? next.brollTransition : undefined);
+    setMotionThemeIdRaw(isMotionThemeId(next.motionThemeId) ? next.motionThemeId : null);
+    setMotionMascotRaw(isMotionMascotId(next.motionMascot) ? next.motionMascot : null);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -2742,7 +2764,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, templateIdState, sfxModeState, brollTransitionState, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, templateIdState, sfxModeState, brollTransitionState, motionThemeIdState, motionMascotState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2793,6 +2815,8 @@ export function useV2Project() {
     templateId: templateIdState ?? null, selectVideoTemplate, setTemplateId: setTemplateIdFromUser,
     sfxMode: sfxModeState, setSfxMode: setSfxModeFromUser,
     brollTransition: brollTransitionState, setBrollTransition: setBrollTransitionFromUser,
+    motionThemeId: motionThemeIdState, setMotionThemeId: setMotionThemeIdFromUser,
+    motionMascot: motionMascotState, setMotionMascot: setMotionMascotFromUser,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,

@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Loader2, Save, SwatchBook } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Loader2, Save, Sparkles, SwatchBook } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { trackEvent } from "@/lib/client-telemetry";
 import { fetchMe, type MeData } from "@/lib/use-me";
+import { isPaid, limitsForPlan } from "@/lib/plan-limits";
 import { normalizeHexPalette } from "@/lib/hex-color";
 import {
   brandPreviewSurfaceKey,
@@ -25,8 +26,6 @@ import {
 import { applyStylePackToPayload, clearStylePack } from "@/lib/style-pack-apply";
 import { stylePack, type StylePackId } from "@/lib/style-pack-catalog";
 import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
-import { AdvancedSettings } from "./AdvancedSettings";
-import { BrandBasicsForm } from "./BrandBasicsForm";
 import { BrandLibraryOverview } from "./BrandLibraryOverview";
 import { BrandStyleWorkspace } from "./BrandStyleWorkspace";
 import { brandPreviewInputKey, createBrandSetupSeed, nextBrandName, type BrandSetupRequest, type BrandSetupResult } from "@/lib/brand-setup";
@@ -56,11 +55,8 @@ import type {
 } from "./types";
 
 /** `niche`, `audience`, `script.tone` and `visual.personality` are optional on
- * the surface; an empty value falls
- * back to the blank-seed default so a name-only brand still produces a
- * complete, publishable payload. Every payload consumer (draft-save, publish,
- * preview, preview-quote) reads the single `payload` memo built from this
- * function, so one fix here covers all of them. */
+ * the surface; an empty value falls back to the blank-seed default so a
+ * name-only brand still produces a complete, publishable payload. */
 function withSeedFallbacks(draft: BrandPayload): BrandPayload {
   const blank = createBlankBrandProfileSeed();
   const niche = draft.niche.trim() ? draft.niche : blank.niche;
@@ -102,14 +98,6 @@ function withSeedFallbacks(draft: BrandPayload): BrandPayload {
   };
 }
 
-/** `BrandPayload` (`BrandProfileSeed`) and `BrandProfilePayload` (the
- * persisted-read Zod-inferred type `applyStylePackToPayload`/`clearStylePack`
- * are written against) describe the same Brand Profile document — they only
- * diverge on three fields that `createBlankBrandProfileSeed()` always sets
- * concretely but the client type leaves optional (`languageMode`) or unset
- * (the two retired scene inputs, kept only so a pinned revision round-trips).
- * These two converters are the one place that gap is bridged, so the Style
- * Pack apply/clear functions stay pure and shared with the server. */
 function toStylePackPayload(payload: BrandPayload): BrandProfilePayload {
   return {
     ...payload,
@@ -148,7 +136,6 @@ export function BrandLibraryClient() {
   const [me, setMe] = useState<MeData | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [draft, setDraft] = useState<BrandPayload>(() => createBlankBrandProfileSeed());
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -162,6 +149,7 @@ export function BrandLibraryClient() {
   const [pendingRecoveryOperation, setPendingRecoveryOperation] = useState<PendingBrandPreviewOperation | null>(null);
   const resumedOperationForUserRef = useRef<string | null>(null);
   const measuredEntry = useRef(false);
+
   useEffect(() => {
     if (!library || loading || measuredEntry.current) return;
     measuredEntry.current = true;
@@ -172,8 +160,21 @@ export function BrandLibraryClient() {
     () => library?.profiles.find((profile) => profile.id === activeId) ?? null,
     [activeId, library],
   );
+  const effectivePlan = me?.effectivePlan ?? me?.plan ?? "FREE";
+  const planLimits = limitsForPlan(effectivePlan);
+  const canCreateVideo = planLimits.allowVideoEditor || me?.role === "ADMIN";
+  const allowElevenLabs = planLimits.allowElevenLabs || me?.role === "ADMIN";
+  const allowLogoExport = isPaid(effectivePlan) || me?.role === "ADMIN";
+  const heroScriptAllowed = me?.heroScriptAllowed === true || isPaid(effectivePlan) || me?.role === "ADMIN";
+
   const allowance = me?.starterAiImageAllowance;
-  const payload = useMemo(() => withSeedFallbacks({ ...draft, name: draft.name.trim() || nextBrandName(library?.profiles.filter((p) => p.id !== activeId).map((p) => p.name) ?? []) }), [draft, library, activeId]);
+  const payload = useMemo(
+    () => withSeedFallbacks({
+      ...draft,
+      name: draft.name.trim() || nextBrandName(library?.profiles.filter((p) => p.id !== activeId).map((p) => p.name) ?? []),
+    }),
+    [draft, library, activeId],
+  );
   const localSaved = localSavedJson === JSON.stringify(draft);
   const dirty = editorOpen && JSON.stringify(draft) !== cleanDraftJson;
 
@@ -230,7 +231,7 @@ export function BrandLibraryClient() {
     return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", onLink, true); };
   }, [dirty, pendingSetup, router]);
 
-  async function submitSetup(request: BrandSetupRequest) {
+  async function submitSetup(request: BrandSetupRequest, afterSaveHref?: string) {
     if (!me?.id || setupRunning.current) return;
     const operation = pendingSetup ?? request;
     const storage = browserStorage();
@@ -242,7 +243,12 @@ export function BrandLibraryClient() {
     setPendingSetup(operation);
     setBusy("setup"); setNotice(null);
     try {
-      const response = await fetch("/api/brand-library/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(operation), signal: AbortSignal.timeout(45_000) });
+      const response = await fetch("/api/brand-library/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(operation),
+        signal: AbortSignal.timeout(45_000),
+      });
       if (!response.ok) {
         if ([400, 401, 403, 404, 409, 422].includes(response.status)) { clearBrandSetupRequest(storage, me.id); setPendingSetup(null); }
         const error = await response.json().catch(() => null);
@@ -258,12 +264,17 @@ export function BrandLibraryClient() {
       if (result.projectId) {
         allowNavigation.current = true;
         router.push(`/video-editor?projectId=${encodeURIComponent(result.projectId)}`);
+      } else if (afterSaveHref) {
+        clearBrandSetupReceipt(storage, me.id);
+        setCompletedSetup(null);
+        allowNavigation.current = true;
+        router.push(afterSaveHref);
       } else {
         try { await load(result.profileId); }
         catch { setNotice({ tone: "error", text: "บันทึกแบรนด์แล้ว แต่โหลดคลังไม่สำเร็จ กรุณาลองโหลดคลังอีกครั้ง" }); return; }
         setEditorOpen(false);
         clearBrandSetupReceipt(storage, me.id); setCompletedSetup(null);
-        setNotice({ tone: "ok", text: "บันทึกแบรนด์แล้ว เลือกสร้างคลิปได้เลย" });
+        setNotice({ tone: "ok", text: "บันทึกแบรนด์แล้ว พร้อมใช้กับ Video Editor, Hero Script และ MCP" });
       }
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ ร่างของคุณยังอยู่" });
@@ -271,10 +282,15 @@ export function BrandLibraryClient() {
   }
 
   function useSavedBrand(profile: BrandProfile) {
+    if (!canCreateVideo) {
+      router.push("/pricing?source=brands_library");
+      return;
+    }
     const revision = profile.revisions.find((item) => item.version === profile.activeRevisionNumber);
     if (!revision) return;
     void submitSetup({ requestId: crypto.randomUUID(), action: "use-brand", profileId: profile.id, revisionId: revision.id });
   }
+
   const previewSource = useMemo<BrandPreviewSource>(() => ({
     profileId: activeId,
     projectId: sourceProjectId,
@@ -286,14 +302,9 @@ export function BrandLibraryClient() {
   );
 
   // ADR 0059: only an account the image gate admits can spend a preview, and
-  // preview-quote is an image action behind that same gate. Quoting for a
-  // rejected account would answer 403 on every debounced keystroke; the count
-  // stays null and the button discloses the gate reason instead.
+  // preview-quote is an image action behind that same gate.
   const canQuotePreview = editorOpen && previewExpanded && library?.imageAccess.canUse === true;
 
-  // Every look is quoted by the server with the lineage its generate call will
-  // use. A saved profile promoted from a clip can reuse that clip's images, so
-  // guessing three here overstated the cost and could block a free preview.
   useEffect(() => {
     if (!canQuotePreview) return;
     const controller = new AbortController();
@@ -306,8 +317,6 @@ export function BrandLibraryClient() {
         signal: controller.signal,
       }).then(responseJson).then((value: { generationCount?: unknown }) => {
         const count = typeof value.generationCount === "number" ? value.generationCount : Number.NaN;
-        // An unusable answer falls back to the worst case, never to a cheaper
-        // number than the creator could actually be charged.
         setPreviewGenerationCount(Number.isInteger(count) && count >= 0 && count <= 3 ? count : 3);
       }).catch((error) => {
         if ((error as Error).name !== "AbortError") setPreviewGenerationCount(3);
@@ -385,20 +394,11 @@ export function BrandLibraryClient() {
             languageMode: language ? "defined" : "none",
             palette: Array.isArray(language?.palette) ? language.palette : seeded.visual.palette,
             personality: typeof language?.personality === "string" ? language.personality : seeded.visual.personality,
-            // Carried through unedited so promoting a completed clip still
-            // resolves to the exact look that clip rendered with. Neither field
-            // is authored on this surface any more (ADR 0006).
             peopleAndSetting: typeof language?.peopleAndSetting === "string" ? language.peopleAndSetting : undefined,
             memorableCues: Array.isArray(language?.memorableCues) ? language.memorableCues : undefined,
             visualNotes: typeof language?.visualNotes === "string" ? language.visualNotes : seeded.visual.visualNotes,
           },
         };
-        // A clip whose look came from a ready-made style keeps that link, and
-        // keeps it WHOLE: re-applying the style is what fills in the narrative
-        // policy, subtitle and tone the clip's own snapshot never carried, so
-        // the draft is never a half-linked look (ADR 0058). The style is
-        // re-applied only if it is still offered — a retired one promotes as
-        // the custom look it already is.
         const seededPackId = libraryData.stylePacks
           .find((pack) => pack.id === exactContext?.stylePack?.id)?.id ?? null;
         if (seededPackId) {
@@ -416,7 +416,6 @@ export function BrandLibraryClient() {
       setExpectedRevision(null);
       setEditorOpen(true);
       if (storage && meData?.id) setRecoverableDraft(readBrandSetupDraft(storage, meData.id, null, requestedProjectId));
-      setAdvancedOpen(false);
       setProposal(null);
       setPreview(null);
       setLoading(false);
@@ -432,8 +431,7 @@ export function BrandLibraryClient() {
     if (nextProfile) {
       openProfile(nextProfile, true, meData?.id);
       setEditorOpen(Boolean(preferredId));
-    }
-    else {
+    } else {
       setActiveId(null);
       const seed = createBrandSetupSeed(libraryData.defaults, []);
       setDraft(seed);
@@ -470,7 +468,9 @@ export function BrandLibraryClient() {
     } finally { setBusy(null); }
   }
 
-  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- `load()` is async and only sets state after its awaited fetch resolves/rejects; this is the standard fetch-on-mount pattern, not a synchronous cascading render
+  useEffect(() => {
+    load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- fetch on mount
 
   const resumePendingBrandPreviewOperation = useCallback(async (
     operation: PendingBrandPreviewOperation,
@@ -512,10 +512,8 @@ export function BrandLibraryClient() {
     resumedOperationForUserRef.current = userId;
     const operation = readPendingBrandPreviewOperation(storage, userId);
     if (!operation) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from a browser-only external system (localStorage) to resume an interrupted preview/reroll after mount; the read cannot happen during render (guarded by loading/ref), so this is the effect's whole purpose
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate interrupted preview/reroll from localStorage
     setPendingRecoveryOperation(operation);
-    // Recovery owns its original request snapshot. Do not replace a newer
-    // brand draft with an old paid-preview snapshot on page load.
     if (!pendingBrandPreviewCanAutoResume(operation)) {
       setNotice({
         tone: "error",
@@ -523,8 +521,6 @@ export function BrandLibraryClient() {
       });
       return;
     }
-    // Persist before the network call: a crash or reload during an ambiguous
-    // response must not auto-start the same paid request on every mount.
     const attempted = markPendingBrandPreviewAutoResumeAttempt(operation);
     writePendingBrandPreviewOperation(storage, attempted);
     setPendingRecoveryOperation(attempted);
@@ -561,7 +557,6 @@ export function BrandLibraryClient() {
     };
     setDraft(next);
     setCleanDraftJson(JSON.stringify(next));
-    setAdvancedOpen(false);
     setProposal(null);
     setPreview(null);
     setNotice(null);
@@ -581,28 +576,19 @@ export function BrandLibraryClient() {
     setSourceVideoJobId(null);
     setActiveId(null);
     setDraft(seed);
-    setAdvancedOpen(false);
     setProposal(null);
     setPreview(null);
     setNotice(null);
     trackEvent("brand_profile_create_started", { path: "/brands" });
   }
 
-  /** ADR 0058: the shared unlink point every custom edit routes through — a
-   * pack-owned field written directly (bypassing `updateVisual`/`applyProposal`)
-   * is exactly how a half-pack would happen, so this stays the one place that
-   * decides whether an edit needs to unlink first. */
-  function clearStylePackIfLinked(payload: BrandPayload): BrandPayload {
-    return payload.visual.stylePackId
-      ? fromStylePackPayload(clearStylePack(toStylePackPayload(payload)))
-      : payload;
+  /** ADR 0058: shared unlink point when a custom visual axis is edited. */
+  function clearStylePackIfLinked(current: BrandPayload): BrandPayload {
+    return current.visual.stylePackId
+      ? fromStylePackPayload(clearStylePack(toStylePackPayload(current)))
+      : current;
   }
 
-  /** ADR 0058: format, narrative-treatment policy/preset, palette and
-   * personality are the axes a Style Pack resolves — editing any of them
-   * while a pack is selected unlinks it first (`clearStylePackIfLinked`) so
-   * the draft never shows a pack tag next to a look the pack no longer fully
-   * describes. */
   function updateVisual<K extends keyof BrandPayload["visual"]>(key: K, value: BrandPayload["visual"][K]) {
     const definesBrandLanguage = key === "palette"
       || key === "personality"
@@ -634,20 +620,12 @@ export function BrandLibraryClient() {
     trackEvent("brand_setup_style_changed", { properties: { packId: id } });
   }
 
-  /** HERO-35: the one-axis escape from the pack list. Goes through
-   * `updateVisual` so the pack unlinks (ADR 0058) while every other value it
-   * resolved stays; the ~40-field Advanced form is deliberately NOT opened. */
   function selectVisualFormat(id: BrandPayload["visual"]["primaryVisualFormatId"]) {
     if (id === draft.visual.primaryVisualFormatId) return;
     updateVisual("primaryVisualFormatId", id);
     trackEvent("brand_setup_style_changed", { properties: { packId: null, formatId: id } });
   }
 
-  /** Applying the AI visual helper's proposal writes the same pack-owned axes
-   * `updateVisual` guards (format, palette, personality) — a selected pack
-   * must unlink here too, in the SAME `setDraft` as the proposal's fields, or
-   * a creator could tap a pack then "นำคำแนะนำมาใส่ในร่าง" and be left with a
-   * pack tag next to an AI-authored look the pack no longer describes. */
   function applyProposal(next: VisualProposal) {
     const palette = normalizeHexPalette(next.palette);
     if (!palette) {
@@ -697,7 +675,7 @@ export function BrandLibraryClient() {
         ...current,
         brandMark: { ...current.brandMark, assetId: id, enabled: true },
       }));
-      setNotice({ tone: "ok", text: "อัปโหลดโลโก้แล้ว และเลือกเป็นลายน้ำเริ่มต้นให้ร่างนี้" });
+      setNotice({ tone: "ok", text: "อัปโหลดโลโก้แล้ว และแสดงบนตัวอย่าง 9:16 ทันที" });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "อัปโหลดโลโก้ไม่สำเร็จ" });
     } finally {
@@ -721,7 +699,26 @@ export function BrandLibraryClient() {
 
   async function publishOrCreate(goToEditor = false) {
     if (!sourceProjectId || activeId) {
-      await submitSetup({ requestId: crypto.randomUUID(), action: goToEditor ? "create-clip" : "save", ...(activeId ? { profileId: activeId, expectedRevision: expectedRevision ?? undefined } : {}), payload });
+      // FREE Build-to-Convert: FREE users cannot open Video Editor (403 on create-clip),
+      // so save the Brand Kit first and route smoothly to /pricing?source=brands.
+      if (goToEditor && !canCreateVideo) {
+        await submitSetup(
+          {
+            requestId: crypto.randomUUID(),
+            action: "save",
+            ...(activeId ? { profileId: activeId, expectedRevision: expectedRevision ?? undefined } : {}),
+            payload,
+          },
+          "/pricing?source=brands",
+        );
+        return;
+      }
+      await submitSetup({
+        requestId: crypto.randomUUID(),
+        action: goToEditor ? "create-clip" : "save",
+        ...(activeId ? { profileId: activeId, expectedRevision: expectedRevision ?? undefined } : {}),
+        payload,
+      });
       return;
     }
     setBusy("publish"); setNotice(null);
@@ -819,8 +816,6 @@ export function BrandLibraryClient() {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }),
         }));
       }
-      // Built from the same lineage the quote priced, so the disclosed cost and
-      // the charge can never come from different inputs.
       const { endpoint, body } = brandPreviewGenerateRequest(previewSource, payload);
       const value = await postPreviewWithRecovery(endpoint, body, requestId, setPreview);
       setPreview(value.batch);
@@ -886,60 +881,334 @@ export function BrandLibraryClient() {
       </div>
     );
   }
-  if (!library) return <div className="space-y-4 p-8 text-sm"><p role="alert">{notice?.text ?? "โหลดคลังแบรนด์ไม่สำเร็จ"}</p><Button onClick={() => { setLoading(true); void load().catch(() => setLoading(false)); }}>ลองโหลดอีกครั้ง</Button></div>;
+  if (!library) {
+    return (
+      <div className="space-y-4 p-8 text-sm">
+        <p role="alert">{notice?.text ?? "โหลดคลังแบรนด์ไม่สำเร็จ"}</p>
+        <Button onClick={() => { setLoading(true); void load().catch(() => setLoading(false)); }}>
+          ลองโหลดอีกครั้ง
+        </Button>
+      </div>
+    );
+  }
 
   const canPublish = payload.name.trim().length > 0;
   const frozen = activeProfile?.frozen === true;
   const locked = frozen || busy !== null || pendingSetup !== null;
   const disabled = locked || recoverableDraft !== null;
+  const statusBadge = frozen
+    ? "อ่านอย่างเดียว"
+    : activeProfile
+      ? `รุ่น v${activeProfile.activeRevisionNumber}${dirty ? " · กำลังแก้" : ""}`
+      : "แบรนด์ใหม่";
+
+  const renderAiPreviewSection = () => (
+    <details
+      open={previewExpanded}
+      onToggle={(event) => setPreviewExpanded(event.currentTarget.open)}
+      className="rounded-xl border border-border bg-card/60 px-4 py-2"
+    >
+      <summary className="cursor-pointer py-2 text-sm font-semibold text-foreground">
+        {sourceProjectId ? "ทดลองภาพ AI กับคลิปนี้" : "ทดลองสร้างภาพ AI 3 แบบฉาก"} · ไม่จำเป็นต้องทดลองก่อนบันทึก
+      </summary>
+      <div className="pb-3 pt-1">
+        <p className="mb-3 text-xs leading-5 text-muted-foreground">
+          {sourceProjectId
+            ? "ใช้บริบทจากคลิปที่เลือก ตรวจสิทธิ์และราคาก่อนสร้างภาพ"
+            : "ใช้ฉากทดสอบมาตรฐาน: ภาพกว้าง มือกับวัตถุ และภาพคน เพื่อดูโทนภาพ AI ก่อนนำไปสร้างคลิปจริง"}
+        </p>
+        <BrandLookPreviewPanel
+          preview={preview}
+          stale={!!preview && previewKey !== brandPreviewInputKey(payload)}
+          previewGenerationCount={previewGenerationCount}
+          allowance={allowance}
+          imageAccess={library.imageAccess}
+          canPublish={canPublish}
+          busy={busy}
+          disabled={disabled}
+          onPreview={previewLook}
+          onReroll={rerollPreviewItem}
+        />
+      </div>
+    </details>
+  );
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
       <div className="mx-auto max-w-[1200px] px-4 pb-16 pt-5 md:px-7 md:pt-8">
-        <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-violet-500"><SwatchBook className="h-4 w-4" />แบรนด์ของฉัน</p>
-            <h1 className="text-2xl font-bold leading-tight tracking-tight md:text-3xl">{!editorOpen ? "เลือกแบรนด์ แล้วสร้างคลิปต่อ" : activeId ? "ปรับแบรนด์สำหรับคลิปใหม่" : "เลือกสไตล์ แล้วเริ่มคลิปแรก"}</h1>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">{editorOpen ? "เราเติมค่าเริ่มต้นให้แล้ว เลือกสไตล์แล้วไปต่อได้ เปลี่ยนรายละเอียดทีหลังได้" : "ภาพ เสียง และซับที่บันทึกไว้ พร้อมใช้กับคลิปถัดไป"}</p>
+        <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-violet-400">
+              <SwatchBook className="h-4 w-4" />
+              Brand Kit Studio
+            </p>
+            <h1 className="text-2xl font-bold leading-tight tracking-tight md:text-3xl">
+              {!editorOpen
+                ? "เลือกแบรนด์ แล้วสร้างคลิปต่อ"
+                : activeId
+                  ? "ปรับ Brand Kit สำหรับคลิปใหม่"
+                  : "เลือกสไตล์ แล้วเริ่มคลิปแรก"}
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {editorOpen
+                ? "ตั้งครั้งเดียว ใช้ร่วมกันได้ทั้ง Video Editor, Hero Script และ AI Agent (MCP) · เปลี่ยนรายคลิปได้เสมอ"
+                : "ภาพ Motion เสียง ซับ โลโก้ และ Script DNA ที่บันทึกไว้ พร้อมสร้างงานต่อในคลิกเดียว"}
+            </p>
           </div>
-          {editorOpen && library.profiles.length > 0 && <Button variant="ghost" disabled={busy !== null || !!pendingSetup} onClick={() => navigateFromDraft(() => setEditorOpen(false))} className="min-h-11"><ArrowLeft className="h-4 w-4" />กลับคลังแบรนด์</Button>}
+          {editorOpen && library.profiles.length > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy !== null || !!pendingSetup}
+              onClick={() => navigateFromDraft(() => setEditorOpen(false))}
+              className="min-h-11"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              กลับคลังแบรนด์
+            </Button>
+          ) : null}
         </header>
 
-        {returnProjectId && <Link href={`/video-editor?projectId=${encodeURIComponent(returnProjectId)}`} className="mb-5 inline-block py-2 text-sm underline underline-offset-4">กลับคลิปเดิม · คลิปนี้ยังใช้เวอร์ชันเดิม</Link>}
-        {library.availabilitySelectionRequired && library.cap !== null && <Card className="mb-6 p-5">
-          <h2 className="font-semibold">เลือก {library.cap} แบรนด์สำหรับงานใหม่</h2><p className="mt-2 text-sm text-muted-foreground">แผนปัจจุบันรองรับน้อยกว่าจำนวนที่มี คลิปเดิมยังใช้เวอร์ชันเดิมได้</p>
-          <div className="my-4 flex flex-wrap gap-2">{library.profiles.map((profile) => <Button key={profile.id} disabled={busy !== null} variant={availabilityChoice.includes(profile.id) ? "default" : "outline"} onClick={() => toggleAvailability(profile.id)}>{availabilityChoice.includes(profile.id) && <Check className="h-4 w-4" />}{profile.name}</Button>)}</div>
-          <Button disabled={busy !== null || availabilityChoice.length !== library.cap} onClick={confirmAvailability}>ยืนยันแบรนด์ที่ใช้ต่อ</Button>
-        </Card>}
+        {returnProjectId ? (
+          <Link
+            href={`/video-editor?projectId=${encodeURIComponent(returnProjectId)}`}
+            className="mb-5 inline-block py-2 text-sm underline underline-offset-4"
+          >
+            กลับคลิปเดิม · คลิปนี้ยังใช้เวอร์ชันเดิม
+          </Link>
+        ) : null}
 
-        {pendingNavigation && <div role="alert" className="mb-5 rounded-lg border border-violet-500/40 bg-card p-4 text-sm"><p>ยังมีร่างที่ไม่ได้เผยแพร่ เก็บไว้ในเครื่องแล้วไปต่อได้</p><div className="mt-3 flex flex-wrap gap-2"><Button onClick={keepDraftAndContinue} className="min-h-11">เก็บร่างแล้วไปต่อ</Button><Button variant="outline" onClick={() => setPendingNavigation(null)} className="min-h-11">แก้ไขต่อ</Button></div></div>}
-        {notice && <div role="status" className={`mb-5 rounded-lg border p-4 text-sm leading-6 ${notice.tone === "error" ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/40"}`}>{notice.text}</div>}
-        {completedSetup && !pendingSetup && <div role="status" className="mb-5 rounded-lg border border-border p-4 text-sm"><p>บันทึกแบรนด์สำเร็จแล้ว{completedSetup.projectId ? " และมีคลิปที่สร้างไว้" : ""}</p><div className="mt-3 flex flex-wrap gap-3">{completedSetup.projectId ? <Link className="py-2 underline" href={`/video-editor?projectId=${encodeURIComponent(completedSetup.projectId)}`}>ไปคลิปที่สร้างไว้</Link> : <Button variant="outline" onClick={() => void load(completedSetup.profileId).catch(() => setNotice({ tone: "error", text: "โหลดคลังไม่สำเร็จ กรุณาลองอีกครั้ง" }))}>โหลดคลังอีกครั้ง</Button>}<Button variant="ghost" onClick={() => { const storage = browserStorage(); if (storage && me?.id) clearBrandSetupReceipt(storage, me.id); setCompletedSetup(null); }}>ปิดข้อความ</Button></div></div>}
-        {pendingSetup && <div className="mb-5 rounded-lg border border-amber-500/40 p-4 text-sm"><p>มีคำขอบันทึก{pendingSetup.payload?.name ? ` “${pendingSetup.payload.name}”` : ""}ที่ยังไม่ได้ยืนยันผล ติดตามคำขอเดิมได้โดยไม่สร้างแบรนด์หรือคลิปซ้ำ</p><Button variant="outline" className="mt-3 min-h-11" disabled={busy !== null} onClick={() => void submitSetup(pendingSetup)}>{busy === "setup" && <Loader2 className="h-4 w-4 animate-spin" />}ติดตามคำขอบันทึกเดิม</Button></div>}
-        {pendingRecoveryOperation && <Button variant="outline" className="mb-5 min-h-11" disabled={busy !== null} onClick={() => void resumePendingBrandPreviewOperation(pendingRecoveryOperation)}>ติดตามคำขอทดลองภาพเดิม</Button>}
+        {library.availabilitySelectionRequired && library.cap !== null ? (
+          <Card className="mb-6 p-5">
+            <h2 className="font-semibold">เลือก {library.cap} แบรนด์สำหรับงานใหม่</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              แผนปัจจุบันรองรับน้อยกว่าจำนวนที่มี คลิปเดิมยังใช้เวอร์ชันเดิมได้
+            </p>
+            <div className="my-4 flex flex-wrap gap-2">
+              {library.profiles.map((profile) => (
+                <Button
+                  key={profile.id}
+                  disabled={busy !== null}
+                  variant={availabilityChoice.includes(profile.id) ? "default" : "outline"}
+                  onClick={() => toggleAvailability(profile.id)}
+                >
+                  {availabilityChoice.includes(profile.id) ? <Check className="h-4 w-4" /> : null}
+                  {profile.name}
+                </Button>
+              ))}
+            </div>
+            <Button
+              disabled={busy !== null || availabilityChoice.length !== library.cap}
+              onClick={confirmAvailability}
+            >
+              ยืนยันแบรนด์ที่ใช้ต่อ
+            </Button>
+          </Card>
+        ) : null}
 
-        {!editorOpen ? <BrandLibraryOverview library={library} busy={busy !== null || !!pendingSetup} onNew={() => startNew()} onOpen={openProfile} onUse={useSavedBrand} onArchive={archiveProfile} /> : <div className="space-y-6">
-          {recoverableDraft && <div className="rounded-lg border border-amber-500/40 p-4 text-sm"><p>พบร่างที่ยังไม่ได้เผยแพร่จากอุปกรณ์นี้</p><div className="mt-3 flex flex-wrap gap-2"><Button disabled={locked} variant="outline" onClick={() => { setDraft(recoverableDraft.payload); setExpectedRevision(recoverableDraft.expectedRevision); setRecoverableDraft(null); }}>กู้คืนร่าง</Button><Button disabled={locked} variant="ghost" onClick={() => { clearLocalDraft(); }}>ใช้ข้อมูลที่บันทึกไว้</Button></div></div>}
-          {sourceProjectId && <div className="rounded-lg border border-border p-4 text-sm">กำลังบันทึกสไตล์จากคลิปนี้ ภาพเดิมจะไม่ถูกสร้างซ้ำ <Link href={`/video-editor?projectId=${encodeURIComponent(sourceProjectId)}`} className="ml-2 underline underline-offset-4">กลับคลิปต้นทาง</Link></div>}
-          {frozen && <p className="text-sm text-muted-foreground">แบรนด์นี้เป็นแบบอ่านอย่างเดียวตามแผนปัจจุบัน</p>}
-          {/* Keyed per profile so the "ปรับจาก <pack>" memory never leaks from one brand's draft into another's. */}
-          <BrandStyleWorkspace key={activeId ?? sourceProjectId ?? "new"} draft={payload} library={library} disabled={disabled} onSelect={selectStylePack} onFormatChange={selectVisualFormat} />
-          <details className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">ชื่อแบรนด์ · {payload.name}</summary><div className="pb-4"><BrandBasicsForm name={draft.name} onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))} disabled={disabled} /><p className="mt-2 text-xs text-muted-foreground">ไม่ต้องเปลี่ยนชื่อก็เริ่มสร้างคลิปได้</p></div></details>
-          <AdvancedSettings open={advancedOpen} onOpenChange={setAdvancedOpen} draft={draft} setDraft={setDraft} updateVisual={updateVisual} library={library} busy={busy} disabled={disabled} proposal={proposal} onAskHelper={askVisualHelper} onApplyProposal={applyProposal} onUploadBrandMark={(file) => void uploadBrandMark(file)} />
-          <details open={previewExpanded} onToggle={(event) => setPreviewExpanded(event.currentTarget.open)} className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">{sourceProjectId ? "ทดลองภาพกับคลิปนี้" : "ทดสอบสไตล์กับ 3 แบบฉาก"} · ไม่จำเป็นต้องทดลองก่อนบันทึก</summary>
-            <p className="mb-3 text-xs leading-5 text-muted-foreground">{sourceProjectId ? "ใช้บริบทจากคลิปที่เลือก ตรวจสิทธิ์และราคาก่อนสร้างภาพ" : "ใช้ฉากทดสอบมาตรฐาน: ภาพกว้าง มือกับวัตถุ และภาพคน ไม่ใช่บทของคุณ หากต้องการทดลองกับเรื่องของคุณ ให้สร้างคลิปก่อน"}</p>
-            <BrandLookPreviewPanel preview={preview} stale={!!preview && previewKey !== brandPreviewInputKey(payload)} previewGenerationCount={previewGenerationCount} allowance={allowance} imageAccess={library.imageAccess} canPublish={canPublish} busy={busy} disabled={disabled} onPreview={previewLook} onReroll={rerollPreviewItem} />
-          </details>
-          <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-between gap-4 border-t border-border bg-background px-4 py-4 lg:mx-0 lg:px-0">
-            <div><p className="break-words text-sm font-semibold">{payload.name}</p><p className="mt-1 text-xs text-muted-foreground">ตั้งค่าแบรนด์ไม่ใช้เครดิต · {dirty ? localSaved ? "เก็บร่างในเครื่องแล้ว ยังไม่เผยแพร่" : "ยังไม่บันทึก" : "พร้อมใช้งาน"}</p></div>
-            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-              {activeId && <Button variant="ghost" disabled={disabled} onClick={saveDraftOnly} className="min-h-11"><Save className="h-4 w-4" />เก็บร่าง</Button>}
-              {!sourceProjectId && <Button variant="outline" disabled={disabled || !canPublish} onClick={() => void publishOrCreate(false)} className="min-h-11">{activeId ? "บันทึกสำหรับคลิปใหม่" : "บันทึกไว้ก่อน"}</Button>}
-              <Button disabled={disabled || !canPublish} onClick={() => void publishOrCreate(true)} className="min-h-11 flex-1 whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 sm:flex-initial">{busy === "setup" || busy === "publish" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}{sourceProjectId ? "บันทึกและใช้กับคลิปนี้" : "ใช้แบรนด์นี้สร้างคลิป"}</Button>
+        {pendingNavigation ? (
+          <div role="alert" className="mb-5 rounded-xl border border-violet-500/40 bg-card p-4 text-sm">
+            <p>ยังมีร่างที่ไม่ได้เผยแพร่ เก็บไว้ในเครื่องแล้วไปต่อได้</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button onClick={keepDraftAndContinue} className="min-h-11">เก็บร่างแล้วไปต่อ</Button>
+              <Button variant="outline" onClick={() => setPendingNavigation(null)} className="min-h-11">แก้ไขต่อ</Button>
             </div>
           </div>
-          {!sourceProjectId && <Link href="/video-editor?empty=1" className="inline-block py-3 text-sm text-muted-foreground underline underline-offset-4">ไปสร้างคลิปก่อน โดยยังไม่ใช้แบรนด์</Link>}
-        </div>}
+        ) : null}
+
+        {notice ? (
+          <div
+            role="status"
+            className={`mb-5 rounded-xl border p-4 text-sm leading-6 ${notice.tone === "error" ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/40"}`}
+          >
+            {notice.text}
+          </div>
+        ) : null}
+
+        {completedSetup && !pendingSetup ? (
+          <div role="status" className="mb-5 rounded-xl border border-border p-4 text-sm">
+            <p>บันทึกแบรนด์สำเร็จแล้ว{completedSetup.projectId ? " และมีคลิปที่สร้างไว้" : ""}</p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              {completedSetup.projectId ? (
+                <Link className="py-2 underline" href={`/video-editor?projectId=${encodeURIComponent(completedSetup.projectId)}`}>
+                  ไปคลิปที่สร้างไว้
+                </Link>
+              ) : (
+                <Button variant="outline" onClick={() => void load(completedSetup.profileId).catch(() => setNotice({ tone: "error", text: "โหลดคลังไม่สำเร็จ กรุณาลองอีกครั้ง" }))}>
+                  โหลดคลังอีกครั้ง
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  const storage = browserStorage();
+                  if (storage && me?.id) clearBrandSetupReceipt(storage, me.id);
+                  setCompletedSetup(null);
+                }}
+              >
+                ปิดข้อความ
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {pendingSetup ? (
+          <div className="mb-5 rounded-xl border border-amber-500/40 p-4 text-sm">
+            <p>
+              มีคำขอบันทึก{pendingSetup.payload?.name ? ` “${pendingSetup.payload.name}”` : ""}ที่ยังไม่ได้ยืนยันผล
+              ติดตามคำขอเดิมได้โดยไม่สร้างแบรนด์หรือคลิปซ้ำ
+            </p>
+            <Button
+              variant="outline"
+              className="mt-3 min-h-11"
+              disabled={busy !== null}
+              onClick={() => void submitSetup(pendingSetup)}
+            >
+              {busy === "setup" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              ติดตามคำขอบันทึกเดิม
+            </Button>
+          </div>
+        ) : null}
+
+        {pendingRecoveryOperation ? (
+          <Button
+            variant="outline"
+            className="mb-5 min-h-11"
+            disabled={busy !== null}
+            onClick={() => void resumePendingBrandPreviewOperation(pendingRecoveryOperation)}
+          >
+            ติดตามคำขอทดลองภาพเดิม
+          </Button>
+        ) : null}
+
+        {!editorOpen ? (
+          <BrandLibraryOverview
+            library={library}
+            busy={busy !== null || !!pendingSetup}
+            canCreateVideo={canCreateVideo}
+            onNew={() => startNew()}
+            onOpen={openProfile}
+            onUse={useSavedBrand}
+            onArchive={archiveProfile}
+          />
+        ) : (
+          <div className="space-y-6">
+            {recoverableDraft ? (
+              <div className="rounded-xl border border-amber-500/40 p-4 text-sm">
+                <p>พบร่างที่ยังไม่ได้เผยแพร่จากอุปกรณ์นี้</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    disabled={locked}
+                    variant="outline"
+                    onClick={() => {
+                      setDraft(recoverableDraft.payload);
+                      setExpectedRevision(recoverableDraft.expectedRevision);
+                      setRecoverableDraft(null);
+                    }}
+                  >
+                    กู้คืนร่าง
+                  </Button>
+                  <Button disabled={locked} variant="ghost" onClick={() => { clearLocalDraft(); }}>
+                    ใช้ข้อมูลที่บันทึกไว้
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {sourceProjectId ? (
+              <div className="rounded-xl border border-border p-4 text-sm">
+                กำลังบันทึกสไตล์จากคลิปนี้ ภาพเดิมจะไม่ถูกสร้างซ้ำ{" "}
+                <Link href={`/video-editor?projectId=${encodeURIComponent(sourceProjectId)}`} className="ml-2 underline underline-offset-4">
+                  กลับคลิปต้นทาง
+                </Link>
+              </div>
+            ) : null}
+
+            {frozen ? (
+              <p className="text-sm text-muted-foreground">แบรนด์นี้เป็นแบบอ่านอย่างเดียวตามแผนปัจจุบัน</p>
+            ) : null}
+
+            <BrandStyleWorkspace
+              key={activeId ?? sourceProjectId ?? "new"}
+              draft={payload}
+              rawDraft={draft}
+              setDraft={setDraft}
+              updateVisual={updateVisual}
+              library={library}
+              activeId={activeId}
+              statusBadge={statusBadge}
+              disabled={disabled}
+              busy={busy}
+              proposal={proposal}
+              allowElevenLabs={allowElevenLabs}
+              allowLogoExport={allowLogoExport}
+              heroScriptAllowed={heroScriptAllowed}
+              sourceProjectId={sourceProjectId}
+              onSelect={selectStylePack}
+              onFormatChange={selectVisualFormat}
+              onAskHelper={askVisualHelper}
+              onApplyProposal={applyProposal}
+              onUploadBrandMark={(file) => void uploadBrandMark(file)}
+              renderAiPreviewSection={renderAiPreviewSection}
+            />
+
+            {/* Sticky bottom action bar */}
+            <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background/95 px-4 py-3.5 backdrop-blur-md lg:mx-0 lg:px-0">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-foreground">{payload.name}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  ตั้งค่าแบรนด์ไม่ใช้เครดิต ·{" "}
+                  {dirty ? (localSaved ? "เก็บร่างในเครื่องแล้ว ยังไม่เผยแพร่" : "ยังไม่บันทึก") : "พร้อมใช้งาน"}
+                </p>
+              </div>
+              <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+                {activeId ? (
+                  <Button variant="ghost" disabled={disabled} onClick={saveDraftOnly} className="min-h-11">
+                    <Save className="h-4 w-4" />
+                    เก็บร่าง
+                  </Button>
+                ) : null}
+                {!sourceProjectId ? (
+                  <Button
+                    variant="outline"
+                    disabled={disabled || !canPublish}
+                    onClick={() => void publishOrCreate(false)}
+                    className="min-h-11"
+                  >
+                    {activeId ? "บันทึกสำหรับคลิปใหม่" : "บันทึกไว้ก่อน"}
+                  </Button>
+                ) : null}
+                <Button
+                  disabled={disabled || !canPublish}
+                  onClick={() => void publishOrCreate(true)}
+                  className="min-h-11 flex-1 whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 sm:flex-initial"
+                >
+                  {busy === "setup" || busy === "publish" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : !sourceProjectId && !canCreateVideo ? (
+                    <Sparkles className="h-4 w-4" />
+                  ) : (
+                    <ArrowRight className="h-4 w-4" />
+                  )}
+                  {sourceProjectId
+                    ? "บันทึกและใช้กับคลิปนี้"
+                    : canCreateVideo
+                      ? "ใช้แบรนด์นี้สร้างคลิป"
+                      : "บันทึกแบรนด์ & อัปเกรดเพื่อสร้างคลิป"}
+                </Button>
+              </div>
+            </div>
+
+            {!sourceProjectId && canCreateVideo ? (
+              <Link
+                href="/video-editor?empty=1"
+                className="inline-block py-2 text-sm text-muted-foreground underline underline-offset-4"
+              >
+                ไปสร้างคลิปก่อน โดยยังไม่ใช้แบรนด์
+              </Link>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );

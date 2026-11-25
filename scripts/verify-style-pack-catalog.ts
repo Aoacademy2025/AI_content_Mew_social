@@ -7,22 +7,26 @@ import { normalizeSubtitleStylePresetConfig } from "../src/lib/editor-style-pres
 import { isHeadlineHookPreset } from "../src/lib/headline-hook";
 import { isSfxMode } from "../src/lib/transition-sfx";
 
-assert.equal(cat.STYLE_PACKS.length, 15);
-assert.equal(cat.activeStylePacks().length, 10);
+assert.equal(cat.STYLE_PACKS.length, 18);
+assert.equal(cat.activeStylePacks().length, 13);
 assert.deepEqual(
   cat.activeStylePacks().map((p) => p.id),
   [...cat.ACTIVE_STYLE_PACK_IDS],
   "ACTIVE_STYLE_PACK_IDS stays in exact order sync with activeStylePacks()",
 );
-// HERO-35 & HERO-94: shared treatments preserve existing first-match tie-breaks
+// HERO-35, HERO-94 & Trending Style Packs: shared treatments preserve existing first-match tie-breaks
 // (`life-drama` for human drama, `finance-clear` for clear-infographic × expert-clarity,
-// `premium-product` for cinematic-realism × premium-product-lifestyle).
+// `premium-product` for cinematic-realism × premium-product-lifestyle,
+// `news-fast` for cinematic-realism × investigative-news-crime).
 assert.equal(cat.stylePack("comic-story").visualFormatId, "dramatic-comic");
 assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "thai-human-drama", visualFormatId: "cinematic-realism" })?.id, "life-drama");
 assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "thai-human-drama", visualFormatId: "dramatic-comic" })?.id, "comic-story");
 assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "expert-clarity", visualFormatId: "clear-infographic" })?.id, "finance-clear");
 assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "expert-clarity", visualFormatId: "simple-editorial-story" })?.id, "health-simple");
 assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "premium-product-lifestyle", visualFormatId: "cinematic-realism" })?.id, "premium-product");
+assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "modern-business-technology", visualFormatId: "cinematic-realism" })?.id, "ai-tech-doc");
+assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "investigative-news-crime", visualFormatId: "cinematic-realism" })?.id, "news-fast");
+assert.equal(cat.stylePackForRecommendation({ treatmentPresetId: "practical-documentary", visualFormatId: "cinematic-realism" })?.id, "self-growth");
 for (const pack of cat.STYLE_PACKS) {
   assert.ok(/[฀-๿]/u.test(pack.thaiLabel));
   assert.ok(VISUAL_FORMAT_IDS.includes(pack.visualFormatId));

@@ -38,6 +38,7 @@ import * as logoEntitlementModule from "../src/lib/logo-entitlement";
 import * as geminiVoiceStylesModule from "../src/lib/gemini-voice-styles";
 import * as geminiVoicesModule from "../src/lib/gemini-voices";
 import * as stylePackCatalogModule from "../src/lib/style-pack-catalog";
+import * as motionBrollCatalogModule from "../src/lib/motion-broll-catalog";
 import * as brollWindowStyleModule from "../src/lib/broll-window-style";
 import * as transitionSfxModule from "../src/lib/transition-sfx";
 import * as videoTemplateApplyModule from "../src/lib/video-template-apply";
@@ -395,6 +396,7 @@ function createHarness(options: {
     if (specifier === "@/lib/gemini-voice-styles") return geminiVoiceStylesModule;
     if (specifier === "@/lib/gemini-voices") return geminiVoicesModule;
     if (specifier === "@/lib/style-pack-catalog") return stylePackCatalogModule;
+    if (specifier === "@/lib/motion-broll-catalog") return motionBrollCatalogModule;
     if (specifier === "@/lib/broll-window-style") return brollWindowStyleModule;
     if (specifier === "@/lib/transition-sfx") return transitionSfxModule;
     if (specifier === "@/lib/video-template-apply") return videoTemplateApplyModule;

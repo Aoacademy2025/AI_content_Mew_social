@@ -1,6 +1,5 @@
-/** Responsive regression coverage for the approved Brands redesign.
- * Render real components with the real stylesheet; keep preview/advanced
- * checks without freezing the old 248px sidebar or tall-card layout. */
+/** Responsive regression coverage for the Brand Kit Studio redesign.
+ * Render real components with the real stylesheet across 320–1280px × 16/20px font sizes. */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,11 +9,12 @@ import { compile } from "@tailwindcss/node";
 import puppeteer from "puppeteer";
 import { BrandStyleWorkspace } from "../src/app/(dashboard)/brands/_components/BrandStyleWorkspace.tsx";
 import { BrandLibraryOverview } from "../src/app/(dashboard)/brands/_components/BrandLibraryOverview.tsx";
-import { AdvancedSettings } from "../src/app/(dashboard)/brands/_components/AdvancedSettings.tsx";
+import { BrandColorPaletteEditor } from "../src/app/(dashboard)/brands/_components/BrandColorPaletteEditor.tsx";
 import { BrandLookPreviewPanel } from "../src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx";
 import { createBlankBrandProfileSeed } from "../src/lib/brand-profile-seed.ts";
 import { VISUAL_FORMATS } from "../src/lib/brand-visual-system.ts";
 import { activeStylePacks } from "../src/lib/style-pack-catalog.ts";
+
 const root = process.cwd();
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const h = React.createElement;
@@ -38,12 +38,12 @@ const library = {
   subtitlePresets: [{ id: "preset-1", name: "ซับไวรัลคำต่อคำแบบเน้นคำสำคัญ", config: {} }],
   brandAssets: [{ id: "asset-1", name: "โลโก้แบรนด์หลัก-2026.png" }],
   defaults: seed,
-  // Asset decoding is covered separately; this checks geometry even on failure.
   stylePacks: activeStylePacks().map((pack) => ({
     id: pack.id,
     thaiLabel: pack.thaiLabel,
     tagline: pack.tagline,
     palette: pack.palette,
+    visualFormatId: pack.visualFormatId,
     sampleImage: `/style-packs/${pack.id}.jpg`,
   })),
 };
@@ -56,7 +56,7 @@ function profile(id, name, extra = {}) {
     audience: "",
     tone: "",
     bannedWords: [],
-    ctaStyle: "",
+    ctaStyle: "follow",
     language: "th",
     analysisNotes: null,
     sampleText: null,
@@ -65,7 +65,7 @@ function profile(id, name, extra = {}) {
     legacyVisualFormat: false,
     updatedAt: "",
     draft: null,
-    revisions: [],
+    revisions: [{ id: `${id}-rev-4`, version: 4, payload: { ...draft, name }, createdAt: "" }],
     ...extra,
   };
 }
@@ -86,18 +86,27 @@ function previewBatch({ failing = false } = {}) {
   };
 }
 
-
 draft.visual.stylePackId = "life-drama";
+draft.visual.defaultBrollSource = "stock";
+const motionDraft = {
+  ...draft,
+  visual: {
+    ...draft.visual,
+    defaultBrollSource: "motion",
+    motionThemeId: "apple-bento-glass",
+    motionMascot: "stickman-scarf",
+  },
+};
 const source = read("src/app/(dashboard)/brands/_components/BrandLibraryClient.tsx");
 const inner = source.match(/<div className="(mx-auto max-w-\[1200px\][^"]*)"/)[1];
 const bodies = [
   h(BrandStyleWorkspace, { draft, library, disabled: false, onSelect: noop, onFormatChange: noop }),
+  h(BrandStyleWorkspace, { draft: motionDraft, library, disabled: false, onSelect: noop, onFormatChange: noop }),
   h(BrandLibraryOverview, { library: { ...library, profiles: [profile("p1", "Mew Social"), profile("p2", "แบรนด์ทดสอบชื่อยาวมากสำหรับหน้าจอมือถือ", { frozen: true })] }, busy: false, onNew: noop, onOpen: noop, onUse: noop, onArchive: noop }),
-  h(AdvancedSettings, { open: true, onOpenChange: noop, draft, setDraft: noop, updateVisual: noop, library, busy: null, disabled: false, proposal: null, onAskHelper: noop, onApplyProposal: noop, onUploadBrandMark: noop }),
+  h(BrandColorPaletteEditor, { palette: draft.visual.palette, disabled: false, onChange: noop }),
   ...[false, true].map(failing => h("section", { "data-preview": true }, h(BrandLookPreviewPanel, { preview: previewBatch({ failing }), previewGenerationCount: 2, allowance: null, imageAccess: failing ? { canUse: false, reason: "payment_required", upgradeUrl: "/pricing" } : library.imageAccess, canPublish: true, busy: null, disabled: false, onPreview: noop, onReroll: noop }))),
 ].map(body => renderToStaticMarkup(h("main", { className: inner }, body)).replace(/<link[^>]*>/g, ""));
 const candidates = new Set(bodies.flatMap(body => [...body.matchAll(/class="([^"]*)"/g)].flatMap(m => m[1].replaceAll("&amp;", "&").split(/\s+/))));
-// Embed shipped samples so screenshots inspect actual assets without networking.
 for (let i = 0; i < bodies.length; i++) bodies[i] = bodies[i].replace(/src="(\/style-packs\/[^"?]+\.jpg)"/g, (_, url) => `src="data:image/jpeg;base64,${fs.readFileSync(path.join(root, "public", url)).toString("base64")}"`);
 const css = (await compile(read("src/app/globals.css"), { base: root, onDependency() {} })).build([...candidates]);
 const browser = await puppeteer.launch({ headless: true, args: process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : [] });
@@ -116,6 +125,7 @@ try {
         overflow: document.documentElement.scrollWidth > innerWidth,
         overflowingElements: [...document.querySelectorAll('body *')].filter(e => rect(e).right > innerWidth + 1).slice(0, 8).map(e => ({ tag: e.tagName, className: e.className, right: rect(e).right })),
         radios: [...document.querySelectorAll('input[type="radio"]')].map(e => ({ height: rect(e.closest('label')).height, checked: e.checked })),
+        tabs: [...document.querySelectorAll('[role="tab"]')].map(e => ({ height: rect(e).height })),
         preview: [...document.querySelectorAll('[data-preview] figure')].map(e => ({ top: rect(e).top, bottom: rect(e).bottom, button: (() => { const b = e.parentElement.querySelector('button'); return b ? { height: rect(b).height, top: rect(b).top, fits: b.scrollWidth <= b.clientWidth + 1 } : null; })() })),
         workspace: (() => { const aside = document.querySelector('aside'); const fieldset = document.querySelector('fieldset'); return aside && fieldset ? { asideTop: rect(aside).top, optionsTop: rect(fieldset).top, asideLeft: rect(aside).left, optionsLeft: rect(fieldset).left } : null; })(),
       };
@@ -123,11 +133,17 @@ try {
     const where = `fixture ${fixture} at ${width}px, root text ${fontSize}px`;
     assert.equal(found.overflow, false, `${where}: no horizontal overflow: ${JSON.stringify(found.overflowingElements)}`);
     if (fixture === 0) {
-      assert.equal(found.radios.length, 4, `${where}: four starting choices (drama, finance, health, comic)`);
+      assert.equal(found.radios.length, 6, `${where}: six trending starting choices (shop-review, ai-tech-doc, true-crime, comic-story, listicle-fast, life-drama)`);
       assert.equal(found.radios.filter(r => r.checked).length, 1, `${where}: one selected default`);
-      assert.ok(found.radios.every(r => r.height >= 44), `${where}: touch targets`);
-      if (width < 1024) assert.ok(found.workspace.asideTop < found.workspace.optionsTop, `${where}: selected summary first on mobile`);
-      else assert.ok(found.workspace.asideLeft > found.workspace.optionsLeft, `${where}: adjacent desktop summary`);
+      assert.ok(found.radios.every(r => r.height >= 44), `${where}: radio touch targets >= 44px`);
+      assert.equal(found.tabs.length, 4, `${where}: 4 studio tabs`);
+      assert.ok(found.tabs.every(t => t.height >= 44), `${where}: tab touch targets >= 44px`);
+      if (width < 1024) assert.ok(found.workspace.asideTop < found.workspace.optionsTop, `${where}: live stage first on mobile`);
+      else assert.ok(found.workspace.asideLeft > found.workspace.optionsLeft, `${where}: adjacent desktop live stage`);
+    }
+    if (fixture === 1) {
+      assert.equal(found.tabs.length, 4, `${where}: Motion mode studio tabs`);
+      assert.ok(found.tabs.every(t => t.height >= 44), `${where}: Motion mode tab touch targets >= 44px`);
     }
     if (found.preview.length) {
       const first = Math.min(...found.preview.map(t => t.top));
@@ -139,4 +155,4 @@ try {
     }
   }
 } finally { await browser.close(); }
-console.log("PASS Brands chooser, library, advanced controls and completed/partial previews fit 320–1280px; selected summary order and touch targets verified");
+console.log("PASS Brands Kit Studio, Visual Library, Palette Editor and Previews fit 320–1280px at 16px/20px; live stage order and touch targets verified");

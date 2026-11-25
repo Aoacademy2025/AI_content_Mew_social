@@ -23,10 +23,16 @@ async function main() {
   assert.equal(payload.voice.voiceId, "Kore");
   assert.equal(payload.subtitle.presetId, "authored-style");
   assert.equal(payload.script.tone, defaults.script.tone);
+  assert.equal(payload.visual.defaultBrollSource, "stock", "new Brand Kit starts on 0-credit stock instead of surprise paid AI images");
   const unowned = createBrandSetupSeed({ ...defaults, script: { styleId: null, tone: blank.script.tone, analysisNotes: null, sampleText: null } }, []);
   assert.equal(unowned.script.tone, stylePack("life-drama").scriptTone, "unowned server defaults acquire the selected pack's writing tone");
   assert.equal(nextBrandName(["แบรนด์ของฉัน", "แบรนด์ของฉัน 2"]), "แบรนด์ของฉัน 3");
   assert.equal(brandPreviewInputKey(payload), brandPreviewInputKey({ ...payload, name: "rename" }));
+  assert.equal(
+    brandPreviewInputKey(payload),
+    brandPreviewInputKey({ ...payload, visual: { ...payload.visual, defaultBrollSource: "motion", motionThemeId: "apple-bento-glass" } }),
+    "changing B-roll source or motion theme does not invalidate AI look preview input key",
+  );
   assert.notEqual(brandPreviewInputKey(payload), brandPreviewInputKey({ ...payload, visual: { ...payload.visual, palette: ["#FFFFFF"] } }));
 
   const owner = await prisma.user.create({ data: { name: "Owner", email: "setup-owner@example.test", plan: "BUSINESS" } });
@@ -43,12 +49,63 @@ async function main() {
   assert.equal(project.brandVisualPinAdmittedCohort, null, "library setup must not admit AI images");
   const draft = JSON.parse(project.draftJson!);
   assert.equal(draft.geminiVoiceName, "Kore");
-  assert.equal(draft.brollSource, "kie-image", "Brand-created clips start with images generated in the pinned style");
+  assert.equal(draft.brollSource, "stock", "unadmitted stock Brand Kit starts on 0-credit stock");
+  assert.equal(draft.templateId, "life-drama", "Style Pack propagates templateId to Editor draft");
+  assert.equal(draft.brollTransition, stylePack("life-drama").brollTransition, "Style Pack propagates brollTransition");
   assert.equal(draft.brandSubtitleDefault.fontFamily, "Sarabun");
   assert.equal(draft.script, "");
   assert.equal(project.activeJobId, null, "setup never starts a render");
   await assert.rejects(() => completeBrandSetup(owner.id, { ...request, payload: { ...payload, name: "different" } }, null), /ข้อมูลอีกชุด/);
   await assert.rejects(() => completeBrandSetup(other.id, { requestId: randomUUID(), action: "use-brand", profileId: result.profileId, revisionId: result.revisionId }, null), /ไม่พบแบรนด์/);
+
+  // Motion B-Roll Brand Kit propagates motionThemeId + motionMascot + 0-credit stock source + HERO-94 defaults.
+  const motionPayload = {
+    ...payload,
+    name: "Motion Channel",
+    voice: { ...payload.voice, geminiVoiceStyle: "energetic", ttsSpeed: 1.1 },
+    visual: {
+      ...payload.visual,
+      defaultBrollSource: "motion" as const,
+      motionThemeId: "apple-bento-glass" as const,
+      motionMascot: "ai-bot" as const,
+    },
+    videoDefaults: {
+      headlineHookEnabled: true,
+      headlineHookPreset: "stat-burst" as const,
+      highlightKeywords: true,
+      statCards: true,
+      sfxMode: "subtle" as const,
+      punchZoom: true,
+      brollTransition: "cut" as const,
+      musicMood: "upbeat" as const,
+    },
+  };
+  const motionSetup = await completeBrandSetup(owner.id, { requestId: randomUUID(), action: "create-clip", payload: motionPayload }, null);
+  const motionProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: motionSetup.projectId! } });
+  const motionDraft = JSON.parse(motionProject.draftJson!);
+  assert.equal(motionDraft.brollSource, "stock");
+  assert.equal(motionDraft.motionThemeId, "apple-bento-glass");
+  assert.equal(motionDraft.motionMascot, "ai-bot");
+  assert.equal(motionDraft.geminiVoiceStyle, "energetic");
+  assert.equal(motionDraft.ttsSpeed, 1.1);
+  assert.equal(motionDraft.sfxMode, "subtle");
+  assert.equal(motionDraft.punchZoom, true);
+  assert.equal(motionDraft.brollTransition, "cut");
+  assert.equal(motionDraft.brandSubtitleDefault.highlightKeywords, true);
+  assert.equal(motionDraft.brandSubtitleDefault.statCards, true);
+
+  // kie-image Brand Kit clamps to stock when unadmitted, and keeps kie-image when admitted.
+  const aiBrandPayload = { ...payload, name: "AI Visual Brand", visual: { ...payload.visual, defaultBrollSource: "kie-image" as const } };
+  const unadmittedAi = await completeBrandSetup(owner.id, { requestId: randomUUID(), action: "create-clip", payload: aiBrandPayload }, null);
+  const unadmittedDraft = JSON.parse((await prisma.editorProject.findUniqueOrThrow({ where: { id: unadmittedAi.projectId! } })).draftJson!);
+  assert.equal(unadmittedDraft.brollSource, "stock", "unadmitted kie-image brand safely clamps to stock");
+  const admittedAi = await completeBrandSetup(
+    owner.id,
+    { requestId: randomUUID(), action: "create-clip", payload: { ...aiBrandPayload, name: "AI Visual Brand Admitted" } },
+    { cohort: "internal", rolloutBucket: 0 },
+  );
+  const admittedDraft = JSON.parse((await prisma.editorProject.findUniqueOrThrow({ where: { id: admittedAi.projectId! } })).draftJson!);
+  assert.equal(admittedDraft.brollSource, "kie-image", "admitted kie-image brand keeps Hero AI Image default");
 
   const save = { requestId: randomUUID(), action: "save" as const, profileId: result.profileId, expectedRevision: 1, payload: { ...payload, name: "updated" } };
   const updated = await completeBrandSetup(owner.id, save, null);
@@ -90,7 +147,7 @@ async function main() {
   assert.equal(storageState.readBrandSetupDraft(storage, owner.id, null, null), null);
   values.set(storageState.brandSetupDraftKey(owner.id, null, null), '{"payload":null}');
   assert.equal(storageState.readBrandSetupDraft(storage, owner.id, null, null), null);
-  console.log("verify-brand-setup: defaults, replay, concurrent retry, ownership, revision conflict, FREE cap, exact pin, no render, and recovery PASS");
+  console.log("verify-brand-setup: 0-credit default, Motion + HERO-94 propagation, admission clamping, replay, concurrent retry, ownership, revision conflict, FREE cap, exact pin, no render, and recovery PASS");
   await prisma.$disconnect();
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

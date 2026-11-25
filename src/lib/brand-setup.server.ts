@@ -86,10 +86,34 @@ export async function completeBrandSetup(userId: string, raw: unknown, admission
     }
     let projectId: string | null = null;
     if (input.action !== "save") {
+      const initialBroll = (() => {
+        const requested = payload.visual.defaultBrollSource;
+        const hasMotion = Boolean(
+          payload.visual.motionThemeId
+          || (typeof payload.subtitle.config?.motionThemeId === "string" && payload.subtitle.config.motionThemeId.trim()),
+        );
+        if (requested === "motion" || (!requested && hasMotion)) {
+          return { brollSource: "stock" as const, mixPreset: "free" as const };
+        }
+        if (requested === "kie-image" && admission !== null) {
+          return { brollSource: "kie-image" as const, mixPreset: "free" as const };
+        }
+        if (requested === "automix" && admission !== null) {
+          return { brollSource: "automix" as const, mixPreset: "recommended" as const };
+        }
+        return { brollSource: "stock" as const, mixPreset: "free" as const };
+      })();
       const project = await createEditorProject(userId, {
         title: `คลิปใหม่ · ${payload.name}`,
-        draft: applyBrandRevisionDefaultsToProjectDraft({ draft: { ...EDITOR_DEFAULT_DRAFT,
-          brollSource: "kie-image", projectTitle: `คลิปใหม่ · ${payload.name}` }, payload }),
+        draft: applyBrandRevisionDefaultsToProjectDraft({
+          draft: {
+            ...EDITOR_DEFAULT_DRAFT,
+            ...initialBroll,
+            projectTitle: `คลิปใหม่ · ${payload.name}`,
+          },
+          payload,
+          aiImageAdmitted: admission !== null,
+        }),
         brandProfileRevisionId: revision.id,
         brandVisualPinAdmission: admission,
       }, tx);

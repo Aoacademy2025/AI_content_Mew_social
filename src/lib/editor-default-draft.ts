@@ -15,6 +15,7 @@ import { DEFAULT_AUTO_MIX_PROVIDERS } from "@/app/(dashboard)/video-editor/_comp
 import type { MixPreset } from "@/app/(dashboard)/video-editor/_v2/mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { MotionMascotId, MotionThemeId } from "@/lib/motion-broll-catalog";
 import type { MusicMood, PacingLevel } from "@/lib/style-pack-catalog";
 import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
@@ -65,6 +66,9 @@ export interface EditorDefaultDraft {
    * Absent on a draft no Brand Revision has been applied to. */
   pacing?: PacingLevel;
   musicMoodDefault?: MusicMood | null;
+  /** Brand Kit / Step 2 Motion B-Roll defaults (0 credits, rendered live in Remotion). */
+  motionThemeId?: MotionThemeId | null;
+  motionMascot?: MotionMascotId | null;
   layerVisibility: EditorLayerVisibility;
 }
 

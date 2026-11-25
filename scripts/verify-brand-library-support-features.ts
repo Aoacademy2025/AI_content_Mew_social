@@ -11,8 +11,10 @@ assert.deepEqual(normalizeHexPalette(["#abc", "38bdf8"]), ["#AABBCC", "#38BDF8"]
 assert.equal(normalizeHexPalette(["warm paper white"]), null);
 assert.equal(normalizeHexPalette([]), null);
 
-const advanced = readFileSync("src/app/(dashboard)/brands/_components/AdvancedSettings.tsx", "utf8");
-const brandList = readFileSync("src/app/(dashboard)/brands/_components/BrandList.tsx", "utf8");
+const paletteEditor = readFileSync("src/app/(dashboard)/brands/_components/BrandColorPaletteEditor.tsx", "utf8");
+const liveStage = readFileSync("src/app/(dashboard)/brands/_components/BrandLiveStage.tsx", "utf8");
+const workspace = readFileSync("src/app/(dashboard)/brands/_components/BrandStyleWorkspace.tsx", "utf8");
+const overview = readFileSync("src/app/(dashboard)/brands/_components/BrandLibraryOverview.tsx", "utf8");
 const brandClient = readFileSync("src/app/(dashboard)/brands/_components/BrandLibraryClient.tsx", "utf8");
 const postPhase = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
 const libraryRoute = readFileSync("src/app/api/brand-library/route.ts", "utf8");
@@ -24,12 +26,14 @@ const previewServer = readFileSync("src/lib/brand-look-preview.server.ts", "utf8
 const heroScriptServer = readFileSync("src/lib/hero-script.server.ts", "utf8");
 const schema = readFileSync("prisma/schema.prisma", "utf8");
 
-assert.doesNotMatch(advanced, /type="color"/, "Brand palette never opens the browser RGB picker");
-assert.match(advanced, /ตกลง/, "HEX input has an explicit Apply action");
-assert.match(advanced, /data-brand-mark-preview="true"/, "Brand Mark settings include a live 9:16 preview");
-assert.match(advanced, /\/api\/user\/brand-assets\/\$\{[^}]+\}\/image/, "logo preview uses the owned asset image endpoint");
+assert.doesNotMatch(paletteEditor, /type="color"/, "Brand palette never opens the browser RGB picker");
+assert.doesNotMatch(workspace, /type="color"/, "Brand workspace never opens the browser RGB picker");
+assert.match(paletteEditor, /ตกลง/, "HEX input has an explicit Apply action");
+assert.match(liveStage, /data-brand-mark-preview["']?:\s*["']true["']|data-brand-mark-preview="true"/, "Live 9:16 Brand Stage includes the live Brand Mark preview");
+assert.match(liveStage, /\/api\/user\/brand-assets\/\$\{[^}]+\}\/image/, "logo preview uses the owned asset image endpoint");
 assert.match(postPhase, /data-editor-function-tabs="true"[\s\S]{0,300}sticky/, "desktop function tabs stay pinned while controls scroll");
-assert.match(brandList, /aria-label=\{`ลบแนวภาพ/, "each saved Brand exposes a visible delete action");
+assert.match(overview, /aria-label=\{`ลบแบรนด์/, "each saved Brand card exposes a visible delete action");
+assert.match(overview, /\/hero-script\?brandId=/, "each saved Brand card links directly to Hero Script with ?brandId=");
 assert.match(brandClient, /method:\s*"DELETE"/, "Brand Library archives through an explicit DELETE request");
 assert.match(archiveRoute, /archiveBrandProfile/, "the DELETE route delegates to the soft-delete domain seam");
 assert.match(libraryRoute, /archivedAt:\s*null/, "archived Brands disappear from the active library");
@@ -47,21 +51,16 @@ assert.match(heroScriptServer, /where:\s*\{\s*id:\s*brandProfileId,\s*userId,\s*
   "archived Brands cannot seed new Hero Script work");
 assert.match(schema, /archivedAt\s+DateTime\?/, "Brand Profile stores a recoverable archive timestamp");
 
-// Task 3 (Brands wave 1 — Style Packs): /brands default surface = name +
-// StylePackPicker; the two visual axes move under a collapsed "กำหนดเอง".
+// StylePackPicker contract (still used inside Video Editor BrandVisualSelector)
 const stylePackPicker = readFileSync("src/app/(dashboard)/brands/_components/StylePackPicker.tsx", "utf8");
 assert.match(stylePackPicker, /role="radio"/, "each Style Pack card is a radio button");
 assert.match(stylePackPicker, /กำหนดเอง/, "a final card opts out to the custom (non-pack) look");
-const stylePackPickerIndex = brandClient.indexOf("<BrandStyleWorkspace");
-const advancedSettingsIndex = brandClient.indexOf("<AdvancedSettings");
 assert.ok(
-  stylePackPickerIndex > 0 && advancedSettingsIndex > stylePackPickerIndex,
-  "the default /brands surface renders the outcome workspace before optional settings",
+  brandClient.includes("<BrandStyleWorkspace") && workspace.includes('role="tablist"'),
+  "the /brands Studio renders the 4-tab BrandStyleWorkspace with live preview",
 );
 
-// Fix-up: applying the AI visual-helper proposal writes the same pack-owned
-// axes (format/palette/personality) `updateVisual` guards — it must unlink a
-// selected Style Pack too, never leave a half-pack silently behind.
+// ADR 0058: applying the AI visual-helper proposal unlinks a selected Style Pack
 const applyProposalBody = brandClient.slice(
   brandClient.indexOf("function applyProposal"),
   brandClient.indexOf("async function uploadBrandMark"),
@@ -76,10 +75,7 @@ const panel = readFileSync("src/app/(dashboard)/brands/_components/BrandLookPrev
 assert.match(panel, /ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้/, "panel must explain the no-name disabled state");
 assert.match(panel, /data-testid="preview-disabled-reason"/);
 
-// ADR 0059: the Brand Library stays open to every plan, so nothing on the page
-// may promise an image entitlement the button then refuses. The allowance card,
-// the allowance cost label and the preview quote itself all sit behind the same
-// image gate, and the gate reason outranks the quote spinner on the button.
+// ADR 0059: the Brand Library stays open to every plan; paid/rollout gates live on AI-image actions only
 assert.doesNotMatch(brandClient, /สิทธิ์ทดลองสร้างภาพ/, "the primary setup surface no longer leads with paid-image funding");
 const quoteFetchIndex = brandClient.indexOf('"/api/brand-library/preview-quote"');
 assert.ok(
@@ -99,21 +95,12 @@ assert.ok(
   "a rejected account reads the image-gate reason instead of a quote that never arrives",
 );
 
-// Task 9 (Telemetry): style_pack_selected (surface: "brand") is emitted once
-// a Brand carries a pack — on manual/"save as brand" creation (POST
-// /api/brand-library) and on every publish (POST /api/brand-library/[id]/publish)
-// — never on a draft autosave, and never when no pack is chosen. Both sites
-// are server-sourced, next to the existing brand telemetry.
+// Telemetry contracts
 assert.match(
   libraryRoute,
   /parsed\.data\.visual\.stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
   "creating a Brand with a pack emits style_pack_selected (surface: brand), gated on a non-null stylePackId",
 );
-// Review fix (2026-09-03, Important finding 1): the publish route's earlier
-// inline `JSON.parse(revision.payloadJson)` sat OUTSIDE any try/catch — a
-// malformed/legacy payload would throw into the route's outer catch and
-// report an already-successful publish as a failure. The whole parse+emit
-// now goes through one fail-open shared helper.
 assert.match(
   publishRoute,
   /emitStylePackSelectedFromRevision\(auth\.user\.id,\s*revision,\s*"brands\.publish"\)/,
@@ -122,7 +109,7 @@ assert.match(
 assert.doesNotMatch(
   publishRoute,
   /JSON\.parse\(revision\.payloadJson\)/,
-  "the publish route never parses the persisted payload inline — a malformed/legacy payloadJson must never turn a successful publish into a reported failure",
+  "the publish route never parses the persisted payload inline",
 );
 assert.doesNotMatch(
   readFileSync("src/app/api/brand-library/[id]/draft/route.ts", "utf8"),
