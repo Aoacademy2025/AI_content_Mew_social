@@ -15,7 +15,9 @@ import { prepareVideoJobInputSchema, type PrepareVideoJobInput } from "./create-
 import { parseClipJobArgs } from "./clip-video-job";
 import { resolveAvatarRequest } from "./avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
-import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp } from "@/lib/brand-profile-library.server";
+import { resolveMcpBrandSubtitleStyle, listActiveBrandProfilesForMcp, type McpBrandSubtitleLookup } from "@/lib/brand-profile-library.server";
+import { isPaid } from "@/lib/plan-limits";
+import { TEMPLATE_TTS_SPEED_BY_PACING, TEMPLATE_VOICE_STYLE_BY_ID } from "@/lib/video-template-apply";
 import { resolveMcpSubtitleDesign } from "./orchestrator-steps";
 import { createDefaultHeadlineHook, resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
 import { resolveGeminiVoiceStyle } from "@/lib/gemini-voice-styles";
@@ -126,7 +128,7 @@ export async function prepareVideoQuote(
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
   const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);
   if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];
-  const execution = await resolveQuoteExecution(user, input, presenters);
+  const execution = await resolveQuoteExecution(user, input, presenters, parsed.data.brollSource !== undefined);
   if ("error" in execution) return execution;
   const hasMotionTheme = Boolean(execution.jobInput.motionThemeId);
   const source = input.brollSource ?? "stock";
@@ -174,12 +176,12 @@ async function resolveQuoteExecution(
   user: User,
   input: ReturnType<typeof normalizeQuoteInput>,
   presenters: Array<{ id: string; resultSrc: string | null }>,
+  explicitBrollSource = false,
 ): Promise<QuoteExecution | QuoteFailure> {
   const presenter = presenters[0] ?? null;
   const avatar = resolveAvatarRequest(input, user);
   if (avatar.kind === "error") return quoteFailure(avatar.payload.error, avatar.payload.message);
-  const templatePack = input.templateId && isActiveStylePackId(input.templateId) ? stylePack(input.templateId) : null;
-  const templateSnapshot = templatePack ? stylePackSnapshotOf(templatePack) : null;
+  let brandLookup: Extract<McpBrandSubtitleLookup, { found: true }> | null = null;
   let brandStyle: SubtitleStylePresetConfig | null = null;
   let brandMotionThemeId: MotionThemeId | undefined;
   let brandMotionMascot: MotionMascotId | undefined;
@@ -192,33 +194,40 @@ async function resolveQuoteExecution(
   if (brandId) {
     const lookup = await resolveMcpBrandSubtitleStyle(user.id, brandId);
     if (!lookup.found) return quoteFailure("brand_not_found", "ไม่พบแบรนด์นี้ หรือยังใช้ไม่ได้");
+    brandLookup = lookup;
     brandStyle = lookup.style ?? null;
     if (isMotionThemeId(lookup.motionThemeId)) brandMotionThemeId = lookup.motionThemeId;
     if (isMotionMascotId(lookup.motionMascot)) brandMotionMascot = lookup.motionMascot;
     if (Array.isArray(lookup.palette) && lookup.palette.length > 0) brandPalette = lookup.palette;
   }
+  const effectiveTemplateId = input.templateId && isActiveStylePackId(input.templateId)
+    ? input.templateId
+    : (brandLookup?.stylePackId && isActiveStylePackId(brandLookup.stylePackId) ? brandLookup.stylePackId : null);
+  const templatePack = effectiveTemplateId ? stylePack(effectiveTemplateId) : null;
+  const templateSnapshot = templatePack ? stylePackSnapshotOf(templatePack) : null;
+  const brandVd = brandLookup?.videoDefaults;
+  // Explicit brollSource (other than external) overrides a brand's default Motion theme unless motionThemeId was explicitly requested.
   const resolvedMotionThemeId = isMotionThemeId(input.motionThemeId)
     ? input.motionThemeId
-    : brandMotionThemeId;
+    : (explicitBrollSource && input.brollSource !== "external" ? undefined : brandMotionThemeId);
   const resolvedMotionMascot = isMotionMascotId(input.motionMascot)
     ? input.motionMascot
     : brandMotionMascot;
-  const baseSubtitleStyle = templatePack ? stylePackSubtitlePreset(templatePack) : brandStyle;
+  const baseSubtitleStyle = input.templateId && templatePack
+    ? stylePackSubtitlePreset(templatePack)
+    : (brandStyle ?? (templatePack ? stylePackSubtitlePreset(templatePack) : null));
   const subtitle = resolveMcpSubtitleDesign(
     {
       ...input,
       ...(resolvedMotionThemeId ? { motionThemeId: resolvedMotionThemeId } : {}),
-      ...(templatePack
-        ? {
-            highlightKeywords: input.highlightKeywords ?? templatePack.highlightKeywords,
-            statCards: input.statCards ?? templatePack.statCards,
-          }
-        : {}),
+      highlightKeywords: input.highlightKeywords ?? brandVd?.highlightKeywords ?? templatePack?.highlightKeywords,
+      statCards: input.statCards ?? brandVd?.statCards ?? templatePack?.statCards,
     },
     baseSubtitleStyle,
   );
-  const resolvedHeadlineHookStyle = input.headlineHookStyle ?? input.visualHookStyle ?? templatePack?.headlineHookPreset;
-  const fallbackHookSeed = !input.headlineHook && !input.visualHook && templatePack
+  const brandHookDisabled = brandVd?.headlineHookEnabled === false && !input.headlineHook && !input.visualHook && !input.headlineHookStyle && !input.visualHookStyle && !input.templateId;
+  const resolvedHeadlineHookStyle = input.headlineHookStyle ?? input.visualHookStyle ?? (!brandHookDisabled ? (brandVd?.headlineHookPreset ?? templatePack?.headlineHookPreset ?? undefined) : undefined);
+  const fallbackHookSeed = !input.headlineHook && !input.visualHook && !brandHookDisabled && (templatePack || brandVd?.headlineHookEnabled)
     ? createDefaultHeadlineHook(input.title?.trim() || input.script?.trim() || "", 60_000).headline.trim()
     : "";
   const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(
@@ -230,17 +239,47 @@ async function resolveQuoteExecution(
     60_000,
     subtitle.design.verticalPos,
   );
-  const resolvedPunchZoom = input.punchZoom ?? templatePack?.punchZoom;
+  const resolvedPunchZoom = input.punchZoom ?? brandVd?.punchZoom ?? templatePack?.punchZoom;
   // Motion themes default to subtle pop/whoosh SFX unless the caller explicitly asked for "none".
-  const resolvedSfxMode = input.sfxMode ?? templatePack?.sfxMode ?? (resolvedMotionThemeId ? "subtle" : undefined);
-  const resolvedBrollTransition = templatePack?.brollTransition;
+  const resolvedSfxMode = input.sfxMode ?? brandVd?.sfxMode ?? templatePack?.sfxMode ?? (resolvedMotionThemeId ? "subtle" : undefined);
+  const resolvedBrollTransition = brandVd?.brollTransition ?? templatePack?.brollTransition ?? undefined;
   const layout = avatar.kind === "ok" ? resolveAvatarLayout(input, await getAvatarPreset(user.id, avatar.avatarId)) : null;
   const source = input.brollSource ?? "stock";
-  const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
-  const voiceId = (input.voiceId ?? user.elevenlabsVoiceId)?.trim();
+  const brandVoice = brandLookup?.voice;
+  const canUseBrandElevenLabs = brandVoice?.provider === "elevenlabs"
+    && isPaid(user.plan)
+    && Boolean(user.elevenlabsKey)
+    && Boolean((brandVoice.voiceId ?? user.elevenlabsVoiceId)?.trim());
+  const inheritedVoiceProvider = brandVoice?.provider === "elevenlabs"
+    ? (canUseBrandElevenLabs ? "elevenlabs" : "gemini")
+    : brandVoice?.provider === "gemini"
+      ? "gemini"
+      : undefined;
+  const voiceProvider = input.voiceProvider
+    ?? inheritedVoiceProvider
+    ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+  const voiceId = (
+    input.voiceId
+    ?? (voiceProvider === "elevenlabs" && brandVoice?.provider === "elevenlabs" ? brandVoice.voiceId : null)
+    ?? user.elevenlabsVoiceId
+  )?.trim();
+  const resolvedGeminiVoiceName = resolveGeminiVoiceId(
+    input.geminiVoiceName
+    || (brandVoice?.provider === "gemini" ? brandVoice.voiceId : null)
+    || user.geminiVoiceName,
+  );
+  const resolvedGeminiVoiceStyleInput = input.geminiVoiceStyle
+    ?? brandVoice?.geminiVoiceStyle
+    ?? (templatePack && isActiveStylePackId(templatePack.id) ? TEMPLATE_VOICE_STYLE_BY_ID[templatePack.id] : undefined);
+  const resolvedTtsSpeed = input.ttsSpeed
+    ?? brandVoice?.ttsSpeed
+    ?? (templatePack && TEMPLATE_TTS_SPEED_BY_PACING[templatePack.pacing] !== 1
+      ? TEMPLATE_TTS_SPEED_BY_PACING[templatePack.pacing]
+      : undefined);
   if (!presenter && voiceProvider === "elevenlabs" && !voiceId) {
     return quoteFailure("voice_setup_required", "ยังไม่ได้เลือกเสียง ElevenLabs สำหรับงานนี้", "เลือกเสียงใน Studio หรือส่ง voiceId ที่ต้องการ แล้วเรียก prepare_video_job ใหม่");
   }
+  const resolvedMusicMood = brandVd?.musicMood !== undefined ? brandVd.musicMood : (templatePack?.musicMood ?? null);
   // Same catalog ordering/ownership and pure selector used by /api/music + the worker.
   // Resolve locally now: a later catalog insert must not pick a different approved track.
   let music: { bgmFile: string; title: string } | null = null;
@@ -260,7 +299,7 @@ async function resolveQuoteExecution(
       }
       music = resolved;
     }
-  } else if (templatePack) {
+  } else if (resolvedMusicMood) {
     const [systemTracks, ownerTracks] = await Promise.all([
       prisma.music.findMany({ orderBy: { createdAt: "desc" }, select: { title: true, filename: true, mood: true } }),
       prisma.userMusic.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, select: { title: true, filename: true } }),
@@ -269,9 +308,12 @@ async function resolveQuoteExecution(
       ...systemTracks.map((track) => ({ title: track.title, bgmFile: `/music/${track.filename}`, mood: track.mood })),
       ...ownerTracks.map((track) => ({ title: track.title, bgmFile: `/api/music/${track.filename}` })),
     ];
-    music = resolveMusicMoodTrack(templatePack.musicMood, tracks);
+    music = resolveMusicMoodTrack(resolvedMusicMood, tracks);
   }
   const styleOpen = isInternalAiBetaEnabledFor(user, process.env.GEMINI_TTS_38_PUBLIC === "1");
+  const inheritedLogoOverlay = isPaid(user.plan) && brandLookup?.logoOverlay?.enabled
+    ? brandLookup.logoOverlay
+    : null;
   const jobInput: VideoJobInput = {
     script: presenter ? "" : input.script!, title: input.title,
     ...(templatePack && templateSnapshot ? { templateId: templatePack.id, templateSnapshot } : {}),
@@ -279,6 +321,7 @@ async function resolveQuoteExecution(
     ...(resolvedMotionMascot ? { motionMascot: resolvedMotionMascot } : {}),
     ...(brandPalette && brandPalette.length > 0 ? { brandPalette } : {}),
     ...(resolvedBrollTransition ? { brollTransition: resolvedBrollTransition } : {}),
+    ...(inheritedLogoOverlay ? { logoOverlay: inheritedLogoOverlay } : {}),
     ...(presenter
       ? {
           mode: "upload",
@@ -298,9 +341,9 @@ async function resolveQuoteExecution(
       : {
           voiceProvider,
           ...(voiceProvider === "elevenlabs" ? { voiceId, elevenlabsModel: elevenLabsSpeechModel(user.elevenlabsModel) } : {}),
-          geminiVoiceName: resolveGeminiVoiceId(input.geminiVoiceName || user.geminiVoiceName),
-          geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(input.geminiVoiceStyle).id : "neutral",
-          ...(input.ttsSpeed !== undefined ? { ttsSpeed: input.ttsSpeed } : {}),
+          geminiVoiceName: resolvedGeminiVoiceName,
+          geminiVoiceStyle: styleOpen ? resolveGeminiVoiceStyle(resolvedGeminiVoiceStyleInput ?? undefined).id : "neutral",
+          ...(resolvedTtsSpeed !== undefined && resolvedTtsSpeed !== null ? { ttsSpeed: resolvedTtsSpeed } : {}),
           ...(input.targetDurationSec !== undefined ? { targetDurationSec: input.targetDurationSec } : {}),
         }),
     ...(resolvedPunchZoom !== undefined ? { punchZoom: resolvedPunchZoom } : {}),

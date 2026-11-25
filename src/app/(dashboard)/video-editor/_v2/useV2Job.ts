@@ -421,7 +421,8 @@ export function useV2Job(p: V2Project) {
     const submittedTargetClipCount = p.mode === "upload" && p.clipDurationSec > 0 && p.targetClipCount > 0
       ? effectiveManualCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
       : p.targetClipCount;
-    const disclosedAiSlots = p.brollSource === "automix"
+    const hasMotionTheme = Boolean(p.motionThemeId);
+    const disclosedAiSlots = !hasMotionTheme && p.brollSource === "automix"
       ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, quotedTargetClipCount)
       : null;
     let reusableAiImages = 0;
@@ -472,20 +473,22 @@ export function useV2Job(p: V2Project) {
       ...(p.sfxMode ? { sfxMode: p.sfxMode } : {}),
       ...(p.brollTransition ? { brollTransition: p.brollTransition } : {}),
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
-      stockSource: apiStockSource(p.brollSource),
+      stockSource: hasMotionTheme ? "none" : apiStockSource(p.brollSource),
+      ...(hasMotionTheme && p.motionThemeId ? { motionThemeId: p.motionThemeId } : {}),
+      ...(hasMotionTheme && p.motionMascot ? { motionMascot: p.motionMascot } : {}),
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       // ADR 0057: the footage style now comes from the project's pinned Style
       // Pack, resolved server-side inside the worker. The client no longer has
       // a style menu, so it submits no legacy style field at all. (The API
       // still accepts that field for drafts saved before wave 1.)
-      ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
-      ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
-      ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+      ...(!hasMotionTheme && p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
+      ...(!hasMotionTheme && p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
+      ...(!hasMotionTheme && p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
       // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
       // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
       // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
-      ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      ...(!hasMotionTheme && !p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
       ...(maxAiImages !== null ? { maxAiImages } : {}),
       ...bgmInput,
       subtitleMode: "sentence",
@@ -518,8 +521,10 @@ export function useV2Job(p: V2Project) {
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
       ...bgmInput,
-      // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
-      stockSource: apiStockSource(p.brollSource),
+      // b-roll source ที่เลือกจริง (motionThemeId = Motion B-Roll 0 เครดิต · kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
+      stockSource: hasMotionTheme ? "none" : apiStockSource(p.brollSource),
+      ...(hasMotionTheme && p.motionThemeId ? { motionThemeId: p.motionThemeId } : {}),
+      ...(hasMotionTheme && p.motionMascot ? { motionMascot: p.motionMascot } : {}),
       // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
       ...(p.useAvatar && p.avatarId
         ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarEngine: p.avatarEngine, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
@@ -530,10 +535,10 @@ export function useV2Job(p: V2Project) {
       // Pack, resolved server-side inside the worker. The client no longer has
       // a style menu, so it submits no legacy style field at all. (The API
       // still accepts that field for drafts saved before wave 1.)
-      ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
-      ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
-      ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
-      ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      ...(!hasMotionTheme && p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
+      ...(!hasMotionTheme && p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
+      ...(!hasMotionTheme && p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+      ...(!hasMotionTheme && !p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
       ...(maxAiImages !== null ? { maxAiImages } : {}),
       subtitleMode: "sentence",
       subtitlePosition: "bottom",

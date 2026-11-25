@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createBlankBrandProfileSeed } from "../src/lib/brand-profile-seed";
 import { TREATMENT_PRESET_IDS } from "../src/lib/brand-treatment-catalog";
 import { VISUAL_FORMAT_IDS } from "../src/lib/brand-visual-system";
-import { activeStylePacks, stylePack } from "../src/lib/style-pack-catalog";
+import { activeStylePacks, stylePack, stylePackSubtitlePreset } from "../src/lib/style-pack-catalog";
 import {
   applyStylePackToPayload,
   clearStylePack,
@@ -19,8 +19,6 @@ assert.equal(
 );
 assert.equal(seed.visual.stylePackVersion, null, "no pack means no pinned pack version");
 
-/** The blank seed as a fully-defaulted payload (the two retired scene inputs
- *  and languageMode are supplied by the Zod defaults on a real write). */
 function blankPayload(): BrandProfilePayload {
   const blank = createBlankBrandProfileSeed();
   return {
@@ -37,7 +35,7 @@ function blankPayload(): BrandProfilePayload {
 
 const ghostPack = stylePack("thai-ghost");
 
-// ── One tap resolves the whole look onto the existing payload axes ──────────
+// ── One tap resolves the whole look + HERO-94 videoDefaults onto the payload ─
 const ghost = applyStylePackToPayload(blankPayload(), ghostPack);
 assert.equal(ghost.visual.stylePackId, "thai-ghost");
 assert.equal(ghost.visual.stylePackVersion, "v1.0.0");
@@ -53,10 +51,35 @@ assert.equal(ghost.visual.personality, ghostPack.personality);
 assert.equal(ghost.subtitle.config.preset, "bold-shadow");
 assert.deepEqual(
   ghost.subtitle.config,
-  { ...ghostPack.subtitle },
-  "a creator who never chose a subtitle style gets the pack's full subtitle contract",
+  { ...stylePackSubtitlePreset(ghostPack) },
+  "a creator who never chose a subtitle style gets the pack's full HERO-94 subtitle contract",
 );
+assert.equal(ghost.videoDefaults?.headlineHookPreset, ghostPack.headlineHookPreset);
+assert.equal(ghost.videoDefaults?.sfxMode, ghostPack.sfxMode);
+assert.equal(ghost.videoDefaults?.brollTransition, ghostPack.brollTransition);
+assert.equal(ghost.videoDefaults?.musicMood, ghostPack.musicMood);
 assert.equal(ghost.script.tone, ghostPack.scriptTone);
+
+// ── Motion theme & mascot survive applying/swapping Style Packs ─────────────
+const withMotion: BrandProfilePayload = {
+  ...blankPayload(),
+  visual: {
+    ...blankPayload().visual,
+    defaultBrollSource: "motion",
+    motionThemeId: "apple-bento-glass",
+    motionMascot: "ai-bot",
+  },
+  subtitle: {
+    presetId: null,
+    config: { motionThemeId: "apple-bento-glass", motionMascot: "ai-bot" },
+  },
+};
+const motionPackApplied = applyStylePackToPayload(withMotion, ghostPack);
+assert.equal(motionPackApplied.visual.motionThemeId, "apple-bento-glass");
+assert.equal(motionPackApplied.visual.motionMascot, "ai-bot");
+assert.equal(motionPackApplied.subtitle.config.motionThemeId, "apple-bento-glass");
+assert.equal(motionPackApplied.subtitle.config.motionMascot, "ai-bot");
+assert.equal(motionPackApplied.subtitle.config.preset, ghostPack.subtitle.preset);
 
 // ── Applying a pack never mutates the payload it was handed ─────────────────
 const untouched = blankPayload();
@@ -100,10 +123,7 @@ assert.equal(
   "thai-ghost",
 );
 
-// ── Swapping packs replaces the previous pack's tone ────────────────────────
-// A tone that came from a pack is pack-owned, not creator writing: every other
-// pack-resolved field is replaced on every apply, and tone must follow, or the
-// second pack a creator taps keeps speaking in the first pack's voice.
+// ── Swapping packs replaces the previous pack's tone & subtitle contract ────
 const premiumPack = stylePack("premium-product");
 const swapped = applyStylePackToPayload(ghost, premiumPack);
 assert.equal(
@@ -116,7 +136,9 @@ assert.equal(swapped.visual.stylePackVersion, "v1.0.0");
 assert.equal(swapped.visual.lockedTreatmentPresetId, "premium-product-lifestyle");
 assert.deepEqual(swapped.visual.palette, [...premiumPack.palette]);
 assert.equal(swapped.visual.personality, premiumPack.personality);
-assert.deepEqual(swapped.subtitle.config, { ...premiumPack.subtitle });
+assert.deepEqual(swapped.subtitle.config, { ...stylePackSubtitlePreset(premiumPack) });
+assert.equal(swapped.videoDefaults?.headlineHookPreset, premiumPack.headlineHookPreset);
+assert.equal(swapped.videoDefaults?.musicMood, premiumPack.musicMood);
 
 // pack → กำหนดเอง → pack: the tone is still pack-owned once the link is cut.
 const swappedAfterClear = applyStylePackToPayload(clearStylePack(ghost), premiumPack);
@@ -184,4 +206,4 @@ for (const pack of activeStylePacks()) {
   assert.equal(stylePackOfPayload(applied)?.id, pack.id);
 }
 
-console.log("verify-style-pack-apply: PASS pack applies onto the payload, pending packs refused");
+console.log("verify-style-pack-apply: PASS pack + HERO-94 videoDefaults + Motion preservation, pending packs refused");

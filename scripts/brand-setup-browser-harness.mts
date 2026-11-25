@@ -24,15 +24,20 @@ const bundled = await build({
   plugins: [{ name: "isolated-browser-boundaries", setup(b) {
     b.onResolve({ filter: /^(next\/navigation|next\/link|@\/lib\/use-me)$/ }, args => ({ path: args.path, namespace: "fixture" }));
     b.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ loader: "tsx", resolveDir: root, contents:
-      args.path === "next/link" ? `import React from 'react'; export default function Link(props){return <a {...props}/>}` : args.path === "next/navigation" ? `export function useRouter(){return {push:(url)=>window.location.assign(url)}}` : `export async function fetchMe(){return {id:'fixture-user',plan:'FREE'}}` }));
+      args.path === "next/link"
+        ? `import React from 'react'; export default function Link(props){return <a {...props}/>}`
+        : args.path === "next/navigation"
+          ? `export function useRouter(){return {push:(url)=>window.location.assign(url)}}`
+          : `export async function fetchMe(){const p=new URLSearchParams(window.location.search).get('plan')||'PRO';return {id:'fixture-user',plan:p,effectivePlan:p,heroScriptAllowed:p!=='FREE'}}` }));
   } }],
 });
 const js = bundled.outputFiles[0].text;
 writeFileSync(join(output, "app.js"), js);
 const candidates = new Set<string>();
-// Scan the same source classes Tailwind sees, plus rendered branch strings.
 function scan(dir: string) { for (const entry of readdirSync(dir, { withFileTypes: true })) { const file = join(dir, entry.name); if (entry.isDirectory()) scan(file); else if (/\.(tsx?|css)$/.test(file)) for (const token of readFileSync(file, "utf8").match(/[^\s"'`<>]+/g) ?? []) candidates.add(token); } }
-scan(join(root, "src/app/(dashboard)/brands")); scan(join(root, "src/components/ui"));
+scan(join(root, "src/app/(dashboard)/brands"));
+scan(join(root, "src/components/ui"));
+for (const token of readFileSync(join(root, "src/app/(dashboard)/video-editor/_components/VoicePreviewButton.tsx"), "utf8").match(/[^\s"'`<>]+/g) ?? []) candidates.add(token);
 const css = (await compile(readFileSync("src/app/globals.css", "utf8"), { base: root, onDependency() {} })).build([...candidates]);
 const html = `<!doctype html><html lang="th" class="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css} .fixture-shell{display:flex;flex-direction:column;height:100dvh;overflow:hidden}.fixture-header{padding:8px 20px;font-size:12px;flex-shrink:0}.fixture-main{display:flex;flex:1;min-height:0;flex-direction:column;overflow:hidden;padding-bottom:64px}.fixture-tabs{position:fixed;bottom:0;left:0;right:0;height:56px;padding:16px;background:#111;text-align:center;font-size:12px}@media(min-width:1024px){.fixture-main{padding-bottom:0}.fixture-tabs{display:none}}</style></head><body><div id="root"></div><script src="/app.js"></script></body></html>`;
 writeFileSync(join(output, "index.html"), html);
@@ -52,7 +57,7 @@ const server = createServer(async (req, res) => {
     let result = results.get(body.requestId);
     if (!result) {
       let profile = profiles.find(p => p.id === body.profileId);
-      if (!profile) { const payload = body.payload ?? createBrandSetupSeed(defaults, []); profile = { id: `fixture-brand-${profiles.length + 1}`, ...payload, tone: payload.script.tone, bannedWords: [], language: "th", frozen: false, legacyVisualFormat: false, activeRevisionNumber: 1, updatedAt: new Date().toISOString(), draft: { baseRevisionNumber: 1, payload }, revisions: [{ id: `fixture-revision-${profiles.length + 1}`, version: 1, payload, createdAt: new Date().toISOString() }] }; profiles.push(profile); }
+      if (!profile) { const payload = body.payload ?? createBrandSetupSeed(defaults, []); profile = { id: `fixture-brand-${profiles.length + 1}`, ...payload, tone: payload.script.tone, bannedWords: payload.script.bannedWords ?? [], ctaStyle: payload.script.ctaStyle ?? "follow", language: "th", analysisNotes: payload.script.analysisNotes ?? null, sampleText: payload.script.sampleText ?? null, frozen: false, legacyVisualFormat: false, activeRevisionNumber: 1, updatedAt: new Date().toISOString(), draft: { baseRevisionNumber: 1, payload }, revisions: [{ id: `fixture-revision-${profiles.length + 1}`, version: 1, payload, createdAt: new Date().toISOString() }] }; profiles.push(profile); }
       else if (body.action !== "use-brand") {
         profile.activeRevisionNumber += 1; profile.name = body.payload.name;
         profile.draft = { baseRevisionNumber: profile.activeRevisionNumber, payload: body.payload };
@@ -64,6 +69,7 @@ const server = createServer(async (req, res) => {
     return json(result);
   }
   if (url.pathname === "/video-editor") { res.setHeader("Content-Type", "text/html;charset=utf-8"); res.end(`<h1>ส่งถึง editor จำลองแล้ว</h1><p>โปรเจกต์: ${url.searchParams.get("projectId")?.replace(/[^a-z0-9-]/gi, "")}</p><a href="/brands">กลับคลังแบรนด์</a>`); return; }
+  if (url.pathname === "/pricing") { res.setHeader("Content-Type", "text/html;charset=utf-8"); res.end(`<h1>หน้าราคาจำลอง</h1><p>source=${url.searchParams.get("source")?.replace(/[^a-z0-9_-]/gi, "") ?? ""}</p><a href="/brands">กลับคลังแบรนด์</a>`); return; }
   if (url.pathname.startsWith("/api/")) return json({ error: "fixture endpoint unavailable" }, 404);
   res.setHeader("Content-Type", "text/html;charset=utf-8"); res.end(html);
 });

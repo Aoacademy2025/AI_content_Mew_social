@@ -12,6 +12,8 @@ import {
   type ResolvedMcpSubtitleJobInput,
 } from "@/lib/mcp/orchestrator-steps";
 import { resolveInitialHeadlineHookFromJobInput } from "@/lib/headline-hook";
+import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
+import { isPaid } from "@/lib/plan-limits";
 import { planTransitionSfxCues } from "@/lib/transition-sfx";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import { RenderDeployDrainError } from "@/lib/render-deploy-drain";
@@ -133,7 +135,7 @@ export class McpHoldNotEnabledError extends Error {
  * removing the project this attempt created.
  */
 export async function createMcpVideoJob(
-  user: { id: string; email?: string | null },
+  user: { id: string; email?: string | null; plan?: string | null },
   input: Record<string, unknown>,
   idempotencyKey: string | undefined,
   /** `waitingImport` (T14, A10): the job starts parked in `waiting_import` until its presenter
@@ -151,11 +153,13 @@ export async function createMcpVideoJob(
   const brollTransition = isBrollTransition(input.brollTransition) ? input.brollTransition : undefined;
   const isManagedAiImageSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
   const initialHeadlineHook = resolveInitialHeadlineHookFromJobInput(input);
+  const initialLogoOverlay = normalizeLogoOverlayConfig(input.logoOverlay);
   const project = await createEditorProject(user.id, {
     title: opts.title,
     draft: {
       createdVia: MCP_PROJECT_CREATED_VIA,
       ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
+      ...(initialLogoOverlay?.enabled && (!user.plan || isPaid(user.plan)) ? { logoOverlay: initialLogoOverlay } : {}),
       ...(templateId ? { templateId } : {}),
       ...(sfxMode ? { sfxMode } : {}),
       ...(brollTransition ? { brollTransition } : {}),
@@ -643,6 +647,10 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
     sfxMode,
     sfxCues,
   );
+  const inheritedLogo = normalizeLogoOverlayConfig(previewInput.logoOverlay);
+  if (inheritedLogo?.enabled) {
+    (subtitleOverlayConfig as unknown as Record<string, unknown>).logoOverlay = inheritedLogo;
+  }
   const script = typeof previewInput.script === "string" ? previewInput.script.slice(0, 20_000) : "";
   return {
     ok: true,
@@ -655,6 +663,7 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
       cardLen,
       captionOverrides: {},
       ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
+      ...(inheritedLogo?.enabled ? { logoOverlay: inheritedLogo } : {}),
     },
     ...(script.trim() ? { exportScript: script } : {}),
   };
@@ -753,10 +762,15 @@ export async function enqueueMcpChainExport(input: {
 
   let exportJob: VideoJob;
   try {
+    const hasInheritedLogo = Boolean(
+      (plan.subtitleOverlayConfig as unknown as Record<string, unknown>).logoOverlay
+      && isPaid(preview.user.plan),
+    );
     const result = await enqueueEditorExport({
       user: { id: preview.userId, plan: preview.user.plan, email: preview.user.email },
-      // The chain overlay never carries a logo, so logo staging is a no-op for it.
-      brandVisualAccess: { canUse: false },
+      // Allow paid Brand Kit logo staging when inherited from the owner's brand;
+      // createDurableExportWithStagedLogo still enforces ownership and plan checks.
+      brandVisualAccess: { canUse: hasInheritedLogo },
       sourceJobId: preview.id,
       subtitleOverlayConfig: plan.subtitleOverlayConfig,
       editorSnapshot: plan.editorSnapshot,

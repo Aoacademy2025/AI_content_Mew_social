@@ -1,7 +1,30 @@
 import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import type { VisualFormatId } from "@/lib/brand-visual-system";
-import type { StylePackId } from "@/lib/style-pack-catalog";
+import type { BrollTransition } from "@/lib/broll-window-style";
+import type { HeadlineHookPreset } from "@/lib/headline-hook";
+import type { MotionMascotId, MotionThemeId } from "@/lib/motion-broll-catalog";
+import type { MusicMood, StylePackId } from "@/lib/style-pack-catalog";
+import type { SfxMode } from "@/lib/transition-sfx";
 import { parseTtsProvider, type TtsProvider } from "@/lib/tts-providers";
+
+export const BRAND_DEFAULT_BROLL_SOURCES = [
+  "motion",
+  "stock",
+  "automix",
+  "kie-image",
+] as const;
+export type BrandDefaultBrollSource = (typeof BRAND_DEFAULT_BROLL_SOURCES)[number];
+
+export type BrandVideoDefaults = {
+  musicMood?: MusicMood | null;
+  headlineHookEnabled?: boolean;
+  headlineHookPreset?: HeadlineHookPreset | null;
+  highlightKeywords?: boolean;
+  statCards?: boolean;
+  sfxMode?: SfxMode | null;
+  punchZoom?: boolean;
+  brollTransition?: BrollTransition | null;
+};
 
 export type BrandProfileSeed = {
   schemaVersion: 1;
@@ -17,9 +40,15 @@ export type BrandProfileSeed = {
     analysisNotes?: string | null;
     sampleText?: string | null;
   };
-  voice: { provider: string; voiceId: string | null };
+  voice: {
+    provider: string;
+    voiceId: string | null;
+    geminiVoiceStyle?: string | null;
+    ttsSpeed?: number | null;
+  };
   subtitle: { presetId: string | null; config: Record<string, string | number | boolean | null> };
   brandMark: { assetId: string | null; enabled: boolean; position: string; sizePct: number; opacity: number };
+  videoDefaults?: BrandVideoDefaults;
   visual: {
     primaryVisualFormatId: VisualFormatId;
     treatmentPolicy: "adaptive" | "locked";
@@ -28,6 +57,11 @@ export type BrandProfileSeed = {
      * Null is a look the creator authored themselves. */
     stylePackId: StylePackId | null;
     stylePackVersion: "v1.0.0" | null;
+    /** Default B-roll engine when starting a new clip from this Brand Kit. */
+    defaultBrollSource?: BrandDefaultBrollSource;
+    /** First-class Motion B-Roll / HyperFrames defaults (mirrored to subtitle.config for legacy readers). */
+    motionThemeId?: MotionThemeId | null;
+    motionMascot?: MotionMascotId | null;
     languageMode: "defined" | "none";
     palette: string[];
     personality: string;

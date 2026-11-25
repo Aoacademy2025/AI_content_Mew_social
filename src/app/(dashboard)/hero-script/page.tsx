@@ -118,8 +118,15 @@ export default function HeroScriptPage() {
     hydratedAccountRef.current = accountId;
     if (workspaceChangedRef.current) return;
     const preferences = readHeroScriptWritingPreferences(window.localStorage, accountId, availableProfiles);
-    newWritingPreferencesRef.current = preferences;
-    setSelectedProfileId(preferences.profileId);
+    const requestedBrandId = typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("brandId")?.trim() || null
+      : null;
+    const matchedBrandId = requestedBrandId && availableProfiles.some((profile) => profile.id === requestedBrandId)
+      ? requestedBrandId
+      : null;
+    const nextProfileId = matchedBrandId ?? preferences.profileId;
+    newWritingPreferencesRef.current = { profileId: nextProfileId, durationSec: preferences.durationSec };
+    setSelectedProfileId(nextProfileId);
     setDurationSec(preferences.durationSec);
   }, [accountId, availableProfiles]);
 

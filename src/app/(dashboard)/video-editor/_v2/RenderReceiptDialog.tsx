@@ -113,19 +113,20 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
     : p.targetClipCount;
 
   // AI usage: only "kie-image" and "automix" can spend AI image credits during render.
-  // "none" (ใส่ B-roll เอง) and "stock" never spend AI images even when a paid account's
-  // default mixPreset is still "recommended" (HERO-79).
-  const selectedAiSource = p.brollSource === "kie-image" || (p.brollSource === "automix" && (p.isAdmin
+  // Motion B-Roll, "none" (ใส่ B-roll เอง), and "stock" never spend AI images even when a
+  // paid account's default mixPreset is still "recommended" (HERO-79).
+  const hasMotionTheme = Boolean(p.motionThemeId);
+  const selectedAiSource = !hasMotionTheme && (p.brollSource === "kie-image" || (p.brollSource === "automix" && (p.isAdmin
     ? true
-    : presetUsesAi(p.mixPreset)));
+    : presetUsesAi(p.mixPreset))));
   const usesAi = selectedAiSource && !(exactDuration && quotedTargetClipCount === 0);
 
   const presetWeights = useMemo(() => {
-    if (p.brollSource === "none") return { video: 0, photo: 0, ai: 0 };
+    if (p.motionThemeId || p.brollSource === "none") return { video: 0, photo: 0, ai: 0 };
     if (p.brollSource === "kie-image") return { video: 0, photo: 0, ai: 1 };
     if (p.brollSource === "automix") return p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
     return { video: 1, photo: 0, ai: 0 };
-  }, [p.isAdmin, p.brollSource, p.mixPreset]);
+  }, [p.isAdmin, p.brollSource, p.mixPreset, p.motionThemeId]);
 
   // Per-image price — ONE price for every customer AI image. Hero AI Image mode and
   // AutoMix "ai" slots both generate on the Hero RunPod seam (fetch-stock), charged
@@ -148,7 +149,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
       avatarEngine: p.avatarEngine || "avatar_iii",
       exactDuration,
-      insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
+      insufficientCreditBehavior: !hasMotionTheme && p.brollSource === "kie-image" ? "block" : "stock-fallback",
       targetClipCount: quotedTargetClipCount,
       starterImageAllowance: p.starterAiImageAllowance?.eligible ? {
         remaining: p.starterAiImageAllowance.remainingImages,
@@ -160,7 +161,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
       // the exact post-TTS gate stays the authority.
       plan: p.plan,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.avatarEngine, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration, p.plan],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.avatarEngine, p.brollSource, hasMotionTheme, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration, p.plan],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed

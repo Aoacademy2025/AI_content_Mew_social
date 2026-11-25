@@ -345,6 +345,14 @@ interface CreateInput {
   headlineHookDurationMs?: number;
   visualHook?: string;
   visualHookStyle?: string;
+  /** Inherited Brand Kit logo overlay for paid MCP jobs (staged on export via createDurableExportWithStagedLogo). */
+  logoOverlay?: {
+    enabled: boolean;
+    assetId: string;
+    position: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+    sizePct: number;
+    opacity: number;
+  };
   /**
    * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
    * finished video to Gallery from the worker, not from a mounted browser component.
