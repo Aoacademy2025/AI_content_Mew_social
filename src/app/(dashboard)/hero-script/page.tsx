@@ -3,21 +3,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { FilePlus2, History, NotebookPen } from "lucide-react";
 import { fetchMe } from "@/lib/use-me";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import { trackEvent } from "@/lib/client-telemetry";
+import { limitsForPlan } from "@/lib/plan-limits";
+import type { HeroScriptStarterTopic } from "@/lib/hero-script-presets";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BrandProfilePanel, type DurationSec } from "./_components/BrandProfilePanel";
+import {
+  BrandProfilePanel,
+  type BrandProfile,
+  type BrandProfilePanelHandle,
+  type DurationSec,
+} from "./_components/BrandProfilePanel";
 import { TopicStep } from "./_components/TopicStep";
-import { HookStep, hookContextKey, type HookChoice } from "./_components/HookStep";
+import { HookStep, hookContextKey, type HookChoice, type HookStepHandle } from "./_components/HookStep";
 import {
   ScriptEditorStep,
   type ScriptDraft,
   type ScriptEditorStepHandle,
+  type ScriptSaveState,
 } from "./_components/ScriptEditorStep";
+import { ScriptPacingRail } from "./_components/ScriptPacingRail";
 import {
   ScriptLibrary,
   type SavedScript,
@@ -31,8 +41,7 @@ import {
   writeHeroScriptWritingPreferences,
   type HeroScriptWritingPreferences,
 } from "./_components/hero-script-workspace-state";
-
-const VIOLET_LIGHT = "#B9A6FF";
+import { HS_COLOR, HS_FONT } from "./_components/hero-script-tokens";
 
 type WorkspaceAction =
   | { kind: "new" }
@@ -51,12 +60,17 @@ export default function HeroScriptPage() {
   const router = useRouter();
   const [plan, setPlan] = useState("FREE");
   const [accountId, setAccountId] = useState<string | null>(null);
-  const [availableProfiles, setAvailableProfiles] = useState<Array<{ id: string }> | null>(null);
+  const [availableProfiles, setAvailableProfiles] = useState<BrandProfile[] | null>(null);
   const [activeTab, setActiveTab] = useState<"write" | "library">("write");
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [stylePreset, setStylePreset] = useState<string | null>(null);
   const [durationSec, setDurationSec] = useState<DurationSec>(60);
+  const [preferredStructure, setPreferredStructure] = useState<string | null>(null);
+  const [ctaStyleOverride, setCtaStyleOverride] = useState<string | null>(null);
   const [topic, setTopic] = useState("");
   const [selectedHook, setSelectedHook] = useState<HookChoice | null>(null);
+  const [hookStepOpen, setHookStepOpen] = useState(false);
+  const [hookStepLoading, setHookStepLoading] = useState(false);
   const [draft, setDraft] = useState<ScriptDraft | null>(null);
   const [recentDraft, setRecentDraft] = useState<ScriptLibraryItem | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
@@ -64,16 +78,26 @@ export default function HeroScriptPage() {
   const [pendingReplacement, setPendingReplacement] = useState<WorkspaceAction | null>(null);
   const [replacementAfterSaveFailure, setReplacementAfterSaveFailure] = useState(false);
   const [handoffPhase, setHandoffPhase] = useState<"saving" | "posting" | null>(null);
+  const [editorStatus, setEditorStatus] = useState<{
+    saveState: ScriptSaveState;
+    generating: boolean;
+    compacting: boolean;
+    sending: boolean;
+  }>({ saveState: "idle", generating: false, compacting: false, sending: false });
+
   const hydratedAccountRef = useRef<string | null>(null);
   const workspaceChangedRef = useRef(false);
-  const newWritingPreferencesRef = useRef<HeroScriptWritingPreferences>({ profileId: null, durationSec: 60 });
+  const newWritingPreferencesRef = useRef<HeroScriptWritingPreferences>({ profileId: null, durationSec: 60, stylePreset: null });
   const draftRef = useRef<ScriptDraft | null>(null);
   const editorRef = useRef<ScriptEditorStepHandle>(null);
+  const hookStepRef = useRef<HookStepHandle>(null);
+  const brandPanelRef = useRef<BrandProfilePanelHandle>(null);
   const detailRequestRef = useRef(0);
   const openingScriptIdRef = useRef<string | null>(null);
   const handoffOperationRef = useRef<HandoffOperation | null>(null);
   const dialogActionRef = useRef(false);
   const libraryDirtyRef = useRef(false);
+  const pendingHookFetchRef = useRef(false);
 
   const invalidateHandoff = useCallback(() => {
     const operation = handoffOperationRef.current;
@@ -109,7 +133,7 @@ export default function HeroScriptPage() {
   useEffect(() => {
     workspaceChangedRef.current = false;
     hydratedAccountRef.current = null;
-    newWritingPreferencesRef.current = { profileId: null, durationSec: 60 };
+    newWritingPreferencesRef.current = { profileId: null, durationSec: 60, stylePreset: null };
   }, [accountId]);
 
   useEffect(() => {
@@ -118,16 +142,10 @@ export default function HeroScriptPage() {
     hydratedAccountRef.current = accountId;
     if (workspaceChangedRef.current) return;
     const preferences = readHeroScriptWritingPreferences(window.localStorage, accountId, availableProfiles);
-    const requestedBrandId = typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get("brandId")?.trim() || null
-      : null;
-    const matchedBrandId = requestedBrandId && availableProfiles.some((profile) => profile.id === requestedBrandId)
-      ? requestedBrandId
-      : null;
-    const nextProfileId = matchedBrandId ?? preferences.profileId;
-    newWritingPreferencesRef.current = { profileId: nextProfileId, durationSec: preferences.durationSec };
-    setSelectedProfileId(nextProfileId);
+    newWritingPreferencesRef.current = preferences;
+    setSelectedProfileId(preferences.profileId);
     setDurationSec(preferences.durationSec);
+    setStylePreset(preferences.profileId ? null : (preferences.stylePreset ?? null));
   }, [accountId, availableProfiles]);
 
   useEffect(() => {
@@ -142,29 +160,62 @@ export default function HeroScriptPage() {
     return () => { cancelled = true; };
   }, [accountId]);
 
-  const rememberWritingPreferences = useCallback((profileId: string | null, nextDurationSec: DurationSec) => {
-    newWritingPreferencesRef.current = { profileId, durationSec: nextDurationSec };
+  // Trigger hook fetch right after HookStep mounts when user clicks "เลือก 5 Hook ก่อน".
+  useEffect(() => {
+    if (!hookStepOpen || !pendingHookFetchRef.current) return;
+    pendingHookFetchRef.current = false;
+    void hookStepRef.current?.fetchHooks();
+  }, [hookStepOpen]);
+
+  const rememberWritingPreferences = useCallback((
+    profileId: string | null,
+    nextDurationSec: DurationSec,
+    nextStylePreset: string | null,
+  ) => {
+    const nextPrefs: HeroScriptWritingPreferences = {
+      profileId,
+      durationSec: nextDurationSec,
+      ...(profileId ? {} : nextStylePreset ? { stylePreset: nextStylePreset } : {}),
+    };
+    newWritingPreferencesRef.current = nextPrefs;
     if (!accountId) return;
-    writeHeroScriptWritingPreferences(window.localStorage, accountId, { profileId, durationSec: nextDurationSec });
+    writeHeroScriptWritingPreferences(window.localStorage, accountId, nextPrefs);
   }, [accountId]);
 
   const changeProfile = useCallback((profileId: string | null) => {
     invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
-    if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, profileId)) setSelectedHook(null);
+    const nextPreset = profileId ? null : stylePreset;
+    if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, profileId, nextPreset)) {
+      setSelectedHook(null);
+    }
     setSelectedProfileId(profileId);
-    rememberWritingPreferences(profileId, durationSec);
+    if (profileId) setStylePreset(null);
+    rememberWritingPreferences(profileId, durationSec, nextPreset);
+  }, [durationSec, invalidateHandoff, rememberWritingPreferences, selectedHook, stylePreset, topic]);
+
+  const changeStylePreset = useCallback((presetKey: string | null) => {
+    invalidateHandoff();
+    editorRef.current?.invalidateAsyncRequests();
+    workspaceChangedRef.current = true;
+    if (selectedHook?.contextKey !== hookContextKey(topic, durationSec, null, presetKey)) {
+      setSelectedHook(null);
+    }
+    setStylePreset(presetKey);
+    rememberWritingPreferences(null, durationSec, presetKey);
   }, [durationSec, invalidateHandoff, rememberWritingPreferences, selectedHook, topic]);
 
   const changeDuration = useCallback((nextDurationSec: DurationSec) => {
     invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
-    if (selectedHook?.contextKey !== hookContextKey(topic, nextDurationSec, selectedProfileId)) setSelectedHook(null);
+    if (selectedHook?.contextKey !== hookContextKey(topic, nextDurationSec, selectedProfileId, stylePreset)) {
+      setSelectedHook(null);
+    }
     setDurationSec(nextDurationSec);
-    rememberWritingPreferences(selectedProfileId, nextDurationSec);
-  }, [invalidateHandoff, rememberWritingPreferences, selectedHook, selectedProfileId, topic]);
+    rememberWritingPreferences(selectedProfileId, nextDurationSec, stylePreset);
+  }, [invalidateHandoff, rememberWritingPreferences, selectedHook, selectedProfileId, stylePreset, topic]);
 
   const restoreScript = useCallback((script: SavedScript) => {
     invalidateHandoff();
@@ -173,10 +224,12 @@ export default function HeroScriptPage() {
     setSelectedProfileId(script.brandProfileId);
     setDurationSec(script.durationSec as DurationSec);
     setTopic(script.topic);
+    setPreferredStructure(script.structure ?? null);
+    setHookStepOpen(false);
     setSelectedHook({
       formula: script.hookFormula ?? "",
       text: script.hookText,
-      contextKey: hookContextKey(script.topic, script.durationSec, script.brandProfileId),
+      contextKey: hookContextKey(script.topic, script.durationSec, script.brandProfileId, null),
     });
     const next: ScriptDraft = {
       id: script.id,
@@ -201,9 +254,34 @@ export default function HeroScriptPage() {
     invalidateHandoff();
     editorRef.current?.invalidateAsyncRequests();
     workspaceChangedRef.current = true;
-    if (selectedHook?.contextKey !== hookContextKey(nextTopic, durationSec, selectedProfileId)) setSelectedHook(null);
+    if (!nextTopic.trim()) setHookStepOpen(false);
+    if (selectedHook?.contextKey !== hookContextKey(nextTopic, durationSec, selectedProfileId, stylePreset)) {
+      setSelectedHook(null);
+    }
     setTopic(nextTopic);
-  }, [durationSec, invalidateHandoff, selectedHook, selectedProfileId]);
+  }, [durationSec, invalidateHandoff, selectedHook, selectedProfileId, stylePreset]);
+
+  const handleStarterTopicPick = useCallback((starter: HeroScriptStarterTopic) => {
+    invalidateHandoff();
+    editorRef.current?.invalidateAsyncRequests();
+    workspaceChangedRef.current = true;
+    const nextPreset = selectedProfileId ? null : starter.presetKey;
+    if (!selectedProfileId) setStylePreset(starter.presetKey);
+    setDurationSec(starter.durationSec);
+    setSelectedHook(null);
+    setTopic(starter.topic);
+    rememberWritingPreferences(selectedProfileId, starter.durationSec, nextPreset);
+  }, [invalidateHandoff, rememberWritingPreferences, selectedProfileId]);
+
+  const handleRequestHooks = useCallback(() => {
+    if (!topic.trim()) return;
+    if (hookStepOpen) {
+      void hookStepRef.current?.fetchHooks();
+    } else {
+      pendingHookFetchRef.current = true;
+      setHookStepOpen(true);
+    }
+  }, [hookStepOpen, topic]);
 
   const changeHook = useCallback((hook: HookChoice | null) => {
     invalidateHandoff();
@@ -226,9 +304,13 @@ export default function HeroScriptPage() {
     setOpeningScriptId(null);
     const defaults = newWritingPreferencesRef.current;
     setSelectedProfileId(defaults.profileId);
+    setStylePreset(defaults.profileId ? null : (defaults.stylePreset ?? null));
     setDurationSec(defaults.durationSec as DurationSec);
+    setPreferredStructure(null);
+    setCtaStyleOverride(null);
     setTopic("");
     setSelectedHook(null);
+    setHookStepOpen(false);
     draftRef.current = null;
     setDraft(null);
     setActiveTab("write");
@@ -280,6 +362,17 @@ export default function HeroScriptPage() {
           return;
         }
         libraryDirtyRef.current = true;
+        if (draftRef.current?.id === scriptId) {
+          const sentDraft: ScriptDraft = {
+            ...draftRef.current,
+            status: "sent",
+            editorProjectId: payload.projectId,
+            editorProjectAvailable: true,
+          };
+          draftRef.current = sentDraft;
+          setDraft(sentDraft);
+        }
+        setRecentDraft((current) => current?.id === scriptId ? null : current);
         trackEvent("hero_script_handoff_completed", { status: "done", durationMs: performance.now() - startedAt });
         router.push(`/video-editor?projectId=${encodeURIComponent(payload.projectId)}`);
       } catch {
@@ -357,6 +450,7 @@ export default function HeroScriptPage() {
       libraryDirtyRef.current = false;
       setHistoryKey((key) => key + 1);
     }
+    trackEvent("hero_script_library_viewed");
     setActiveTab("library");
   }, []);
 
@@ -385,40 +479,211 @@ export default function HeroScriptPage() {
     resetWorkspace();
   }, [resetWorkspace]);
 
+  const canSendToEditor = limitsForPlan(plan).allowVideoEditor;
+  const workspaceActionsBusy = handoffPhase !== null || editorStatus.generating || editorStatus.compacting || editorStatus.sending;
+
   return (
-    <div className="relative flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 md:px-6 md:py-8">
-        <div className="space-y-6">
-          <header className="flex flex-wrap items-end justify-between gap-4 border-b pb-3" style={{ borderColor: "var(--ui-divider)" }}>
-            <div>
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>Hero Script</p>
-              <h1 className="text-2xl font-bold tracking-tight md:text-3xl" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>เขียนสคริปต์ AI</h1>
+    <div className="relative flex-1 overflow-y-auto" style={{ fontFamily: HS_FONT.body }}>
+      <div className="mx-auto max-w-6xl px-4 py-5 md:px-6 md:py-7">
+        <div className="space-y-5">
+          {/* ── Editor v2-Aligned Header ── */}
+          <header
+            className="flex flex-wrap items-center justify-between gap-3 border-b pb-4"
+            style={{ borderColor: "var(--ui-divider)" }}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                style={{ background: HS_COLOR.violetSoft, border: `1px solid ${HS_COLOR.violetBorder}`, color: HS_COLOR.violet }}
+              >
+                <NotebookPen className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <h1
+                  className="text-xl font-bold tracking-tight md:text-2xl"
+                  style={{ fontFamily: HS_FONT.heading, color: "var(--ui-text-primary)" }}
+                >
+                  เขียนสคริปต์ AI
+                </h1>
+                <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+                  พิมพ์หัวข้อ → สร้างสคริปต์พร้อมแบ่งซีนในคลิกเดียว หรือเลือก 5 Hook ก่อน
+                </p>
+              </div>
             </div>
+
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" onClick={() => { void requestWorkspaceAction({ kind: "new" }); }} className="min-h-11 rounded-lg px-3 text-sm font-semibold" style={{ color: VIOLET_LIGHT }}>สคริปต์ใหม่</button>
-              <div role="tablist" aria-label="พื้นที่สคริปต์" className="flex min-h-11 items-center gap-1 rounded-lg p-1" style={{ background: "var(--ui-btn-bg)" }}>
-                <button type="button" role="tab" aria-selected={activeTab === "write"} onClick={() => setActiveTab("write")} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "write" ? VIOLET_LIGHT : "transparent", color: activeTab === "write" ? "#241a3c" : "var(--ui-text-secondary)" }}>เขียนสคริปต์</button>
-                <button type="button" role="tab" aria-selected={activeTab === "library"} onClick={showLibrary} className="min-h-9 rounded-md px-3 text-sm font-semibold" style={{ background: activeTab === "library" ? VIOLET_LIGHT : "transparent", color: activeTab === "library" ? "#241a3c" : "var(--ui-text-secondary)" }}>คลังสคริปต์</button>
+              <button
+                type="button"
+                onClick={() => { void requestWorkspaceAction({ kind: "new" }); }}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition-colors hover:bg-black/5 dark:hover:bg-white/5 sm:text-sm"
+                style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)" }}
+              >
+                <FilePlus2 className="h-4 w-4" style={{ color: HS_COLOR.violet }} aria-hidden="true" />
+                สคริปต์ใหม่
+              </button>
+
+              <div
+                role="tablist"
+                aria-label="พื้นที่สคริปต์"
+                className="flex min-h-11 items-center gap-1 rounded-xl border p-1"
+                style={{ background: "var(--ui-btn-bg)", borderColor: "var(--ui-card-border)" }}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "write"}
+                  onClick={() => setActiveTab("write")}
+                  className="min-h-9 rounded-lg px-3 text-xs font-semibold transition-all sm:text-sm"
+                  style={{
+                    background: activeTab === "write" ? HS_COLOR.violetGradient : "transparent",
+                    color: activeTab === "write" ? "#ffffff" : "var(--ui-text-secondary)",
+                    fontFamily: HS_FONT.heading,
+                  }}
+                >
+                  เขียนสคริปต์
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "library"}
+                  onClick={showLibrary}
+                  className="min-h-9 rounded-lg px-3 text-xs font-semibold transition-all sm:text-sm"
+                  style={{
+                    background: activeTab === "library" ? HS_COLOR.violetGradient : "transparent",
+                    color: activeTab === "library" ? "#ffffff" : "var(--ui-text-secondary)",
+                    fontFamily: HS_FONT.heading,
+                  }}
+                >
+                  คลังสคริปต์
+                </button>
               </div>
             </div>
           </header>
 
-          <div role="tabpanel" hidden={activeTab !== "write"} className="space-y-6">
-            <HeroScriptQuickStart accountId={accountId} />
+          {/* ── Writing Tab (2-Column Studio Layout; kept mounted across tab switches) ── */}
+          <div role="tabpanel" hidden={activeTab !== "write"} className="space-y-4">
+            {/* Compact top utility bar: recent draft recovery + collapsed guide */}
             {recentDraft && (
-              <button type="button" disabled={openingScriptId === recentDraft.id} onClick={() => { void requestWorkspaceAction({ kind: "open", item: recentDraft }); }} className="min-h-11 rounded-lg px-3 text-left text-sm font-medium" style={{ color: VIOLET_LIGHT }}>
-                {openingScriptId === recentDraft.id ? "กำลังเปิดร่างล่าสุด…" : `ทำร่างล่าสุดต่อ · ${recentDraft.topic}`}
-              </button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={openingScriptId === recentDraft.id}
+                  onClick={() => {
+                    trackEvent("hero_script_script_opened", { properties: { source: "recent_draft", status: recentDraft.status } });
+                    void requestWorkspaceAction({ kind: "open", item: recentDraft });
+                  }}
+                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-xl border px-3 py-1.5 text-left text-xs font-medium transition-colors hover:border-violet-400 sm:text-sm"
+                  style={{
+                    borderColor: HS_COLOR.violetBorder,
+                    background: HS_COLOR.violetSoft,
+                    color: "var(--ui-text-primary)",
+                  }}
+                >
+                  <History className="h-3.5 w-3.5 shrink-0" style={{ color: HS_COLOR.violet }} aria-hidden="true" />
+                  <span className="truncate">
+                    {openingScriptId === recentDraft.id ? "กำลังเปิดร่างล่าสุด…" : `ทำร่างล่าสุดต่อ · ${recentDraft.topic}`}
+                  </span>
+                </button>
+              </div>
             )}
-            <BrandProfilePanel plan={plan} selectedProfileId={selectedProfileId} onSelectedProfileIdChange={changeProfile} durationSec={durationSec} onDurationSecChange={changeDuration} onProfilesChange={setAvailableProfiles} />
-            <TopicStep selectedProfileId={selectedProfileId} topic={topic} onTopicChange={changeTopic} />
-            {topic.trim() && <HookStep topic={topic} durationSec={durationSec} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} />}
-            {!selectedHook && draft && <p role="status" className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ร่างเดิมยังอยู่ เลือก Hook ใหม่ก่อนสร้างสคริปต์ต่อ</p>}
-            <div hidden={!selectedHook && !draft}>
-              <ScriptEditorStep ref={editorRef} topic={topic} durationSec={durationSec} plan={plan} selectedProfileId={selectedProfileId} selectedHook={selectedHook} onSelectedHookChange={changeHook} draft={draft} onDraftChange={changeDraft} onSaved={handleSaved} onOpenEditorProject={(projectId) => { void requestWorkspaceAction({ kind: "navigate", projectId }); }} onCreateEditorProject={() => createEditorProject(draftRef.current?.id ?? null)} handoffPending={handoffPhase !== null} handoffPosting={handoffPhase === "posting"} />
+
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
+              {/* Left Main Column: Controls → Smart Composer → Optional Hook Step → Full Script Editor */}
+              <div className="min-w-0 space-y-4">
+                <BrandProfilePanel
+                  ref={brandPanelRef}
+                  plan={plan}
+                  selectedProfileId={selectedProfileId}
+                  onSelectedProfileIdChange={changeProfile}
+                  stylePreset={stylePreset}
+                  onStylePresetChange={changeStylePreset}
+                  durationSec={durationSec}
+                  onDurationSecChange={changeDuration}
+                  preferredStructure={preferredStructure}
+                  onPreferredStructureChange={setPreferredStructure}
+                  ctaStyleOverride={ctaStyleOverride}
+                  onCtaStyleOverrideChange={setCtaStyleOverride}
+                  onProfilesChange={setAvailableProfiles}
+                />
+
+                <TopicStep
+                  selectedProfileId={selectedProfileId}
+                  stylePreset={stylePreset}
+                  topic={topic}
+                  hasDraft={Boolean(draft)}
+                  quickGenerating={editorStatus.generating}
+                  hookPickerLoading={hookStepLoading}
+                  actionsDisabled={workspaceActionsBusy}
+                  onTopicChange={changeTopic}
+                  onStarterTopicPick={handleStarterTopicPick}
+                  onQuickGenerate={() => { void editorRef.current?.runQuickGenerate(); }}
+                  onRequestHooks={handleRequestHooks}
+                />
+
+                {topic.trim() && hookStepOpen && (
+                  <HookStep
+                    ref={hookStepRef}
+                    topic={topic}
+                    durationSec={durationSec}
+                    selectedProfileId={selectedProfileId}
+                    stylePreset={stylePreset}
+                    selectedHook={selectedHook}
+                    onSelectedHookChange={changeHook}
+                    onLoadingChange={setHookStepLoading}
+                    onGenerateWithHook={() => { void editorRef.current?.runHookGenerate(); }}
+                    generateDisabled={workspaceActionsBusy}
+                    generating={editorStatus.generating}
+                  />
+                )}
+
+                {!selectedHook && draft && (
+                  <p role="status" className="rounded-xl px-3 py-2 text-xs" style={{ background: "var(--ui-card-bg-2)", color: "var(--ui-text-muted)" }}>
+                    ร่างเดิมยังอยู่ — กด “สร้างสคริปต์เลย (1 คลิก)” หรือเลือก Hook ใหม่เพื่อสร้างฉบับใหม่
+                  </p>
+                )}
+
+                <ScriptEditorStep
+                  ref={editorRef}
+                  topic={topic}
+                  durationSec={durationSec}
+                  selectedProfileId={selectedProfileId}
+                  stylePreset={stylePreset}
+                  preferredStructure={preferredStructure}
+                  ctaStyleOverride={ctaStyleOverride}
+                  profilesCount={availableProfiles?.length ?? 0}
+                  selectedHook={selectedHook}
+                  onSelectedHookChange={changeHook}
+                  draft={draft}
+                  onDraftChange={changeDraft}
+                  onSaved={handleSaved}
+                  onCreateEditorProject={() => createEditorProject(draftRef.current?.id ?? null)}
+                  onOpenCreateBrand={() => brandPanelRef.current?.openCreateDialog()}
+                  onStatusChange={setEditorStatus}
+                  handoffPending={handoffPhase !== null}
+                  handoffPosting={handoffPhase === "posting"}
+                />
+
+                <HeroScriptQuickStart accountId={accountId} />
+              </div>
+
+              {/* Right Sticky Rail: Live Spoken Duration · Scene Breakdown · Copy · Send to Editor */}
+              <ScriptPacingRail
+                draft={draft}
+                durationSec={durationSec}
+                saveState={editorStatus.saveState}
+                canSendToEditor={canSendToEditor}
+                generating={editorStatus.generating}
+                compacting={editorStatus.compacting}
+                sending={editorStatus.sending}
+                handoffPending={handoffPhase !== null}
+                onCompact={() => { void editorRef.current?.runCompact(); }}
+                onOpenEditorProject={(projectId) => { void requestWorkspaceAction({ kind: "navigate", projectId }); }}
+                onCreateEditorProject={() => { void editorRef.current?.createEditorProject(); }}
+              />
             </div>
           </div>
 
+          {/* ── Library Tab ── */}
           <div role="tabpanel" hidden={activeTab !== "library"}>
             <ScriptLibrary
               active={activeTab === "library"}

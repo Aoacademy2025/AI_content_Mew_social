@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
+import { isValidCtaStyleKey, isValidHookFormulaKey } from "@/lib/viral-frameworks";
+import {
+  getQuickStylePreset,
+  isValidQuickStylePresetKey,
+  quickStylePresetToBrandProfile,
+} from "@/lib/hero-script-presets";
 import {
   buildRegenPrompt,
   type BrandProfileForPrompt,
@@ -67,6 +72,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "สูตร hook ไม่ถูกต้อง" }, { status: 400 });
     }
 
+    const ctaOverride = typeof body?.ctaStyle === "string" && body.ctaStyle.trim()
+      ? body.ctaStyle.trim()
+      : null;
+    if (ctaOverride && !isValidCtaStyleKey(ctaOverride)) {
+      return NextResponse.json({ error: "สไตล์ CTA ไม่ถูกต้อง" }, { status: 400 });
+    }
+
+    const stylePresetKey = typeof body?.stylePreset === "string" && body.stylePreset.trim()
+      ? body.stylePreset.trim()
+      : null;
+    if (stylePresetKey && !isValidQuickStylePresetKey(stylePresetKey)) {
+      return NextResponse.json({ error: "สไตล์เริ่มต้นไม่ถูกต้อง" }, { status: 400 });
+    }
+
     const brandProfileId =
       typeof body?.brandProfileId === "string" && body.brandProfileId.trim()
         ? body.brandProfileId.trim()
@@ -86,7 +105,12 @@ export async function POST(req: Request) {
       profile = resolved.profile;
       bannedWords = resolved.bannedWords;
       ctaStyle = resolved.ctaStyle;
+    } else if (stylePresetKey) {
+      profile = quickStylePresetToBrandProfile(stylePresetKey);
+      const preset = getQuickStylePreset(stylePresetKey);
+      if (preset) ctaStyle = preset.defaultCtaStyle;
     }
+    if (ctaOverride) ctaStyle = ctaOverride;
 
     // count: PRO tier — one request can be up to 4 model round-trips on the
     // expensive model (see resolveLlmTriad).

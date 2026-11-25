@@ -41,6 +41,7 @@ import { visibleTtsProvider } from "@/lib/tts-providers";
 import {
   applyBrandRevisionDefaultsToProjectDraft,
   BrandProfileLibraryError,
+  isVersionedBrandProfile,
   resolveBrandProfileRevisionForNewProjectInTransaction,
   resolveBrandProfileRevisionForRead,
 } from "@/lib/brand-profile-library.server";
@@ -127,12 +128,25 @@ export function serializeBannedWords(words: readonly unknown[] | null | undefine
   );
 }
 
-/** API-facing shape: bannedWords as a real array instead of a JSON string. */
-export type BrandProfileDTO = Omit<BrandProfile, "bannedWords"> & { bannedWords: string[] };
+/** API-facing shape: bannedWords as a real array instead of a JSON string,
+ *  plus `isVersioned` so Hero Script can route published profiles straight to
+ *  `/brands` instead of opening a read-only modal that 409s on submit. */
+export type BrandProfileDTO = Omit<BrandProfile, "bannedWords"> & {
+  bannedWords: string[];
+  isVersioned: boolean;
+};
 
 /** Map a raw BrandProfile row to its API-facing DTO (bannedWords parsed). */
-export function toBrandProfileDTO(row: BrandProfile): BrandProfileDTO {
-  return { ...row, bannedWords: parseBannedWords(row.bannedWords) };
+export function toBrandProfileDTO(
+  row: BrandProfile & { _count?: { revisions?: number } },
+): BrandProfileDTO {
+  const { _count, ...rest } = row;
+  const isVersioned = isVersionedBrandProfile({
+    activeRevisionNumber: rest.activeRevisionNumber,
+    frozenAt: rest.frozenAt,
+    revisionCount: _count?.revisions ?? 0,
+  });
+  return { ...rest, bannedWords: parseBannedWords(rest.bannedWords), isVersioned };
 }
 
 export type HeroScriptBrandProfileResolution =
@@ -1028,6 +1042,126 @@ export function validateGenerateResponse(data: unknown): GenerateScriptResult | 
   if (!structure || !isValidStoryStructureKey(structure)) return null;
   if (!bodyText || !ctaText) return null;
   return { structure, bodyText, ctaText };
+}
+
+export interface QuickGenerateScriptResult extends GenerateScriptResult {
+  hookFormula: string;
+  hookText: string;
+  alternativeHooks: HookChoice[];
+}
+
+/** Validate & repair the 1-click quick-generate contract:
+ *  { hookFormula, hookText, alternativeHooks (up to 4 distinct formulas), structure, bodyText, ctaText }.
+ *  Reuses the same formula normalization + ≤20 word truncation as repairHooksResponse
+ *  so minor provider formatting drift does not throw away a complete script. */
+export function repairQuickGenerateResponse(data: unknown): QuickGenerateScriptResult | null {
+  const base = validateGenerateResponse(data);
+  if (!base || !data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+
+  const primaryText = typeof d.hookText === "string" ? truncateHookToWordLimit(normalizeLines(d.hookText).split("\n")[0] ?? "") : "";
+  if (!primaryText) return null;
+  const primaryFormula = normalizedHookFormulaKey(d.hookFormula) ?? HOOK_FORMULAS[0].key;
+
+  const usedFormulas = new Set<string>([primaryFormula]);
+  const seenTexts = new Set<string>([primaryText.toLocaleLowerCase("th").replace(/\s+/g, " ")]);
+  const rawAlts = Array.isArray(d.alternativeHooks) ? d.alternativeHooks : [];
+  const alternativeHooks: HookChoice[] = [];
+
+  for (const raw of rawAlts) {
+    if (alternativeHooks.length >= 4) break;
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const text = typeof item.text === "string" ? truncateHookToWordLimit(normalizeLines(item.text).split("\n")[0] ?? "") : "";
+    const textKey = text.toLocaleLowerCase("th").replace(/\s+/g, " ");
+    if (!text || seenTexts.has(textKey)) continue;
+    let formula = normalizedHookFormulaKey(item.formula);
+    if (!formula || usedFormulas.has(formula)) {
+      formula = HOOK_FORMULAS.find((candidate) => !usedFormulas.has(candidate.key))?.key ?? null;
+    }
+    if (!formula) break;
+    seenTexts.add(textKey);
+    usedFormulas.add(formula);
+    alternativeHooks.push({ formula, text });
+  }
+
+  return {
+    structure: base.structure,
+    bodyText: stripEchoedHook(base.bodyText, primaryText),
+    ctaText: base.ctaText,
+    hookFormula: primaryFormula,
+    hookText: primaryText,
+    alternativeHooks,
+  };
+}
+
+/** Trigger an automatic 1-pass server compact ONLY when generated spoken words
+ *  exceed the target word budget by >25% (e.g. >300 words for a 60s script). */
+export const WORD_BUDGET_AUTO_COMPACT_RATIO = 1.25;
+
+export function exceedsWordBudgetCompactThreshold(
+  script: ScriptSections,
+  durationSec: number,
+): boolean {
+  const budget = wordBudgetForDuration(durationSec);
+  const words = countWords(assembleScript(script));
+  return words > Math.round(budget * WORD_BUDGET_AUTO_COMPACT_RATIO);
+}
+
+export interface CompactScriptResult {
+  bodyText: string;
+  ctaText: string;
+}
+
+export function validateCompactResponse(data: unknown): CompactScriptResult | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const bodyText = typeof d.bodyText === "string" ? normalizeLines(d.bodyText) : "";
+  const ctaText = typeof d.ctaText === "string" ? normalizeLines(d.ctaText) : "";
+  if (!bodyText || !ctaText) return null;
+  return { bodyText, ctaText };
+}
+
+/** Fail-open 1-pass length guard: only calls `runCompact` when `script` exceeds
+ *  125% of the duration word budget, and accepts the compacted copy only when it
+ *  is strictly shorter and introduces no new banned word. */
+export async function compactScriptIfOverBudget(params: {
+  script: ScriptSections;
+  durationSec: number;
+  bannedWords: readonly string[];
+  runCompact: () => Promise<CompactScriptResult | null>;
+}): Promise<{ bodyText: string; ctaText: string; compacted: boolean }> {
+  const { script, durationSec, bannedWords, runCompact } = params;
+  if (!exceedsWordBudgetCompactThreshold(script, durationSec)) {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  const originalWords = countWords(assembleScript(script));
+  let candidate: CompactScriptResult | null = null;
+  try {
+    candidate = await runCompact();
+  } catch {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  if (!candidate) {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  const cleanedBody = stripEchoedHook(candidate.bodyText, script.hookText);
+  if (!cleanedBody) {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  const nextScript: ScriptSections = {
+    hookText: script.hookText,
+    bodyText: cleanedBody,
+    ctaText: candidate.ctaText,
+  };
+  const nextWords = countWords(assembleScript(nextScript));
+  if (nextWords >= originalWords) {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  if (findBannedWord(`${cleanedBody}\n${candidate.ctaText}`, bannedWords)) {
+    return { bodyText: script.bodyText, ctaText: script.ctaText, compacted: false };
+  }
+  return { bodyText: cleanedBody, ctaText: candidate.ctaText, compacted: true };
 }
 
 export const REGEN_TARGETS = ["hook", "body", "cta"] as const;

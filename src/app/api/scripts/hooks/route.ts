@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
+import {
+  isValidQuickStylePresetKey,
+  quickStylePresetToBrandProfile,
+} from "@/lib/hero-script-presets";
 import { buildHooksPrompt, type BrandProfileForPrompt } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
@@ -34,6 +38,13 @@ export async function POST(req: Request) {
         ? body.brandProfileId.trim()
         : null;
 
+    const stylePresetKey = typeof body?.stylePreset === "string" && body.stylePreset.trim()
+      ? body.stylePreset.trim()
+      : null;
+    if (stylePresetKey && !isValidQuickStylePresetKey(stylePresetKey)) {
+      return NextResponse.json({ error: "สไตล์เริ่มต้นไม่ถูกต้อง" }, { status: 400 });
+    }
+
     let profile: BrandProfileForPrompt | null = null;
     if (brandProfileId) {
       const resolved = await resolveHeroScriptBrandProfile(authUser.id, brandProfileId);
@@ -44,6 +55,8 @@ export async function POST(req: Request) {
         );
       }
       profile = resolved.profile;
+    } else if (stylePresetKey) {
+      profile = quickStylePresetToBrandProfile(stylePresetKey);
     }
 
     const triad = await resolveLlmTriad(authUser.id, { script: topicCheck.topic });
