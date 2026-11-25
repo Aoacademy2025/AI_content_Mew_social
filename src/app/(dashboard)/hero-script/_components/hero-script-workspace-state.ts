@@ -1,3 +1,5 @@
+import { isValidQuickStylePresetKey } from "@/lib/hero-script-presets";
+
 export type HeroScriptWorkspaceTab = "write" | "library";
 
 export interface HeroScriptWorkspaceState {
@@ -10,6 +12,7 @@ export interface HeroScriptWorkspaceState {
 export interface HeroScriptWritingPreferences {
   profileId: string | null;
   durationSec: 30 | 60 | 90;
+  stylePreset?: string | null;
 }
 
 interface StorageReader {
@@ -48,14 +51,22 @@ export function readHeroScriptWritingPreferences(
   try {
     const raw = storage.getItem(preferencesKey(accountId));
     if (!raw) return DEFAULT_PREFERENCES;
-    const parsed = JSON.parse(raw) as { profileId?: unknown; durationSec?: unknown };
+    const parsed = JSON.parse(raw) as {
+      profileId?: unknown;
+      durationSec?: unknown;
+      stylePreset?: unknown;
+    };
     const durationSec = parsed.durationSec === 30 || parsed.durationSec === 60 || parsed.durationSec === 90
       ? parsed.durationSec
       : DEFAULT_PREFERENCES.durationSec;
     const profileId = typeof parsed.profileId === "string" && profiles.some((profile) => profile.id === parsed.profileId)
       ? parsed.profileId
       : null;
-    return { profileId, durationSec };
+    const result: HeroScriptWritingPreferences = { profileId, durationSec };
+    if (!profileId && isValidQuickStylePresetKey(parsed.stylePreset)) {
+      result.stylePreset = parsed.stylePreset;
+    }
+    return result;
   } catch {
     return DEFAULT_PREFERENCES;
   }

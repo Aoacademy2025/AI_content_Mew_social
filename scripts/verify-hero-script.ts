@@ -111,7 +111,19 @@ async function main() {
     heroScriptGenerationLimit,
     HERO_SCRIPT_FREE_GENERATIONS,
     HERO_SCRIPT_TRIAL_GENERATIONS,
+    // Hero Script v2: quick generate + length guard
+    repairQuickGenerateResponse,
+    WORD_BUDGET_AUTO_COMPACT_RATIO,
+    exceedsWordBudgetCompactThreshold,
+    validateCompactResponse,
+    compactScriptIfOverBudget,
   } = await import("../src/lib/hero-script.server");
+  const {
+    HERO_SCRIPT_QUICK_PRESETS,
+    HERO_SCRIPT_STARTER_TOPICS,
+    isValidQuickStylePresetKey,
+    quickStylePresetToBrandProfile,
+  } = await import("../src/lib/hero-script-presets");
   const {
     classifyOpenRouterFailure,
     openRouterError,
@@ -139,6 +151,8 @@ async function main() {
     buildHooksPrompt,
     // Task 3
     buildGeneratePrompt,
+    buildQuickGeneratePrompt,
+    buildCompactScriptPrompt,
     buildRegenPrompt,
     buildBannedWordRetryNote,
   } = await import("../src/lib/prompts/hero-script");
@@ -2282,6 +2296,138 @@ async function main() {
     const trialBlocked = await reserveScriptGeneration("hs-quota-trial", "trial");
     ok(!trialBlocked.allowed && trialBlocked.used === HERO_SCRIPT_TRIAL_GENERATIONS,
       "generation quota: TRIAL blocks the 11th full script in the rolling window");
+  }
+
+  // ── Hero Script v2: quick presets, 1-click quick generate, preferredStructure,
+  //    >25% word-budget auto-compact guard, and BrandProfileDTO.isVersioned ──
+  {
+    ok(HERO_SCRIPT_QUICK_PRESETS.length >= 5, "v2 presets: at least 5 curated quick style presets");
+    ok(HERO_SCRIPT_STARTER_TOPICS.length === 3, "v2 presets: 3 clickable starter topics");
+    ok(isValidQuickStylePresetKey("howto-punchy") && !isValidQuickStylePresetKey("unknown-preset"),
+      "v2 presets: key validator accepts known presets and rejects unknown keys");
+    const presetProfile = quickStylePresetToBrandProfile("contrarian-viral");
+    ok(Boolean(presetProfile && presetProfile.niche && presetProfile.audience && presetProfile.tone),
+      "v2 presets: resolves into a complete BrandProfileForPrompt");
+
+    const structuredPrompt = buildGeneratePrompt({
+      topic: "วิธีเก็บเงิน",
+      durationSec: 60,
+      wordBudget: 240,
+      hookText: "เงินเดือนขึ้นแต่ไม่เหลือเก็บ",
+      ctaStyle: "comment",
+      preferredStructure: "pas",
+    });
+    ok(structuredPrompt.includes("ใช้โครงเรื่อง pas — ปัญหา-ขยี้-ทางออก"),
+      "v2 buildGeneratePrompt: embeds explicit preferredStructure when chosen");
+
+    const quickPrompt = buildQuickGeneratePrompt({
+      topic: "วิธีเก็บเงิน",
+      durationSec: 60,
+      wordBudget: 240,
+      ctaStyle: "comment",
+      preferredStructure: "how-to",
+      profile: presetProfile,
+    });
+    ok(quickPrompt.includes("alternativeHooks") && quickPrompt.includes("ใช้โครงเรื่อง how-to") && quickPrompt.includes("ชวนคอมเมนต์"),
+      "v2 buildQuickGeneratePrompt: requests primary hook + 4 alternatives + explicit structure + CTA");
+
+    const repaired = repairQuickGenerateResponse({
+      hookFormula: "Curiosity_Gap",
+      hookText: "รู้ไหมทำไมเงินเดือนขึ้นแต่เงินเก็บไม่เคยเหลือ",
+      alternativeHooks: [
+        { formula: "contrarian", text: "เลิกออมเงินแบบเดิมถ้าอยากมีเงินเก็บจริง" },
+        { formula: "curiosity-gap", text: "สูตรซ้ำต้องถูกแก้เป็นสูตรอื่นอัตโนมัติ" },
+        { formula: "shock-number", text: "หักแค่ 15% วันเงินออก เก็บได้แสนแรกใน 12 เดือน" },
+        { formula: "direct-callout", text: "มนุษย์เงินเดือนที่สิ้นเดือนทีไรเงินหมดฟังทางนี้" },
+        { formula: "mistake-warning", text: "ข้อ 5 เกินโควตาต้องไม่ถูกใส่เพิ่ม" },
+      ],
+      structure: "how-to",
+      bodyText: "รู้ไหมทำไมเงินเดือนขึ้นแต่เงินเก็บไม่เคยเหลือ\n\nข้อแรกหักออมทันที\nข้อสองแยกบัญชี",
+      ctaText: "คอมเมนต์บอกหน่อยว่าคุณออมกี่เปอร์เซ็นต์",
+    });
+    ok(Boolean(repaired && repaired.hookFormula === "curiosity-gap" && repaired.alternativeHooks.length === 4),
+      "v2 repairQuickGenerateResponse: normalizes primary formula and keeps 4 distinct alternative hooks");
+    ok(Boolean(repaired && new Set([repaired.hookFormula, ...repaired.alternativeHooks.map((h) => h.formula)]).size === 5),
+      "v2 repairQuickGenerateResponse: all 5 hook formulas are strictly distinct");
+    ok(Boolean(repaired && repaired.bodyText === "ข้อแรกหักออมทันที\nข้อสองแยกบัญชี"),
+      "v2 repairQuickGenerateResponse: strips echoed primary hook and blank lines from bodyText");
+    ok(repairQuickGenerateResponse({ structure: "how-to", bodyText: "ok", ctaText: "ok" }) === null,
+      "v2 repairQuickGenerateResponse: rejects missing primary hookText");
+
+    const compactPrompt = buildCompactScriptPrompt({
+      topic: "วิธีเก็บเงิน",
+      durationSec: 30,
+      wordBudget: 120,
+      current: { hookText: "ฮุกเดิม", bodyText: "เนื้อหายาว", ctaText: "ชวนทำต่อ" },
+      ctaStyle: "share",
+    });
+    ok(compactPrompt.includes("คง Hook เดิมไว้ไม่แก้") && compactPrompt.includes("~120 คำ"),
+      "v2 buildCompactScriptPrompt: preserves hook and states target word budget");
+    ok(validateCompactResponse({ bodyText: "สั้น 1\n\nสั้น 2", ctaText: "แชร์เลย" })?.bodyText === "สั้น 1\nสั้น 2",
+      "v2 validateCompactResponse: normalizes lines and strips blanks");
+
+    ok(WORD_BUDGET_AUTO_COMPACT_RATIO === 1.25, "v2 length guard: auto-compact threshold is 1.25x (+25%)");
+    const repeatWord = (count: number) => Array(count).fill("ปากกา").join(" ");
+    const withinThreshold = { hookText: repeatWord(10), bodyText: repeatWord(130), ctaText: repeatWord(8) }; // 148 <= 150 (30s * 4 * 1.25)
+    const overThreshold = { hookText: repeatWord(10), bodyText: repeatWord(160), ctaText: repeatWord(10) }; // 180 > 150
+    ok(!exceedsWordBudgetCompactThreshold(withinThreshold, 30),
+      "v2 length guard: script at <=125% of 30s budget does not trigger auto-compact");
+    ok(exceedsWordBudgetCompactThreshold(overThreshold, 30),
+      "v2 length guard: script at >125% of 30s budget triggers auto-compact");
+
+    let compactCalls = 0;
+    const skipped = await compactScriptIfOverBudget({
+      script: withinThreshold,
+      durationSec: 30,
+      bannedWords: [],
+      runCompact: async () => { compactCalls += 1; return { bodyText: "shorter", ctaText: "cta" }; },
+    });
+    ok(!skipped.compacted && compactCalls === 0,
+      "v2 compactScriptIfOverBudget: makes zero LLM calls when script is <=125%");
+
+    const compactedHook = "ฮุกหลักห้ามซ้ำในเนื้อหา";
+    const overThresholdWithDistinctHook = { hookText: compactedHook, bodyText: repeatWord(160), ctaText: repeatWord(10) };
+    const compacted = await compactScriptIfOverBudget({
+      script: overThresholdWithDistinctHook,
+      durationSec: 30,
+      bannedWords: ["ห้ามพูด"],
+      runCompact: async () => { compactCalls += 1; return { bodyText: `${compactedHook}\n${repeatWord(90)}`, ctaText: repeatWord(10) }; },
+    });
+    ok(compacted.compacted && compactCalls === 1 && !compacted.bodyText.startsWith(compactedHook),
+      "v2 compactScriptIfOverBudget: runs once when >125%, strips echoed hook, and accepts shorter clean copy");
+
+    const rejectedBanned = await compactScriptIfOverBudget({
+      script: overThreshold,
+      durationSec: 30,
+      bannedWords: ["ห้ามพูด"],
+      runCompact: async () => ({ bodyText: "สั้นแต่มีคำ ห้ามพูด หลุดมา", ctaText: "จบ" }),
+    });
+    ok(!rejectedBanned.compacted && rejectedBanned.bodyText === overThreshold.bodyText,
+      "v2 compactScriptIfOverBudget: rejects compacted output that introduces a banned word");
+
+    const rejectedLonger = await compactScriptIfOverBudget({
+      script: overThreshold,
+      durationSec: 30,
+      bannedWords: [],
+      runCompact: async () => ({ bodyText: repeatWord(200), ctaText: repeatWord(20) }),
+    });
+    ok(!rejectedLonger.compacted && rejectedLonger.bodyText === overThreshold.bodyText,
+      "v2 compactScriptIfOverBudget: fails open to original when compact attempt is not shorter");
+
+    const legacyDto = toBrandProfileDTO({
+      id: "bp-legacy", userId: "u", name: "Legacy", niche: "n", audience: "a", tone: "t",
+      bannedWords: "[]", ctaStyle: "follow", language: "th", sampleText: null, sampleUrl: null,
+      analysisNotes: null, activeRevisionNumber: 0, frozenAt: null, archivedAt: null, lastUsedAt: null,
+      createdAt: new Date(), updatedAt: new Date(), _count: { revisions: 0 },
+    });
+    const publishedDto = toBrandProfileDTO({
+      id: "bp-pub", userId: "u", name: "Published", niche: "n", audience: "a", tone: "t",
+      bannedWords: "[]", ctaStyle: "follow", language: "th", sampleText: null, sampleUrl: null,
+      analysisNotes: null, activeRevisionNumber: 2, frozenAt: null, archivedAt: null, lastUsedAt: null,
+      createdAt: new Date(), updatedAt: new Date(), _count: { revisions: 2 },
+    });
+    ok(legacyDto.isVersioned === false && publishedDto.isVersioned === true && !("_count" in publishedDto),
+      "v2 toBrandProfileDTO: exposes accurate isVersioned flag without leaking _count");
   }
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);

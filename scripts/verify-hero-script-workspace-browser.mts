@@ -73,6 +73,8 @@ const script = (value: Partial<FixtureScript> & Pick<FixtureScript, "id" | "topi
 const profileFixtures = Array.from({ length: 20 }, (_, index) => ({
   id: index === 0 ? "legacy-revision-zero" : index === 1 ? "published-profile" : `fixture-brand-${index + 1}`,
   name: index === 0 ? "Legacy fixture" : index === 1 ? "Published fixture" : `Fixture Brand ${index + 1}`,
+  isVersioned: index === 1,
+  activeRevisionNumber: index === 1 ? 2 : 0,
 }));
 const records = new Map<string, FixtureScript>([
   ["recent-draft", script({ id: "recent-draft", topic: "Recent fixture", durationSec: 90 })],
@@ -171,11 +173,32 @@ const server = createServer(async (req, res) => {
     return json({ items: filtered.slice(start, start + pageSize), brandOptions: profileFixtures, total: filtered.length, page, pageSize, hasNextPage: start + pageSize < filtered.length });
   }
   if (url.pathname === "/api/scripts/hooks") return json({ hooks: [{ formula: "question-poll", text: "Hook fixture" }] });
+  if (url.pathname === "/api/scripts/compact") {
+    const requestBody = await readBody();
+    return json({ bodyText: `Compacted ${String(requestBody.durationSec)}s body`, ctaText: "Compacted CTA" });
+  }
   if (url.pathname === "/api/scripts/generate") {
+    const requestBody = await readBody();
     const reply = generationReplies.shift();
     if (reply?.release) await reply.release;
     if (reply?.delayMs) await wait(reply.delayMs);
-    return json(reply?.body ?? { structure: "how-to", bodyText: "Body fixture", ctaText: "CTA fixture" }, reply?.status ?? 200);
+    if (reply) return json(reply.body, reply.status ?? 200);
+    if (requestBody?.mode === "quick") {
+      return json({
+        hookFormula: "curiosity-gap",
+        hookText: "Quick primary hook",
+        alternativeHooks: [
+          { formula: "contrarian", text: "Quick alt hook 1" },
+          { formula: "shock-number", text: "Quick alt hook 2" },
+          { formula: "direct-callout", text: "Quick alt hook 3" },
+          { formula: "mistake-warning", text: "Quick alt hook 4" },
+        ],
+        structure: requestBody.structure || "how-to",
+        bodyText: "Quick body line 1\nQuick body line 2",
+        ctaText: "Quick CTA fixture",
+      });
+    }
+    return json({ structure: requestBody.structure || "how-to", bodyText: "Body fixture", ctaText: "CTA fixture" }, 200);
   }
   if (url.pathname === "/api/scripts/regen-section") {
     const requestBody = await readBody();
@@ -243,9 +266,17 @@ try {
   await page.evaluateOnNewDocument(() => localStorage.setItem("hero-script-writing:fixture-account", JSON.stringify({ profileId: "legacy-revision-zero", durationSec: 90 })));
   await page.goto(`http://127.0.0.1:${port}/hero-script`);
   await page.waitForFunction(() => document.body.textContent?.includes("ทำร่างล่าสุดต่อ"));
-  await page.locator('details:has([role="listbox"]) > summary').click();
+  // Brand Popover opens with 21 options (no-profile + 20 brands) and auto-closes on selection!
+  await page.locator('button[aria-label="เลือกโปรไฟล์แบรนด์"]').click();
   await page.waitForFunction(() => document.querySelectorAll('[role="option"]').length === 21);
-  await page.locator('details:has([role="listbox"]) > summary').click();
+  // Published fixture (isVersioned=true) links directly to /brands without a 409 modal trap
+  assert.equal(
+    await page.evaluate(() => Boolean(document.querySelector('a[href="/brands"][aria-label*="Published fixture"]'))),
+    true,
+    "published (rev 1+) profiles expose a direct /brands link instead of a read-only edit modal",
+  );
+  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((btn) => btn.textContent?.includes("Legacy fixture"))?.click());
+  await page.waitForFunction(() => document.querySelectorAll('[role="listbox"]').length === 0);
   const topicInput = await page.$('input[aria-label="หัวข้อสคริปต์"]');
   const topicBox = await topicInput?.boundingBox();
   assert.ok(topicBox && topicBox.y + topicBox.height <= 768, "the topic stays in the initial 1366×768 desktop viewport with 20 profiles");
@@ -256,22 +287,63 @@ try {
   assert.deepEqual(detailGets, [], "initial recovery metadata does not fetch a full record");
   assert.equal(libraryListCount, 0, "the hidden library does not load its full page");
 
-  const duration = page.locator('[role="combobox"]');
-  await duration.click();
-  await page.locator('::-p-text(30 วิ)').click();
+  // Duration segmented radio pills
+  await page.locator('[role="radiogroup"][aria-label="ความยาวคลิป"] [role="radio"]::-p-text(30 วิ)').click();
   await page.locator('::-p-text(ทำร่างล่าสุดต่อ)').click();
   await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "Recent fixture");
   assert.deepEqual(detailGets, ["recent-draft"], "explicit recovery fetches the full owned detail once");
   await page.locator('::-p-text(สคริปต์ใหม่)').click();
   await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
-  assert.equal(await page.$eval('[role="combobox"]', (element) => element.textContent), "30 วิ", "historical restore does not replace explicit new-writing defaults");
+  assert.equal(
+    await page.$eval('[role="radiogroup"][aria-label="ความยาวคลิป"] [role="radio"][aria-checked="true"]', (element) => element.textContent?.trim()),
+    "30 วิ",
+    "historical restore does not replace explicit new-writing defaults",
+  );
 
-  assert.equal(await page.evaluate(() => document.body.innerText.includes("เลือก Hook")), false, "Hook is hidden before a topic");
+  // Zero-brand Quick Style Presets + 1-click Quick Generate + 4 Alt Hook swap + 1-click Compact + Empty-hook autosave guard
+  await page.locator('button[aria-label="เลือกโปรไฟล์แบรนด์"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[role="option"]').length === 21);
+  await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((btn) => btn.textContent?.includes("ไม่ใช้โปรไฟล์"))?.click());
+  await page.waitForFunction(() => document.querySelectorAll('[role="listbox"]').length === 0);
+  await page.waitForFunction(() => document.body.innerText.includes("สอนทำ-กระชับ"));
+  await page.locator('button::-p-text(สอนทำ-กระชับ)').click();
+  await page.locator('input[aria-label="หัวข้อสคริปต์"]').fill("หัวข้อทดสอบด่วน");
+  await page.locator('button::-p-text(สร้างสคริปต์เลย (1 คลิก))').click();
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].some((node) => node.value === "Quick body line 1\nQuick body line 2"));
+  await page.waitForFunction(() => document.body.innerText.includes("บันทึกแล้ว"));
+  // Swap alternative hook in 1 click
+  await page.locator('button::-p-text(สลับ Hook (4))').click();
+  await page.waitForFunction(() => document.body.innerText.includes("Quick alt hook 1"));
+  await page.locator('button::-p-text(Quick alt hook 1)').click();
+  assert.equal(await page.$eval('textarea[aria-label="ข้อความ Hook"]', (el: HTMLTextAreaElement) => el.value), "Quick alt hook 1", "1-click alternative hook swap replaces the active hook cleanly");
+  // 1-click Compact
+  await page.locator('button::-p-text(กระชับให้พอดี 30 วิ)').click();
+  await page.waitForFunction(() => (document.querySelector('textarea[aria-label="เนื้อหาสคริปต์"]') as HTMLTextAreaElement)?.value === "Compacted 30s body");
+  await page.waitForFunction(() => document.body.innerText.includes("บันทึกแล้ว"));
+  // Empty-hook autosave guard: clearing Hook pauses autosave and sends ZERO PUT 400s
+  const savesBeforeEmptyHook = saveBodies.length;
+  await page.evaluate(() => {
+    const hookInput = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="ข้อความ Hook"]')!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(hookInput, "   ");
+    hookInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.body.innerText.includes("กรุณาใส่ Hook ก่อนจึงจะบันทึกอัตโนมัติ"));
+  await new Promise((resolve) => setTimeout(resolve, 1_350));
+  assert.equal(saveBodies.length, savesBeforeEmptyHook, "blank hook pauses debounced autosave instead of firing PUT 400");
+  await page.evaluate(() => {
+    const hookInput = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="ข้อความ Hook"]')!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(hookInput, "Quick alt hook 1");
+    hookInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.locator('::-p-text(สคริปต์ใหม่)').click();
+  await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
+
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll("h2")].some((heading) => heading.textContent === "เลือก Hook" && heading.getClientRects().length > 0)), false, "Hook is hidden before a topic");
   assert.equal(await page.evaluate(() => [...document.querySelectorAll("h2")].some((heading) => heading.textContent === "สคริปต์เต็ม" && heading.getClientRects().length > 0)), false, "full script is hidden before a Hook");
   await page.locator('input[aria-label="หัวข้อสคริปต์"]').fill("หัวข้อทดสอบ");
-  await page.locator('::-p-text(สร้าง Hook)').click();
+  await page.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
   await page.locator('::-p-text(Hook fixture)').click();
-  await page.locator('::-p-text(สร้างสคริปต์เต็ม)').click();
+  await page.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
   await page.waitForFunction(() => [...document.querySelectorAll("textarea")].some((node) => node.value === "Body fixture"));
   await page.waitForFunction(() => document.body.innerText.includes("บันทึกแล้ว"));
   const fullLibraryCallsBeforeEdit = libraryListCount;
@@ -283,7 +355,7 @@ try {
   await page.$eval('[role="tab"][aria-selected="false"]', (element) => (element as HTMLElement).click());
   await page.waitForFunction(() => document.body.innerText.includes("Fast detail"));
   await new Promise((resolve) => setTimeout(resolve, 1_350));
-  assert.equal(records.get("draft-1")?.bodyText, "Body edited", "the mounted save owner commits while the writing tab is hidden");
+  assert.equal(records.get("draft-2")?.bodyText, "Body edited", "the mounted save owner commits while the writing tab is hidden");
   assert.equal(libraryListCount, fullLibraryCallsBeforeEdit + 1, "opening the library loads one page instead of refreshing for hidden edits");
   await page.$eval('[role="tab"][aria-selected="false"]', (element) => { (element as HTMLElement).focus(); (element as HTMLElement).click(); });
   assert.deepEqual(await page.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.filter((input) => input.getClientRects().length > 0).map((input) => input.value).slice(-3)), ["Hook fixture", "Body edited", "CTA fixture"]);
@@ -297,14 +369,14 @@ try {
   assert.equal(await page.evaluate(() => [...document.querySelectorAll("h2")].some((heading) => heading.textContent === "เลือก Hook" && heading.getClientRects().length > 0)), false);
   assert.equal(await page.$$eval("textarea", (inputs: HTMLTextAreaElement[]) => inputs.some((input) => input.value === "Body edited")), true, "new-generation context keeps the mounted draft");
   await page.locator('input[aria-label="หัวข้อสคริปต์"]').fill("หัวข้อใหม่");
-  await page.locator('::-p-text(สร้าง Hook)').click();
+  await page.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
   await page.locator('::-p-text(Hook fixture)').click();
 
   await page.locator('::-p-text(สคริปต์ใหม่)').click();
   await page.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
   const createsBeforeBrief = createCount;
   await page.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Brief fixture");
-  await page.locator('::-p-text(สร้าง Hook)').click();
+  await page.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
   await page.locator('::-p-text(Hook fixture)').click();
   await page.evaluate(() => {
     const input = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].find((node) => node.getClientRects().length > 0)!;
@@ -326,7 +398,7 @@ try {
   assert.equal(createCount, createsBeforeBrief, "explicit discard still creates no Script row");
 
   await page.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Brief before open");
-  await page.locator('::-p-text(สร้าง Hook)').click();
+  await page.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
   await page.locator('::-p-text(Hook fixture)').click();
   await page.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
   const routesBeforeBriefProjectOpen = await page.evaluate(() => (window as unknown as { __fixtureRoutes?: string[] }).__fixtureRoutes?.length ?? 0);
@@ -468,11 +540,9 @@ try {
   slowDetailDelayMs = 400;
   await page.evaluate(() => [...document.querySelectorAll("article button")].find((button) => button.textContent?.includes("Delete race"))?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   await new Promise((resolve) => setTimeout(resolve, 30));
-  await page.evaluate(() => {
-    const article = [...document.querySelectorAll("article")].find((node) => node.textContent?.includes("Delete race"))!;
-    (article.querySelector("summary") as HTMLElement).click();
-    ([...article.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("ลบสคริปต์")))?.click();
-  });
+  await page.locator('button[aria-label="ตัวเลือก Delete race"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent?.includes("ลบสคริปต์")));
+  await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent?.includes("ลบสคริปต์"))?.click());
   await page.waitForFunction(() => document.body.textContent?.includes("ลบสคริปต์นี้?"));
   await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "ลบ" && button.getClientRects().length > 0)?.click());
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -483,7 +553,7 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("summary")].find((summary) => summary.textContent?.includes("วิธีใช้"))?.click());
   await page.waitForFunction(() => localStorage.getItem("hero-script-guide:fixture-account") === "open");
   assert.equal(await page.evaluate(() => localStorage.getItem("hero-script-guide:fixture-account")), "open");
-  await page.evaluate(() => [...document.querySelectorAll("summary")].find((summary) => summary.textContent?.includes("จัดการโปรไฟล์"))?.click());
+  await page.locator('button[aria-label="เลือกโปรไฟล์แบรนด์"]').click();
   await page.waitForFunction(() => document.body.textContent?.includes("Legacy fixture"));
   await page.locator('button[aria-label="แก้ไข Legacy fixture"]').click();
   await page.locator('input[placeholder="เช่น ช่องการเงิน"]').fill("Legacy edited");
@@ -495,9 +565,16 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "บันทึก")?.click());
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.deepEqual(legacyUpdate && { niche: legacyUpdate.niche, audience: legacyUpdate.audience, tone: legacyUpdate.tone, bannedWords: legacyUpdate.bannedWords, ctaStyle: legacyUpdate.ctaStyle, analysisNotes: legacyUpdate.analysisNotes }, { niche: "niche edited", audience: "audience edited", tone: "tone edited", bannedWords: ["word-a", "word-b"], ctaStyle: "follow", analysisNotes: "notes edited" });
-  await page.locator('button[aria-label="แก้ไข Published fixture"]').click();
-  await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "บันทึก")?.click());
-  await page.waitForFunction(() => (window as unknown as { __fixtureManageUrl?: string }).__fixtureManageUrl === "/brands");
+  // Published fixture is routed directly to /brands via link (no 409 modal trap)
+  await page.locator('button[aria-label="เลือกโปรไฟล์แบรนด์"]').click();
+  await page.waitForFunction(() => Boolean(document.querySelector('a[href="/brands"][aria-label*="Published fixture"]')));
+  assert.equal(
+    await page.$eval('a[href="/brands"][aria-label*="Published fixture"]', (link) => link.getAttribute("href")),
+    "/brands",
+    "published profiles link straight to /brands from the brand popover",
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.querySelectorAll('[role="listbox"]').length === 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.equal(saveBodies.some(({ body }) => body.bodyText === "Latest before failed handoff"), true);
 
@@ -617,11 +694,11 @@ try {
   const clickLibraryCreate = async (fixturePage: import("puppeteer").Page, topicName: string) => {
     await fixturePage.locator('[role="tab"]::-p-text(คลังสคริปต์)').click();
     await fixturePage.waitForFunction((name) => [...document.querySelectorAll("article")].some((article) => article.textContent?.includes(name)), {}, topicName);
-    await fixturePage.evaluate((name) => {
-      const article = [...document.querySelectorAll("article")].find((node) => node.textContent?.includes(name))!;
-      (article.querySelector("summary") as HTMLElement).click();
-      [...article.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("สร้างงานตัดต่อใหม่"))?.click();
-    }, topicName);
+    await fixturePage.locator(`button[aria-label="ตัวเลือก ${topicName}"]`).click();
+    await fixturePage.waitForFunction(() => [...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent?.includes("สร้างงานตัดต่อใหม่")));
+    await fixturePage.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent?.includes("สร้างงานตัดต่อใหม่"))?.click();
+    });
   };
 
   // A non-active library handoff is still a workspace transition: it drains
@@ -661,7 +738,7 @@ try {
   const libraryBriefPage = await newHandoffPage();
   await libraryBriefPage.locator('input[aria-label="หัวข้อสคริปต์"]').fill("Unsaved library handoff brief");
   const briefHookResponse = libraryBriefPage.waitForResponse((response) => response.url().endsWith("/api/scripts/hooks"));
-  await libraryBriefPage.locator('button::-p-text(สร้าง Hook)').click();
+  await libraryBriefPage.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
   await briefHookResponse;
   await libraryBriefPage.locator('button::-p-text(Hook fixture)').click();
   const postsBeforeLibraryBrief = handoffPosts.length;
@@ -764,8 +841,7 @@ try {
     await settleReact();
     const activeTopic = await racePage.$eval('input[aria-label="หัวข้อสคริปต์"]', (input: HTMLInputElement) => input.value);
     const response = racePage.waitForResponse((candidate) => candidate.url().endsWith("/api/scripts/hooks") && requestBody(candidate).topic === activeTopic);
-    await racePage.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => ["สร้าง Hook", "ขออีกชุด"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0));
-    await racePage.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["สร้าง Hook", "ขออีกชุด"].includes(button.textContent?.trim() ?? "") && button.getClientRects().length > 0)?.click());
+    await racePage.locator('button::-p-text(เลือก 5 Hook ก่อน)').click();
     await response;
     await settleReact();
     await racePage.locator('button::-p-text(Hook fixture)').click();
@@ -789,8 +865,10 @@ try {
     await racePage.waitForFunction(() => (document.querySelector('input[aria-label="หัวข้อสคริปต์"]') as HTMLInputElement)?.value === "");
   };
   const clickRegen = async (label: "Hook" | "เนื้อหา" | "CTA") => racePage.evaluate((sectionLabel) => {
-    const labelNode = [...document.querySelectorAll<HTMLSpanElement>("span")].find((node) => node.textContent === sectionLabel && node.getClientRects().length > 0)!;
-    (labelNode.parentElement?.querySelector("button") as HTMLButtonElement).click();
+    const badgeText = sectionLabel === "Hook" ? "HOOK" : sectionLabel;
+    const badgeNode = [...document.querySelectorAll<HTMLSpanElement>("span")].find((node) => node.textContent?.trim() === badgeText && node.getClientRects().length > 0)!;
+    const card = badgeNode.closest("div.rounded-xl")!;
+    [...card.querySelectorAll<HTMLButtonElement>("button")].find((btn) => btn.textContent?.includes("เขียนใหม่"))?.click();
   }, label);
   const clickCreateProject = async () => racePage.evaluate(() => {
     [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
@@ -853,12 +931,10 @@ try {
   generationReplies.push({ release: durationGate.release, body: { structure: "how-to", bodyText: "STALE DURATION", ctaText: "stale" } });
   const durationResponse = waitForGeneration("Old duration context");
   await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
-  const currentDuration = await racePage.$eval('[role="combobox"]', (element) => element.textContent?.trim());
+  const currentDuration = await racePage.$eval('[role="radiogroup"][aria-label="ความยาวคลิป"] [role="radio"][aria-checked="true"]', (element) => element.textContent?.trim());
   const nextDuration = currentDuration === "60 วิ" ? "90 วิ" : "60 วิ";
-  await racePage.locator('[role="combobox"]').click();
-  await racePage.waitForFunction((label) => [...document.querySelectorAll<HTMLElement>('[role="option"]')].some((node) => node.textContent?.trim() === label && node.getClientRects().length > 0), {}, nextDuration);
-  await racePage.evaluate((label) => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === label && node.getClientRects().length > 0)?.click(), nextDuration);
-  await racePage.waitForFunction((label) => document.querySelector('[role="combobox"]')?.textContent?.trim() === label, {}, nextDuration);
+  await racePage.locator(`[role="radiogroup"][aria-label="ความยาวคลิป"] [role="radio"]::-p-text(${nextDuration})`).click();
+  await racePage.waitForFunction((label) => document.querySelector('[role="radiogroup"][aria-label="ความยาวคลิป"] [role="radio"][aria-checked="true"]')?.textContent?.trim() === label, {}, nextDuration);
   durationGate.resolve();
   await durationResponse;
   await settleReact();
@@ -871,12 +947,12 @@ try {
   generationReplies.push({ release: profileGate.release, body: { structure: "how-to", bodyText: "STALE PROFILE", ctaText: "stale" } });
   const profileResponse = waitForGeneration("Old profile context");
   await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
-  const currentProfile = await racePage.evaluate(() => [...document.querySelectorAll<HTMLElement>("summary")].find((node) => node.getClientRects().length > 0 && (node.textContent?.includes("Legacy fixture") || node.textContent?.includes("ไม่ใช้โปรไฟล์")))?.textContent);
-  const nextProfile = currentProfile?.includes("Legacy fixture") ? "ไม่ใช้โปรไฟล์" : "Legacy fixture";
-  await racePage.evaluate(() => [...document.querySelectorAll<HTMLElement>("summary")].find((node) => node.getClientRects().length > 0 && (node.textContent?.includes("Legacy fixture") || node.textContent?.includes("ไม่ใช้โปรไฟล์")))?.click());
+  const currentProfile = await racePage.$eval('button[aria-label="เลือกโปรไฟล์แบรนด์"]', (node) => node.textContent ?? "");
+  const nextProfile = currentProfile.includes("Legacy fixture") ? "ไม่ใช้โปรไฟล์" : "Legacy fixture";
+  await racePage.locator('button[aria-label="เลือกโปรไฟล์แบรนด์"]').click();
   await racePage.waitForSelector('[role="option"]');
   await racePage.evaluate((profileName) => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((node) => node.textContent?.includes(profileName))?.click(), nextProfile);
-  await racePage.evaluate(() => [...document.querySelectorAll<HTMLDetailsElement>("details")].find((node) => node.querySelector('[role="listbox"]'))?.removeAttribute("open"));
+  await racePage.waitForFunction(() => document.querySelectorAll('[role="listbox"]').length === 0);
   profileGate.resolve();
   await profileResponse;
   await settleReact();
@@ -992,10 +1068,10 @@ try {
   // Starting a handoff owns the current Script and invalidates generation work
   // that was already in flight before the handoff began.
   const generationBeforeHandoffGate = deferredReply();
-  generationReplies.push({ release: generationBeforeHandoffGate.release, body: { structure: "how-to", bodyText: "STALE GENERATION DURING HANDOFF", ctaText: "stale" } });
+  generationReplies.push({ release: generationBeforeHandoffGate.release, body: { hookFormula: "curiosity-gap", hookText: "STALE HOOK", alternativeHooks: [], structure: "how-to", bodyText: "STALE GENERATION DURING HANDOFF", ctaText: "stale" } });
   const generationBeforeHandoffRequest = racePage.waitForRequest((request) => request.url().endsWith("/api/scripts/generate"));
   const generationBeforeHandoffResponse = waitForGeneration("Sent available");
-  await racePage.locator('button::-p-text(สร้างสคริปต์เต็ม)').click();
+  await racePage.locator('button::-p-text(สร้างสคริปต์เลย (1 คลิก))').click();
   await generationBeforeHandoffRequest;
   const generationHandoffGate = deferredReply();
   nextHandoffRelease = generationHandoffGate.release;
@@ -1107,17 +1183,16 @@ try {
   await scalePage.waitForFunction(() => document.body.textContent?.includes("พบ 1 สคริปต์"));
   assert.equal(libraryRequests.some((request) => request.includes("q=%E0%B8%AB%E0%B8%B1%E0%B8%A7%E0%B8%82%E0%B9%89%E0%B8%AD")), true, "keyboard search reaches the server with the full Thai query");
 
-  await tabTo("select", 0);
-  await scalePage.keyboard.press("Home");
-  await scalePage.keyboard.type("Fixture Brand 10");
   const targetBrandId = records.get("scale-0421")?.brandProfileId;
   assert.equal(targetBrandId, "fixture-brand-10");
-  await scalePage.waitForFunction((brandProfileId) => (document.querySelectorAll("select")[0] as HTMLSelectElement | undefined)?.value === brandProfileId, {}, targetBrandId);
-  const statusSelect = (await scalePage.$$("select"))[1];
-  assert.ok(statusSelect);
+  await tabTo('button[aria-label="กรองตามโปรไฟล์แบรนด์"]', 0);
+  await scalePage.keyboard.press("Enter");
+  await scalePage.waitForFunction(() => [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent?.trim() === "Fixture Brand 10"));
+  await scalePage.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === "Fixture Brand 10")?.click());
   const combinedFilterResponse = scalePage.waitForResponse((response) => response.url().includes(`brandProfileId=${targetBrandId}`) && response.url().includes("status=draft"));
-  await statusSelect.select("draft");
-  await scalePage.waitForFunction(() => (document.querySelectorAll("select")[1] as HTMLSelectElement | undefined)?.value === "draft");
+  await scalePage.locator('button[aria-label="กรองตามสถานะสคริปต์"]').click();
+  await scalePage.waitForFunction(() => [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent?.trim() === "ร่าง"));
+  await scalePage.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === "ร่าง")?.click());
   await combinedFilterResponse;
   assert.equal(libraryRequests.some((request) => request.includes(`brandProfileId=${targetBrandId}`) && request.includes("status=draft")), true, "combined keyboard brand/status filters query the full library");
 
@@ -1166,6 +1241,19 @@ try {
   await lockedPage.goto(`http://127.0.0.1:${port}/locked-preview`);
   await lockedPage.waitForFunction(() => document.body.textContent?.includes("ฟีเจอร์พรีเมียมสำหรับสมาชิก"));
   assert.equal(await lockedPage.$eval('a[href="/pricing?source=hero_script_preview"]', (link) => link.textContent?.includes("ดูแผน")), true, "the actual locked-preview UI exposes its pricing action");
+  // Interactive read-only sample hook switcher
+  await lockedPage.locator('button::-p-text(ตัวเลขช็อค)').click();
+  await lockedPage.waitForFunction(() => document.body.textContent?.includes("15% วันเงินออก"));
+  assert.equal(
+    await lockedPage.$eval('button[aria-pressed="true"]', (btn) => btn.textContent?.trim()),
+    "ตัวเลขช็อค",
+    "locked-preview sample hook switcher marks the clicked hook formula active",
+  );
+  assert.equal(
+    await lockedPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    true,
+    "390px locked-preview has no horizontal overflow",
+  );
   await lockedPage.screenshot({ path: `${screenshotDir}/hero-script-locked-preview-mobile.png` });
   await lockedPage.close();
 

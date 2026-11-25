@@ -40,6 +40,24 @@ assert.deepEqual(
   { profileId: null, durationSec: 60 },
   "an unavailable remembered profile or duration falls back to explicit no-profile defaults",
 );
+values.set("hero-script-writing:account-a", JSON.stringify({ profileId: null, durationSec: 30, stylePreset: "howto-punchy" }));
+assert.deepEqual(
+  readHeroScriptWritingPreferences(storage, "account-a", profiles),
+  { profileId: null, durationSec: 30, stylePreset: "howto-punchy" },
+  "valid no-profile quick style presets are restored per account",
+);
+values.set("hero-script-writing:account-a", JSON.stringify({ profileId: "legacy-revision-zero", durationSec: 60, stylePreset: "howto-punchy" }));
+assert.deepEqual(
+  readHeroScriptWritingPreferences(storage, "account-a", profiles),
+  { profileId: "legacy-revision-zero", durationSec: 60 },
+  "a valid brand profile suppresses any stale quick style preset",
+);
+values.set("hero-script-writing:account-a", JSON.stringify({ profileId: null, durationSec: 60, stylePreset: "invalid-preset" }));
+assert.deepEqual(
+  readHeroScriptWritingPreferences(storage, "account-a", profiles),
+  { profileId: null, durationSec: 60 },
+  "an unknown remembered quick style preset is ignored safely",
+);
 
 type Detail = { id: string; topic: string };
 const pending = new Map<string, (response: Response) => void>();

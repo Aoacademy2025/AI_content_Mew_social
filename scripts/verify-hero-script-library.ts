@@ -117,15 +117,19 @@ async function verifyMountedLibrary() {
       false,
       "a successful mounted refresh clears the prior failure alert",
     );
-    const brandSelect = await page.$("select");
-    assert.ok(brandSelect);
+    const brandTrigger = await page.$('button[aria-label="กรองตามโปรไฟล์แบรนด์"]');
+    assert.ok(brandTrigger, "brand filter trigger renders as a shadcn Select combobox");
+    await brandTrigger.click();
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="option"]')].some((option) => option.textContent?.includes("Archived history brand")));
     assert.equal(
-      await page.$eval('option[value="archived-brand"]', (option) => option.textContent),
-      "Archived history brand",
+      await page.evaluate(() => [...document.querySelectorAll('[role="option"]')].some((option) => option.textContent?.trim() === "Archived history brand")),
+      true,
       "mounted filters include historical brand metadata absent from the visible row",
     );
     const filteredResponse = page.waitForResponse((response) => response.url().includes("brandProfileId=archived-brand"));
-    await brandSelect.select("archived-brand");
+    await page.evaluate(() => {
+      [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent?.trim() === "Archived history brand")?.click();
+    });
     await filteredResponse;
     assert.equal(
       requests.some((search) => search.includes("brandProfileId=archived-brand")),

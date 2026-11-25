@@ -1,39 +1,55 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
 import {
+  isValidCtaStyleKey,
+  isValidHookFormulaKey,
+  isValidStoryStructureKey,
+} from "@/lib/viral-frameworks";
+import {
+  getQuickStylePreset,
+  isValidQuickStylePresetKey,
+  quickStylePresetToBrandProfile,
+} from "@/lib/hero-script-presets";
+import {
+  buildCompactScriptPrompt,
   buildGeneratePrompt,
+  buildQuickGeneratePrompt,
   type BrandProfileForPrompt,
 } from "@/lib/prompts/hero-script";
 import {
+  compactScriptIfOverBudget,
   generateValidatedJson,
   generateWithBannedWordGuard,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
+  repairQuickGenerateResponse,
   requireHeroScriptUser,
   reserveScriptGeneration,
   resolveHeroScriptBrandProfile,
   resolveLlmTriad,
   settleScriptGeneration,
   stripEchoedHook,
+  validateCompactResponse,
   validateGenerateResponse,
   validateTopic,
   wordBudgetForDuration,
   PRO_TIER_TEXT_CALL_COST,
   type GenerateScriptResult,
   type GuardedGeneration,
+  type QuickGenerateScriptResult,
 } from "@/lib/hero-script.server";
 
-// POST /api/scripts/generate — {topic, hookText, hookFormula, brandProfileId?,
-// durationSec} → {structure, bodyText, ctaText} (+ optional `warning`).
-//
-// PRO model (spec Global Constraints: full script + section regenerate run on
-// HERO_SCRIPT_MODEL_PRO). The chosen hook is NEVER round-tripped through the
-// model: it goes into the prompt verbatim as fixed context, the response
-// contract has no hook field, and the client keeps its own copy as line 1 — so
-// a model that paraphrases the hook can't overwrite the user's wording. If the
-// model echoes the hook as the first body line we drop that line instead
-// (stripEchoedHook), otherwise the assembled script would say it twice.
+// POST /api/scripts/generate
+// Supports two modes:
+//   1. Step-by-step (default / mode: "hook"): { topic, hookText, hookFormula?,
+//      brandProfileId?, stylePreset?, durationSec, structure?, ctaStyle? }
+//      → { structure, bodyText, ctaText, compacted?, warning? }
+//   2. 1-click fast path (mode: "quick"): { mode: "quick", topic,
+//      brandProfileId?, stylePreset?, durationSec, structure?, ctaStyle? }
+//      → { hookFormula, hookText, alternativeHooks, structure, bodyText, ctaText,
+//          compacted?, warning? }
+// Both modes run on PRO tier with banned-word guard + fail-open >25% word-budget
+// auto-compact pass (max 1 pass).
 export async function POST(req: Request) {
   let reservedUserId: string | null = null;
   let reservationId: string | null = null;
@@ -41,9 +57,6 @@ export async function POST(req: Request) {
     if (!reservedUserId || !reservationId) return;
     const id = reservationId;
     if (succeeded) {
-      // A successful output must not be returned unless its durable quota row
-      // is committed. If this throws, the outer catch releases the reservation
-      // and returns an error instead of silently creating a quota bypass.
       await settleScriptGeneration(reservedUserId, id, true);
       reservationId = null;
       return;
@@ -69,15 +82,40 @@ export async function POST(req: Request) {
     }
     const durationSec = body.durationSec as 30 | 60 | 90;
 
+    const rawMode = typeof body?.mode === "string" ? body.mode.trim() : "";
+    if (rawMode && rawMode !== "quick" && rawMode !== "hook") {
+      return NextResponse.json({ error: "โหมดการสร้างสคริปต์ไม่ถูกต้อง" }, { status: 400 });
+    }
+    const isQuickMode = rawMode === "quick";
+
     const hookText = typeof body?.hookText === "string" ? body.hookText.trim() : "";
-    if (!hookText) {
+    if (!isQuickMode && !hookText) {
       return NextResponse.json({ error: "กรุณาเลือก hook ก่อนสร้างสคริปต์เต็ม" }, { status: 400 });
     }
-    // hookFormula travels with the hook so the client can save it on the Script
-    // row; the GENERATE prompt itself doesn't need it (the hook text is fixed).
     const hookFormula = typeof body?.hookFormula === "string" ? body.hookFormula.trim() : "";
-    if (hookFormula && !isValidHookFormulaKey(hookFormula)) {
+    if (!isQuickMode && hookFormula && !isValidHookFormulaKey(hookFormula)) {
       return NextResponse.json({ error: "สูตร hook ไม่ถูกต้อง" }, { status: 400 });
+    }
+
+    const preferredStructure = typeof body?.structure === "string" && body.structure.trim()
+      ? body.structure.trim()
+      : null;
+    if (preferredStructure && !isValidStoryStructureKey(preferredStructure)) {
+      return NextResponse.json({ error: "โครงเรื่องไม่ถูกต้อง" }, { status: 400 });
+    }
+
+    const ctaOverride = typeof body?.ctaStyle === "string" && body.ctaStyle.trim()
+      ? body.ctaStyle.trim()
+      : null;
+    if (ctaOverride && !isValidCtaStyleKey(ctaOverride)) {
+      return NextResponse.json({ error: "สไตล์ CTA ไม่ถูกต้อง" }, { status: 400 });
+    }
+
+    const stylePresetKey = typeof body?.stylePreset === "string" && body.stylePreset.trim()
+      ? body.stylePreset.trim()
+      : null;
+    if (stylePresetKey && !isValidQuickStylePresetKey(stylePresetKey)) {
+      return NextResponse.json({ error: "สไตล์เริ่มต้นไม่ถูกต้อง" }, { status: 400 });
     }
 
     const brandProfileId =
@@ -99,11 +137,13 @@ export async function POST(req: Request) {
       profile = resolved.profile;
       bannedWords = resolved.bannedWords;
       ctaStyle = resolved.ctaStyle;
+    } else if (stylePresetKey) {
+      profile = quickStylePresetToBrandProfile(stylePresetKey);
+      const preset = getQuickStylePreset(stylePresetKey);
+      if (preset) ctaStyle = preset.defaultCtaStyle;
     }
+    if (ctaOverride) ctaStyle = ctaOverride;
 
-    // Product entitlement is reserved BEFORE the provider call. This closes
-    // the old hole where FREE users received the full output and only hit the
-    // 3-script wall later during autosave (or deleted rows to restore slots).
     const generationReserve = await reserveScriptGeneration(authUser.id, access.access.cohort);
     if (!generationReserve.allowed) {
       return NextResponse.json(
@@ -114,30 +154,110 @@ export async function POST(req: Request) {
     reservedUserId = authUser.id;
     reservationId = generationReserve.reservationId;
 
-    // count: PRO tier — one request can be up to 4 model round-trips on the
-    // expensive model (see resolveLlmTriad).
     const triad = await resolveLlmTriad(
       authUser.id,
-      { script: `${topicCheck.topic}\n${hookText}` },
-      { count: PRO_TIER_TEXT_CALL_COST }
+      { script: isQuickMode ? topicCheck.topic : `${topicCheck.topic}\n${hookText}` },
+      { count: PRO_TIER_TEXT_CALL_COST },
     );
     if (!triad.ok) {
       await settle(false);
       return NextResponse.json(triad.body, { status: triad.status });
     }
     const { apiKey } = triad;
+    const wordBudget = wordBudgetForDuration(durationSec);
+
+    if (isQuickMode) {
+      const prompt = buildQuickGeneratePrompt({
+        topic: topicCheck.topic,
+        durationSec,
+        wordBudget,
+        ctaStyle,
+        preferredStructure,
+        profile,
+      });
+
+      let guarded: GuardedGeneration<QuickGenerateScriptResult> | null;
+      try {
+        guarded = await generateWithBannedWordGuard<QuickGenerateScriptResult>({
+          bannedWords,
+          extractText: (r) => `${r.hookText}\n${r.bodyText}\n${r.ctaText}`,
+          generate: (sternNote) =>
+            generateValidatedJson({
+              apiKey,
+              prompt: `${prompt}${sternNote}`,
+              maxOutputTokens: 4096,
+              tier: "pro",
+              validate: repairQuickGenerateResponse,
+            }),
+        });
+      } catch (error) {
+        const llmError = heroScriptLlmErrorResponse(error, {
+          route: "POST /api/scripts/generate",
+          tier: "pro",
+        });
+        if (llmError) {
+          await settle(false);
+          return llmError;
+        }
+        throw error;
+      }
+      if (!guarded) {
+        await settle(false);
+        return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });
+      }
+
+      const initialBody = stripEchoedHook(guarded.result.bodyText, guarded.result.hookText);
+      const lengthGuarded = await compactScriptIfOverBudget({
+        script: {
+          hookText: guarded.result.hookText,
+          bodyText: initialBody,
+          ctaText: guarded.result.ctaText,
+        },
+        durationSec,
+        bannedWords,
+        runCompact: () => generateValidatedJson({
+          apiKey,
+          prompt: buildCompactScriptPrompt({
+            topic: topicCheck.topic,
+            durationSec,
+            wordBudget,
+            current: {
+              hookText: guarded!.result.hookText,
+              bodyText: initialBody,
+              ctaText: guarded!.result.ctaText,
+            },
+            ctaStyle,
+            profile,
+          }),
+          maxOutputTokens: 3072,
+          tier: "pro",
+          validate: validateCompactResponse,
+        }),
+      });
+
+      await settle(true);
+      return NextResponse.json({
+        hookFormula: guarded.result.hookFormula,
+        hookText: guarded.result.hookText,
+        alternativeHooks: guarded.result.alternativeHooks,
+        structure: guarded.result.structure,
+        bodyText: lengthGuarded.bodyText,
+        ctaText: lengthGuarded.ctaText,
+        ...(lengthGuarded.compacted ? { compacted: true } : {}),
+        ...(guarded.warning ? { warning: guarded.warning } : {}),
+      });
+    }
 
     const prompt = buildGeneratePrompt({
       topic: topicCheck.topic,
       durationSec,
-      wordBudget: wordBudgetForDuration(durationSec),
+      wordBudget,
       hookText,
       ctaStyle,
+      preferredStructure,
       profile,
     });
 
-    // Banned-words guard: generate → screen → 1 retry with the stern note →
-    // still there? return it WITH a warning (never block the user).
     let guarded: GuardedGeneration<GenerateScriptResult> | null;
     try {
       guarded = await generateWithBannedWordGuard<GenerateScriptResult>({
@@ -153,9 +273,6 @@ export async function POST(req: Request) {
           }),
       });
     } catch (error) {
-      // The pro model id is gone/unusable, or the provider's credit is spent →
-      // say so (503), never fall back to the fast model or the other provider
-      // (ADR 0004). Everything else keeps its own path.
       const llmError = heroScriptLlmErrorResponse(error, {
         route: "POST /api/scripts/generate",
         tier: "pro",
@@ -171,12 +288,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });
     }
 
-    const { structure, bodyText, ctaText } = guarded.result;
+    const initialBody = stripEchoedHook(guarded.result.bodyText, hookText);
+    const lengthGuarded = await compactScriptIfOverBudget({
+      script: {
+        hookText,
+        bodyText: initialBody,
+        ctaText: guarded.result.ctaText,
+      },
+      durationSec,
+      bannedWords,
+      runCompact: () => generateValidatedJson({
+        apiKey,
+        prompt: buildCompactScriptPrompt({
+          topic: topicCheck.topic,
+          durationSec,
+          wordBudget,
+          current: {
+            hookText,
+            bodyText: initialBody,
+            ctaText: guarded!.result.ctaText,
+          },
+          ctaStyle,
+          profile,
+        }),
+        maxOutputTokens: 3072,
+        tier: "pro",
+        validate: validateCompactResponse,
+      }),
+    });
+
     await settle(true);
     return NextResponse.json({
-      structure,
-      bodyText: stripEchoedHook(bodyText, hookText),
-      ctaText,
+      structure: guarded.result.structure,
+      bodyText: lengthGuarded.bodyText,
+      ctaText: lengthGuarded.ctaText,
+      ...(lengthGuarded.compacted ? { compacted: true } : {}),
       ...(guarded.warning ? { warning: guarded.warning } : {}),
     });
   } catch (error) {

@@ -1,18 +1,32 @@
 "use client";
 
-// ScriptLibrary — owner-scoped server search and pagination. Rows contain only
-// summary data; choosing one asks the page owner to fetch its full detail.
+// ScriptLibrary v2 — owner-scoped server search and pagination using shadcn
+// Select & DropdownMenu primitives (no native <select> dark-mode glitches or
+// stuck <details> menus). Preserves all race guards & ownership boundaries.
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChevronLeft, ChevronRight, ExternalLink, Loader2, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { trackEvent } from "@/lib/client-telemetry";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-const VIOLET = "#8B5CF6";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { HS_COLOR } from "./hero-script-tokens";
 
 export interface SavedScript {
   id: string;
@@ -141,8 +155,20 @@ interface ScriptLibraryProps {
 
 const LIBRARY_PAGE_SIZE = 20;
 const SEARCH_DELAY_MS = 300;
+const BRAND_ALL_VALUE = "__all__";
 
-export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEditorProject, handoffPending = false, beforeDelete, onDeleted, onStartWriting, activeScriptId, refreshKey, active = true }: ScriptLibraryProps) {
+export function ScriptLibrary({
+  onOpenScript,
+  onOpenEditorProject,
+  onCreateEditorProject,
+  handoffPending = false,
+  beforeDelete,
+  onDeleted,
+  onStartWriting,
+  activeScriptId,
+  refreshKey,
+  active = true,
+}: ScriptLibraryProps) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status, setStatus] = useState<ScriptLibraryQuery["status"]>("all");
@@ -241,12 +267,21 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
 
   const hasFilters = !!debouncedSearch || status !== "all" || brandProfileId !== null;
   const pageCount = Math.max(1, Math.ceil((data?.total ?? 0) / LIBRARY_PAGE_SIZE));
+  const selectedBrandLabel = brandProfileId === null
+    ? "ทุกแบรนด์"
+    : brandProfileId === "none"
+      ? "ไม่ใช้โปรไฟล์"
+      : brandOptions.find((option) => option.id === brandProfileId)?.name ?? "ทุกแบรนด์";
+  const selectedStatusLabel = status === "draft" ? "ร่าง" : status === "sent" ? "ส่งแล้ว" : "ทั้งหมด";
 
   return (
-    <section className="min-w-0 rounded-2xl p-4 sm:p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
-      <div className="mb-4 flex flex-col gap-3">
+    <section
+      className="min-w-0 rounded-2xl p-4 sm:p-5"
+      style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}
+    >
+      <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_13rem_10rem] lg:items-end">
         <div className="relative">
-          <label htmlFor="script-library-search" className="mb-1.5 block text-sm font-medium" style={{ color: "var(--ui-text-primary)" }}>
+          <label htmlFor="script-library-search" className="mb-1.5 block text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>
             ค้นหาสคริปต์
           </label>
           <Search aria-hidden="true" className="pointer-events-none absolute bottom-3 left-3 h-4 w-4" style={{ color: "var(--ui-text-muted)" }} />
@@ -255,46 +290,73 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
             type="search"
             value={search}
             onChange={(event) => { setSearch(event.target.value); setLoading(true); setError(null); }}
-            className="min-h-11 w-full rounded-lg border bg-transparent py-2 pl-9 pr-3 text-base outline-none focus:ring-2"
-            style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)", "--tw-ring-color": VIOLET } as React.CSSProperties}
+            className="min-h-11 w-full rounded-xl border py-2 pl-9 pr-3 text-base outline-none focus:ring-2"
+            style={{
+              borderColor: "var(--ui-card-border)",
+              background: "var(--ui-input-bg)",
+              color: "var(--ui-text-primary)",
+              "--tw-ring-color": HS_COLOR.violet,
+            } as React.CSSProperties}
             placeholder="ค้นหาจากหัวข้อ"
             maxLength={200}
           />
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <label className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>
             โปรไฟล์แบรนด์
-            <select
-              value={brandProfileId ?? ""}
-              onChange={(event) => { setBrandProfileId(event.target.value || null); setPage(1); setLoading(true); setError(null); }}
-              className="mt-1 min-h-11 w-full rounded-lg border bg-transparent px-3 text-base sm:text-sm"
-              style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)" }}
-            >
-              <option value="">ทุกแบรนด์</option>
-              <option value="none">ไม่ใช้โปรไฟล์</option>
-              {brandOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
-            </select>
-          </label>
-          <label className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
+          </span>
+          <Select
+            value={brandProfileId ?? BRAND_ALL_VALUE}
+            onValueChange={(value) => {
+              setBrandProfileId(value === BRAND_ALL_VALUE ? null : value);
+              setPage(1);
+              setLoading(true);
+              setError(null);
+            }}
+          >
+            <SelectTrigger aria-label="กรองตามโปรไฟล์แบรนด์" className="min-h-11 rounded-xl text-sm">
+              <SelectValue>{selectedBrandLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={BRAND_ALL_VALUE}>ทุกแบรนด์</SelectItem>
+              <SelectItem value="none">ไม่ใช้โปรไฟล์</SelectItem>
+              {brandOptions.map((option) => (
+                <SelectItem key={option.id} value={option.id}>{option.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div>
+          <span className="mb-1.5 block text-xs font-medium" style={{ color: "var(--ui-text-secondary)" }}>
             สถานะ
-            <select
-              value={status}
-              onChange={(event) => { setStatus(event.target.value as ScriptLibraryQuery["status"]); setPage(1); setLoading(true); setError(null); }}
-              className="mt-1 min-h-11 w-full rounded-lg border bg-transparent px-3 text-base sm:text-sm"
-              style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)" }}
-            >
-              <option value="all">ทั้งหมด</option>
-              <option value="draft">ร่าง</option>
-              <option value="sent">ส่งแล้ว</option>
-            </select>
-          </label>
+          </span>
+          <Select
+            value={status}
+            onValueChange={(value) => {
+              setStatus(value as ScriptLibraryQuery["status"]);
+              setPage(1);
+              setLoading(true);
+              setError(null);
+            }}
+          >
+            <SelectTrigger aria-label="กรองตามสถานะสคริปต์" className="min-h-11 rounded-xl text-sm">
+              <SelectValue>{selectedStatusLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">ทั้งหมด</SelectItem>
+              <SelectItem value="draft">ร่าง</SelectItem>
+              <SelectItem value="sent">ส่งแล้ว</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
       {error && (
-        <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: "var(--ui-danger, #ef4444)", color: "var(--ui-text-primary)" }}>
+        <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-sm" style={{ borderColor: "var(--ui-danger, #ef4444)", color: "var(--ui-text-primary)" }}>
           <span>โหลดคลังสคริปต์ไม่สำเร็จ</span>
-          <button type="button" onClick={() => { setLoading(true); setError(null); setRetryKey((key) => key + 1); }} className="min-h-11 rounded-lg px-3 font-medium" style={{ color: VIOLET }}>
+          <button type="button" onClick={() => { setLoading(true); setError(null); setRetryKey((key) => key + 1); }} className="min-h-10 rounded-lg px-3 font-medium" style={{ color: HS_COLOR.violet }}>
             ลองอีกครั้ง
           </button>
         </div>
@@ -310,11 +372,11 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
             {hasFilters ? "ไม่พบสคริปต์ที่ตรงกับการค้นหา" : "ยังไม่มีสคริปต์"}
           </p>
           {hasFilters ? (
-            <button type="button" onClick={clearFilters} className="min-h-11 rounded-lg px-4 text-sm font-medium" style={{ color: VIOLET }}>
+            <button type="button" onClick={clearFilters} className="min-h-11 rounded-xl px-4 text-sm font-semibold" style={{ color: HS_COLOR.violet }}>
               ล้างตัวกรอง
             </button>
           ) : (
-            <button type="button" onClick={onStartWriting} className="flex min-h-11 items-center rounded-lg px-4 text-sm font-medium" style={{ color: VIOLET }}>
+            <button type="button" onClick={onStartWriting} className="flex min-h-11 items-center rounded-xl px-4 text-sm font-semibold text-white" style={{ background: HS_COLOR.violetGradient }}>
               เริ่มเขียนสคริปต์
             </button>
           )}
@@ -325,58 +387,91 @@ export function ScriptLibrary({ onOpenScript, onOpenEditorProject, onCreateEdito
             <span>พบ {data.total.toLocaleString("th-TH")} สคริปต์</span>
             {loading && <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> กำลังอัปเดต...</span>}
           </div>
-          <div className="divide-y" style={{ borderColor: "var(--ui-card-border)" }}>
+          <div className="divide-y" style={{ borderColor: "var(--ui-divider)" }}>
             {data.items.map((item) => {
-              const active = item.id === activeScriptId;
+              const isCurrent = item.id === activeScriptId;
               const sent = item.status === "sent";
               return (
                 <article key={item.id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
                   <button
                     type="button"
-                    onClick={() => onOpenScript(item)}
-                    className="min-h-11 min-w-0 rounded-lg px-2 text-left outline-none focus:ring-2"
-                    style={{ background: active ? "rgba(139,92,246,.08)" : "transparent", "--tw-ring-color": VIOLET } as React.CSSProperties}
+                    onClick={() => {
+                      trackEvent("hero_script_script_opened", {
+                        properties: { source: "library", status: item.status, durationSec: item.durationSec },
+                      });
+                      onOpenScript(item);
+                    }}
+                    className="min-h-11 min-w-0 rounded-xl px-2.5 py-1.5 text-left outline-none transition-colors hover:bg-black/5 focus:ring-2 dark:hover:bg-white/5"
+                    style={{ background: isCurrent ? HS_COLOR.violetSoft : "transparent", "--tw-ring-color": HS_COLOR.violet } as React.CSSProperties}
                   >
                     <span className="line-clamp-2 break-words text-base font-medium" style={{ color: "var(--ui-text-primary)" }}>{item.topic}</span>
                     <span className="mt-1 block text-xs" style={{ color: "var(--ui-text-muted)" }}>
                       {item.brandName ?? "ไม่ใช้โปรไฟล์"} · {item.durationSec} วินาที · {formatDate(item.updatedAt)}
                     </span>
                   </button>
-                  <span className="shrink-0 self-start rounded-full px-2 py-1 text-xs sm:self-auto" style={{ background: sent ? "rgba(139,92,246,.15)" : "var(--ui-btn-bg)", color: sent ? VIOLET : "var(--ui-text-muted)" }}>
+
+                  <span
+                    className="shrink-0 self-start rounded-full px-2.5 py-1 text-xs font-medium sm:self-auto"
+                    style={{
+                      background: sent ? HS_COLOR.ctaBg : "var(--ui-badge-neutral-bg)",
+                      color: sent ? HS_COLOR.cta : "var(--ui-text-muted)",
+                    }}
+                  >
                     {sent ? "ส่งแล้ว" : "ร่าง"}
                   </span>
+
                   <div className="col-span-2 flex flex-wrap items-center justify-end gap-1 sm:col-span-1 sm:flex-nowrap">
                     {sent && item.editorProjectAvailable && item.editorProjectId ? (
                       <button
                         type="button"
                         onClick={() => onOpenEditorProject?.(item)}
-                        className="flex min-h-11 items-center gap-1 rounded-lg px-3 text-xs font-medium"
-                        style={{ color: VIOLET }}
+                        className="flex min-h-11 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                        style={{ color: HS_COLOR.violet }}
                       >
                         เปิดงานตัดต่อเดิม <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
                     ) : sent ? (
                       <span className="px-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>งานตัดต่อเดิมไม่พร้อมใช้งาน</span>
                     ) : null}
-                    <details className="relative">
-                      <summary className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-lg hover:bg-black/5 focus:ring-2 dark:hover:bg-white/5" aria-label={`ตัวเลือก ${item.topic}`} style={{ "--tw-ring-color": VIOLET } as React.CSSProperties}>
-                        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                      </summary>
-                      <div className="absolute right-0 z-20 mt-1 min-w-48 rounded-lg border p-1 shadow-lg" style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}>
-                        <button type="button" disabled={creatingId !== null || handoffPending || !onCreateEditorProject} onClick={() => { void createEditorProject(item); }} className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm disabled:opacity-50">
+
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={`ตัวเลือก ${item.topic}`}
+                          className="flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 dark:hover:bg-white/5"
+                          style={{ color: "var(--ui-text-secondary)", "--tw-ring-color": HS_COLOR.violet } as React.CSSProperties}
+                        >
+                          <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        className="min-w-48 border"
+                        style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}
+                      >
+                        <DropdownMenuItem
+                          disabled={creatingId !== null || handoffPending || !onCreateEditorProject}
+                          onSelect={() => { void createEditorProject(item); }}
+                          className="min-h-10 cursor-pointer text-sm"
+                        >
                           {creatingId === item.id ? "กำลังสร้าง…" : "สร้างงานตัดต่อใหม่"}
-                        </button>
-                        <button type="button" onClick={() => setDeleteItem(item)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm">
-                          <Trash2 className="h-4 w-4" aria-hidden="true" /> ลบสคริปต์
-                        </button>
-                      </div>
-                    </details>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => setDeleteItem(item)}
+                          className="min-h-10 cursor-pointer text-sm text-red-500 focus:text-red-500"
+                        >
+                          <Trash2 className="mr-1 h-4 w-4" aria-hidden="true" /> ลบสคริปต์
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </article>
               );
             })}
           </div>
-          <nav aria-label="หน้าคลังสคริปต์" className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{ borderColor: "var(--ui-card-border)" }}>
+
+          <nav aria-label="หน้าคลังสคริปต์" className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{ borderColor: "var(--ui-divider)" }}>
             <button type="button" disabled={page <= 1 || loading} onClick={() => { setLoading(true); setError(null); setPage((value) => Math.max(1, value - 1)); }} className="flex min-h-11 items-center gap-1 rounded-lg px-3 text-sm disabled:opacity-40">
               <ChevronLeft className="h-4 w-4" aria-hidden="true" /> ก่อนหน้า
             </button>

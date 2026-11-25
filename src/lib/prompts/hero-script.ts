@@ -21,6 +21,7 @@ import {
   STORY_STRUCTURES,
   RETENTION_RULES,
   getCtaStyle,
+  getStoryStructure,
 } from "@/lib/viral-frameworks";
 
 /**
@@ -208,14 +209,72 @@ export function buildGeneratePrompt(params: {
   wordBudget: number;
   hookText: string;
   ctaStyle: string;
+  preferredStructure?: string | null;
   profile?: BrandProfileForPrompt | null;
 }): string {
-  const { hookText, ctaStyle } = params;
+  const { hookText, ctaStyle, preferredStructure } = params;
+  const chosenStructure = preferredStructure ? getStoryStructure(preferredStructure) : undefined;
+  const structureInstruction = chosenStructure
+    ? `ใช้โครงเรื่อง ${chosenStructure.key} — ${chosenStructure.name} (${chosenStructure.structure}) แล้วเขียนเนื้อหา (body) ต่อจาก hook และปิดด้วย CTA สไตล์ ${ctaStyleLabel(ctaStyle)}`
+    : `เลือกโครงเรื่องที่เหมาะที่สุด 1 โครงจากรายการข้างบน แล้วเขียนเนื้อหา (body) ต่อจาก hook และปิดด้วย CTA สไตล์ ${ctaStyleLabel(ctaStyle)}`;
   return `${buildScriptContext(params)}
 Hook ที่ผู้ใช้เลือก (ห้ามแก้แม้แต่คำเดียว จะถูกใช้เป็นบรรทัดแรกเสมอ): "${hookText}"
-เลือกโครงเรื่องที่เหมาะที่สุด 1 โครงจากรายการข้างบน แล้วเขียนเนื้อหา (body) ต่อจาก hook และปิดด้วย CTA สไตล์ ${ctaStyleLabel(ctaStyle)}
-กติกา body: 1 บรรทัด = 1 ประโยคที่พูดจริง, ทำตาม RETENTION_RULES ทุกข้อ, งบคำรวม (hook+body+cta) อยู่ในกรอบ
+${structureInstruction}
+กติกา body: 1 บรรทัด = 1 ประโยคที่พูดจริง, ทำตาม RETENTION_RULES ทุกข้อ, งบคำรวม (hook+body+cta) อยู่ในกรอบ ห้ามเขียนยืดเกินงบคำ
 ตอบเป็น JSON เท่านั้น: {"structure":"<key>","bodyText":"บรรทัดละประโยค\\nคั่นด้วย \\\\n","ctaText":"..."}`;
+}
+
+/**
+ * QUICK GENERATE (pro) — 1-click fast path: generates the recommended Hook +
+ * 4 distinct alternative Hooks (5 distinct HOOK_FORMULAS total) + full body +
+ * CTA in a single LLM round-trip so the user gets an editable script right away
+ * and can 1-click swap among the 5 hooks afterward.
+ */
+export function buildQuickGeneratePrompt(params: {
+  topic: string;
+  durationSec: number;
+  wordBudget: number;
+  ctaStyle: string;
+  preferredStructure?: string | null;
+  profile?: BrandProfileForPrompt | null;
+}): string {
+  const { ctaStyle, preferredStructure } = params;
+  const chosenStructure = preferredStructure ? getStoryStructure(preferredStructure) : undefined;
+  const structureInstruction = chosenStructure
+    ? `ใช้โครงเรื่อง ${chosenStructure.key} — ${chosenStructure.name} (${chosenStructure.structure})`
+    : "เลือกโครงเรื่องที่เหมาะที่สุด 1 โครงจากรายการข้างบน";
+  return `${buildScriptContext(params)}
+${renderHookFormulasBlock()}
+งานของคุณ (สร้างจบในรอบเดียว):
+1. เลือกสูตร hook 5 สูตรที่ไม่ซ้ำกันจากรายการข้างบน: เลือก 1 อันที่แรงที่สุดเป็น hook หลัก (hookFormula + hookText) และอีก 4 อันเป็น alternativeHooks (สูตรต้องไม่ซ้ำกับ hook หลักและไม่ซ้ำกันเอง แต่ละอันยาวไม่เกิน 20 คำ ภาษาพูด ห้ามคำทักทาย)
+2. ${structureInstruction} แล้วเขียนเนื้อหา (bodyText) ต่อจาก hookText (ห้ามซ้ำข้อความ hookText ในบรรทัดแรกของ bodyText) และปิดด้วย CTA สไตล์ ${ctaStyleLabel(ctaStyle)}
+3. กติกา bodyText: 1 บรรทัด = 1 ประโยคที่พูดจริง, ทำตาม RETENTION_RULES ทุกข้อ, งบคำรวม (hookText + bodyText + ctaText) ต้องอยู่ใกล้ ~${params.wordBudget} คำ (±15%) ห้ามเขียนยืดเกินกรอบ
+ตอบเป็น JSON เท่านั้น: {"hookFormula":"<key>","hookText":"...","alternativeHooks":[{"formula":"<key>","text":"..."}],"structure":"<key>","bodyText":"บรรทัดละประโยค\\nคั่นด้วย \\\\n","ctaText":"..."}`;
+}
+
+/**
+ * COMPACT (pro) — tightens an over-budget script down to the target word budget
+ * while preserving the user's Hook and key punchlines. Used both by the server
+ * >25% auto-compact guard and by the editor's 1-click compact button.
+ */
+export function buildCompactScriptPrompt(params: {
+  topic: string;
+  durationSec: number;
+  wordBudget: number;
+  current: { hookText: string; bodyText: string; ctaText: string };
+  ctaStyle: string;
+  profile?: BrandProfileForPrompt | null;
+}): string {
+  const { current, durationSec, wordBudget, ctaStyle } = params;
+  return `${buildScriptContext(params)}
+${renderCurrentScriptBlock(current)}
+งานของคุณ: กระชับเฉพาะเนื้อหา (bodyText) และ CTA (ctaText) ให้พูดจบได้จริงใน ${durationSec} วินาที โดยคง Hook เดิมไว้ไม่แก้
+กติกาเข้มงวด:
+- ตัดคำฟุ่มเฟือย คำซ้ำ และประโยคอธิบายยืดยาวออก แต่เก็บใจความหลักและจุดพีคไว้ครบ
+- จำนวนคำรวมทั้งคลิป (Hook เดิม + bodyText ใหม่ + ctaText ใหม่) ต้องอยู่ภายใน ~${wordBudget} คำ (±15%)
+- 1 บรรทัด = 1 ประโยคที่พูดจริง, ภาษาพูด, ทำตาม RETENTION_RULES ทุกข้อ, ห้ามซ้ำข้อความ Hook ในบรรทัดแรกของ bodyText
+- CTA สไตล์ ${ctaStyleLabel(ctaStyle)} กระชับไม่เกิน 2 ประโยค
+ตอบเป็น JSON เท่านั้น: {"bodyText":"บรรทัดละประโยค\\nคั่นด้วย \\\\n","ctaText":"..."}`;
 }
 
 /** The current script, so a regenerate knows what it must differ from. */

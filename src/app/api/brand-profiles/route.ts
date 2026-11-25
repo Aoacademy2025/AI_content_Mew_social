@@ -20,6 +20,7 @@ export async function GET() {
     const profiles = await prisma.brandProfile.findMany({
       where: { userId: authUser.id, archivedAt: null },
       orderBy: { createdAt: "desc" },
+      include: { _count: { select: { revisions: true } } },
     });
 
     return NextResponse.json(profiles.map(toBrandProfileDTO));
