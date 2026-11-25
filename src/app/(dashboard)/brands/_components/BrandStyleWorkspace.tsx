@@ -6,7 +6,6 @@ import {
   ChevronDown,
   FileText,
   Film,
-  ImageOff,
   Loader2,
   Mic,
   Palette,
@@ -32,13 +31,10 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
-import { stylePackSample } from "@/lib/style-pack-samples";
 import { MUSIC_MOODS, stylePack, type MusicMood } from "@/lib/style-pack-catalog";
 import {
-  DEFAULT_THEME_BRAND_CI,
   isMotionMascotId,
   isMotionThemeId,
-  isNewMotionTheme,
   type MotionMascotId,
   type MotionThemeId,
 } from "@/lib/motion-broll-catalog";
@@ -50,6 +46,7 @@ import { GeminiVoiceStyleSelect } from "@/components/gemini-voice-style-select";
 import { BrandBasicsForm } from "./BrandBasicsForm";
 import { BrandColorPaletteEditor } from "./BrandColorPaletteEditor";
 import { BrandLiveStage } from "./BrandLiveStage";
+import { MotionThemeCardGrid, StylePackPosterGrid } from "./BrandVisualCards";
 import { BrandVoicePicker } from "./BrandVoicePicker";
 import { VisualFormatPicker } from "./VisualFormatPicker";
 import {
@@ -57,8 +54,6 @@ import {
   BRAND_SUBTITLE_QUICK_STYLES,
   HEADLINE_HOOK_PRESET_META,
   MOTION_MASCOT_META,
-  MOTION_THEME_DISPLAY_ORDER,
-  MOTION_THEME_META,
   MUSIC_MOOD_LABELS,
   TTS_SPEED_OPTIONS,
   VISUAL_MODE_OPTIONS,
@@ -76,10 +71,12 @@ type NicheIdea = {
 };
 
 const STARTER_PACK_IDS: ReadonlyArray<BrandPayload["visual"]["stylePackId"]> = [
-  "life-drama",
-  "finance-clear",
-  "health-simple",
+  "shop-review",
+  "ai-tech-doc",
+  "true-crime",
   "comic-story",
+  "listicle-fast",
+  "life-drama",
 ];
 
 const NO_SUBTITLE_PRESET = "__clip-default__";
@@ -332,10 +329,16 @@ export function BrandStyleWorkspace({
       ? draft.subtitle.config.motionMascot
       : "stickman-scarf";
 
-  const starters = [...STARTER_PACK_IDS, selectedPack?.id];
   const visiblePacks = showAllPacks
     ? library.stylePacks
-    : library.stylePacks.filter((item) => starters.includes(item.id));
+    : [
+        ...STARTER_PACK_IDS
+          .map((id) => library.stylePacks.find((item) => item.id === id))
+          .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+        ...library.stylePacks.filter(
+          (item) => item.id === selectedPack?.id && !STARTER_PACK_IDS.includes(item.id),
+        ),
+      ];
 
   const subtitleConfig = normalizeSubtitleStylePresetConfig(draft.subtitle.config)
     ?? fullSelectedPack?.subtitle
@@ -710,57 +713,22 @@ export function BrandStyleWorkspace({
               ) : null}
             </section>
 
-            {/* 1B: Motion Themes & Mascots OR Style Packs Grid */}
+            {/* 1B: Motion Themes & Mascots OR Video Style Poster Grid */}
             {isMotionMode ? (
               <section className="space-y-4">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <p className="text-sm font-semibold text-foreground">เลือกธีม Motion B-Roll (6 ธีม)</p>
-                  <span className="text-xs text-muted-foreground">ดูผลสดบนจอพรีวิวทันที · 0 เครดิต</span>
+                  <span className="text-xs text-muted-foreground">ชี้หรือกดเพื่อดูภาพเคลื่อนไหว · 0 เครดิต</span>
                 </div>
-                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-                  {MOTION_THEME_DISPLAY_ORDER.map((themeId) => {
-                    const meta = MOTION_THEME_META[themeId];
-                    const ci = DEFAULT_THEME_BRAND_CI[themeId];
-                    const selected = activeMotionTheme === themeId;
-                    return (
-                      <button
-                        key={themeId}
-                        type="button"
-                        disabled={disabled}
-                        aria-pressed={selected}
-                        onClick={() => selectMotionTheme(themeId)}
-                        className={cn(
-                          "flex min-h-[88px] flex-col items-start justify-between gap-2 rounded-xl border p-3.5 text-left transition-all",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 disabled:opacity-50",
-                          selected
-                            ? "border-violet-500 bg-violet-500/10 ring-1 ring-violet-500/35"
-                            : "border-border bg-card hover:border-violet-500/40",
-                        )}
-                      >
-                        <div className="flex w-full items-center justify-between gap-2">
-                          <span className="truncate text-sm font-semibold text-foreground">{meta.shortLabel}</span>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            {isNewMotionTheme(themeId) ? (
-                              <span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-violet-300">
-                                ใหม่
-                              </span>
-                            ) : null}
-                            <span className="flex items-center gap-1" aria-hidden="true">
-                              {[ci.backgroundColor, ci.primaryColor, ci.accentColor].map((hex, i) => (
-                                <span
-                                  key={`${themeId}-${i}`}
-                                  className="h-2.5 w-2.5 rounded-full border border-white/25"
-                                  style={{ backgroundColor: hex }}
-                                />
-                              ))}
-                            </span>
-                          </div>
-                        </div>
-                        <span className="text-xs leading-5 text-muted-foreground">{meta.tagline}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <MotionThemeCardGrid
+                  activeTheme={activeMotionTheme}
+                  disabled={disabled}
+                  palette={draft.visual.palette}
+                  fontFamily={subtitleConfig.fontFamily}
+                  accentColor={subtitleConfig.accentColor}
+                  mascot={activeMotionMascot}
+                  onSelect={selectMotionTheme}
+                />
 
                 {/* 4 Mascots */}
                 <div className="space-y-2">
@@ -795,9 +763,14 @@ export function BrandStyleWorkspace({
               <section className="space-y-3">
                 <fieldset disabled={disabled} className="min-w-0">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <legend className="text-sm font-semibold text-foreground">
-                      ชุดสไตล์เริ่มต้น ({showAllPacks ? `ทั้งหมด ${library.stylePacks.length}` : "แนะนำ 4 สไตล์"})
-                    </legend>
+                    <div>
+                      <legend className="text-sm font-semibold text-foreground">
+                        ชุดสไตล์วิดีโอ ({showAllPacks ? `ทั้งหมด ${library.stylePacks.length} สไตล์` : "แนะนำ 6 สไตล์ฮิต"})
+                      </legend>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        รวมแนวภาพ โทนสี ซับไตเติล และจังหวะตัดต่อตามเทรนด์คลิปสั้น
+                      </p>
+                    </div>
                     <Button
                       type="button"
                       variant="ghost"
@@ -806,69 +779,17 @@ export function BrandStyleWorkspace({
                       onClick={() => setShowAllPacks((prev) => !prev)}
                       className="h-9 px-2.5 text-xs text-violet-400 hover:text-violet-300"
                     >
-                      {showAllPacks ? "แสดงสไตล์แนะนำ" : `ดูสไตล์ทั้งหมด (${library.stylePacks.length})`}
+                      {showAllPacks ? "แสดง 6 สไตล์ฮิต" : `ดูสไตล์ทั้งหมด (${library.stylePacks.length})`}
                     </Button>
                   </div>
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                    {visiblePacks.map((item) => {
-                      const checked = item.id === selectedPack?.id;
-                      const packSample = stylePackSample(item.id);
-                      const thumbUrl = packSample?.imageUrl && !failedThumbIds[item.id] ? packSample.imageUrl : null;
-                      return (
-                        <label
-                          key={item.id}
-                          className={cn(
-                            "flex min-h-[78px] cursor-pointer items-center gap-3 rounded-xl border p-3 transition-all",
-                            checked
-                              ? "border-violet-500 bg-violet-500/10 ring-1 ring-violet-500/35"
-                              : "border-border bg-card hover:border-violet-500/40",
-                            disabled && "cursor-not-allowed opacity-60",
-                          )}
-                        >
-                          <input
-                            type="radio"
-                            name="brand-setup-style"
-                            value={item.id}
-                            checked={checked}
-                            onChange={() => onSelect(item.id)}
-                            className="sr-only"
-                          />
-                          <div className="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
-                            {thumbUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={thumbUrl}
-                                alt=""
-                                className="h-full w-full object-cover"
-                                onError={() => setFailedThumbIds((prev) => ({ ...prev, [item.id]: true }))}
-                              />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                                <ImageOff className="h-3.5 w-3.5" />
-                              </div>
-                            )}
-                          </div>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-center justify-between gap-2">
-                              <span className="truncate text-sm font-semibold text-foreground">{item.thaiLabel}</span>
-                              <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
-                                {item.palette.map((hex, i) => (
-                                  <span
-                                    key={`${item.id}-${i}`}
-                                    className="h-2.5 w-2.5 rounded-full border border-white/25"
-                                    style={{ backgroundColor: hex }}
-                                  />
-                                ))}
-                              </span>
-                            </span>
-                            <span className="mt-1 line-clamp-2 block text-xs leading-4 text-muted-foreground">
-                              {item.tagline}
-                            </span>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  <StylePackPosterGrid
+                    packs={visiblePacks}
+                    selectedId={selectedPack?.id ?? null}
+                    disabled={disabled}
+                    failedThumbIds={failedThumbIds}
+                    onImageError={(id) => setFailedThumbIds((prev) => ({ ...prev, [id]: true }))}
+                    onSelect={onSelect}
+                  />
                 </fieldset>
 
                 <div className="flex flex-wrap items-center gap-2">

@@ -1,7 +1,7 @@
 import type { BrandDefaultBrollSource } from "@/lib/brand-profile-seed";
 import type { HeadlineHookPreset } from "@/lib/headline-hook";
 import type { MotionMascotId, MotionThemeId } from "@/lib/motion-broll-catalog";
-import type { MusicMood } from "@/lib/style-pack-catalog";
+import { ACTIVE_STYLE_PACK_IDS, type MusicMood, type PacingLevel, type StylePackId } from "@/lib/style-pack-catalog";
 import type { SubPreset, SubTextEffect } from "@/app/(dashboard)/video-editor/_components/types";
 
 export const MOTION_THEME_META: Record<
@@ -76,7 +76,7 @@ export const VISUAL_MODE_OPTIONS: readonly {
   {
     id: "stock",
     title: "สต็อก & AutoMix",
-    badge: "10 ชุดสไตล์",
+    badge: `${ACTIVE_STYLE_PACK_IDS.length} ชุดสไตล์`,
     desc: "วิดีโอสต็อกฟรี หรือผสมภาพ AI อัตโนมัติ",
   },
   {
@@ -220,6 +220,87 @@ export const BRAND_SUBTITLE_FONTS = [
   { value: "Mitr", label: "Mitr", note: "โค้ง เป็นกันเอง" },
   { value: "Noto Sans Thai", label: "Noto Sans", note: "เรียบมาตรฐาน" },
 ] as const;
+
+export const PACING_BADGE_LABELS: Record<PacingLevel, string> = {
+  fast: "ตัดไว",
+  normal: "จังหวะกำลังดี",
+  slow: "เนิบซึ้ง",
+};
+
+/** Visual metadata rendered on each Video Style Poster Card so creators immediately
+ * recognize the video genre, subtitle energy, and trending status. */
+export const STYLE_PACK_CARD_META: Partial<
+  Record<StylePackId, { badge?: string; badgeTone?: "trending" | "new" | "popular"; sampleCaption: string; accentWord: string }>
+> = {
+  "shop-review": {
+    badge: "ฮิต · ปักตะกร้า",
+    badgeTone: "trending",
+    sampleCaption: "ของมันต้องมี",
+    accentWord: "คุ้มจริง!",
+  },
+  "listicle-fast": {
+    badge: "ไวรัล · ตัดไว",
+    badgeTone: "trending",
+    sampleCaption: "3 ข้อลับที่",
+    accentWord: "คนพลาด",
+  },
+  "ai-tech-doc": {
+    badge: "ใหม่ · เทรนด์ AI",
+    badgeTone: "new",
+    sampleCaption: "AI เปลี่ยนโลก",
+    accentWord: "ในปีนี้",
+  },
+  "true-crime": {
+    badge: "ใหม่ · ยอดวิวพุ่ง",
+    badgeTone: "new",
+    sampleCaption: "เงื่อนงำลับ",
+    accentWord: "คืนเกิดเหตุ",
+  },
+  "self-growth": {
+    badge: "ใหม่ · ลงทุกวัน",
+    badgeTone: "new",
+    sampleCaption: "เริ่มวันนี้",
+    accentWord: "อย่ารอพร้อม",
+  },
+  "comic-story": {
+    badge: "แชร์สูง",
+    badgeTone: "popular",
+    sampleCaption: "จุดหักมุมที่",
+    accentWord: "ไม่มีใครคาด",
+  },
+  "thai-ghost": {
+    badge: "ดูจนจบสูง",
+    badgeTone: "popular",
+    sampleCaption: "เสียงเคาะตอน",
+    accentWord: "ตีสาม...",
+  },
+  "life-drama": {
+    badge: "ยอดนิยม",
+    badgeTone: "popular",
+    sampleCaption: "เรื่องจริงที่",
+    accentWord: "กระทบใจ",
+  },
+  "finance-clear": {
+    sampleCaption: "สูตรออมเงิน",
+    accentWord: "+300%",
+  },
+  "news-fast": {
+    sampleCaption: "สรุปด่วนใน",
+    accentWord: "30 วิ",
+  },
+  "health-simple": {
+    sampleCaption: "แค่ปรับเรื่องนี้",
+    accentWord: "หลับสนิท",
+  },
+  "thai-history": {
+    sampleCaption: "บันทึกเก่าที่",
+    accentWord: "หลายคนไม่รู้",
+  },
+  "premium-product": {
+    sampleCaption: "นิยามใหม่ของ",
+    accentWord: "ความเรียบหรู",
+  },
+};
 
 export const TTS_SPEED_OPTIONS = [
   { value: 0.9, label: "0.9x", note: "ช้าลง" },

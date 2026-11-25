@@ -39,12 +39,16 @@ try {
     if ([390, 1280].includes(width)) await page.screenshot({ path: `artifacts/brands-ux-qa/live-chooser-${width}.png`, fullPage: true });
   }
 
+  await page.setViewport({ width: 1280, height: 1180 });
+  await page.screenshot({ path: "artifacts/brands-ux-qa/live-chooser-1280-tall.png", fullPage: true });
+
   // Test Motion B-Roll mode live canvas + 6 themes + 4 mascots, then return to Stock mode
   await button("Motion B-Roll").click();
   await page.waitForSelector('aside canvas');
   await page.screenshot({ path: "artifacts/brands-ux-qa/live-motion-1280.png", fullPage: true });
   await button("สต็อก & AutoMix").click();
   await page.waitForSelector('input[name="brand-setup-style"]');
+  await page.setViewport({ width: 1280, height: 844 });
 
   // Test 4-tab switching & contextual progressive disclosure
   const visualAdvOpen = () => page.$eval('[aria-controls="brand-advanced-visual"]', (b) => b.getAttribute("aria-expanded"));

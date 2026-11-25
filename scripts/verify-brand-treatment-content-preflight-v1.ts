@@ -57,6 +57,14 @@ async function main() {
     stylePackForRecommendation({
       treatmentPresetId: "modern-business-technology",
       visualFormatId: "cinematic-realism",
+    })?.id,
+    "ai-tech-doc",
+    "modern-business-technology maps to its active Style Pack",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "unmapped-treatment",
+      visualFormatId: "cinematic-realism",
     }),
     null,
     "a treatment with no ACTIVE Style Pack suggests nothing",
@@ -260,13 +268,13 @@ async function main() {
   );
   assert.equal(
     await suggestedPackFor({
-      title: "No active pack",
+      title: "AI tech explainer",
       text: "ระบบหลังบ้านของแอปทำงานอย่างไร",
       suggestedVisualFormatId: "cinematic-realism",
       rankedTreatmentPresetIds: ["modern-business-technology", "expert-clarity", "practical-documentary"],
     }),
-    null,
-    "a first-ranked treatment with no ACTIVE Style Pack suggests nothing",
+    "ai-tech-doc",
+    "a first-ranked modern-business-technology treatment maps to ai-tech-doc",
   );
   assert.doesNotMatch(
     capturedPrompt,

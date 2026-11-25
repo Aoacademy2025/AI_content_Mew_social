@@ -184,7 +184,7 @@ export function BrandLiveStage({
     let raf = 0;
     const startedAt = performance.now();
     const tick = (now: number) => {
-      const progress = (((now - startedAt) / 1000) % 3.6) / 3.6;
+      const progress = (0.58 + (now - startedAt) / 3600) % 1;
       paintMotionBrollCanvas(desktopCanvas, motionConfig, progress);
       paintMotionBrollCanvas(mobileCanvas, motionConfig, progress);
       raf = requestAnimationFrame(tick);

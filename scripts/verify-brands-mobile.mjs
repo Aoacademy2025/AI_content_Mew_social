@@ -88,10 +88,20 @@ function previewBatch({ failing = false } = {}) {
 
 draft.visual.stylePackId = "life-drama";
 draft.visual.defaultBrollSource = "stock";
+const motionDraft = {
+  ...draft,
+  visual: {
+    ...draft.visual,
+    defaultBrollSource: "motion",
+    motionThemeId: "apple-bento-glass",
+    motionMascot: "stickman-scarf",
+  },
+};
 const source = read("src/app/(dashboard)/brands/_components/BrandLibraryClient.tsx");
 const inner = source.match(/<div className="(mx-auto max-w-\[1200px\][^"]*)"/)[1];
 const bodies = [
   h(BrandStyleWorkspace, { draft, library, disabled: false, onSelect: noop, onFormatChange: noop }),
+  h(BrandStyleWorkspace, { draft: motionDraft, library, disabled: false, onSelect: noop, onFormatChange: noop }),
   h(BrandLibraryOverview, { library: { ...library, profiles: [profile("p1", "Mew Social"), profile("p2", "แบรนด์ทดสอบชื่อยาวมากสำหรับหน้าจอมือถือ", { frozen: true })] }, busy: false, onNew: noop, onOpen: noop, onUse: noop, onArchive: noop }),
   h(BrandColorPaletteEditor, { palette: draft.visual.palette, disabled: false, onChange: noop }),
   ...[false, true].map(failing => h("section", { "data-preview": true }, h(BrandLookPreviewPanel, { preview: previewBatch({ failing }), previewGenerationCount: 2, allowance: null, imageAccess: failing ? { canUse: false, reason: "payment_required", upgradeUrl: "/pricing" } : library.imageAccess, canPublish: true, busy: null, disabled: false, onPreview: noop, onReroll: noop }))),
@@ -123,13 +133,17 @@ try {
     const where = `fixture ${fixture} at ${width}px, root text ${fontSize}px`;
     assert.equal(found.overflow, false, `${where}: no horizontal overflow: ${JSON.stringify(found.overflowingElements)}`);
     if (fixture === 0) {
-      assert.equal(found.radios.length, 4, `${where}: four starting choices (drama, finance, health, comic)`);
+      assert.equal(found.radios.length, 6, `${where}: six trending starting choices (shop-review, ai-tech-doc, true-crime, comic-story, listicle-fast, life-drama)`);
       assert.equal(found.radios.filter(r => r.checked).length, 1, `${where}: one selected default`);
       assert.ok(found.radios.every(r => r.height >= 44), `${where}: radio touch targets >= 44px`);
       assert.equal(found.tabs.length, 4, `${where}: 4 studio tabs`);
       assert.ok(found.tabs.every(t => t.height >= 44), `${where}: tab touch targets >= 44px`);
       if (width < 1024) assert.ok(found.workspace.asideTop < found.workspace.optionsTop, `${where}: live stage first on mobile`);
       else assert.ok(found.workspace.asideLeft > found.workspace.optionsLeft, `${where}: adjacent desktop live stage`);
+    }
+    if (fixture === 1) {
+      assert.equal(found.tabs.length, 4, `${where}: Motion mode studio tabs`);
+      assert.ok(found.tabs.every(t => t.height >= 44), `${where}: Motion mode tab touch targets >= 44px`);
     }
     if (found.preview.length) {
       const first = Math.min(...found.preview.map(t => t.top));
