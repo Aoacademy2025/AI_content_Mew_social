@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { resolveVideoDisplayName, resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import {
+  buildHeroSocialHandoffUrl,
   buildSocialPostCaptionPack,
   HERO_AI_SOCIAL_SCHEDULER_URL,
 } from "@/lib/social-post-handoff";
@@ -810,16 +811,24 @@ function VideoCard({
             <button
               type="button"
               aria-label="ตั้งเวลาโพสต์ลงโซเชียล"
-              title="คัดลอกแคปชัน & เปิดหน้าตั้งเวลาโพสต์ (Hero AI)"
+              title="ส่งวิดีโอและแคปชันไปยังหน้าตั้งเวลาโพสต์ (Hero AI)"
               onClick={(e) => {
                 e.stopPropagation();
-                const pack = buildSocialPostCaptionPack({
-                  title: video.project?.title,
+                const handoffInput = {
+                  videoUrl: downloadSrc,
+                  title: video.project?.title || title,
+                  headline: video.content?.headline,
                   script: video.script,
-                });
+                };
+                const pack = buildSocialPostCaptionPack(handoffInput);
+                const handoffUrl = buildHeroSocialHandoffUrl(handoffInput);
                 void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
-                toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI");
-                window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+                toast.success(
+                  handoffUrl !== HERO_AI_SOCIAL_SCHEDULER_URL
+                    ? "ส่งวิดีโอและแคปชันไปยังหน้าตั้งเวลาโพสต์ Hero AI แล้ว"
+                    : "คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI",
+                );
+                window.open(handoffUrl, "_blank", "noopener,noreferrer");
               }}
               className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
               style={{ background: "rgba(139,92,246,.35)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
@@ -888,13 +897,21 @@ function VideoCard({
             type="button"
             aria-label="ตั้งเวลาโพสต์ลงโซเชียล"
             onClick={() => {
-              const pack = buildSocialPostCaptionPack({
-                title: video.project?.title,
+              const handoffInput = {
+                videoUrl: downloadSrc,
+                title: video.project?.title || title,
+                headline: video.content?.headline,
                 script: video.script,
-              });
+              };
+              const pack = buildSocialPostCaptionPack(handoffInput);
+              const handoffUrl = buildHeroSocialHandoffUrl(handoffInput);
               void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
-              toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI");
-              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+              toast.success(
+                handoffUrl !== HERO_AI_SOCIAL_SCHEDULER_URL
+                  ? "ส่งวิดีโอและแคปชันไปยังหน้าตั้งเวลาโพสต์ Hero AI แล้ว"
+                  : "คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI",
+              );
+              window.open(handoffUrl, "_blank", "noopener,noreferrer");
             }}
             className="flex h-11 w-11 items-center justify-center rounded-full text-white"
             style={{ background: "rgba(139,92,246,.45)", border: `1px solid ${VIOLET_TILE_BORDER}` }}

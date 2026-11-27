@@ -19,9 +19,12 @@ import {
 import { isActiveStylePackId } from "../src/lib/style-pack-catalog";
 import { isMotionThemeId } from "../src/lib/motion-broll-catalog";
 import {
+  buildHeroSocialHandoffUrl,
   buildSocialPostCaptionPack,
   buildWeeklySeriesHref,
   HERO_AI_SOCIAL_SCHEDULER_URL,
+  HERO_AI_VIDEO_HANDOFF_URL,
+  resolveStudioHandoffVideoUrl,
 } from "../src/lib/social-post-handoff";
 import { alignTranscriptWordsToSourceDetailed } from "../src/lib/mcp/subtitle-quality";
 import { buildPartialAlignmentClock } from "../src/lib/mcp/partial-alignment";
@@ -191,14 +194,75 @@ async function main() {
       "HERO_AI_SOCIAL_SCHEDULER_URL targets app.heroaiengine.com with attribution",
       HERO_AI_SOCIAL_SCHEDULER_URL.startsWith("https://app.heroaiengine.com/?utm_source=hero_studio"),
     );
+    const directUrlRaw = buildHeroSocialHandoffUrl({
+      videoUrl: "/api/renders/export-hero98.mp4",
+      title: "โปรเจกต์ทดสอบ",
+      headline: "3 เทคนิคปิดการขายไว",
+      script: "3 เทคนิคปิดการขายไว\nข้อแรก ตอบแชตให้เร็วภายใน 5 นาที\nข้อสอง สรุปราคาให้ชัดเจน",
+      durationSec: 42.6,
+    });
+    const directParsed = new URL(directUrlRaw);
+    check(
+      "buildHeroSocialHandoffUrl resolves relative /api/renders/... to studio.heroaiengine.com and sets metadata",
+      directParsed.origin + directParsed.pathname === HERO_AI_VIDEO_HANDOFF_URL
+        && directParsed.searchParams.get("videoUrl") === "https://studio.heroaiengine.com/api/renders/export-hero98.mp4"
+        && directParsed.searchParams.get("headline") === "3 เทคนิคปิดการขายไว"
+        && directParsed.searchParams.get("title") === "โปรเจกต์ทดสอบ"
+        && directParsed.searchParams.get("durationSec") === "43"
+        && (directParsed.searchParams.get("caption") ?? "").includes("#HeroAI"),
+      directUrlRaw,
+    );
+    check(
+      "resolveStudioHandoffVideoUrl accepts media.heroaiengine.com HTTPS renders",
+      resolveStudioHandoffVideoUrl("https://media.heroaiengine.com/renders/clip-1.mp4#t=0.1")
+        === "https://media.heroaiengine.com/renders/clip-1.mp4",
+    );
+    check(
+      "buildHeroSocialHandoffUrl safely falls back on empty, insecure, external-host, or non-render URLs",
+      buildHeroSocialHandoffUrl({ videoUrl: "" }) === HERO_AI_SOCIAL_SCHEDULER_URL
+        && buildHeroSocialHandoffUrl({ videoUrl: "http://studio.heroaiengine.com/api/renders/a.mp4" }) === HERO_AI_SOCIAL_SCHEDULER_URL
+        && buildHeroSocialHandoffUrl({ videoUrl: "https://evil.example.com/api/renders/a.mp4" }) === HERO_AI_SOCIAL_SCHEDULER_URL
+        && buildHeroSocialHandoffUrl({ videoUrl: "//evil.example.com/api/renders/a.mp4" }) === HERO_AI_SOCIAL_SCHEDULER_URL
+        && buildHeroSocialHandoffUrl({ videoUrl: "https://studio.heroaiengine.com/pricing" }) === HERO_AI_SOCIAL_SCHEDULER_URL,
+    );
+    const hugeThaiLine = "เทคนิคปั้นช่องคลิปสั้นขายดีด้วยระบบอัตโนมัติสำหรับครีเอเตอร์ไทยยุคใหม่".repeat(25);
+    const hugeScript = `${hugeThaiLine}\n${hugeThaiLine}\n${hugeThaiLine}\n${hugeThaiLine}`;
+    const hugePack = buildSocialPostCaptionPack({
+      title: hugeThaiLine,
+      headline: hugeThaiLine,
+      script: hugeScript,
+    });
+    const hugeHandoffUrl = buildHeroSocialHandoffUrl({
+      videoUrl: "/renders/very-long-thai-script-export.mp4",
+      title: hugeThaiLine,
+      headline: hugeThaiLine,
+      script: hugeScript,
+      durationSec: 90,
+    });
+    check(
+      "very long Thai script + title + headline keeps handoff URL <= 3500 chars (< 4000) while preserving full clipboard pack",
+      hugeHandoffUrl.startsWith(`${HERO_AI_VIDEO_HANDOFF_URL}?`)
+        && hugeHandoffUrl.length <= 3500
+        && hugePack.captionText.length > 1000,
+      `len=${hugeHandoffUrl.length}`,
+    );
     for (const rel of [
       "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx",
       "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx",
       "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx",
       "src/app/(dashboard)/videos/page.tsx",
     ]) {
-      check(`${rel} wires HERO_AI_SOCIAL_SCHEDULER_URL`, read(rel).includes("HERO_AI_SOCIAL_SCHEDULER_URL"));
+      const src = read(rel);
+      check(
+        `${rel} wires buildHeroSocialHandoffUrl and HERO_AI_SOCIAL_SCHEDULER_URL`,
+        src.includes("buildHeroSocialHandoffUrl") && src.includes("HERO_AI_SOCIAL_SCHEDULER_URL"),
+      );
     }
+    const videosSrc = read("src/app/(dashboard)/videos/page.tsx");
+    check(
+      "videos/page.tsx wires buildHeroSocialHandoffUrl on both desktop hover and mobile touch bars",
+      (videosSrc.match(/buildHeroSocialHandoffUrl\(/g) ?? []).length >= 2,
+    );
   }
 
   console.log("\n[5] HERO-132 — Fuzzy Partial-Word Salvage on Elided Particles");
