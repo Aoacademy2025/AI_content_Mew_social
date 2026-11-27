@@ -776,7 +776,32 @@ function alignTranscriptWordsFuzzily(
     }
   });
   if (mappedCharsByWord.some((mapped) => mapped.length === 0)) {
-    return { status: "failed", code: "incomplete_alignment" };
+    const partialWords: TimedWord[] = [];
+    let prevEndMs = -1;
+    for (let wordIndex = 0; wordIndex < sourceWords.length; wordIndex += 1) {
+      const mapped = mappedCharsByWord[wordIndex];
+      if (!mapped || mapped.length === 0) continue;
+      const source = sourceWords[wordIndex];
+      const first = transcriptCharTimes[mapped[0]];
+      const last = transcriptCharTimes[mapped[mapped.length - 1]];
+      if (!first || !last) continue;
+      const startMs = Math.round(first.startMs);
+      const endMs = Math.max(startMs + 1, Math.round(last.endMs));
+      if (startMs < prevEndMs) continue;
+      prevEndMs = endMs;
+      partialWords.push({
+        word: source.word,
+        startMs,
+        endMs,
+        startChar: source.startChar,
+        endChar: source.endChar,
+      });
+    }
+    return {
+      status: "failed",
+      code: "incomplete_alignment",
+      ...(partialWords.length > 0 ? { partialWords } : {}),
+    };
   }
 
   const words = sourceWords.map((source, wordIndex): TimedWord => {

@@ -22,6 +22,7 @@ import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import {
   cancelBannerOffered,
   monthlyPromptpayAvailable,
+  resolveAnnualCheckoutFallback,
   resolveMonthlyMethodForTier,
   seedMethodFromCancelReturn,
   type PaidTier,
@@ -168,6 +169,30 @@ export function PricingClient({
     && cancelBannerOffered(cancelReturn, { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered })
     ? { plan: cancelReturn.plan, period: cancelReturn.period }
     : null;
+  const annualFallback = resolveAnnualCheckoutFallback(
+    {
+      paymentResult,
+      acquisitionSource,
+      preferredPeriod,
+      cancelReturn,
+    },
+    { promptpayMonthlyEnabled: promptpayMonthlyEnabledFlag, monthlyOffered: monthlyPromptpayOffered },
+  );
+  const trackedFallbackImpressionRef = useRef(false);
+  useEffect(() => {
+    if (!annualFallback || trackedFallbackImpressionRef.current) return;
+    trackedFallbackImpressionRef.current = true;
+    trackEvent("pricing_fallback_impression", {
+      step: "pricing_page",
+      properties: {
+        plan: annualFallback.plan,
+        reason: annualFallback.reason,
+        offerAnnualPromptpay: annualFallback.offerAnnualPromptpay,
+        monthlyFallbackMethod: annualFallback.monthlyFallbackMethod,
+        source: acquisitionSource ?? "direct",
+      },
+    });
+  }, [annualFallback, acquisitionSource]);
 
   useEffect(() => {
     fetch("/api/user/me")
@@ -349,7 +374,40 @@ export function PricingClient({
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, period: cancelPeriod, method: "promptpay" }),
+        body: JSON.stringify({ plan, period: cancelPeriod, method: "promptpay", couponCode: appliedCoupon?.code }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(customerApiErrorMessage(data, "ยังเริ่มชำระเงินไม่ได้ กรุณาลองใหม่หรือติดต่อทีมงาน"));
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setCancelBannerLoading(false);
+    }
+  }
+
+  async function handleMonthlyFallbackCheckout(plan: PaidTier, fallbackMethod: PaymentMethod) {
+    trackEvent("pricing_cta_clicked", {
+      step: "pricing_page",
+      properties: {
+        plan,
+        period: "monthly",
+        method: fallbackMethod,
+        surface: "cancel_return_monthly_fallback",
+        source: acquisitionSource ?? "direct",
+      },
+    });
+    setPeriod("monthly");
+    if (fallbackMethod === "promptpay") setMonthlyMethod("promptpay");
+    setCancelBannerLoading(true);
+    try {
+      const res = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, period: "monthly", method: fallbackMethod, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -410,22 +468,106 @@ export function PricingClient({
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => handleCancelBannerCheckout(cancelBanner.plan, cancelBanner.period)}
-              disabled={cancelBannerLoading}
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed"
-              style={{ background: VIOLET_GRAD, color: "#fff" }}
-            >
-              {cancelBannerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "จ่ายด้วย PromptPay"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => handleCancelBannerCheckout(cancelBanner.plan, cancelBanner.period)}
+                disabled={cancelBannerLoading}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed"
+                style={{ background: VIOLET_GRAD, color: "#fff" }}
+              >
+                {cancelBannerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "จ่ายด้วย PromptPay"}
+              </button>
+              {cancelBanner.period === "annual" && annualFallback && (
+                <button
+                  type="button"
+                  data-testid="cancel-return-monthly-fallback"
+                  onClick={() => handleMonthlyFallbackCheckout(cancelBanner.plan, annualFallback.monthlyFallbackMethod)}
+                  disabled={cancelBannerLoading}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border px-4 py-2.5 text-sm font-semibold transition hover:bg-white/10 disabled:cursor-not-allowed"
+                  style={{ borderColor: "rgba(252,165,165,.45)", color: "#FECACA" }}
+                >
+                  เริ่มรายเดือน ฿{((cancelBanner.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (cancelBanner.plan === "PRO" ? 599 : 990)).toLocaleString()}/เดือน แทน
+                </button>
+              )}
+            </div>
           </div>
         ) : (
-          <div className="mx-auto mb-6 flex max-w-2xl items-center gap-3 rounded-2xl p-4"
+          <div className="mx-auto mb-6 flex max-w-2xl flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between"
             style={{ background: "rgba(248,113,113,.10)", border: "1px solid rgba(248,113,113,.25)" }}>
-            <AlertCircle className="h-5 w-5 shrink-0" style={{ color: "#F87171" }} />
-            <p className="text-sm" style={{ color: "#FCA5A5" }}>ยกเลิกการชำระเงินแล้ว — กลับมาเลือกแพ็กได้ทุกเมื่อ</p>
+            <div className="flex items-center gap-3">
+              <AlertCircle className="h-5 w-5 shrink-0" style={{ color: "#F87171" }} />
+              <div>
+                <p className="text-sm" style={{ color: "#FCA5A5" }}>ยกเลิกการชำระเงินแล้ว — กลับมาเลือกแพ็กได้ทุกเมื่อ</p>
+                {annualFallback && (
+                  <p className="mt-1 text-xs" style={{ color: "#FECACA" }}>
+                    ติดวงเงินบัตรหรือยังไม่พร้อมจ่ายรายปี? สแกนจ่าย PromptPay หรือเริ่มแบบรายเดือนเบา ๆ ได้ทันที
+                  </p>
+                )}
+              </div>
+            </div>
+            {annualFallback && (
+              <div className="flex flex-wrap items-center gap-2">
+                {annualFallback.offerAnnualPromptpay && (
+                  <button
+                    type="button"
+                    onClick={() => handleCancelBannerCheckout(annualFallback.plan, "annual")}
+                    disabled={cancelBannerLoading}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed"
+                    style={{ background: VIOLET_GRAD, color: "#fff" }}
+                  >
+                    สแกนจ่าย PromptPay รายปี
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-testid="cancel-return-monthly-fallback"
+                  onClick={() => handleMonthlyFallbackCheckout(annualFallback.plan, annualFallback.monthlyFallbackMethod)}
+                  disabled={cancelBannerLoading}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border px-4 py-2 text-xs font-semibold transition hover:bg-white/10 disabled:cursor-not-allowed"
+                  style={{ borderColor: "rgba(252,165,165,.45)", color: "#FECACA" }}
+                >
+                  สลับเป็นรายเดือน ฿{((annualFallback.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (annualFallback.plan === "PRO" ? 599 : 990)).toLocaleString()}
+                </button>
+              </div>
+            )}
           </div>
         )
+      )}
+      {paymentResult !== "cancelled" && paymentResult !== "success" && annualFallback?.reason === "checkout_recovery" && (
+        <div
+          data-testid="checkout-recovery-fallback-banner"
+          className="mx-auto mb-6 flex max-w-2xl flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between"
+          style={{ background: "rgba(139,92,246,.10)", border: "1px solid rgba(139,92,246,.30)" }}
+        >
+          <div>
+            <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>
+              เลือกวิธีชำระเงินที่สะดวกสำหรับแผน {annualFallback.plan}
+            </p>
+            <p className="mt-0.5 text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+              สแกนจ่าย PromptPay รายปีไม่ต้องใช้บัตร หรือเริ่มแบบรายเดือนก่อนได้ในคลิกเดียว
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleCancelBannerCheckout(annualFallback.plan, "annual")}
+              disabled={cancelBannerLoading}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed"
+              style={{ background: VIOLET_GRAD, color: "#fff" }}
+            >
+              สแกนจ่าย PromptPay รายปี
+            </button>
+            <button
+              type="button"
+              onClick={() => handleMonthlyFallbackCheckout(annualFallback.plan, annualFallback.monthlyFallbackMethod)}
+              disabled={cancelBannerLoading}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border px-4 py-2 text-xs font-semibold transition hover:bg-white/10 disabled:cursor-not-allowed"
+              style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-primary)" }}
+            >
+              เริ่มรายเดือน ฿{((annualFallback.plan === "PRO" ? planConfig?.pro?.price : planConfig?.business?.price) ?? (annualFallback.plan === "PRO" ? 599 : 990)).toLocaleString()}
+            </button>
+          </div>
+        </div>
       )}
 
       {/* expiring GRANT coupon banner — final 7 days of unpaid workshop/course grant (HERO-99) */}

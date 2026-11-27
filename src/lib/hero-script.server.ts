@@ -1306,7 +1306,7 @@ const SCRIPT_WINDOW_MS = SCRIPT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 // this ledger is charged before /generate calls the server-paid provider and
 // survives deleting the resulting saved Script.
 export const HERO_SCRIPT_FREE_GENERATIONS = 3;
-export const HERO_SCRIPT_TRIAL_GENERATIONS = 10;
+export const HERO_SCRIPT_TRIAL_GENERATIONS = 3;
 export const HERO_SCRIPT_RESERVATION_MINUTES = 10;
 
 export function heroScriptGenerationLimit(cohort: HeroScriptCohort): number {

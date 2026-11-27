@@ -76,6 +76,12 @@ import { classifyFailure, failureViewCopy } from "./failure-view";
 import { fetchMe, type MeData } from "@/lib/use-me";
 import { GrantExpiryBanner } from "@/components/billing/grant-expiry-banner";
 import { isActiveStylePackId } from "@/lib/style-pack-catalog";
+import { isMotionThemeId } from "@/lib/motion-broll-catalog";
+import { findFlagshipMotionPreset } from "@/lib/video-template-apply";
+import {
+  buildSocialPostCaptionPack,
+  HERO_AI_SOCIAL_SCHEDULER_URL,
+} from "@/lib/social-post-handoff";
 import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
 import { findFirstClipStarter, shouldApplyFirstClipStarterScript } from "@/lib/first-clip-starter";
 import { useEditorDiagnostics } from "./useEditorDiagnostics";
@@ -210,26 +216,35 @@ export function EditorV2Shell() {
   useEffect(() => {
     if (queryTemplateAppliedRef.current || !p.projectReady) return;
     if (typeof window === "undefined") return;
+    queryTemplateAppliedRef.current = true;
     const params = new URLSearchParams(window.location.search);
     const tplParam = params.get("templateId");
+    const motionParam = params.get("motionThemeId");
     const sampleParam = params.get("sample");
     const sourceParam = params.get("source");
     const isDormantSource =
       sourceParam === "lapsed_payer_d21"
       || sourceParam === "lapsed_payer_d35"
       || sourceParam === "preview_stalled_d3";
-    if (!tplParam && sampleParam !== "1" && !isDormantSource) return;
-    queryTemplateAppliedRef.current = true;
+    if (!tplParam && !motionParam && sampleParam !== "1" && !isDormantSource) return;
 
-    const validTemplateId = tplParam && isActiveStylePackId(tplParam) ? tplParam : null;
-    if (validTemplateId && (sampleParam === "1" || !p.templateId)) {
+    const validMotionId = motionParam && isMotionThemeId(motionParam) ? motionParam : null;
+    const motionPreset = findFlagshipMotionPreset(validMotionId);
+    const validTemplateId = tplParam && isActiveStylePackId(tplParam)
+      ? tplParam
+      : (motionPreset?.templateId ?? null);
+    if (validTemplateId && (sampleParam === "1" || validMotionId || !p.templateId)) {
       p.selectVideoTemplate(validTemplateId);
+    }
+    if (validMotionId) {
+      p.setMotionThemeId(validMotionId);
     }
     const starter = findFirstClipStarter(validTemplateId);
     let appliedSample = false;
-    if (sampleParam === "1" && starter && shouldApplyFirstClipStarterScript(p.script)) {
+    const sampleText = motionPreset?.sampleScript ?? starter?.script ?? null;
+    if (sampleParam === "1" && sampleText && shouldApplyFirstClipStarterScript(p.script)) {
       p.setMode("script");
-      p.setScript(starter.script);
+      p.setScript(sampleText);
       appliedSample = true;
     }
     if (appliedSample) {
@@ -243,13 +258,14 @@ export function EditorV2Shell() {
         },
       });
     }
-    if (tplParam || sampleParam === "1") {
+    if (tplParam || motionParam || sampleParam === "1") {
       const url = new URL(window.location.href);
       url.searchParams.delete("sample");
       url.searchParams.delete("templateId");
+      url.searchParams.delete("motionThemeId");
       window.history.replaceState({}, "", `${url.pathname}${url.search}`);
     }
-  }, [p.projectReady, p.templateId, p.script, p.selectVideoTemplate, p.setMode, p.setScript]);
+  }, [p.projectReady, p.templateId, p.script, p.selectVideoTemplate, p.setMotionThemeId, p.setMode, p.setScript]);
 
   useEffect(() => {
     let alive = true;
@@ -1346,6 +1362,17 @@ function ExportedView({ job, onNewProject, onEditPreview, expiringGrant, downloa
               <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
             </a>
           )}
+          <BtnSecondary
+            onClick={() => {
+              emitFirstClipViewed();
+              const pack = buildSocialPostCaptionPack({ title: downloadFilename.replace(/\.mp4$/i, "") });
+              void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
+              toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์");
+              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+            }}
+          >
+            ตั้งเวลาโพสต์ลงโซเชียล (Hero AI)
+          </BtnSecondary>
           <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
           {onEditPreview && <BtnGhost onClick={onEditPreview}>แก้ซับต่อ</BtnGhost>}
           <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>

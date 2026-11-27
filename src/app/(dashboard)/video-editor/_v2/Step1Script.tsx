@@ -16,6 +16,7 @@ import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { activeStylePacks } from "@/lib/style-pack-catalog";
+import { FLAGSHIP_MOTION_STEP1_PRESETS, type FlagshipMotionStep1Preset } from "@/lib/video-template-apply";
 import { FIRST_CLIP_STARTERS, shouldApplyFirstClipStarterScript } from "@/lib/first-clip-starter";
 import { trackEvent } from "@/lib/client-telemetry";
 
@@ -208,11 +209,12 @@ export function Step1Script({
                 · แตะ 1 คลิกเพื่อตั้งซับ พาดหัว โทนเสียง และเพลงให้อัตโนมัติ
               </span>
             </div>
-            {p.templateId ? (
+            {(p.templateId || p.motionThemeId) ? (
               <button
                 type="button"
                 onClick={() => {
                   p.selectVideoTemplate(null);
+                  p.setMotionThemeId(null);
                   toast("เปลี่ยนกลับเป็นกำหนดเองแล้ว");
                 }}
                 style={{
@@ -229,8 +231,68 @@ export function Step1Script({
             ) : null}
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
+            {FLAGSHIP_MOTION_STEP1_PRESETS.map((preset: FlagshipMotionStep1Preset) => {
+              const active = p.motionThemeId === preset.motionThemeId;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  data-motion-preset-id={preset.motionThemeId}
+                  aria-pressed={active}
+                  onClick={() => {
+                    if (active) {
+                      p.setMotionThemeId(null);
+                      p.selectVideoTemplate(null);
+                      toast("เปลี่ยนกลับเป็นกำหนดเองแล้ว");
+                      return;
+                    }
+                    p.selectVideoTemplate(preset.templateId);
+                    p.setMotionThemeId(preset.motionThemeId);
+                    trackEvent("motion_broll_quick_cta_clicked", {
+                      properties: { surface: "step1_template_strip", motionThemeId: preset.motionThemeId, templateId: preset.templateId },
+                    });
+                    toast.success(`เลือก Motion "${preset.shortLabel}" แล้ว (60fps · 0 เครดิต)`);
+                  }}
+                  className="flex min-w-[178px] max-w-[214px] shrink-0 flex-col items-start gap-1 text-left"
+                  style={{
+                    borderRadius: radius.card,
+                    padding: "8px 10px",
+                    background: active ? color.selectedBg : "rgba(139,92,246,.06)",
+                    border: `1px solid ${active ? color.selectedBorder : "rgba(139,92,246,.28)"}`,
+                    cursor: "pointer",
+                    transition: "all 150ms ease",
+                  }}
+                >
+                  <div className="flex w-full items-center justify-between gap-1.5">
+                    <span className="truncate" style={{ font: `600 12px ${font.heading}`, color: color.text }}>
+                      {preset.thaiLabel}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+                      {preset.palette.map((hex, idx) => (
+                        <span
+                          key={`${preset.id}-${idx}`}
+                          style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: 999,
+                            background: hex,
+                            border: "1px solid rgba(255,255,255,.22)",
+                          }}
+                        />
+                      ))}
+                    </span>
+                  </div>
+                  <span
+                    className="w-full truncate"
+                    style={{ fontSize: 10, color: active ? color.primary300 : color.textSecondary }}
+                  >
+                    {active ? `กำลังใช้ · ${preset.tagline}` : preset.tagline}
+                  </span>
+                </button>
+              );
+            })}
             {activeStylePacks().map((pack) => {
-              const active = p.templateId === pack.id;
+              const active = p.templateId === pack.id && !p.motionThemeId;
               return (
                 <button
                   key={pack.id}
@@ -239,6 +301,7 @@ export function Step1Script({
                   aria-pressed={active}
                   onClick={() => {
                     const next = active ? null : pack.id;
+                    if (p.motionThemeId) p.setMotionThemeId(null);
                     p.selectVideoTemplate(next);
                     if (next) toast.success(`เลือกเทมเพลต "${pack.thaiLabel}" แล้ว`);
                     else toast("เปลี่ยนกลับเป็นกำหนดเองแล้ว");
@@ -577,6 +640,36 @@ export function Step1Script({
                 <NotebookPen size={13} strokeWidth={2} aria-hidden="true" />
                 ให้ AI เขียนสคริปต์ให้
               </Link>
+              {FLAGSHIP_MOTION_STEP1_PRESETS.map((preset) => (
+                <button
+                  key={`starter-${preset.id}`}
+                  type="button"
+                  data-testid={`step1-motion-starter-${preset.motionThemeId}`}
+                  onClick={() => {
+                    if (!shouldApplyFirstClipStarterScript(p.script)) return;
+                    p.selectVideoTemplate(preset.templateId);
+                    p.setMotionThemeId(preset.motionThemeId);
+                    p.setScript(preset.sampleScript);
+                    trackEvent("step1_empty_starter_clicked", {
+                      properties: {
+                        kind: "motion_flagship_starter",
+                        motionThemeId: preset.motionThemeId,
+                        templateId: preset.templateId,
+                      },
+                    });
+                    toast.success(`เริ่มด้วย Motion "${preset.shortLabel}" + สคริปต์ตัวอย่างแล้ว`);
+                  }}
+                  className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[11.5px] font-medium transition-colors hover:bg-violet-500/15"
+                  style={{
+                    background: "rgba(255,255,255,.03)",
+                    border: `1px solid ${color.cardBorder}`,
+                    color: color.textSecondary,
+                    cursor: "pointer",
+                  }}
+                >
+                  ✦ {preset.shortLabel} (60fps)
+                </button>
+              ))}
             </div>
           )}
           <textarea

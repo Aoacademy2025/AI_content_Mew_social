@@ -15,6 +15,11 @@ import {
 import { toast } from "sonner";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
 import { featuredMotionThemes, type MotionThemeId } from "@/lib/motion-broll-catalog";
+import {
+  buildSocialPostCaptionPack,
+  buildWeeklySeriesHref,
+  HERO_AI_SOCIAL_SCHEDULER_URL,
+} from "@/lib/social-post-handoff";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
@@ -242,8 +247,24 @@ export function PostPhase({
           <a href={ed.exp.url} download={downloadFilename} onClick={emitFirstClipViewed}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          <BtnSecondary
+            onClick={() => {
+              emitFirstClipViewed();
+              const pack = buildSocialPostCaptionPack({
+                script,
+                headline: ed.headlineHook?.headline,
+              });
+              void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
+              toast.success("คัดลอกแคปชันพร้อมแฮชแท็กแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์");
+              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+            }}
+          >
+            ตั้งเวลาโพสต์ลงโซเชียล (Hero AI)
+          </BtnSecondary>
           <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
-          <a href="/hero-script" onClick={emitFirstClipViewed}><BtnSecondary>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
+          <a href={buildWeeklySeriesHref({ script, headline: ed.headlineHook?.headline })} onClick={emitFirstClipViewed}>
+            <BtnSecondary>ต่อยอดซีรีส์รายสัปดาห์ (Hero Script)</BtnSecondary>
+          </a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

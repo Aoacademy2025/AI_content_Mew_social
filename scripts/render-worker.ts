@@ -22,11 +22,15 @@ import {
 import { runRender, type ResolvedRenderInput } from "../src/lib/render/run-render";
 import { recordChargedClip } from "../src/lib/clip-charge";
 import { HeavyMediaAdmission, type HeavyMediaLease } from "../src/lib/heavy-media-admission";
-import { publishRenderWorkerBundle } from "../src/lib/render/remotion-bundle-pointer";
+import {
+  publishRenderWorkerBundle,
+  readRenderWorkerBundle,
+  remotionSourceFingerprint,
+} from "../src/lib/render/remotion-bundle-pointer";
 import os from "node:os";
 import path from "node:path";
 
-const POLL_MS = Number(process.env.RENDER_WORKER_POLL_MS) || 3000;
+const POLL_MS = Number(process.env.RENDER_WORKER_POLL_MS) || 1000;
 const STALL_MS = Number(process.env.RENDER_STALL_MS) || 120_000; // no progress for 2 min ⇒ stuck
 const WALLCLOCK_MS = Number(process.env.RENDER_WALLCLOCK_MS) || 45 * 60_000; // hard cap per job
 const WATCHDOG_MS = 10_000;
@@ -56,12 +60,36 @@ const heavyMediaAdmission = new HeavyMediaAdmission({
 // detected by fingerprint + index.html existence inside runRender).
 let workerBundleLocation: string | null = null;
 let workerBundleMtime = "";
+try {
+  const fp = remotionSourceFingerprint();
+  const warmLocation = readRenderWorkerBundle(fp);
+  if (warmLocation) {
+    workerBundleLocation = warmLocation;
+    workerBundleMtime = fp;
+  }
+} catch {
+  // Cold start will build normally inside runRender.
+}
 const workerBundleCache = {
-  get: () => ({ location: workerBundleLocation, mtime: workerBundleMtime }),
+  get: () => {
+    if (!workerBundleLocation) {
+      try {
+        const fp = remotionSourceFingerprint();
+        const sharedLocation = readRenderWorkerBundle(fp);
+        if (sharedLocation) {
+          workerBundleLocation = sharedLocation;
+          workerBundleMtime = fp;
+        }
+      } catch {
+        // Ignore; runRender builds on demand.
+      }
+    }
+    return { location: workerBundleLocation, mtime: workerBundleMtime };
+  },
   set: (location: string | null, mtime: string) => {
     workerBundleLocation = location;
     workerBundleMtime = mtime;
-    // W4: let get_preview_frame (web process) reuse this bundle instead of building its own.
+    // W4: let get_preview_frame (web process) and sibling render-worker reuse this bundle.
     publishRenderWorkerBundle(location, mtime);
   },
 };

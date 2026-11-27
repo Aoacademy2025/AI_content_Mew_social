@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useId, useRef } from "react";
 import {
-  Loader2, Play, XCircle, Trash2, Download,
+  Loader2, Play, XCircle, Trash2, Download, Share2,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
   RefreshCw, Clock, FolderOpen, Pencil, TextCursorInput, Check, X,
 } from "lucide-react";
@@ -23,6 +23,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { resolveVideoDisplayName, resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import {
+  buildSocialPostCaptionPack,
+  HERO_AI_SOCIAL_SCHEDULER_URL,
+} from "@/lib/social-post-handoff";
 import {
   DEFAULT_EDITOR_PROJECT_TITLE,
   MAX_EDITOR_PROJECT_TITLE_LENGTH,
@@ -803,6 +807,25 @@ function VideoCard({
                 <Download className="h-4 w-4" />
               </a>
             )}
+            <button
+              type="button"
+              aria-label="ตั้งเวลาโพสต์ลงโซเชียล"
+              title="คัดลอกแคปชัน & เปิดหน้าตั้งเวลาโพสต์ (Hero AI)"
+              onClick={(e) => {
+                e.stopPropagation();
+                const pack = buildSocialPostCaptionPack({
+                  title: video.project?.title,
+                  script: video.script,
+                });
+                void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
+                toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI");
+                window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+              }}
+              className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
+              style={{ background: "rgba(139,92,246,.35)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
+            >
+              <Share2 className="h-4 w-4" />
+            </button>
           </>
         )}
         {isRendering && (
@@ -859,6 +882,25 @@ function VideoCard({
             style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
             <Download className="h-4 w-4" />
           </a>
+        )}
+        {isReady && (
+          <button
+            type="button"
+            aria-label="ตั้งเวลาโพสต์ลงโซเชียล"
+            onClick={() => {
+              const pack = buildSocialPostCaptionPack({
+                title: video.project?.title,
+                script: video.script,
+              });
+              void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
+              toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์ Hero AI");
+              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+            }}
+            className="flex h-11 w-11 items-center justify-center rounded-full text-white"
+            style={{ background: "rgba(139,92,246,.45)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
         )}
         {onRename && !deleteConfirm && (
           <button

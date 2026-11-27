@@ -73,8 +73,24 @@ async function main() {
     },
     flags: { paidEnabled: true, publicPreview: true, trialPercent: 100, freePercent: 100 },
   });
-  assert.equal(heroScript.canUse, false, "Hero Script generate stays denied on Conversion Trial");
-  assert.equal(heroScript.canPreview, true, "Hero Script locked preview stays visible on Conversion Trial");
+  assert.equal(heroScript.canUse, false, "Hero Script generate stays denied when conversionTrial is false");
+  assert.equal(heroScript.canPreview, true, "Hero Script locked preview stays visible when conversionTrial is false");
+  const activeTrialHeroScript = decideHeroScriptAccess({
+    internal: false,
+    conversionTrial: true,
+    paidEquivalent: {
+      canUsePaidFeatures: false,
+      effectivePlan: "FREE",
+      source: "none",
+      expiresAt: null,
+      cashBacked: false,
+      recurring: false,
+      reason: "no_qualifying_evidence",
+    },
+    flags: { paidEnabled: true, publicPreview: true, trialPercent: 0, freePercent: 0, trialSampleEnabled: true },
+  });
+  assert.equal(activeTrialHeroScript.canUse, true, "Active Conversion Trial admits bounded 3-script Hero Script sample (HERO-131)");
+  assert.equal(activeTrialHeroScript.cohort, "trial", "Active Conversion Trial resolves to 'trial' finite quota cohort");
 
   const { prisma } = await import("../src/lib/prisma");
   const { resolveFirstClipPath } = await import("../src/lib/first-clip-path.server");
