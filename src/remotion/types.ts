@@ -110,6 +110,14 @@ export type SubtitleTextEffect =
   | "karaoke"    // word-by-word highlight
   | "typewriter"; // character-by-character reveal
 
+export interface PopupWordTiming {
+  word: string;
+  /** Timeline-absolute start frame. */
+  startFrame: number;
+  /** Timeline-absolute end frame. */
+  endFrame: number;
+}
+
 export interface KeywordPopupItem {
   text: string;
   start: number;       // frame number
@@ -122,6 +130,12 @@ export interface KeywordPopupItem {
   stylePreset?: SubtitleStylePreset;
   fontWeight?: number; // 300–900, default 900
   tag?: "hook" | "body" | "cta";
+  /** Optional real word-level frame timings for frame-accurate Karaoke/Highlight sync. */
+  words?: PopupWordTiming[];
+  /** True when the preceding popup ends within <=2 frames (suppresses fade-in blink). */
+  contiguousPrev?: boolean;
+  /** True when the next popup starts within <=2 frames (suppresses fade-out blink). */
+  contiguousNext?: boolean;
 }
 
 export interface ThaiWordBreakOverrides {
@@ -160,6 +174,8 @@ export interface SubtitleOverlayConfig {
   sfxCues?: TransitionSfxCue[];
   bgmFile?: string;
   bgmVolume?: number;
+  /** Optional pre-computed speech spans (ms) for automatic BGM speech ducking on base renders. */
+  bgmDuckSegments?: Array<{ startMs: number; endMs: number }>;
   /** EP5 U7: the music was changed after creation. The base video is muted and the voice track
    *  is re-mixed with the new music (optionally ducked). Absent = today's audio, untouched. */
   audioMix?: SubtitleAudioMix;
@@ -188,6 +204,8 @@ export interface ShortVideoConfig {
   voiceVolume: number;
   bgmFile?: string;
   bgmVolume?: number;
+  /** Optional pre-computed speech spans (ms) for automatic BGM speech ducking on base renders. */
+  bgmDuckSegments?: Array<{ startMs: number; endMs: number }>;
   flashFrames?: number[];
   durationInFrames: number;
   fontFamily?: string;

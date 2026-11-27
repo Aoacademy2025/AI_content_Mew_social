@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, Audio, Freeze, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import { logoOverlayFrame } from "../lib/logo-overlay";
 import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
-import { bgmGainAt, normalizeAudioMix } from "../lib/background-music";
+import { bgmEnvelopeGainAt, normalizeAudioMix, speechSegments } from "../lib/background-music";
 import { planStatCardsForCaptions } from "../lib/stat-cards";
 import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
@@ -119,27 +119,48 @@ export function SubtitleOverlayComposition({
         <>
           <Audio src={mix.voiceFile} volume={mix.voiceVolume} />
           {/* "extend": the volume callback gets the absolute frame across loops, so the duck
-              envelope stays on the voice's clock after the track wraps. */}
-          {mix.bgmFile && (
-            <Audio
-              src={mix.bgmFile}
-              loop
-              loopVolumeCurveBehavior="extend"
-              volume={mix.ducking && mix.duckSegments?.length
-                ? (frame) => bgmGainAt((frame / fps) * 1_000, {
+              envelope + end fade-out stay on the timeline's clock after the track wraps. */}
+          {mix.bgmFile && (() => {
+            const totalDurationMs = (durationInFrames / fps) * 1_000;
+            return (
+              <Audio
+                src={mix.bgmFile}
+                loop
+                loopVolumeCurveBehavior="extend"
+                volume={(frame) => bgmEnvelopeGainAt((frame / fps) * 1_000, totalDurationMs, {
                   volume: mix.bgmVolume,
-                  ducking: true,
+                  ducking: Boolean(mix.ducking && mix.duckSegments?.length),
                   segments: mix.duckSegments,
-                })
-                : mix.bgmVolume}
-            />
-          )}
+                })}
+              />
+            );
+          })()}
         </>
       ) : (
         /* Background music — mixed in here so the avatar path (whose composite has
-           voice only) still gets BGM in the final burned video. Looped to cover
-           the whole duration. */
-        bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />
+           voice only) still gets BGM in the final burned video, with automatic speech
+           ducking + smooth 250ms fade-in & 650ms fade-out. */
+        bgmFile && (() => {
+          const totalDurationMs = (durationInFrames / fps) * 1_000;
+          const autoDuckSegments = speechSegments({
+            captions: keywordPopups.map((p) => ({
+              startMs: (p.start / fps) * 1_000,
+              endMs: (p.end / fps) * 1_000,
+            })),
+          });
+          return (
+            <Audio
+              src={bgmFile}
+              loop
+              loopVolumeCurveBehavior="extend"
+              volume={(frame) => bgmEnvelopeGainAt((frame / fps) * 1_000, totalDurationMs, {
+                volume: bgmVolume ?? 0.12,
+                ducking: autoDuckSegments.length > 0,
+                segments: autoDuckSegments,
+              })}
+            />
+          );
+        })()
       )}
 
       {/* EP5/S2 #3: Subtle transition sound effects (-18 dB) */}
@@ -182,7 +203,10 @@ export function SubtitleOverlayComposition({
 
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
       {keywordPopups.map((p) => {
-        const visibleStart = Math.max(p.start, hookEndFrame);
+        const hookTop = (headlineHook as { topPercent?: number } | undefined)?.topPercent ?? 18;
+        const subTop = p.topPercent ?? 72;
+        const collidesWithHook = Boolean(headlineHook?.enabled && hookEndFrame > 0 && Math.abs(subTop - hookTop) < 28);
+        const visibleStart = collidesWithHook ? Math.max(p.start, hookEndFrame) : p.start;
         const dur = p.end - visibleStart;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
@@ -199,6 +223,7 @@ export function SubtitleOverlayComposition({
               outline={subtitleOutline}
               outlineSize={subtitleOutlineSize}
               highlightKeywords={subtitleHighlightKeywords}
+              sequenceStartFrame={visibleStart}
             />
           </Sequence>
         );

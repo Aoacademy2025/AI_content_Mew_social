@@ -61,6 +61,11 @@ export type ProbedClipMetadata = {
   hasAudio: boolean;
   width: number;
   height: number;
+  codec?: string;
+  pixFmt?: string;
+  fps?: number;
+  tbr?: number;
+  hasRotation?: boolean;
 };
 
 export async function probeClipInfoViaFfmpeg(
@@ -86,12 +91,30 @@ export async function probeClipInfoViaFfmpeg(
           }
         }
         const hasAudio = /Stream #\d+:\d+.*Audio:/i.test(text);
-        const videoMatch = text.match(
-          /Stream #\d+:\d+.*Video:.*?\b(\d{2,5})x(\d{2,5})\b/i,
-        );
+        const videoLine = text.match(/Stream #\d+:\d+.*Video:[^\r\n]*/i)?.[0] ?? "";
+        const videoMatch = videoLine.match(/\b(\d{2,5})x(\d{2,5})\b/);
         const width = videoMatch ? Number(videoMatch[1]) : 0;
         const height = videoMatch ? Number(videoMatch[2]) : 0;
-        resolve({ durationSec, hasAudio, width, height });
+        const codecMatch = videoLine.match(/Video:\s*([a-z0-9_]+)/i);
+        const pixFmtMatch = videoLine.match(
+          /Video:\s*[a-z0-9_]+(?:\s*\([^)]*\))*\s*,\s*([a-z0-9_]+)/i,
+        );
+        const fpsMatch = videoLine.match(/(\d+(?:\.\d+)?)\s*fps\b/i);
+        const tbrMatch = videoLine.match(/(\d+(?:\.\d+)?)\s*tbr\b/i);
+        const fps = fpsMatch ? Number(fpsMatch[1]) : tbrMatch ? Number(tbrMatch[1]) : 0;
+        const tbr = tbrMatch ? Number(tbrMatch[1]) : 0;
+        const hasRotation = /displaymatrix:\s*rotation|rotate\s*:\s*(?!0\b)/i.test(text);
+        resolve({
+          durationSec,
+          hasAudio,
+          width,
+          height,
+          codec: codecMatch?.[1]?.toLowerCase(),
+          pixFmt: pixFmtMatch?.[1]?.toLowerCase(),
+          fps: Number.isFinite(fps) ? fps : 0,
+          tbr: Number.isFinite(tbr) ? tbr : 0,
+          hasRotation,
+        });
       },
     );
   });
@@ -120,15 +143,25 @@ export async function stitchPresenterVideoFiles(input: {
   if (urls.length === 1) {
     const singleUrl = urls[0]!;
     const local = resolveLocalMediaFile(singleUrl, { stocks: true });
-    const info = local.ok
+    const info: ProbedClipMetadata = local.ok
       ? await probeClipInfoViaFfmpeg(local.path)
       : { durationSec: 0, hasAudio: true, width: 0, height: 0 };
-    const isNonPortrait = info.width > 0 && info.height > 0 && info.width >= info.height;
-    const needsPortraitNormalization =
+    const isExactPortraitCanvas = info.width === 1080 && info.height === 1920;
+    const isCanonical30Cfr =
+      info.codec === "h264"
+      && info.pixFmt === "yuv420p"
+      && !info.hasRotation
+      && Boolean(info.fps && Math.abs(info.fps - 30) <= 0.05)
+      && (!info.tbr || Math.abs(info.tbr - 30) <= 0.05);
+    const needsSingleClipNormalization =
       local.ok
       && info.durationSec > 0.1
-      && (isNonPortrait || input.presenterFit === "contain");
-    if (!needsPortraitNormalization) {
+      && (
+        !isExactPortraitCanvas
+        || !isCanonical30Cfr
+        || input.presenterFit === "contain"
+      );
+    if (!needsSingleClipNormalization) {
       return {
         clipUrl: singleUrl,
         stitched: false,
@@ -195,11 +228,29 @@ export async function stitchPresenterVideoFiles(input: {
     "-preset",
     "veryfast",
     "-crf",
-    "20",
+    "19",
+    "-r",
+    "30",
+    "-g",
+    "30",
+    "-keyint_min",
+    "30",
+    "-bf",
+    "0",
+    "-vsync",
+    "cfr",
+    "-color_range",
+    "tv",
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
     "-c:a",
     "aac",
     "-b:a",
-    "160k",
+    "192k",
     "-pix_fmt",
     "yuv420p",
     "-movflags",

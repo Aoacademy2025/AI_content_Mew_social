@@ -962,9 +962,10 @@ async function main(): Promise<void> {
         await prisma.mediaImport.update({ where: { id: row.id }, data: { status: "ready" } });
         return row;
       };
+      const { KEN_BURNS_DURATION_SEC } = await import("../src/lib/broll-asset-lib");
       const image = await staged("image", png);
       const imageResult = await staging.processStagedUpload({ importId: image.id, purpose: image.purpose, plan: "PRO", stocksDir });
-      check("image → Ken Burns clip under /api/stocks/, 5 s", imageResult.ok && /^\/api\/stocks\/broll-upload-[\w-]+\.mp4$/.test(imageResult.resultSrc) && imageResult.durationMs === 5000, JSON.stringify(imageResult));
+      check(`image → Ken Burns clip under /api/stocks/, ${KEN_BURNS_DURATION_SEC} s`, imageResult.ok && /^\/api\/stocks\/broll-upload-[\w-]+\.mp4$/.test(imageResult.resultSrc) && imageResult.durationMs === KEN_BURNS_DURATION_SEC * 1000, JSON.stringify(imageResult));
       if (imageResult.ok) outputs.push(path.join(stocksDir, path.basename(imageResult.resultSrc)));
       check("image: staged file removed", !fs.existsSync(staging.stagedUploadPath(image.id)));
 

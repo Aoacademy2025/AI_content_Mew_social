@@ -75,7 +75,7 @@ import {
 import {
   distributeAutoMixAiSlots,
   parseAutoMixReceiptImageCeiling,
-  planAutoMixSources,
+  planSemanticAutoMixSources,
   pickEvenIndices,
 } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
@@ -617,17 +617,20 @@ async function tryPexelsPhotoKenBurns(
   apiKey: string,
   imagePath: string,
   outPath: string,
+  usedPhotoIds?: Set<string>,
+  durationSec: number = KEN_BURNS_DURATION_SEC,
 ): Promise<ImageFallbackResult | null> {
-  const photos = await searchPexelsPhotos(query, apiKey, 1);
-  const photo = photos[0];
+  const photos = await searchPexelsPhotos(query, apiKey, 6);
+  const photo = photos.find((p) => !usedPhotoIds?.has(`pexels:${p.id}`)) ?? photos[0];
   const imageUrl = photo?.src?.large2x ?? photo?.src?.large ?? photo?.src?.original;
   if (!photo || !imageUrl) return null;
+  usedPhotoIds?.add(`pexels:${photo.id}`);
 
   await downloadAndCrop(imageUrl, imagePath);
-  await applyKenBurns(imagePath, outPath);
+  await applyKenBurns(imagePath, outPath, durationSec);
 
   return {
-    duration: KEN_BURNS_DURATION_SEC,
+    duration: durationSec,
     imageUrl,
     assetMeta: {
       provider: "pexels",
@@ -646,17 +649,20 @@ async function tryPixabayPhotoKenBurns(
   apiKey: string,
   imagePath: string,
   outPath: string,
+  usedPhotoIds?: Set<string>,
+  durationSec: number = KEN_BURNS_DURATION_SEC,
 ): Promise<ImageFallbackResult | null> {
-  const photos = await searchPixabayPhotos(query, apiKey, 3);
-  const photo = photos[0];
+  const photos = await searchPixabayPhotos(query, apiKey, 6);
+  const photo = photos.find((p) => !usedPhotoIds?.has(`pixabay:${p.id}`)) ?? photos[0];
   const imageUrl = photo?.largeImageURL ?? photo?.webformatURL;
   if (!photo || !imageUrl) return null;
+  usedPhotoIds?.add(`pixabay:${photo.id}`);
 
   await downloadAndCrop(imageUrl, imagePath);
-  await applyKenBurns(imagePath, outPath);
+  await applyKenBurns(imagePath, outPath, durationSec);
 
   return {
-    duration: KEN_BURNS_DURATION_SEC,
+    duration: durationSec,
     imageUrl,
     assetMeta: {
       provider: "pixabay",
@@ -1323,11 +1329,12 @@ async function handleFetchStock(req: Request) {
   // ผู้ใช้เลือก provider เองได้ผ่าน autoMixProviders (undefined = เปิดทุกตัวตาม default เดิม)
   const isAutoMixProviderAllowed = (p: string) => !allowedAutoMixProviders || allowedAutoMixProviders.has(p);
   const canUseUnsplashFallback = useAutoMix && !!unsplashKey && isAutoMixProviderAllowed("unsplash");
-  // Photo fallbacks stay on the user's OWN key. The managed key's quota is
-  // budgeted for video search (ADR 0025 capacity math); AutoMix keeps its
-  // key-free photo providers (Wikimedia/NASA/Met) plus AI images instead.
-  const canUsePexelsPhotoFallback = useAutoMix && !!ownPexelsKey && isAutoMixProviderAllowed("pexels-photo");
-  const canUsePixabayPhotoFallback = useAutoMix && !!ownPixabayKey && isAutoMixProviderAllowed("pixabay-photo");
+  // Auto Mix photo slots: allow Pixabay/Pexels photo search on the resolved stock key
+  // (Pixabay has no monthly cap and goes first on managed stock so Pexels monthly quota
+  // stays protected while keyless customers get real editorial photography instead of
+  // falling through to Wikimedia/Met/NASA museum archives on everyday scripts).
+  const canUsePexelsPhotoFallback = useAutoMix && !!pexelsKey && isAutoMixProviderAllowed("pexels-photo");
+  const canUsePixabayPhotoFallback = useAutoMix && !!pixabayKey && isAutoMixProviderAllowed("pixabay-photo");
   const canUseFlickrFallback = useAutoMix && !!flickrKey && isAutoMixProviderAllowed("flickr");
   const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
   const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
@@ -1606,9 +1613,10 @@ async function handleFetchStock(req: Request) {
   // weight video:photo:ai = 3:2:1 (env-tunable AUTOMIX_WEIGHT_*); only providers the user
   // actually enabled (key present + checked) get a non-zero weight. Active only for
   // stockSource=auto-mix; every other mode is untouched.
-  const autoMixActiveVideo = new Set<number>();   // ki → fetch a real video clip
-  const autoMixPhotoSlots = new Set<number>();    // ki → free-photo provider (Ken Burns)
-  const autoMixAiSlots = new Set<number>();       // ki → generated AI image (paid)
+    const autoMixActiveVideo = new Set<number>();   // ki → fetch a real video clip
+    const autoMixPhotoSlots = new Set<number>();    // ki → free-photo provider (Ken Burns)
+    const autoMixAiSlots = new Set<number>();       // ki → generated AI image (paid)
+    const usedAutoMixPhotoIds = new Set<string>();  // deduplicate photo IDs across AutoMix photo slots
   const autoMixReusableByScene = new Map<number, {
     beatId: string;
     sceneIndex: number;
@@ -1654,7 +1662,10 @@ async function handleFetchStock(req: Request) {
       ? keywords.length
       : aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
     const activeIdx = pickEvenIndices(keywords.length, pieceCount);
-    const plan = planAutoMixSources(activeIdx.length, weights);
+    const activeSceneTexts = activeIdx.map((ki) =>
+      (Array.isArray(subtitleTexts) ? subtitleTexts[ki] : undefined) ?? keywords[ki] ?? "",
+    );
+    const plan = planSemanticAutoMixSources(activeIdx.length, weights, activeSceneTexts);
     activeIdx.forEach((ki, j) => {
       const src = plan[j] ?? "video";
       if (src === "ai") autoMixAiSlots.add(ki);
@@ -3372,12 +3383,12 @@ async function handleFetchStock(req: Request) {
             const file = pickBestFile(v);
             if (!file) continue;
             const title = slugToTitle(v.url ?? "");
-            candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title, query, provider: "pexels" });
+            candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title, query, provider: "pexels", ...(v.image ? { thumb: v.image } : {}) });
           }
           for (const pv of pixabayVideos) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
             const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 6).map((t: string) => t.trim()).join(" ") : query;
-            candidates.push({ keyword, sourceIndex: ki, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, width: pv.width, height: pv.height, title: pbTitle, query, provider: "pixabay" });
+            candidates.push({ keyword, sourceIndex: ki, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, width: pv.width, height: pv.height, title: pbTitle, query, provider: "pixabay", ...(pv.thumb ? { thumb: pv.thumb } : {}) });
           }
 
           if (candidates.length > 0) {
@@ -3400,7 +3411,7 @@ async function handleFetchStock(req: Request) {
             for (const v of page2) {
               const file = pickBestFile(v);
               if (!file) continue;
-              candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
+              candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels", ...(v.image ? { thumb: v.image } : {}) });
             }
             if (candidates.length > 0) {
               stockTelemetry.searchCandidatesTotal += candidates.length;
@@ -3723,8 +3734,20 @@ async function handleFetchStock(req: Request) {
         const query = kw || subtitleTexts?.[ki] || "";
 
         // ลองตามลำดับ provider ที่ตรงกับ topic ของ query (keyword-aware routing).
-        // AI slots skip stock search entirely → straight to the kie.ai block below.
-        if (kind === "photo") for (const provider of getImageProviderOrder(query)) {
+        // AI slots skip stock search entirely → straight to the Hero/kie block below.
+        const slotWindowDurSec = Array.isArray(brollWindowDurationsSec) ? brollWindowDurationsSec[ki] : undefined;
+        const slotKbDurationSec = Math.max(
+          KEN_BURNS_DURATION_SEC,
+          Math.min(30, Math.ceil((typeof slotWindowDurSec === "number" && slotWindowDurSec > 0 ? slotWindowDurSec : KEN_BURNS_DURATION_SEC) + 1)),
+        );
+        const baseProviderOrder = getImageProviderOrder(query);
+        const orderedPhotoProviders = usesManagedStock
+          ? [
+              ...baseProviderOrder.filter((p) => p === "pixabay-photo"),
+              ...baseProviderOrder.filter((p) => p !== "pixabay-photo"),
+            ]
+          : baseProviderOrder;
+        if (kind === "photo") for (const provider of orderedPhotoProviders) {
           if (provider === "unsplash" && !canUseUnsplashFallback) continue;
           if (provider === "pexels-photo" && !canUsePexelsPhotoFallback) continue;
           if (provider === "pixabay-photo" && !canUsePixabayPhotoFallback) continue;
@@ -3742,8 +3765,8 @@ async function handleFetchStock(req: Request) {
             let fallback: ImageFallbackResult | null = null;
             switch (provider) {
               case "unsplash":      fallback = await tryUnsplashKenBurns(query, unsplashKey!, imagePath, outPath); break;
-              case "pexels-photo":  fallback = await tryPexelsPhotoKenBurns(query, ownPexelsKey!, imagePath, outPath); break;
-              case "pixabay-photo": fallback = await tryPixabayPhotoKenBurns(query, ownPixabayKey!, imagePath, outPath); break;
+              case "pexels-photo":  fallback = await tryPexelsPhotoKenBurns(query, pexelsKey!, imagePath, outPath, usedAutoMixPhotoIds, slotKbDurationSec); break;
+              case "pixabay-photo": fallback = await tryPixabayPhotoKenBurns(query, pixabayKey!, imagePath, outPath, usedAutoMixPhotoIds, slotKbDurationSec); break;
               case "flickr":        fallback = await tryFlickrKenBurns(query, flickrKey!, imagePath, outPath); break;
               case "wikimedia":     fallback = await tryWikimediaKenBurns(query, imagePath, outPath); break;
               case "nasa":          fallback = await tryNasaKenBurns(query, imagePath, outPath); break;
@@ -3851,11 +3874,16 @@ async function handleFetchStock(req: Request) {
           let failureReason: string | null = null;
           let creditsRefunded = 0;
           try {
-            const genPrompt = buildKieImagePrompt(kw, {
+            const spokenSceneContext = Array.isArray(subtitleTexts) ? subtitleTexts[ki]?.trim() : "";
+            const richSubject = spokenSceneContext && spokenSceneContext.toLowerCase() !== kw.toLowerCase()
+              ? `${kw} (${spokenSceneContext.slice(0, 140)})`
+              : kw;
+            const genPrompt = buildKieImagePrompt(richSubject, {
               visualDirection,
               terms: relTerms,
               region: brollPreference.brollRegionPreference,
               style: brollPreference.brollVisualStyle,
+              creativeBrollSceneIndex: ki,
             }).slice(0, 1_500);
             generated = await generateHeroImageForVideo({
               userId,
@@ -3882,13 +3910,13 @@ async function handleFetchStock(req: Request) {
             } else {
               await downloadAndCrop(generated.outputUrl, imagePath);
             }
-            await applyKenBurns(imagePath, outPath);
+            await applyKenBurns(imagePath, outPath, slotKbDurationSec);
             if (!isValidMp4Path(outPath)) throw new Error("Hero image Ken Burns output is invalid");
             stockTelemetry.downloadedCount++;
             stockTelemetry.normalizeSkippedCount++;
             try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
             await retainResult({
-              keyword: kw, sourceIndex: ki, pexelsId: id, duration: KEN_BURNS_DURATION_SEC,
+              keyword: kw, sourceIndex: ki, pexelsId: id, duration: slotKbDurationSec,
               videoUrl: generated.outputUrl,
               localPath: outPath, localUrl: `/api/stocks/${outFile}`,
               imageUrl: generated.outputUrl, imageLocalUrl: `/api/stocks/${imageFile}`,

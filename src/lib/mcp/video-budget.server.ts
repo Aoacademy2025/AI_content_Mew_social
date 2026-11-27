@@ -1,4 +1,4 @@
-import { classifyEntitlement } from "@/lib/entitlements";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { mcpAccessAllowed } from "./auth";
 import { validateMcpStarterTrialConsumptionInTransaction } from "./starter-trial";
 import { VIDEO_JOB_INFLIGHT_STATUSES } from "./video-job-status";
@@ -92,7 +92,7 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       if (user.suspended) return quoteFailure("account_suspended", "บัญชีนี้ยังสร้างงานไม่ได้");
       const receipt = JSON.parse(quote.receiptJson) as QuoteReceipt;
       const execution = JSON.parse(quote.executionJson) as QuoteExecution;
-      const effectivePlan = classifyEntitlement(user).effectivePlan;
+      const effectivePlan = (await resolveEffectiveEntitlement(user, new Date(), tx)).effectivePlan;
       if (!mcpAccessAllowed(effectivePlan)) {
         const starterRefusal = await validateMcpStarterTrialConsumptionInTransaction(tx, user, {
           source: quote.source,
@@ -118,7 +118,7 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
       const totalAvailableCredits = (wallet?.granted ?? 0) + (wallet?.purchased ?? 0) + (promotional._sum.remainingAmount ?? 0);
       if (totalAvailableCredits < quote.totalHeroCreditCeiling) return quoteFailure("insufficient_funding", "เครดิตปัจจุบันไม่เพียงพอกับวงเงินที่ยืนยัน");
       if (execution.jobInput.voiceProvider === "elevenlabs") {
-        const refusal = voiceProviderPlanViolation("elevenlabs", user.plan);
+        const refusal = voiceProviderPlanViolation("elevenlabs", effectivePlan);
         if (refusal) return quoteFailure(refusal.code, refusal.message);
         if (!user.elevenlabsKey) return quoteFailure("voice_setup_required", "กรุณาตั้งค่า ElevenLabs API key ใน Studio");
       }
@@ -135,7 +135,7 @@ export async function consumeVideoQuote(userId: string, quoteId: string, changed
         const walletCanFundOverflow = process.env.CREDITS_LIVE === "1" && totalAvailableCredits > quote.totalHeroCreditCeiling;
         const audioRefusal = aiAudioCeilingRefusal(
           { allowed: used < ceiling, remaining },
-          user.plan,
+          effectivePlan,
           { walletCanFundOverflow },
         );
         if (audioRefusal) return quoteFailure(audioRefusal.code, `${audioRefusal.message} — ${audioRefusal.userAction}`);

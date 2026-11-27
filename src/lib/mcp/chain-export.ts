@@ -623,7 +623,13 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
   const rawBgVideos = Array.isArray((sourcePreview.config as { bgVideos?: unknown } | undefined)?.bgVideos)
     ? ((sourcePreview.config as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
     : [];
-  const sfxMode = previewInput.sfxMode === "subtle" ? "subtle" as const : "none" as const;
+  const baseAlreadyHasSfx =
+    (sourcePreview.config as { sfxMode?: unknown } | undefined)?.sfxMode === "subtle"
+    && sourcePreview.avatarMode !== "direct";
+  const sfxMode =
+    !baseAlreadyHasSfx && previewInput.sfxMode === "subtle"
+      ? "subtle" as const
+      : "none" as const;
   const sfxCues = sfxMode === "subtle"
     ? planTransitionSfxCues({
         sfxMode: "subtle",
@@ -646,6 +652,7 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
     initialHeadlineHook,
     sfxMode,
     sfxCues,
+    sourcePreview.words,
   );
   const inheritedLogo = normalizeLogoOverlayConfig(previewInput.logoOverlay);
   if (inheritedLogo?.enabled) {

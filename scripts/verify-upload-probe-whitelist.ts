@@ -566,7 +566,7 @@ async function legitChecks(dir: string): Promise<void> {
     const outDims = ffprobeDimensions(forcedOut, "mov");
     check(`${label}: Ken Burns output is 1080x1920`, outDims?.width === 1080 && outDims?.height === 1920, JSON.stringify(outDims));
     const [a, b] = await Promise.all([framesHash(forcedOut), framesHash(autoOut)]);
-    check(`${label}: Ken Burns frames equal the auto-detect path`, a.frames === 150 && a.hash === b.hash && a.frames === b.frames,
+    check(`${label}: Ken Burns frames equal the auto-detect path`, a.frames === KEN_BURNS_DURATION_SEC * 30 && a.hash === b.hash && a.frames === b.frames,
       `${a.frames}:${a.hash} vs ${b.frames}:${b.hash}`);
   }
 }

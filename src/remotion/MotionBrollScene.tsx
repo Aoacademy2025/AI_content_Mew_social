@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useLayoutEffect, useRef } from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import {
   DEFAULT_THEME_BRAND_CI,
@@ -73,6 +73,14 @@ export function paintMotionBrollCanvas(
 
   const bw = 540;
   const bh = 960;
+  // Subtle continuous ambient camera drift across p ∈ [0, 1] so scenes stay alive
+  // in the second half of the window instead of freezing like a static slide.
+  const camScale = 1 + 0.028 * p;
+  const camDriftX = Math.sin(p * Math.PI * 1.5) * 3.5;
+  const camDriftY = -4.5 * Math.sin(p * Math.PI);
+  ctx.translate(bw / 2 + camDriftX, bh / 2 + camDriftY);
+  ctx.scale(camScale, camScale);
+  ctx.translate(-bw / 2, -bh / 2);
 
   // 1. Background layer
   const bgVariant = props.backgroundVariant ?? entry.defaultBackgroundVariant;
@@ -489,15 +497,15 @@ export function paintMotionBrollCanvas(
       ctx.fill();
     }
 
-    // Main Card Title + Monospace file path subtitle
+    // Main Card Title + Monospace topic subtitle
     ctx.fillStyle = "#FFFFFF";
     ctx.font = `900 31px ${font}`;
     ctx.textAlign = "left";
-    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หัวข้อสำคัญ", 22), -200, -124);
+    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หัวข้อสำคัญ", 22), -200, -124, 400);
 
     ctx.fillStyle = "#94A3B8";
     ctx.font = `500 16px ${monoFont}`;
-    ctx.fillText(trimPhraseAtWordBoundary(props.subtitle ?? "workflow/step.ts", 36), -200, -96);
+    ctx.fillText(trimPhraseAtWordBoundary(props.subtitle ?? "SUMMARY · KEY INSIGHT", 36), -200, -96, 400);
 
     // Divider line
     ctx.strokeStyle = "rgba(255,255,255,0.08)";
@@ -510,18 +518,18 @@ export function paintMotionBrollCanvas(
     const items =
       props.items && props.items.length > 0
         ? props.items
-        : ["วางโครงเรื่องให้ชัด", "เปิดด้วยภาพคำตอบทันที", "ล็อกสีและฟอนต์ประจำช่อง"];
+        : ["สรุปประเด็นสำคัญ", "ขั้นตอนที่นำไปใช้ได้จริง", "ผลลัพธ์ที่ตรวจสอบได้"];
 
     // Specialized Rich Board Content (8 distinct production layouts)
     if (boardStyle === "comment-cta") {
       // Glowing CTA Board with Typewriter Input Box
       drawCard(-196, -42, 392, 82, "#FFFFFF", 41, brand.primaryColor, 4);
-      const word = props.rightText ?? "MEW";
+      const word = props.rightText ?? "สนใจ";
       const chars = Math.max(1, Math.floor(clamp01((p - 0.12) / 0.42) * word.length));
       ctx.fillStyle = "#0F172A";
       ctx.font = `900 34px ${font}`;
       ctx.textAlign = "left";
-      ctx.fillText(`💬  ${word.slice(0, chars)}`, -164, 11);
+      ctx.fillText(`💬  ${word.slice(0, chars)}`, -164, 11, 296);
 
       // Blinking cursor
       if (Math.floor(p * 12) % 2 === 0) {
@@ -650,12 +658,12 @@ export function paintMotionBrollCanvas(
         ctx.restore();
       }
     } else if (boardStyle === "pronounce-map") {
-      // Left -> Right pills (Ref 2 Step 3/9)
+      // Left -> Right pills (Key Points Breakdown)
       const pairs = [
-        ["Hook 3 วิแรก", "เปิดด้วยภาพคำตอบ"],
-        ["Brand CI", "ล็อกสี #38BDF8 อัตโนมัติ"],
-        ["Subtitles", "กระชับ ไม่ตกบรรทัด"],
-        ["Motion 60fps", "ขยับตรงจังหวะเสียงพูด"],
+        ["POINT 01", "จุดสำคัญอันดับแรก"],
+        ["POINT 02", "แนวทางปฏิบัติจริง"],
+        ["POINT 03", "ข้อควรระวังหลัก"],
+        ["POINT 04", "สรุปผลลัพธ์ที่ได้"],
       ];
       pairs.forEach(([left, right], idx) => {
         const at = 0.08 + idx * 0.14;
@@ -677,7 +685,7 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#F8FAFC";
         ctx.font = `700 16px ${monoFont}`;
         ctx.textAlign = "center";
-        ctx.fillText(left, -126, 6);
+        ctx.fillText(left, -126, 6, 134);
 
         ctx.fillStyle = brand.primaryColor;
         ctx.font = `900 20px ${font}`;
@@ -686,18 +694,18 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#FFFFFF";
         ctx.font = `800 19px ${font}`;
         ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(items[idx] ?? right, 20), -6, 7);
+        ctx.fillText(trimPhraseAtWordBoundary(items[idx] ?? right, 20), -6, 7, 202);
         ctx.restore();
       });
     } else if (boardStyle === "code-editor") {
-      // React / Remotion code snippet + bottom highlight pill (Ref 2 Step 6/9)
+      // Structured Blueprint Lines + bottom highlight pill
       const codeLines = props.codeLines ?? [
-        "<MotionBrollScene",
-        "  themeId='cue-step-board'",
-        "  brandCi={{ primary: '#38BDF8' }}",
-        "  mascot='ai-bot'",
-        "  syncToWordCues={true}",
-        "/>",
+        `const topic = "${trimPhraseAtWordBoundary(props.title ?? "หัวข้อหลัก", 18)}";`,
+        `  step1: "${trimPhraseAtWordBoundary(items[0] ?? "วิเคราะห์ต้นเหตุ", 20)}",`,
+        `  step2: "${trimPhraseAtWordBoundary(items[1] ?? "ลงมือแก้ไขตรงจุด", 20)}",`,
+        `  step3: "${trimPhraseAtWordBoundary(items[2] ?? "วัดผลลัพธ์ชัดเจน", 20)}",`,
+        `  status: "VERIFIED",`,
+        `};`,
       ];
       codeLines.forEach((line, idx) => {
         const at = 0.05 + idx * 0.08;
@@ -705,7 +713,7 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = idx === 1 || idx === 2 ? brand.primaryColor : "#E2E8F0";
         ctx.font = `500 15.5px ${monoFont}`;
         ctx.textAlign = "left";
-        ctx.fillText(line, -196, -42 + idx * 28);
+        ctx.fillText(line, -196, -42 + idx * 28, 392);
       });
 
       if (p > 0.3) {
@@ -720,7 +728,7 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#090D16";
         ctx.font = `800 17.5px ${font}`;
         ctx.textAlign = "center";
-        ctx.fillText("Remotion + Brand CI = วาดด้วยโค้ดทุกเฟรม", 0, 7);
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "สรุปโครงสร้างเข้าใจง่ายในภาพเดียว", 28), 0, 7, 372);
         ctx.restore();
       }
     } else if (boardStyle === "contact-sheet-qa") {
@@ -764,12 +772,12 @@ export function paintMotionBrollCanvas(
         }
       }
     } else if (boardStyle === "script-table") {
-      // Structured Script Rows (hook / problem / solution / cta) (Ref 2 Step 2/9)
+      // Structured Rows (01..04)
       const rows = [
-        ["hook", items[0] ?? "เปิดด้วยภาพคำตอบใน 3 วิแรก"],
-        ["pain", items[1] ?? "ทำไมคนเลื่อนผ่านคลิปที่เปิดช้า"],
-        ["brand", items[2] ?? "ล็อกสีและสไตล์ประจำช่องให้จำง่าย"],
-        ["cta", "ปิดด้วยคำถามให้คนคอมเมนต์ MEW"],
+        ["01", items[0] ?? "ประเด็นสำคัญข้อแรก"],
+        ["02", items[1] ?? "รายละเอียดที่ต้องรู้"],
+        ["03", items[2] ?? "แนวทางนำไปปรับใช้"],
+        ["04", items[3] ?? props.badgeText ?? "สรุปผลลัพธ์ชัดเจน"],
       ];
       rows.forEach(([tag, desc], idx) => {
         const at = 0.08 + idx * 0.14;
@@ -782,7 +790,7 @@ export function paintMotionBrollCanvas(
 
         ctx.fillStyle = "#F8FAFC";
         ctx.font = `600 19px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(desc, 25), -118, y);
+        ctx.fillText(trimPhraseAtWordBoundary(desc, 25), -138, y, 330);
 
         ctx.strokeStyle = "rgba(255,255,255,0.08)";
         ctx.beginPath();
@@ -791,16 +799,16 @@ export function paintMotionBrollCanvas(
         ctx.stroke();
       });
     } else {
-      // terminal-spec (Ref 2 Step 1/9: Fact check + checklist pills)
+      // terminal-spec (Key Insight Summary + checklist pills)
       ctx.fillStyle = "#CBD5E1";
       ctx.font = `500 16px ${monoFont}`;
       ctx.textAlign = "left";
-      ctx.fillText("@ Channel Audit: mewsocial (duckyhero)", -196, -44);
+      ctx.fillText(`> TOPIC: ${trimPhraseAtWordBoundary(props.headerText ?? "KEY INSIGHT", 26)}`, -196, -44, 392);
       ctx.fillStyle = "#FFFFFF";
       ctx.font = `700 16px ${monoFont}`;
-      ctx.fillText("### 1. Brand CI Palette & Hook Cadence", -196, -16);
+      ctx.fillText(`### ${trimPhraseAtWordBoundary(props.title ?? "สรุปประเด็นหลัก", 28)}`, -196, -16, 392);
       ctx.fillStyle = brand.primaryColor;
-      ctx.fillText("    VERIFIED  ·  #38BDF8 / Kanit", -196, 10);
+      ctx.fillText(`    STATUS  ·  ${trimPhraseAtWordBoundary(props.badgeText ?? "VERIFIED", 20)}`, -196, 10, 392);
 
       items.slice(0, 2).forEach((item, idx) => {
         const at = 0.22 + idx * 0.18;
@@ -823,7 +831,7 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#FFFFFF";
         ctx.font = `700 20px ${font}`;
         ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(item, 24), -142, 7);
+        ctx.fillText(trimPhraseAtWordBoundary(item, 24), -142, 7, 326);
         ctx.restore();
       });
     }
@@ -1076,16 +1084,16 @@ export function paintMotionBrollCanvas(
       ctx.fillStyle = "#F8FAFC";
       ctx.font = `800 15px ${monoFont}`;
       ctx.textAlign = "left";
-      ctx.fillText("RETENTION: 22%", -78, -82);
+      ctx.fillText("BEFORE", -78, -82);
 
       // Caption on Polaroid bottom
       ctx.fillStyle = "#1C1917";
       ctx.font = `900 20px ${font}`;
       ctx.textAlign = "center";
-      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "คลิปทั่วไป: เกริ่นยาว", 18), 0, 82);
+      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "แบบเดิมที่พบบ่อย", 18), 0, 82, 192);
       ctx.fillStyle = "#DC2626";
       ctx.font = `800 16px ${font}`;
-      ctx.fillText("❌ คนปัดทิ้งตั้งแต่ 3 วิแรก", 0, 106);
+      ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "❌ เสียเวลาและผิดพลาดง่าย", 20), 0, 106, 192);
 
       // Red Pushpin
       ctx.fillStyle = "#DC2626";
@@ -1123,15 +1131,15 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = brand.accentColor || "#FACC15";
         ctx.font = `800 15px ${monoFont}`;
         ctx.textAlign = "left";
-        ctx.fillText("HOOK LOCKED: +310%", -78, 34);
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "RESULT · VERIFIED", 18), -78, 34, 160);
 
         ctx.fillStyle = "#1C1917";
         ctx.font = `900 20px ${font}`;
         ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "เปิดด้วยคำตอบ + ภาพขยับ", 18), 0, 82);
+        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "แนวทางที่แม่นยำกว่า", 18), 0, 82, 192);
         ctx.fillStyle = "#15803D";
         ctx.font = `800 16px ${font}`;
-        ctx.fillText("✓ หยุดนิ้วคนดูได้ทันที", 0, 106);
+        ctx.fillText(trimPhraseAtWordBoundary(items[1] ?? "✓ เห็นผลลัพธ์ชัดเจนทันที", 20), 0, 106, 192);
 
         // Red Pushpin
         ctx.fillStyle = "#DC2626";
@@ -1370,6 +1378,7 @@ export function paintMotionBrollCanvas(
     ctx.fill();
 
     // Avatar Circle with Brand Ring + Online Dot
+    const avatarInitial = (props.title ?? props.headerText ?? "★").trim().charAt(0).toUpperCase() || "★";
     ctx.fillStyle = brand.primaryColor;
     ctx.beginPath();
     ctx.arc(-176, -208, 22, 0, Math.PI * 2);
@@ -1377,7 +1386,7 @@ export function paintMotionBrollCanvas(
     ctx.fillStyle = "#090D16";
     ctx.font = `900 18px ${font}`;
     ctx.textAlign = "center";
-    ctx.fillText("M", -176, -201);
+    ctx.fillText(avatarInitial, -176, -201);
 
     ctx.fillStyle = "#22C55E";
     ctx.beginPath();
@@ -1387,10 +1396,10 @@ export function paintMotionBrollCanvas(
     ctx.fillStyle = "#F8FAFC";
     ctx.font = `800 20px ${font}`;
     ctx.textAlign = "left";
-    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "Mew Social Studio", 22), -142, -212);
+    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "ข้อความสำคัญ", 22), -142, -212, 340);
     ctx.fillStyle = brand.primaryColor;
     ctx.font = `600 14px ${monoFont}`;
-    ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "ACTIVE NOW · VERIFIED", 26), -142, -190);
+    ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "ACTIVE NOW · VERIFIED", 26), -142, -190, 340);
 
     if (config.templateId === "chat.notification-stack") {
       // Stacked iOS Glass Notification Banners cascading in with spring physics
@@ -1425,11 +1434,11 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#94A3B8";
         ctx.font = `700 13px ${monoFont}`;
         ctx.textAlign = "left";
-        ctx.fillText(idx === 2 ? "BRAND CI SYSTEM · NOW" : `ANALYTICS ALERT · ${idx + 1}m ago`, -128, -14);
+        ctx.fillText(idx === 2 ? "HIGHLIGHT · NOW" : `UPDATE · ${idx + 1}m ago`, -128, -14);
 
         ctx.fillStyle = "#FFFFFF";
         ctx.font = `800 20px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(alertText, 25), -128, 18);
+        ctx.fillText(trimPhraseAtWordBoundary(alertText, 25), -128, 18, 320);
         ctx.restore();
       });
     } else if (config.templateId === "chat.viral-comment-reply") {
@@ -1467,7 +1476,7 @@ export function paintMotionBrollCanvas(
       // Creator Auto-Reply Bubble with Typewriter Keyword
       if (p > 0.22) {
         const c2 = easeOutBack(clamp01((p - 0.22) / 0.18));
-        const kw = props.rightText ?? "MEW";
+        const kw = props.rightText ?? "สนใจ";
         ctx.save();
         ctx.translate(0, 78);
         ctx.scale(c2, c2);
@@ -1479,9 +1488,9 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#090D16";
         ctx.font = `900 32px ${font}`;
         ctx.textAlign = "center";
-        ctx.fillText(`💬 พิมพ์คอมเมนต์ "${kw}"`, 0, -4);
+        ctx.fillText(`💬 พิมพ์คอมเมนต์ "${kw}"`, 0, -4, 384);
         ctx.font = `800 19px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ส่งลิงก์ให้ใน DM ทันที ⚡", 24), 0, 32);
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ส่งรายละเอียดให้ในแชตทันที ⚡", 24), 0, 32, 384);
         ctx.restore();
       }
     } else {
@@ -1641,28 +1650,28 @@ export function paintMotionBrollCanvas(
     };
 
     // Keynote Pill Header
-    const topTag = trimPhraseAtWordBoundary(props.headerText ?? "APPLE BENTO SUMMARY", 24);
+    const topTag = trimPhraseAtWordBoundary(props.headerText ?? "KEY HIGHLIGHTS", 24);
     ctx.save();
     ctx.translate(bw / 2, 72);
     drawBentoTile(-175, -22, 350, 44, false, 22);
     ctx.fillStyle = brand.primaryColor;
     ctx.font = `800 15px ${monoFont}`;
     ctx.textAlign = "center";
-    ctx.fillText(`✦  ${topTag}`, 0, 6);
+    ctx.fillText(`✦  ${topTag}`, 0, 6, 320);
     ctx.restore();
 
     const items =
       props.items && props.items.length > 0
         ? props.items
-        : ["AI Script Hook", "Brand CI Lock", "60fps Motion B-Roll", "Smart Karaoke Sub"];
+        : ["ประเด็นสำคัญ 1", "ประเด็นสำคัญ 2", "ประเด็นสำคัญ 3", "สรุปผลลัพธ์"];
 
     if (config.templateId === "bento.feature-matrix") {
-      // 2x2 Apple Keynote Bento Grid with Active Spotlight Tile
+      // 2x2 Keynote Bento Grid with Active Spotlight Tile
       const tiles = [
-        { x: 34, y: 120, w: 226, h: 215, tag: "01 · HOOK", icon: "⚡" },
-        { x: 280, y: 120, w: 226, h: 215, tag: "02 · BRAND CI", icon: "🎨" },
-        { x: 34, y: 355, w: 226, h: 215, tag: "03 · MOTION", icon: "🎬" },
-        { x: 280, y: 355, w: 226, h: 215, tag: "04 · SUBTITLE", icon: "💬" },
+        { x: 34, y: 120, w: 226, h: 215, tag: "01 · FOCUS", icon: "⚡" },
+        { x: 280, y: 120, w: 226, h: 215, tag: "02 · INSIGHT", icon: "🎯" },
+        { x: 34, y: 355, w: 226, h: 215, tag: "03 · ACTION", icon: "🚀" },
+        { x: 280, y: 355, w: 226, h: 215, tag: "04 · RESULT", icon: "✨" },
       ];
       const activeIdx = Math.min(3, Math.floor(p * 4));
       tiles.forEach((t, idx) => {
@@ -1717,11 +1726,11 @@ export function paintMotionBrollCanvas(
       ctx.fillStyle = "#EF4444";
       ctx.font = `800 15px ${monoFont}`;
       ctx.textAlign = "left";
-      ctx.fillText("OLD WORKFLOW · วิธีเดิมที่เสียเวลา", -204, -46);
+      ctx.fillText("BEFORE · วิธีเดิมที่เสียเปรียบ", -204, -46, 408);
 
       ctx.fillStyle = "#94A3B8";
       ctx.font = `800 28px ${font}`;
-      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "ตัดต่อเอง 4 ชั่วโมง / คลิป", 22), -204, 4);
+      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? items[0] ?? "ขั้นตอนยุ่งยาก ใช้เวลานาน", 22), -204, 4, 408);
 
       // Animated red strikethrough line
       const strikeP = clamp01((p - 0.18) / 0.2);
@@ -1734,7 +1743,7 @@ export function paintMotionBrollCanvas(
 
       ctx.fillStyle = "#64748B";
       ctx.font = `600 18px ${font}`;
-      ctx.fillText("× ซับไม่ตรงแบรนด์   × กราฟิกไม่ขยับตามเสียงพูด", -204, 52);
+      ctx.fillText(trimPhraseAtWordBoundary(props.subtitle ?? "× ต้นทุนแฝงสูง   × คุมมาตรฐานยาก", 34), -204, 52, 408);
       ctx.restore();
 
       // Bottom Highlighted Bento Verdict Card
@@ -1752,22 +1761,22 @@ export function paintMotionBrollCanvas(
         ctx.fillStyle = "#090D16";
         ctx.font = `900 14px ${monoFont}`;
         ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "PRO VERDICT", 16), -116, -75);
+        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "KEY TAKEAWAY", 16), -116, -75, 164);
 
         ctx.fillStyle = "#FFFFFF";
         ctx.font = `900 34px ${font}`;
         ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "ใช้ AI + Brand CI เสร็จใน 5 นาที", 22), -204, -22);
+        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? props.title ?? "ทางเลือกที่คุ้มค่าและชัดเจนกว่า", 22), -204, -22, 408);
 
         items.slice(0, 2).forEach((point, idx) => {
           ctx.fillStyle = "#E2E8F0";
           ctx.font = `700 20px ${font}`;
-          ctx.fillText(`✓  ${trimPhraseAtWordBoundary(point, 26)}`, -204, 34 + idx * 38);
+          ctx.fillText(`✓  ${trimPhraseAtWordBoundary(point, 26)}`, -204, 34 + idx * 38, 408);
         });
         ctx.restore();
       }
     } else {
-      // Default: bento.glass-metrics (Hero KPI Card with 60fps Animated Number Counter + 2 Sub-Bento Cards)
+      // Default: bento.glass-metrics (Hero KPI Card with Script-Derived Counter + 2 Sub-Bento Cards)
       const heroEnter = easeOutBack(clamp01(p / 0.16));
       ctx.save();
       ctx.translate(bw / 2, 255);
@@ -1777,15 +1786,23 @@ export function paintMotionBrollCanvas(
       ctx.fillStyle = "#94A3B8";
       ctx.font = `700 16px ${monoFont}`;
       ctx.textAlign = "left";
-      ctx.fillText("RETENTION & HOOK VELOCITY", -202, -92);
+      ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "KEY HIGHLIGHT METRIC", 28), -202, -92, 404);
 
-      // 60fps Animated KPI Number Counter
-      const countVal = Math.round(clamp01(p / 0.55) * 320);
+      // Parse real number from badgeText/title/subtitle when present; otherwise show clean focal step/percentage
+      const metricMatch = `${props.badgeText ?? ""} ${props.title ?? ""} ${props.subtitle ?? ""}`.match(
+        /([+-]?\d[\d,.]*)\s*(%|เท่า|x|X|ข้อ|ขั้น|วัน|นาที|วินาที|บาท)?/,
+      );
+      const parsedNum = metricMatch ? Number(metricMatch[1]!.replace(/,/g, "")) : NaN;
+      const targetNum = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 100;
+      const unitSuffix = metricMatch?.[2] ?? "%";
+      const animatedVal = Math.round(clamp01(p / 0.55) * targetNum);
+      const formattedMetric = `${targetNum >= 1000 ? animatedVal.toLocaleString("en-US") : animatedVal}${unitSuffix}`;
+
       ctx.fillStyle = "#FFFFFF";
-      ctx.font = `900 78px ${font}`;
-      ctx.fillText(`+${countVal}%`, -202, -8);
+      ctx.font = `900 68px ${font}`;
+      ctx.fillText(formattedMetric, -202, -8, 264);
 
-      // Glowing Growth Pill
+      // Glowing Status Pill
       ctx.fillStyle = "rgba(34, 197, 94, 0.22)";
       ctx.strokeStyle = "#22C55E";
       ctx.lineWidth = 2;
@@ -1794,14 +1811,14 @@ export function paintMotionBrollCanvas(
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = "#4ADE80";
-      ctx.font = `800 18px ${monoFont}`;
+      ctx.font = `800 16px ${monoFont}`;
       ctx.textAlign = "center";
-      ctx.fillText("▲ 3.2x FAST", 138, -35);
+      ctx.fillText("▲ KEY POINT", 138, -35, 120);
 
       ctx.fillStyle = "#F8FAFC";
       ctx.font = `800 24px ${font}`;
       ctx.textAlign = "left";
-      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หยุดนิ้วคนดูตั้งแต่วินาทีแรก", 24), -202, 44);
+      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "สรุปข้อมูลสำคัญที่ต้องรู้", 24), -202, 44, 404);
 
       // Smooth Sparkline Curve inside Hero Bento Card
       const sparkP = clamp01((p - 0.1) / 0.5);
@@ -1815,8 +1832,8 @@ export function paintMotionBrollCanvas(
 
       // 2 Bottom Sub-Bento Cards
       const subCards = [
-        { x: 34, title: items[0] ?? "เปิดด้วยคำตอบทันที", sub: "3 วิแรกห้ามเกริ่น" },
-        { x: 280, title: items[1] ?? "ล็อกสี Brand CI", sub: "จำช่องได้ในพริบตา" },
+        { x: 34, title: items[0] ?? "ประเด็นหลักข้อที่ 1", sub: items[2] ?? "ชัดเจน เข้าใจง่าย" },
+        { x: 280, title: items[1] ?? "ประเด็นหลักข้อที่ 2", sub: props.badgeText ?? "นำไปใช้ได้จริง" },
       ];
       subCards.forEach((sc, idx) => {
         const at = 0.22 + idx * 0.12;
@@ -1934,7 +1951,11 @@ export function paintMotionBrollCanvas(
       }
 
       case "three-cards-progression": {
-        const labels = ["ตอน 1", "ตอน 2", "ตอน 3"];
+        const labels = [
+          trimPhraseAtWordBoundary(items[0] ?? "ขั้นที่ 1", 10),
+          trimPhraseAtWordBoundary(items[1] ?? "ขั้นที่ 2", 10),
+          trimPhraseAtWordBoundary(items[2] ?? "ขั้นที่ 3", 10),
+        ];
         const flames = [1.0, 0.55, 0.0];
         labels.forEach((lbl, idx) => {
           const at = 0.05 + idx * 0.14;
@@ -1946,9 +1967,9 @@ export function paintMotionBrollCanvas(
           ctx.scale(cp, cp);
           drawCard(-56, -80, 112, 150, "#FFFFFF", 14, "#111827", 4.2);
           ctx.fillStyle = "#111827";
-          ctx.font = `900 24px ${font}`;
+          ctx.font = `900 20px ${font}`;
           ctx.textAlign = "center";
-          ctx.fillText(lbl, 0, 22);
+          ctx.fillText(lbl, 0, 22, 98);
 
           const fScale = flames[idx] ?? 0;
           if (fScale > 0) {
@@ -2098,9 +2119,9 @@ export function paintMotionBrollCanvas(
         // White title label on book cover
         drawCard(-44, -76, 102, 42, "#FFFFFF", 8, "#111827", 3.5);
         ctx.fillStyle = "#111827";
-        ctx.font = `900 19px ${font}`;
+        ctx.font = `900 18px ${font}`;
         ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "Mew Guide", 10), 7, -49);
+        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "คู่มือสำคัญ", 10), 7, -49, 92);
 
         // Smiley mini icon on book cover
         ctx.fillStyle = "#FFFFFF";
@@ -2355,9 +2376,9 @@ export function paintMotionBrollCanvas(
           ctx.rotate(-0.03);
           drawCard(-105, -26, 210, 52, "#FFFFFF", 12);
           ctx.fillStyle = "#111827";
-          ctx.font = `800 21px ${font}`;
+          ctx.font = `800 20px ${font}`;
           ctx.textAlign = "center";
-          ctx.fillText("วาดด้วยโค้ด", 0, 8);
+          ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "ชัดเจนทุกขั้นตอน", 16), 0, 8, 194);
           ctx.restore();
         }
 
@@ -2369,9 +2390,9 @@ export function paintMotionBrollCanvas(
           ctx.rotate(0.02);
           drawCard(-110, -26, 220, 52, brand.accentColor, 12);
           ctx.fillStyle = "#111827";
-          ctx.font = `900 21px ${font}`;
+          ctx.font = `900 20px ${font}`;
           ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ล็อก Brand CI", 14), 0, 8);
+          ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? items[1] ?? "เข้าใจในภาพเดียว", 16), 0, 8, 204);
           ctx.restore();
         }
         break;
@@ -2470,7 +2491,7 @@ export function MotionBrollScene({
       : 1;
   const opacity = Math.min(fadeIn, fadeOut);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     paintMotionBrollCanvas(canvasRef.current, resolvedConfig, progress);
   }, [resolvedConfig, progress, width, height]);
 

@@ -3,7 +3,7 @@ import { requestVideoJob } from "@/lib/mcp/video-budget.server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
-import { isMcpPatToken, resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
+import { isMcpPatToken, resolveMcpPrincipal, resolveMcpPrincipalByClerkId, type McpPrincipal } from "@/lib/mcp/auth";
 import { canInvokeMcpTool } from "@/lib/mcp/starter-trial";
 import { buildMcpPlanRequiredPayload } from "@/lib/mcp/plan-upgrade-cta";
 import { auth } from "@clerk/nextjs/server";
@@ -62,7 +62,7 @@ async function runTool(
 ) {
   const started = Date.now();
   const { userId, effectivePlan, user, userAgent } = principalFrom(extra);
-  if (!userId || !user || !effectivePlan || !canInvokeMcpTool(user, effectivePlan, toolName)) {
+  if (!userId || !user || !effectivePlan || !(await canInvokeMcpTool(user, effectivePlan, toolName))) {
     const refusal = buildMcpPlanRequiredPayload({ toolName });
     await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args, userAgent, responseJson: { error: "plan_required", code: "plan_required" } });
     return text(refusal);

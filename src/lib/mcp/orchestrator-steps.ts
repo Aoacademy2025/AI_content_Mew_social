@@ -290,6 +290,7 @@ export function buildBurnConfig(
   headlineHook?: import("@/lib/headline-hook").HeadlineHookConfig | null,
   sfxMode?: import("@/lib/transition-sfx").SfxMode,
   sfxCues?: import("@/lib/transition-sfx").TransitionSfxCue[],
+  words?: readonly { word: string; startMs: number; endMs: number }[] | null,
 ) {
   return buildHeroSubtitleOverlayConfig({
     baseVideoUrl,
@@ -300,6 +301,7 @@ export function buildBurnConfig(
     ...(headlineHook ? { headlineHook } : {}),
     ...(sfxMode ? { sfxMode } : {}),
     ...(sfxCues?.length ? { sfxCues } : {}),
+    ...(words?.length ? { words } : {}),
   });
 }
 

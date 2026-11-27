@@ -1,7 +1,7 @@
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isPaid } from "@/lib/plan-limits";
-import { classifyEntitlement } from "@/lib/entitlements";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { isMcpPatToken, resolveMcpToken } from "@/lib/mcp/token";
 
 export { isMcpPatToken };
@@ -9,7 +9,7 @@ export { isMcpPatToken };
 export type McpPrincipal = {
   userId: string;
   plan: string; // raw stored plan
-  effectivePlan: string; // after entitlement classification (expired trial/plan → FREE)
+  effectivePlan: string; // after Paid-Equivalent + entitlement classification
   user: User;
 };
 
@@ -30,8 +30,9 @@ export async function resolveMcpPrincipal(token: string | undefined | null): Pro
 }
 
 /** Build a principal (plan/effectivePlan) from a loaded Prisma user. */
-export function principalFromUser(user: User): McpPrincipal {
-  return { userId: user.id, plan: user.plan, effectivePlan: classifyEntitlement(user).effectivePlan, user };
+export async function principalFromUser(user: User, now: Date = new Date()): Promise<McpPrincipal> {
+  const entitlement = await resolveEffectiveEntitlement(user, now);
+  return { userId: user.id, plan: user.plan, effectivePlan: entitlement.effectivePlan, user };
 }
 
 /** Resolve a principal from a Clerk user id — for OAuth-authenticated requests (desktop app). */

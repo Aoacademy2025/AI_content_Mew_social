@@ -351,7 +351,15 @@ async function main() {
         ? caption.tag : (index === 0 ? "hook" : "body")) as "hook" | "body" | "cta",
     }));
     const expectedOverlay = buildBurnConfig(
-      previewOut!.videoUrl!, captions, previewOut!.preview!.audioDurationMs, v2SubConfigToHeroDesign(customDesign), RENDER_FPS,
+      previewOut!.videoUrl!,
+      captions,
+      previewOut!.preview!.audioDurationMs,
+      v2SubConfigToHeroDesign(customDesign),
+      RENDER_FPS,
+      undefined,
+      "none",
+      undefined,
+      previewOut!.preview!.words,
     );
     check("overlay = buildHeroSubtitleOverlayConfig(resolved design, preview captions) on the preview base",
       JSON.stringify(exportInput.subtitleOverlayConfig) === JSON.stringify(expectedOverlay),

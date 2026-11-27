@@ -755,9 +755,9 @@ export async function POST(req: Request) {
     subtitleShadow,
     subtitleOutline,
     subtitleOutlineSize,
-    // Ken Burns motion on b-roll — env-gated (STOCK_KEN_BURNS=1, default off). Set in
-    // the config so the render AND the editor preview (both read ShortVideoConfig) match.
-    kenBurns: process.env.STOCK_KEN_BURNS === "1",
+    // Ken Burns motion on b-roll — enabled by default unless STOCK_KEN_BURNS="0" opts out.
+    // Set in the config so both the render AND the editor preview read the same value.
+    kenBurns: process.env.STOCK_KEN_BURNS !== "0",
     // HERO-42: with B-roll off there is no footage to paint over, so the frame is
     // the brand palette. Omitted for every other source, leaving the composition's
     // own black backdrop exactly as before.

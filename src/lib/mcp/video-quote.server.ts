@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getBalance, getReservedCredits } from "@/lib/credits";
 import { minutesFromSeconds } from "@/lib/minute-round";
 import { resolveHeroAiImageAccess, isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { validateMcpStarterTrialQuoteInput } from "@/lib/mcp/starter-trial";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
@@ -85,7 +86,7 @@ export async function prepareVideoQuote(
   let durationSeconds = estimateClipSecV2(input.script ?? "");
   let quoteWarnings: string[] = [];
   let presenter: { id: string; resultSrc: string | null; durationMs: number | null } | null = null;
-  let presenters: Array<{ id: string; resultSrc: string | null; durationMs: number | null }> = [];
+  const presenters: Array<{ id: string; resultSrc: string | null; durationMs: number | null }> = [];
   if (clip.clip) {
     if (clip.clip.source.kind !== "upload") return importRequired();
     const uploadIds =
@@ -117,18 +118,20 @@ export async function prepareVideoQuote(
     if (paced.warning) quoteWarnings = [paced.warning];
   }
   if (!(durationSeconds > 0) || !Number.isFinite(durationSeconds)) return quoteFailure("invalid_input", "ไม่พบเนื้อหาที่ใช้สร้างวิดีโอ", "ส่ง script ที่มีคำพูด หรือคลิปพิธีกรที่นำเข้าสำเร็จแล้ว");
+  const quoteNow = new Date();
   const starterTrialRefusal = await validateMcpStarterTrialQuoteInput(
     user,
     input,
     durationSeconds,
-    new Date(),
+    quoteNow,
     opts?.toolName ?? "prepare_video_job",
   );
   if (starterTrialRefusal) return starterTrialRefusal;
+  const effectivePlan = (await resolveEffectiveEntitlement(user, quoteNow)).effectivePlan;
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
-  const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, user.plan);
+  const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, effectivePlan);
   if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];
-  const execution = await resolveQuoteExecution(user, input, presenters, parsed.data.brollSource !== undefined);
+  const execution = await resolveQuoteExecution(user, effectivePlan, input, presenters, parsed.data.brollSource !== undefined);
   if ("error" in execution) return execution;
   const hasMotionTheme = Boolean(execution.jobInput.motionThemeId);
   const source = input.brollSource ?? "stock";
@@ -174,6 +177,7 @@ export async function prepareVideoQuote(
 
 async function resolveQuoteExecution(
   user: User,
+  effectivePlan: string,
   input: ReturnType<typeof normalizeQuoteInput>,
   presenters: Array<{ id: string; resultSrc: string | null }>,
   explicitBrollSource = false,
@@ -247,7 +251,7 @@ async function resolveQuoteExecution(
   const source = input.brollSource ?? "stock";
   const brandVoice = brandLookup?.voice;
   const canUseBrandElevenLabs = brandVoice?.provider === "elevenlabs"
-    && isPaid(user.plan)
+    && isPaid(effectivePlan)
     && Boolean(user.elevenlabsKey)
     && Boolean((brandVoice.voiceId ?? user.elevenlabsVoiceId)?.trim());
   const inheritedVoiceProvider = brandVoice?.provider === "elevenlabs"
@@ -311,7 +315,7 @@ async function resolveQuoteExecution(
     music = resolveMusicMoodTrack(resolvedMusicMood, tracks);
   }
   const styleOpen = isInternalAiBetaEnabledFor(user, process.env.GEMINI_TTS_38_PUBLIC === "1");
-  const inheritedLogoOverlay = isPaid(user.plan) && brandLookup?.logoOverlay?.enabled
+  const inheritedLogoOverlay = isPaid(effectivePlan) && brandLookup?.logoOverlay?.enabled
     ? brandLookup.logoOverlay
     : null;
   const jobInput: VideoJobInput = {

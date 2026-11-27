@@ -22,6 +22,7 @@ import { prepareBrollRenderAssets, type BrollCoverageAsset } from "../src/lib/br
 import { mergeWindowEdits, validateWindowEdits } from "../src/lib/broll-rerender";
 import { ffprobeDurationSec } from "../src/lib/upload-media-probe";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
+import { KEN_BURNS_DURATION_SEC } from "../src/lib/broll-asset-lib";
 import {
   MAX_BROLL_IMAGE_BYTES,
   MAX_BROLL_VIDEO_BYTES,
@@ -113,7 +114,7 @@ async function pipelineChecks(tmp: string): Promise<void> {
     stocksDir,
   });
   check("runBrollPipeline: real jpg → ok with /api/stocks/ src and Ken Burns duration",
-    jpgResult.ok && jpgResult.value.src.startsWith("/api/stocks/") && jpgResult.value.clipDuration === 5 && jpgResult.value.stillImage === true,
+    jpgResult.ok && jpgResult.value.src.startsWith("/api/stocks/") && jpgResult.value.clipDuration === KEN_BURNS_DURATION_SEC && jpgResult.value.stillImage === true,
     JSON.stringify(jpgResult));
   if (jpgResult.ok) {
     const outPath = path.join(stocksDir, jpgResult.value.src.replace("/api/stocks/", ""));
@@ -155,7 +156,7 @@ async function pipelineChecks(tmp: string): Promise<void> {
     const time = (frame + 0.5) / 30;
     const segment = coverage.segments.find(item => time >= item.start && time < item.end);
     assert.equal(segment?.src, imported[ids[index] - 1].src, `real imported identity at frame ${frame}`);
-    assert.equal(segment?.clipDuration, 4.5, "real 5s MP4 probe retains safety margin");
+    assert.equal(segment?.clipDuration, KEN_BURNS_DURATION_SEC - 0.5, "real Ken Burns MP4 probe retains safety margin");
   }
   check("22 real PNG imports → edit merge → 22 real probes → all 3230 incident frames retain selected identity", true);
 

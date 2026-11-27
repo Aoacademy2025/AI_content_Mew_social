@@ -21,20 +21,13 @@ export function clampedLongSide(width?: number, height?: number): number {
 export type StockVariant = { url?: string; width?: number; height?: number } | undefined;
 
 /**
- * #8 soft resolution floor for Pixabay — RETUNED for normalize cost.
- * The render output is 1080×1920 and every clip is downscaled to fit it in
- * normalizeForRemotion, so decoding a source much larger than that is wasted CPU.
- * A/B on prod (2026-06-16): re-encoding a 1440p source took 156s vs 69s for the
- * same clip at 540p (~2.3× slower) — and the original #8 fell up to `large` (≤1920)
- * for the COMMON case (Pixabay medium is ~540p), which roughly doubled b-roll
- * normalize time per clip and stacked to ~35min/video over ~36 serial clips.
+ * #8 Full-HD resolution floor for Pixabay while respecting #63 (never pull 4K >1920).
+ * The render output is 1080×1920. Pixabay `medium` is frequently 360×640 or 540×960,
+ * which looks visibly blurry when upscaled 2–3× to 1080×1920. Whenever `medium` is
+ * sub-Full-HD (<1080 long side) and `large` offers higher resolution without exceeding
+ * 1920px (avoiding 4K 2160×3840 downloads), upgrade to `large`.
  *
- * So strongly prefer the smaller `medium` (restores pre-#8 speed). Only fall up to
- * `large` when medium is genuinely tiny (<480 long side) AND large stays modest
- * (≤1280) — keeps the anti-"soft/upscaled" intent for the worst cases without
- * paying the 1920p decode tax on every clip.
- *
- * When dimensions are unknown (0), behaves like the old `medium ?? large` fallback.
+ * When dimensions are unknown (0), behaves like the `medium ?? large` fallback.
  */
 export function pickPixabayVariant(
   medium: StockVariant,
@@ -42,7 +35,10 @@ export function pickPixabayVariant(
 ): { url: string; width?: number; height?: number } {
   const medLong = Math.max(medium?.width ?? 0, medium?.height ?? 0);
   const lgLong = Math.max(large?.width ?? 0, large?.height ?? 0);
-  const useLarge = (!medium?.url || medLong < 480) && !!large?.url && lgLong > 0 && lgLong <= 1280;
+  const useLarge =
+    (!medium?.url || (medLong > 0 && medLong < 1080 && lgLong > medLong))
+    && !!large?.url
+    && ( !medium?.url || (lgLong > 0 && lgLong <= 1920) );
   const chosen = useLarge ? large : (medium ?? large);
   return { url: chosen?.url ?? "", width: chosen?.width, height: chosen?.height };
 }

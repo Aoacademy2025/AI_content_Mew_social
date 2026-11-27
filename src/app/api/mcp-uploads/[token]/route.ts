@@ -102,7 +102,8 @@ export async function PUT(request: Request, context: { params: Promise<{ token: 
     if (!link) return linkInvalid();
     // Bound to its user: that user must still be allowed to use the feature right now.
     const user = await prisma.user.findUnique({ where: { id: link.userId } });
-    entitled = !!user && mcpAccessAllowed(principalFromUser(user).effectivePlan) && mcpEditorProjectEnabledFor(user);
+    const principal = user ? await principalFromUser(user, now) : null;
+    entitled = !!user && !!principal && mcpAccessAllowed(principal.effectivePlan) && mcpEditorProjectEnabledFor(user);
   } catch (error) {
     console.error("[mcp-uploads] database unavailable before admission:", error instanceof Error ? error.name : "unknown");
     return serverBusy();
