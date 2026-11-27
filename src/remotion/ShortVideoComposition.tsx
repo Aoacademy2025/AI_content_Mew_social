@@ -780,28 +780,28 @@ export function ShortVideoComposition({
         };
         const STILL_PROVIDERS = new Set(["kie-ai", "runpod", "unsplash", "wikimedia", "flickr", "nasa", "met"]);
         const segs: Seg[] = [];
-        for (const v of bgVideos) {
+        for (const rawV of bgVideos) {
+          const uriTemplateId = parseMotionTemplateIdFromUri(rawV.src);
+          const motionTemplate = (rawV.motionTemplate || uriTemplateId)
+            ? normalizeMotionTemplateConfig(rawV.motionTemplate, uriTemplateId ?? undefined)
+            : null;
+          const v = !rawV.src && motionTemplate
+            ? { ...rawV, src: `motion://${motionTemplate.templateId}` }
+            : rawV;
           const startFrame = Math.max(0, Math.round(v.start * fps));
           const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
           const clipOffset   = v.clipOffset ?? 0;
-          const uriTemplateId = parseMotionTemplateIdFromUri(v.src);
-          const motionTemplate = (v.motionTemplate || uriTemplateId)
-            ? normalizeMotionTemplateConfig(v.motionTemplate, uriTemplateId ?? undefined)
-            : null;
-          const resolvedSrc = !v.src && motionTemplate
-            ? `motion://${motionTemplate.templateId}`
-            : v.src;
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
           segs.push({
-            src: resolvedSrc,
+            src: v.src,
             startFrame,
             endFrame,
             clipOffset,
             clipDuration,
             // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
-            brollEnabled: v.brollEnabled !== false && Boolean(resolvedSrc),
+            brollEnabled: v.brollEnabled !== false && Boolean(v.src),
             transition: v.transition,
             fit: effectiveBrollFit(v.fit),
             timelineAligned: v.timelineAligned === true,
