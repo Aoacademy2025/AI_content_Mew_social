@@ -511,14 +511,20 @@ export function useV2Project() {
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [brandContentPreflightId, setBrandContentPreflightId] = useState<string | null>(null);
-  const [hasPersistedVisualPin, setHasPersistedVisualPin] = useState(false);
+  const [hasPersistedVisualPin, setHasPersistedVisualPinRaw] = useState(false);
+  const setHasPersistedVisualPin = useCallback((next: boolean) => {
+    setHasPersistedVisualPinRaw((prev) => prev === next ? prev : next);
+  }, []);
   // ADR 0059 amendment + wave 1b (D1): a pin alone no longer says anything
   // about AI images — every plan can own one. This mirrors the render-time
   // predicate (`hasAdmittedPersistedPin`) exactly, so the Editor never offers
   // an AI-image action the render would refuse. NOT implied by (and does not
   // imply) `hasPersistedVisualPin` — see the comment on the server response
   // shape in `editor-projects.ts`.
-  const [hasAdmittedVisualPin, setHasAdmittedVisualPin] = useState(false);
+  const [hasAdmittedVisualPin, setHasAdmittedVisualPinRaw] = useState(false);
+  const setHasAdmittedVisualPin = useCallback((next: boolean) => {
+    setHasAdmittedVisualPinRaw((prev) => prev === next ? prev : next);
+  }, []);
   const [projectReady, setProjectReadyRaw] = useState(false);
   const projectReadyRef = useRef(false);
   const setProjectReady = useCallback((next: boolean) => {
@@ -1331,15 +1337,13 @@ export function useV2Project() {
     const nextActiveExportJobId = typeof project.activeExportJobId === "string" ? project.activeExportJobId : null;
     const nextLatestVideoId = typeof project.latestVideoId === "string" ? project.latestVideoId : null;
     const nextMedia = (project.previewMediaState as ProjectMediaState | null | undefined) ?? null;
-    const nextPersistedPin = project.hasPersistedVisualPin === true;
-    const nextAdmittedPin = project.hasAdmittedVisualPin === true;
     setProjectStatus((prev) => prev === nextStatus ? prev : nextStatus);
     setActiveJobId((prev) => prev === nextActiveJobId ? prev : nextActiveJobId);
     setActiveExportJobId((prev) => prev === nextActiveExportJobId ? prev : nextActiveExportJobId);
     setLatestVideoId((prev) => prev === nextLatestVideoId ? prev : nextLatestVideoId);
     setPreviewMediaState((prev) => JSON.stringify(prev) === JSON.stringify(nextMedia) ? prev : nextMedia);
-    setHasPersistedVisualPin((prev) => prev === nextPersistedPin ? prev : nextPersistedPin);
-    setHasAdmittedVisualPin((prev) => prev === nextAdmittedPin ? prev : nextAdmittedPin);
+    setHasPersistedVisualPin(project.hasPersistedVisualPin === true);
+    setHasAdmittedVisualPin(project.hasAdmittedVisualPin === true);
   }
 
   function serverCandidateForProject(
