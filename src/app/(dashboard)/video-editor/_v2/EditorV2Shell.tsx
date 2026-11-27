@@ -79,6 +79,7 @@ import { isActiveStylePackId } from "@/lib/style-pack-catalog";
 import { isMotionThemeId } from "@/lib/motion-broll-catalog";
 import { findFlagshipMotionPreset } from "@/lib/video-template-apply";
 import {
+  buildHeroSocialHandoffUrl,
   buildSocialPostCaptionPack,
   HERO_AI_SOCIAL_SCHEDULER_URL,
 } from "@/lib/social-post-handoff";
@@ -947,6 +948,8 @@ export function EditorV2Shell() {
         ) : (
           <ExportedView
             job={job}
+            script={p.mode === "script" ? p.script : ""}
+            headline={p.headlineHook?.headline}
             onNewProject={handleNewProject}
             onEditPreview={(job.output?.sourceJobId ?? p.activeJobId)
               ? job.output?.editSnapshot
@@ -1323,14 +1326,17 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
   );
 }
 
-function ExportedView({ job, onNewProject, onEditPreview, expiringGrant, downloadFilename }: {
+function ExportedView({ job, script, headline, onNewProject, onEditPreview, expiringGrant, downloadFilename }: {
   job: V2JobState;
+  script?: string;
+  headline?: string;
   onNewProject: () => void;
   onEditPreview?: () => void;
   expiringGrant?: MeData["expiringGrant"];
   downloadFilename: string;
 }) {
   const videoUrl = job.output?.videoUrl ?? "";
+  const exportedVideoRef = useRef<HTMLVideoElement | null>(null);
 
   return (
     <main className="flex flex-1 items-center justify-center p-6">
@@ -1347,6 +1353,7 @@ function ExportedView({ job, onNewProject, onEditPreview, expiringGrant, downloa
         </div>
         {videoUrl ? (
           <video
+            ref={exportedVideoRef}
             src={videoUrl}
             controls
             playsInline
@@ -1365,10 +1372,26 @@ function ExportedView({ job, onNewProject, onEditPreview, expiringGrant, downloa
           <BtnSecondary
             onClick={() => {
               emitFirstClipViewed();
-              const pack = buildSocialPostCaptionPack({ title: downloadFilename.replace(/\.mp4$/i, "") });
+              const vidDur = exportedVideoRef.current?.duration;
+              const durationSec = typeof vidDur === "number" && Number.isFinite(vidDur) && vidDur > 0
+                ? Math.round(vidDur)
+                : undefined;
+              const handoffInput = {
+                videoUrl,
+                title: downloadFilename.replace(/\.(mp4|mov)$/i, ""),
+                script,
+                headline,
+                durationSec,
+              };
+              const pack = buildSocialPostCaptionPack(handoffInput);
+              const handoffUrl = buildHeroSocialHandoffUrl(handoffInput);
               void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
-              toast.success("คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์");
-              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+              toast.success(
+                handoffUrl !== HERO_AI_SOCIAL_SCHEDULER_URL
+                  ? "ส่งวิดีโอและแคปชันไปยังหน้าตั้งเวลาโพสต์ Hero AI แล้ว"
+                  : "คัดลอกแคปชันแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์",
+              );
+              window.open(handoffUrl, "_blank", "noopener,noreferrer");
             }}
           >
             ตั้งเวลาโพสต์ลงโซเชียล (Hero AI)

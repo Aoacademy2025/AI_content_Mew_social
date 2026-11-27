@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
 import { featuredMotionThemes, type MotionThemeId } from "@/lib/motion-broll-catalog";
 import {
+  buildHeroSocialHandoffUrl,
   buildSocialPostCaptionPack,
   buildWeeklySeriesHref,
   HERO_AI_SOCIAL_SCHEDULER_URL,
@@ -230,6 +231,7 @@ export function PostPhase({
   }
 
   if (ed.exp.phase === "done") {
+    const exportedUrl = ed.exp.url;
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
         <FirstClipExportedViewSignal />
@@ -242,21 +244,36 @@ export function PostPhase({
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
-        <video src={ed.exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
+        <video src={exportedUrl} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <a href={ed.exp.url} download={downloadFilename} onClick={emitFirstClipViewed}>
+          <a href={exportedUrl} download={downloadFilename} onClick={emitFirstClipViewed}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <BtnSecondary
             onClick={() => {
               emitFirstClipViewed();
-              const pack = buildSocialPostCaptionPack({
+              const cleanTitle = downloadFilename.replace(/\.(mp4|mov)$/i, "");
+              const lastCapEndMs = ed.captions.length > 0
+                ? ed.captions[ed.captions.length - 1]!.endMs + (ed.tailHoldMs ?? 0)
+                : 0;
+              const rawDurationMs = Math.max(lastCapEndMs, job.output?.preview?.audioDurationMs ?? 0);
+              const durationSec = rawDurationMs > 0 ? Math.round(rawDurationMs / 1000) : undefined;
+              const handoffInput = {
+                videoUrl: exportedUrl,
+                title: cleanTitle,
                 script,
                 headline: ed.headlineHook?.headline,
-              });
+                durationSec,
+              };
+              const pack = buildSocialPostCaptionPack(handoffInput);
+              const handoffUrl = buildHeroSocialHandoffUrl(handoffInput);
               void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
-              toast.success("คัดลอกแคปชันพร้อมแฮชแท็กแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์");
-              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+              toast.success(
+                handoffUrl !== HERO_AI_SOCIAL_SCHEDULER_URL
+                  ? "ส่งวิดีโอและแคปชันไปยังหน้าตั้งเวลาโพสต์ Hero AI แล้ว"
+                  : "คัดลอกแคปชันพร้อมแฮชแท็กแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์",
+              );
+              window.open(handoffUrl, "_blank", "noopener,noreferrer");
             }}
           >
             ตั้งเวลาโพสต์ลงโซเชียล (Hero AI)

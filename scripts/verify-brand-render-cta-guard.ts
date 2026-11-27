@@ -1049,7 +1049,9 @@ async function verifyEditorV2ShellBlockedRenderGuards(): Promise<void> {
     if (specifier === "@/lib/social-post-handoff") {
       return {
         HERO_AI_SOCIAL_SCHEDULER_URL: "https://app.heroaiengine.com",
-        buildSocialPostCaptionPack: () => "",
+        HERO_AI_VIDEO_HANDOFF_URL: "https://app.heroaiengine.com/studio/video-handoff",
+        buildHeroSocialHandoffUrl: () => "https://app.heroaiengine.com/studio/video-handoff",
+        buildSocialPostCaptionPack: () => ({ hookLine: "", bodySummary: "", hashtags: [], captionText: "" }),
         buildWeeklySeriesHref: () => "/hero-script",
       };
     }
