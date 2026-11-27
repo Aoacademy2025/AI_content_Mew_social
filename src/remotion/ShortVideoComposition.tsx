@@ -19,6 +19,7 @@ import { renderSubtitle } from "./renderSubtitle";
 import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
 import { brollCutAfter, effectiveBrollFit, type BrollFit } from "../lib/broll-window-style";
+import { bgmEnvelopeGainAt, speechSegments } from "../lib/background-music";
 import { headlineHookEndFrame, headlineHookFontCssFamily } from "../lib/headline-hook";
 import { planStatCardsForCaptions } from "../lib/stat-cards";
 import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
@@ -42,7 +43,7 @@ export { renderSubtitle };
 // same files (and weights) as the editor preview, otherwise fonts in the burned
 // MP4 won't match what the user saw on screen.
 const FONTS_CSS =
-  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;500;600;700&family=Kanit:wght@400;500;600;700;800;900&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700;800;900&family=Noto+Sans+Thai:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=Chonburi&family=Fahkwang:wght@400;500;600;700&family=K2D:wght@400;500;600;700;800&family=Charm:wght@400;700&family=Bai+Jamjuree:wght@400;600;700&family=Krub:wght@400;600;700&family=Pridi:wght@400;600;700&family=Itim&family=Sriracha&family=Oswald:wght@400;500;600;700&family=Anton&family=Bebas+Neue&display=swap";
+  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;500;600;700&family=Kanit:wght@400;500;600;700;800;900&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700;800;900&family=Noto+Sans+Thai:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=Chonburi&family=Fahkwang:wght@400;500;600;700&family=K2D:wght@400;500;600;700;800&family=Charm:wght@400;700&family=Bai+Jamjuree:wght@400;600;700&family=Krub:wght@400;600;700&family=Pridi:wght@400;600;700&family=Itim&family=Sriracha&family=Oswald:wght@400;500;600;700&family=Anton&family=Bebas+Neue&family=JetBrains+Mono:wght@500;700&display=swap";
 
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
 const CROSSFADE_FRAMES = 8;
@@ -93,6 +94,13 @@ function paintContainBackdrop(canvas: HTMLCanvasElement | null, frame: CanvasIma
 }
 
 // ─── VideoClip ────────────────────────────────────────────────────────────────
+const KB_DRIFT_VECTORS: readonly [number, number][] = [
+  [-12, -8],
+  [12, -6],
+  [-10, 8],
+  [10, 8],
+];
+
 function VideoClip({
   src,
   startFrom,
@@ -103,6 +111,8 @@ function VideoClip({
   clipIndex,
   kenBurns = false,
   fit = "cover",
+  timelineAligned = false,
+  skipGrade = false,
 }: {
   src: string;
   startFrom: number;
@@ -113,20 +123,28 @@ function VideoClip({
   clipIndex: number;
   kenBurns?: boolean;
   fit?: BrollFit;
+  timelineAligned?: boolean;
+  skipGrade?: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
-  const totalFrames = segDurFrames + tailFrames;
-  // Ken Burns: subtle continuous zoom so b-roll reads as intentional motion, not a
-  // static slideshow. Alternate zoom-in / zoom-out by clipIndex for variety. We only
-  // ever scale ≥1.0 and objectFit:cover already fills the frame, so no edge gap is
-  // ever exposed. Pure CSS transform on an already-decoded frame → ~free on render.
-  const kbScale = kenBurns
-    ? clipIndex % 2 === 0
-      ? interpolate(frame, [0, totalFrames], [1.0, 1.08], { extrapolateRight: "clamp" })
-      : interpolate(frame, [0, totalFrames], [1.08, 1.0], { extrapolateRight: "clamp" })
+  const totalFrames = Math.max(1, segDurFrames + tailFrames);
+  // Ken Burns: smooth sinusoidal subpixel zoom + gentle camera drift so video B-roll
+  // reads as intentional cinematography rather than a frozen frame. Skipped on
+  // `timelineAligned` presenter segments so they stay pixel-identical to `[1:v]` in
+  // cutaway composite (zero jump/brightness flash on presenter <-> B-roll dissolves).
+  const activeKb = kenBurns && !timelineAligned && fit !== "contain";
+  const kbEase = Easing.inOut(Easing.sin);
+  const kbProgress = activeKb
+    ? interpolate(frame, [0, totalFrames], [0, 1], { easing: kbEase, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 0;
+  const kbScale = activeKb
+    ? (clipIndex % 2 === 0 ? 1.0 + 0.065 * kbProgress : 1.065 - 0.055 * kbProgress)
     : 1;
+  const [driftTargetX, driftTargetY] = KB_DRIFT_VECTORS[clipIndex % KB_DRIFT_VECTORS.length]!;
+  const kbTx = activeKb ? (kbScale - 1.005 > 0 ? driftTargetX * (kbProgress - 0.5) : 0) : 0;
+  const kbTy = activeKb ? (kbScale - 1.005 > 0 ? driftTargetY * (kbProgress - 0.5) : 0) : 0;
   const playback = resolveBrollPlaybackPlan({ startFrom, totalFrames, clipDurFrames });
 
   // Opacity: fade-in (entry) × fade-out (tail for next clip). Eased (smoothstep-ish)
@@ -154,14 +172,19 @@ function VideoClip({
           width,
           height,
           objectFit: fit === "contain" ? "contain" : "cover",
-          filter: GRADE_FILTER,
-          ...(kenBurns ? { transform: `scale(${kbScale})`, transformOrigin: "center center" } : {}),
+          ...(!timelineAligned && !skipGrade ? { filter: GRADE_FILTER } : {}),
+          ...(activeKb
+            ? {
+                transform: `translate3d(${kbTx.toFixed(2)}px, ${kbTy.toFixed(2)}px, 0) scale(${kbScale.toFixed(5)})`,
+                transformOrigin: "center center",
+              }
+            : {}),
         }}
         {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
         muted
       />
   );
-  // "cover" renders exactly the single element it always did.
+  // "cover" renders the foreground clip (+ subtle B-roll cinematic vignette only on non-presenter B-roll).
   const video = fit === "contain" ? (
     <>
       <canvas
@@ -171,8 +194,14 @@ function VideoClip({
         style={{ position: "absolute", top: 0, left: 0, width, height }}
       />
       {foreground}
+      {!timelineAligned && <CinematicOverlay />}
     </>
-  ) : foreground;
+  ) : (
+    <>
+      {foreground}
+      {!timelineAligned && <CinematicOverlay />}
+    </>
+  );
 
   return (
     <AbsoluteFill style={{ opacity }}>
@@ -497,6 +526,7 @@ export function AnimatedSubtitle({
   outline = false,
   outlineSize = 2,
   highlightKeywords = false,
+  sequenceStartFrame,
 }: {
   popup: NonNullable<ShortVideoConfig["keywordPopups"]>[number];
   preset: SubtitleStylePreset;
@@ -508,6 +538,7 @@ export function AnimatedSubtitle({
   outline?: boolean;
   outlineSize?: number;
   highlightKeywords?: boolean;
+  sequenceStartFrame?: number;
 }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -529,8 +560,12 @@ export function AnimatedSubtitle({
   // "flip" — perspective flip from 90deg
   const flipSpring = spring({ frame, fps, config: { mass: 0.6, damping: 12, stiffness: 160 }, durationInFrames: 14 });
 
-  const fadeIn  = interpolate(frame, [0, 5], [0, 1], { extrapolateRight: "clamp" });
-  const fadeOut = interpolate(frame, [captionDurFrames - 4, captionDurFrames], [1, 0], { extrapolateLeft: "clamp" });
+  const fadeIn = popup.contiguousPrev
+    ? 1
+    : interpolate(frame, [0, 5], [0, 1], { extrapolateRight: "clamp" });
+  const fadeOut = popup.contiguousNext
+    ? 1
+    : interpolate(frame, [captionDurFrames - 4, captionDurFrames], [1, 0], { extrapolateLeft: "clamp" });
   const baseFade = Math.min(fadeIn, fadeOut);
 
   let transform = "translateY(-50%)";
@@ -602,6 +637,18 @@ export function AnimatedSubtitle({
             outline,
             outlineSize,
             highlightKeywords,
+            ...(popup.words?.length
+              ? {
+                  wordTimings: popup.words.map((w) => {
+                    const origin = sequenceStartFrame ?? popup.start;
+                    return {
+                      word: w.word,
+                      startFrame: Math.max(0, w.startFrame - origin),
+                      endFrame: Math.max(1, w.endFrame - origin),
+                    };
+                  }),
+                }
+              : {}),
           })}
         </div>
       </div>
@@ -632,6 +679,7 @@ export function ShortVideoComposition({
   voiceVolume = 1,
   bgmFile,
   bgmVolume = 0.12,
+  bgmDuckSegments,
   fontFamily,
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
@@ -726,8 +774,11 @@ export function ShortVideoComposition({
           brollEnabled: boolean;
           transition?: unknown;
           fit: BrollFit;
+          timelineAligned: boolean;
+          alreadyAnimatedStill: boolean;
           motionTemplate: MotionTemplateConfig | null;
         };
+        const STILL_PROVIDERS = new Set(["kie-ai", "runpod", "unsplash", "wikimedia", "flickr", "nasa", "met"]);
         const segs: Seg[] = [];
         for (const v of bgVideos) {
           const startFrame = Math.max(0, Math.round(v.start * fps));
@@ -738,21 +789,23 @@ export function ShortVideoComposition({
           const motionTemplate = (v.motionTemplate || uriTemplateId)
             ? normalizeMotionTemplateConfig(v.motionTemplate, uriTemplateId ?? undefined)
             : null;
-          if (!v.src && motionTemplate) {
-            v.src = `motion://${motionTemplate.templateId}`;
-          }
+          const resolvedSrc = !v.src && motionTemplate
+            ? `motion://${motionTemplate.templateId}`
+            : v.src;
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
           segs.push({
-            src: v.src,
+            src: resolvedSrc,
             startFrame,
             endFrame,
             clipOffset,
             clipDuration,
             // HERO-44: an unfilled window has no src; <OffthreadVideo> throws on one.
-            brollEnabled: v.brollEnabled !== false && Boolean(v.src),
+            brollEnabled: v.brollEnabled !== false && Boolean(resolvedSrc),
             transition: v.transition,
             fit: effectiveBrollFit(v.fit),
+            timelineAligned: v.timelineAligned === true,
+            alreadyAnimatedStill: v.stillImage === true || Boolean(v.provider && STILL_PROVIDERS.has(v.provider)),
             motionTemplate,
           });
         }
@@ -818,22 +871,47 @@ export function ShortVideoComposition({
                 headFrames={headFrames}
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
-                kenBurns={kenBurns}
+                kenBurns={kenBurns && !v.alreadyAnimatedStill}
                 fit={v.fit}
+                timelineAligned={v.timelineAligned}
               />
             </Sequence>
           );
         });
       })()}
 
-      {/* Cinematic overlay */}
-      <CinematicOverlay />
-
       {/* TTS voice */}
       {voiceFile && <Audio src={voiceFile} volume={voiceVolume} />}
 
-      {/* Background music */}
-      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
+      {/* Background music — auto-ducked under speech with smooth 250ms fade-in & 650ms fade-out */}
+      {bgmFile && (() => {
+        const totalDurationMs = (durationInFrames / fps) * 1000;
+        const resolvedDuckSegments = bgmDuckSegments?.length
+          ? bgmDuckSegments
+          : keywordPopups.length > 0
+            ? speechSegments({
+                captions: keywordPopups.map((p) => ({
+                  startMs: (p.start / fps) * 1000,
+                  endMs: (p.end / fps) * 1000,
+                })),
+              })
+            : [];
+        const targetVol = bgmVolume ?? 0.12;
+        return (
+          <Audio
+            src={bgmFile}
+            loop
+            loopVolumeCurveBehavior="extend"
+            volume={(f) =>
+              bgmEnvelopeGainAt((f / fps) * 1000, totalDurationMs, {
+                volume: targetVol,
+                ducking: resolvedDuckSegments.length > 0,
+                segments: resolvedDuckSegments,
+              })
+            }
+          />
+        );
+      })()}
 
       {/* EP5/S2 #3: Subtle transition sound effects (-18 dB) */}
       {activeSfxCues.map((cue, idx) => {
@@ -858,7 +936,10 @@ export function ShortVideoComposition({
 
       {/* Subtitles */}
       {keywordPopups.map((p) => {
-        const visibleStart = Math.max(p.start, hookEndFrame);
+        const hookTop = (headlineHook as { topPercent?: number } | undefined)?.topPercent ?? 18;
+        const subTop = p.topPercent ?? 72;
+        const collidesWithHook = Boolean(headlineHook?.enabled && hookEndFrame > 0 && Math.abs(subTop - hookTop) < 28);
+        const visibleStart = collidesWithHook ? Math.max(p.start, hookEndFrame) : p.start;
         const dur = p.end - visibleStart;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
@@ -875,6 +956,7 @@ export function ShortVideoComposition({
               outline={subtitleOutline}
               outlineSize={subtitleOutlineSize}
               highlightKeywords={subtitleHighlightKeywords}
+              sequenceStartFrame={visibleStart}
             />
           </Sequence>
         );

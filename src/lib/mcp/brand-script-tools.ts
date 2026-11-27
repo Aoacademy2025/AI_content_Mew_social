@@ -323,7 +323,7 @@ export async function generateHeroScriptTool(
 
   // 4. Rolling-window saved-script cap precheck before burning AI calls.
   if (saveToLibrary) {
-    const preCap = canCreateScript(user.plan, await countScriptsInWindow(user.id));
+    const preCap = canCreateScript(access.effectivePlan, await countScriptsInWindow(user.id));
     if (!preCap.allowed) {
       return fail(
         "quota_exceeded",
@@ -495,7 +495,7 @@ export async function generateHeroScriptTool(
     // 9. Persist to Script library (unless caller explicitly requested saveToLibrary: false).
     let scriptId: string | null = null;
     if (saveToLibrary) {
-      const saved = await createScriptWithinCap(user.id, user.plan, {
+      const saved = await createScriptWithinCap(user.id, access.effectivePlan, {
         topic: topicCheck.topic,
         durationSec,
         hookFormula: chosenHook.formula,

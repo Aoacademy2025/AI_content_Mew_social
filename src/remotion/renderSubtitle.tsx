@@ -531,14 +531,60 @@ function tokenLines(text: string): TokenLine[] {
 
 const KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES = 8;
 
+export interface RelativeWordTiming {
+  word: string;
+  /** Frame offset relative to the current subtitle Sequence's frame 0. */
+  startFrame: number;
+  endFrame: number;
+}
+
 function activeTokenIndex(
   lines: TokenLine[],
   frame: number,
   captionDurFrames: number,
   numericMinActiveFrames = 0,
+  wordTimings?: readonly RelativeWordTiming[],
 ): number {
   const tokens = lines.flatMap((line) => line.parts).filter((part) => part.isWordLike);
   if (tokens.length === 0) return -1;
+
+  // Frame-accurate word sync when ASR / TTS word timestamps are available.
+  if (wordTimings && wordTimings.length > 0) {
+    if (wordTimings.length === tokens.length) {
+      for (let i = 0; i < wordTimings.length; i++) {
+        const wt = wordTimings[i]!;
+        const nextStart = i + 1 < wordTimings.length ? wordTimings[i + 1]!.startFrame : Infinity;
+        if (frame < Math.max(wt.endFrame, nextStart)) return i;
+      }
+      return tokens.length - 1;
+    }
+    // Map each wordTiming onto token character ranges when ICU tokenization splits compounds differently.
+    const tokenTotalChars = tokens.reduce((s, p) => s + Math.max(1, p.text.length), 0) || 1;
+    const wordTotalChars = wordTimings.reduce((s, w) => s + Math.max(1, w.word.trim().length), 0) || 1;
+    let activeWordIdx = wordTimings.length - 1;
+    for (let i = 0; i < wordTimings.length; i++) {
+      const wt = wordTimings[i]!;
+      const nextStart = i + 1 < wordTimings.length ? wordTimings[i + 1]!.startFrame : Infinity;
+      if (frame < Math.max(wt.endFrame, nextStart)) {
+        activeWordIdx = i;
+        break;
+      }
+    }
+    const activeWord = wordTimings[activeWordIdx]!;
+    const wordSpan = Math.max(1, activeWord.endFrame - activeWord.startFrame);
+    const intraProgress = Math.max(0, Math.min(0.999, (frame - activeWord.startFrame) / wordSpan));
+    let charsBefore = 0;
+    for (let i = 0; i < activeWordIdx; i++) {
+      charsBefore += Math.max(1, wordTimings[i]!.word.trim().length);
+    }
+    const charRatio = (charsBefore + intraProgress * Math.max(1, activeWord.word.trim().length)) / wordTotalChars;
+    let cumChars = 0;
+    for (let idx = 0; idx < tokens.length; idx++) {
+      cumChars += Math.max(1, tokens[idx]!.text.length);
+      if (charRatio < cumChars / tokenTotalChars) return idx;
+    }
+    return tokens.length - 1;
+  }
 
   // A one-character number received only ~0.1s under pure character-weighted
   // timing. For Karaoke, reserve a readable minimum for numeric tokens when the
@@ -602,6 +648,8 @@ export interface SubtitleDecorationOptions {
    * (the burn already passes its 1080-frame size).
    */
   lineBudgetSize?: number;
+  /** Optional real word timings (relative to this subtitle Sequence's frame 0). */
+  wordTimings?: readonly RelativeWordTiming[];
 }
 
 function mergeTextShadow(...parts: Array<React.CSSProperties["textShadow"] | undefined>): string | undefined {
@@ -754,7 +802,7 @@ export function renderSubtitle(
         return wrapHighlightCard(<span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined })}>{text}</span>);
       }
       const lines = tokenLines(text);
-      const active = activeTokenIndex(lines, frame, captionDurFrames);
+      const active = activeTokenIndex(lines, frame, captionDurFrames, 0, decorations.wordTimings);
       if (active < 0) {
         return wrapHighlightCard(<span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined })}>{text}</span>);
       }
@@ -812,6 +860,7 @@ export function renderSubtitle(
         frame,
         captionDurFrames,
         KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES,
+        decorations.wordTimings,
       );
       if (active < 0) {
         return wrapKaraoke(

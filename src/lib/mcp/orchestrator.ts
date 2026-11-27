@@ -191,6 +191,7 @@ import {
   type SfxMode,
 } from "@/lib/transition-sfx";
 import { stitchPresenterVideoFiles } from "@/lib/presenter-stitch.server";
+import { speechSegments } from "@/lib/background-music";
 import {
   buildMotionBrollUri,
   isMotionMascotId,
@@ -1671,14 +1672,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ? (rrBaseConfig.punchZoomCuesSec as unknown[]).filter(
                   (n): n is number => typeof n === "number" && Number.isFinite(n),
                 )
-              : preview.captions.map((c) => Number((c.startMs / 1000).toFixed(3)));
+              : preview.captions
+                  .filter((c, i, arr) => i > 0 && c.startMs - arr[i - 1]!.endMs >= 240)
+                  .map((c) => Number((c.startMs / 1000).toFixed(3)));
+            const rrHasBaseAudioOverlay =
+              (typeof rrBaseConfig.bgmFile === "string" && rrBaseConfig.bgmFile.length > 0)
+              || rrBaseConfig.sfxMode === "subtle";
+            const rrDissolveLeadInSec = rrBaseConfig.brollTransition === "cut" ? 0 : 8 / 30;
             const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
               avatarVideoUrl: preview.avatarVideoUrl,
               bgVideoUrl: rrNewBase,
               mode: "cutaway",
               personRanges: rrCutawayPersonRanges,
-              cutawayAudioFromBackground: typeof rrBaseConfig.bgmFile === "string"
-                && rrBaseConfig.bgmFile.length > 0,
+              cutawayAudioFromBackground: rrHasBaseAudioOverlay,
+              cutawayDissolveLeadInSec: rrDissolveLeadInSec,
               ...(rrBaseConfig.punchZoom === true
                 ? { punchZoom: true, punchZoomCuesSec: rrPunchZoomCuesSec }
                 : {}),
@@ -2211,8 +2218,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }>(
         "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
       );
-      const upCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
-      if (!upCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
+      const upRawCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
+      if (!upRawCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
       // Partial coverage ships: report it with the job, never fail on it (ADR 0056).
       const uploadWarnings = Array.isArray(tx.warnings) ? tx.warnings : [];
       if (uploadWarnings.length > 0) {
@@ -2221,7 +2228,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           + uploadWarnings.map((w) => `${w.code}[${w.fromMs ?? "?"}-${w.toMs ?? "?"}]`).join(" "),
         );
       }
-      const upFullText = tx.fullText?.trim() || upCaps.map((caption) => caption.text).join(" ");
+      const upFullText = tx.fullText?.trim() || upRawCaps.map((caption) => caption.text).join(" ");
       const uploadWords = resolveUploadTranscriptWords(upFullText, tx.words ?? []);
       const upWords = uploadWords.words;
       if (!uploadWords.regroupingAvailable) {
@@ -2231,7 +2238,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
-        : Math.max(...upCaps.map((c) => c.endMs));
+        : Math.max(...upRawCaps.map((c) => c.endMs));
+      // Apply the same Card Line Budget + monotonic timing repair used by the script TTS path
+      // so ASR upload captions stay crisp 1–2 line cards instead of overflowing into 3–4 lines.
+      const upBudgetedCaps = enforceCardLineBudget(
+        upRawCaps,
+        upWords,
+        upFullText,
+        resolvedSubtitleCardLen,
+        cardBudgetSize,
+      );
+      const upRepaired = repairCaptionTiming(upBudgetedCaps, upDurMs);
+      const upCaps = upRepaired.captions.length > 0 ? upRepaired.captions : upRawCaps;
       // Advisory A (T3 fix round 1): this upload job's own resolved design — the web
       // upload route (jobs/route.ts, mode "upload") never resolves/persists
       // subtitleDesign/subtitleCardLen the way the MCP route does for T4, and there is no
@@ -2401,11 +2419,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
 
       await step("keywords", 40);
+      // Enrich each odd cutaway window with preceding presenter-window context so Thai
+      // pro-drop clauses retain the subject noun introduced by the speaker right before B-roll.
+      const upContextualKeywordTexts = upBrollUnits.map((unit) => {
+        const winIdx = upWindows.findIndex((w) => w.startMs === unit.startMs && w.endMs === unit.endMs);
+        const prevText = winIdx > 0 ? upWindows[winIdx - 1]?.text?.trim() : "";
+        return prevText ? `${prevText.slice(-60)} — ${unit.text}` : unit.text;
+      });
       const upKw = (!motionThemeId && upBrollUnits.length > 0)
         ? await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
             "/api/videos/extract-keywords",
             {
-              ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
+              ...buildKeywordsPayload(upContextualKeywordTexts, upCaps.map((c) => c.text).join("\n"), upDurMs, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
                 stockMood: await resolveStockMood(),
@@ -2488,10 +2513,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       );
 
       await step("render", 75);
+      // Only trigger punch-zoom at actual jump cuts and real breath/sentence pauses (>=240ms gap),
+      // never on every dense mid-sentence caption start.
+      const pauseCueTimesSec = upCaps
+        .filter((c, i, arr) => i > 0 && c.startMs - arr[i - 1]!.endMs >= 240)
+        .map((c) => Number((c.startMs / 1000).toFixed(3)));
       const punchZoomCuesSec = Array.from(
         new Set([
           ...jumpCutTimesSec,
-          ...upCaps.map((c) => Number((c.startMs / 1000).toFixed(3))),
+          ...pauseCueTimesSec,
         ]),
       ).sort((a, b) => a - b);
       const upMotionBrandCi = motionThemeId
@@ -2530,11 +2560,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             };
           })
         : undefined;
+      const upBgmDuckSegments = input.bgmFile
+        ? speechSegments({ words: upWords, captions: upCaps })
+        : [];
       const upBaseConfig = {
         ...rawUpConfig,
         ...(upConfiguredBgVideos ? { bgVideos: upConfiguredBgVideos } : {}),
         keywordPopups: [] as unknown[],
-        ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+        ...(input.bgmFile
+          ? {
+              bgmFile: input.bgmFile,
+              bgmVolume: input.bgmVolume ?? 0.12,
+              ...(upBgmDuckSegments.length > 0 ? { bgmDuckSegments: upBgmDuckSegments } : {}),
+            }
+          : {}),
         ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
         ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
         ...(punchZoomCuesSec.length > 0 ? { punchZoomCuesSec } : {}),
@@ -2557,12 +2596,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // ต้องระบุช่วงให้ชัด: /api/heygen/composite ปฏิเสธ personRanges ว่างแล้ว (fail-closed)
       // แทน fail-open เดิมที่วางคลิปทับทั้งคลิปเงียบ ๆ.
       else if (upDurMs > 0) personRanges.push({ start: 0, end: upDurMs / 1000 });
+      const upCutawayDissolveLeadInSec =
+        (upBaseConfig as { brollTransition?: unknown }).brollTransition === "cut" ? 0 : 8 / 30;
       const comp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
         mode: "cutaway",
         avatarVideoUrl: input.clipUrl,
         bgVideoUrl: upReelUrl,
         personRanges,
-        cutawayAudioFromBackground: Boolean(input.bgmFile),
+        cutawayAudioFromBackground: Boolean(input.bgmFile) || effectiveSfxMode(input.sfxMode) === "subtle",
+        cutawayDissolveLeadInSec: upCutawayDissolveLeadInSec,
         ...(input.punchZoom === true
           ? { punchZoom: true, punchZoomCuesSec }
           : {}),
@@ -3277,14 +3319,27 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
         })
       : undefined;
+    const scriptBgmDuckSegments = input.bgmFile
+      ? speechSegments({ words: capRes.words, captions })
+      : [];
+    // When `!input.previewMode` (direct 1-pass render + Step 8 burn), leave `sfxMode` off
+    // `baseConfig` so Step 8's `SubtitleOverlayComposition` burn renders transition SFX
+    // cleanly ONCE instead of double-baking SFX across both `baseConfig` and `burn`.
+    const bakeSfxIntoBase = Boolean(input.previewMode) && resolvedSfxMode === "subtle";
     const baseConfig = {
       ...rawScriptConfig,
       ...(scriptConfiguredBgVideos ? { bgVideos: scriptConfiguredBgVideos } : {}),
       keywordPopups: [] as unknown[],
-      ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+      ...(input.bgmFile
+        ? {
+            bgmFile: input.bgmFile,
+            bgmVolume: input.bgmVolume ?? 0.12,
+            ...(scriptBgmDuckSegments.length > 0 ? { bgmDuckSegments: scriptBgmDuckSegments } : {}),
+          }
+        : {}),
       ...(isBrollTransition(input.brollTransition) ? { brollTransition: input.brollTransition } : {}),
       ...(typeof input.punchZoom === "boolean" ? { punchZoom: input.punchZoom } : {}),
-      ...(resolvedSfxMode === "subtle" ? { sfxMode: "subtle" as const } : {}),
+      ...(bakeSfxIntoBase ? { sfxMode: "subtle" as const } : {}),
     };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
@@ -3473,6 +3528,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         scriptHook,
         resolvedSfxMode,
         scriptSfxCues,
+        capRes.words,
       ),
       parentJobId: jobId,
     });

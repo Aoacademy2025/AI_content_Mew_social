@@ -1,6 +1,9 @@
 import type { Prisma, User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { classifyEntitlement } from "@/lib/entitlements";
+import {
+  resolveEffectiveEntitlement,
+  type EffectiveEntitlementResolution,
+} from "@/lib/entitlements";
 import { durationCapSecFor, isPaid } from "@/lib/plan-limits";
 import { syncSharedUsageCycle } from "@/lib/usage-limits";
 import { mcpAccessAllowed } from "@/lib/mcp/auth";
@@ -67,37 +70,51 @@ export function isVerifiedMcpUser(
   );
 }
 
-export function isMcpStarterTrialEligibleUser(
+function isStarterTrialEligibleWithResolution(
   user: User,
-  now: Date = new Date(),
+  entitlement: EffectiveEntitlementResolution,
+  now: Date,
 ): boolean {
   if (!isVerifiedMcpUser(user)) return false;
   if (user.planExpiresAt && user.planExpiresAt <= now) return false;
   if (user.trialEndsAt && user.trialEndsAt <= now) return false;
   if (user.trialEndedAt) return false;
-  const entitlement = classifyEntitlement(user, now);
+  if (entitlement.hasLapsedGrantOrCoupon) return false;
   if (entitlement.action !== "KEEP") return false;
   return entitlement.effectivePlan === "FREE";
 }
 
-export function canCreateMcpTokenForUser(
+export async function isMcpStarterTrialEligibleUser(
   user: User,
   now: Date = new Date(),
-): boolean {
-  const effectivePlan = classifyEntitlement(user, now).effectivePlan;
-  if (isPaid(effectivePlan)) return true;
-  return isMcpStarterTrialEligibleUser(user, now);
+  db: Prisma.TransactionClient = prisma,
+): Promise<boolean> {
+  if (!isVerifiedMcpUser(user)) return false;
+  if (user.planExpiresAt && user.planExpiresAt <= now) return false;
+  if (user.trialEndsAt && user.trialEndsAt <= now) return false;
+  if (user.trialEndedAt) return false;
+  const entitlement = await resolveEffectiveEntitlement(user, now, db);
+  return isStarterTrialEligibleWithResolution(user, entitlement, now);
 }
 
-export function canInvokeMcpTool(
+export async function canCreateMcpTokenForUser(
+  user: User,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const entitlement = await resolveEffectiveEntitlement(user, now);
+  if (isPaid(entitlement.effectivePlan)) return true;
+  return isStarterTrialEligibleWithResolution(user, entitlement, now);
+}
+
+export async function canInvokeMcpTool(
   user: User | undefined | null,
   effectivePlan: string | undefined | null,
   toolName: string,
   now: Date = new Date(),
-): boolean {
+): Promise<boolean> {
   if (!user || !effectivePlan) return false;
   if (mcpAccessAllowed(effectivePlan)) return true;
-  if (!isMcpStarterTrialEligibleUser(user, now)) return false;
+  if (!(await isMcpStarterTrialEligibleUser(user, now))) return false;
   return MCP_STARTER_TRIAL_ALLOWED_TOOLS.has(toolName);
 }
 
@@ -135,13 +152,14 @@ export async function countStarterMcpRootJobsInTransaction(
 }
 
 export async function getMcpStarterTrialStatusInTransaction(
-  tx: VideoJobCountClient,
+  tx: Prisma.TransactionClient,
   user: User,
   now: Date = new Date(),
 ): Promise<McpStarterTrialStatus> {
-  const effectivePlan = classifyEntitlement(user, now).effectivePlan;
+  const entitlement = await resolveEffectiveEntitlement(user, now, tx);
+  const effectivePlan = entitlement.effectivePlan;
   const isStarterTrialPlan = !isPaid(effectivePlan);
-  const eligible = isStarterTrialPlan && isMcpStarterTrialEligibleUser(user, now);
+  const eligible = isStarterTrialPlan && isStarterTrialEligibleWithResolution(user, entitlement, now);
   const usedClips = isStarterTrialPlan
     ? await countStarterMcpRootJobsInTransaction(tx, user.id)
     : 0;
@@ -196,10 +214,10 @@ export async function validateMcpStarterTrialQuoteInput(
   now: Date = new Date(),
   toolName: string = "prepare_video_job",
 ): Promise<QuoteFailure | null> {
-  const effectivePlan = classifyEntitlement(user, now).effectivePlan;
-  if (mcpAccessAllowed(effectivePlan)) return null;
+  const entitlement = await resolveEffectiveEntitlement(user, now);
+  if (mcpAccessAllowed(entitlement.effectivePlan)) return null;
 
-  if (!isMcpStarterTrialEligibleUser(user, now)) {
+  if (!isStarterTrialEligibleWithResolution(user, entitlement, now)) {
     return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE, toolName);
   }
 
@@ -275,10 +293,10 @@ export async function validateMcpStarterTrialConsumptionInTransaction(
   now: Date = new Date(),
   toolName: string = "create_video_job",
 ): Promise<QuoteFailure | null> {
-  const effectivePlan = classifyEntitlement(user, now).effectivePlan;
-  if (mcpAccessAllowed(effectivePlan)) return null;
+  const entitlement = await resolveEffectiveEntitlement(user, now, tx);
+  if (mcpAccessAllowed(entitlement.effectivePlan)) return null;
 
-  if (!isMcpStarterTrialEligibleUser(user, now)) {
+  if (!isStarterTrialEligibleWithResolution(user, entitlement, now)) {
     return starterTrialPlanRequiredFailure(MCP_PLAN_REQUIRED_MESSAGE, toolName);
   }
 

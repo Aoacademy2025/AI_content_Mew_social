@@ -346,8 +346,8 @@ export function buildCompositeFilter(
       // yuva444p conversion, chromakey, despill and feather cost for pixels that were then
       // discarded. Ratio expressions keep this correct for both 720p and 1080p sources.
       const avatarFilter = left > 0 || top > 0 || visibleW < w || visibleH < h
-        ? `[1:v]crop='max(2,trunc(iw*${visibleW}/${w}/2)*2)':'max(2,trunc(ih*${visibleH}/${h}/2)*2)':'trunc(iw*${left}/${w}/2)*2':'trunc(ih*${top}/${h}/2)*2',scale=${visibleW}:${visibleH}:flags=lanczos,${keyChain}[fg]`
-        : `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`;
+        ? `[1:v]crop='max(2,trunc(iw*${visibleW}/${w}/2)*2)':'max(2,trunc(ih*${visibleH}/${h}/2)*2)':'trunc(iw*${left}/${w}/2)*2':'trunc(ih*${top}/${h}/2)*2',scale=${visibleW}:${visibleH}:flags=lanczos,${keyChain},fps=30[fg]`
+        : `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain},fps=30[fg]`;
       return [
         backgroundFilter,
         avatarFilter,
@@ -357,14 +357,14 @@ export function buildCompositeFilter(
     }
     return [
       backgroundFilter,
-      `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`,
+      `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain},fps=30[fg]`,
       `[bg][fg]overlay=${x}:${y}:format=auto[${overlayOutput}]`,
       ...(fadeFilter ? [fadeFilter] : []),
     ].join(";");
   }
   return [
     backgroundFilter,
-    `[1:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,${keyChain}[fg]`,
+    `[1:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,${keyChain},fps=30[fg]`,
     `[bg][fg]overlay=0:0:format=auto[${overlayOutput}]`,
     ...(fadeFilter ? [fadeFilter] : []),
   ].join(";");

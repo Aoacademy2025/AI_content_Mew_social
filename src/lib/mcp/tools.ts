@@ -2,7 +2,7 @@ import { getVideoQuote } from "./video-quote.server";
 import { getVideoJobCostReceipt } from "./billing-receipt";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { classifyEntitlement } from "@/lib/entitlements";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { getMcpStarterTrialStatus } from "@/lib/mcp/starter-trial";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus, deriveFailedJobFields, deriveSettlementFields } from "@/lib/mcp/video-job";
@@ -77,7 +77,10 @@ function deriveTitle(v: { content: { headline: string | null } | null; script: s
 }
 
 export async function getCurrentUserTool(user: User) {
-  const mcpStarterTrial = await getMcpStarterTrialStatus(user);
+  const [entitlement, mcpStarterTrial] = await Promise.all([
+    resolveEffectiveEntitlement(user),
+    getMcpStarterTrialStatus(user),
+  ]);
   const keysConfigured = {
     gemini: !!user.geminiKey || process.env.MANAGED_GEMINI === "1",
     heygen: !!user.heygenKey,
@@ -88,7 +91,7 @@ export async function getCurrentUserTool(user: User) {
   return {
     email: user.email,
     plan: user.plan,
-    effectivePlan: classifyEntitlement(user).effectivePlan,
+    effectivePlan: entitlement.effectivePlan,
     usageCount: user.usageCount,
     usageLimit: user.usageLimit,
     keysConfigured,

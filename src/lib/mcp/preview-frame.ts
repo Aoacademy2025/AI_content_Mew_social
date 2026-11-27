@@ -25,6 +25,7 @@ import { prepareFilledWindowRenderAssets } from "@/lib/broll-placeholders";
 import { headlineHookEndFrame } from "@/lib/headline-hook";
 import { canManageBrandMark, getBrandAssetPath } from "@/lib/brand-assets.server";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { projectHasAdmittedPersistedPin } from "@/lib/project-look.server";
 import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { renderPreviewStill, resolvePreviewServeUrl } from "@/lib/render/preview-still";
@@ -178,9 +179,13 @@ function avatarRangesMs(state: PendingEditState, durationMs: number): Array<{ st
 async function previewLogo(user: User, state: PendingEditState, burn: BurnConfig, notes: string[]) {
   const logo = burn.logoOverlay;
   if (!logo?.enabled) return null;
+  const [entitlement, brandAccess] = await Promise.all([
+    resolveEffectiveEntitlement(user),
+    resolveBrandVisualAccess(user),
+  ]);
   const allowed = canManageBrandMark(
-    user.plan,
-    (await resolveBrandVisualAccess(user)).canUse
+    entitlement.effectivePlan,
+    brandAccess.canUse
       || await projectHasAdmittedPersistedPin({ userId: user.id, projectId: state.projectId }),
   );
   if (!allowed) {

@@ -69,9 +69,12 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 // Presenter outputs always land in <cwd>/public/renders (upload-avatar's dir); remove ours on exit.
 const rendersDir = path.join(ROOT, "public", "renders");
 const listPresenterOutputs = () => (fs.existsSync(rendersDir) ? fs.readdirSync(rendersDir).filter((n) => n.startsWith("presenter-import-")) : []);
+const listStitchOutputs = () => (fs.existsSync(rendersDir) ? fs.readdirSync(rendersDir).filter((n) => n.startsWith("presenter-stitch-")) : []);
 const presenterOutputsBefore = new Set(listPresenterOutputs());
+const stitchOutputsBefore = new Set(listStitchOutputs());
 process.on("exit", () => {
   for (const name of listPresenterOutputs()) if (!presenterOutputsBefore.has(name)) fs.rmSync(path.join(rendersDir, name), { force: true });
+  for (const name of listStitchOutputs()) if (!stitchOutputsBefore.has(name)) fs.rmSync(path.join(rendersDir, name), { force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -617,11 +620,15 @@ async function main() {
     const done = await runJob(autoRootId, tester.user.id);
     check("the upload-mode preview runs to done", done.status === "done", String(done.errorMessage));
     const transcribe = calls("/api/videos/transcribe");
-    check("subtitles come from the clip's own audio (transcribe audioUrl = clipUrl, no TTS)",
-      transcribe.length === 1 && transcribe[0].body?.audioUrl === ready.resultSrc && calls("/api/videos/tts-gemini").length === 0 && calls("/api/videos/tts").length === 0,
+    const effectivePresenterSrc = String(transcribe[0]?.body?.audioUrl ?? "");
+    const isCanonicalOrImportedClip =
+      effectivePresenterSrc === ready.resultSrc
+      || /^\/api\/renders\/presenter-stitch-[\w-]+\.mp4$/.test(effectivePresenterSrc);
+    check("subtitles come from the clip's own audio (transcribe audioUrl = normalized clipUrl, no TTS)",
+      transcribe.length === 1 && isCanonicalOrImportedClip && calls("/api/videos/tts-gemini").length === 0 && calls("/api/videos/tts").length === 0,
       JSON.stringify(transcribe));
     const composite = calls("/api/heygen/composite")[0]?.body as Json | undefined;
-    check("composite mode cutaway over the clip", composite?.mode === "cutaway" && composite?.avatarVideoUrl === ready.resultSrc, JSON.stringify(composite));
+    check("composite mode cutaway over the clip", composite?.mode === "cutaway" && composite?.avatarVideoUrl === effectivePresenterSrc, JSON.stringify(composite));
     const output = parseVideoJobOutput(done.outputJson);
     check("preview avatarModel upload-cutaway, captions from the clip", output?.preview?.avatarModel === "upload-cutaway" && output?.preview?.captions?.[0]?.text === CARDS[0], JSON.stringify(output?.preview?.avatarModel));
     const personRanges = (composite?.personRanges ?? []) as Array<{ start: number; end: number }>;

@@ -159,7 +159,7 @@ function buildDirectCompositeFilter(
   const overlayOutput = fadeWindows.length > 0 ? "avatar_composite" : "out";
   return [
     backgroundFilter,
-    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1,fps=30[fg]`,
     `[bg][fg]overlay=0:0:format=auto[${overlayOutput}]`,
     ...(fadeWindows.length > 0
       ? [avatarFadeBlendFilter({
@@ -189,7 +189,8 @@ async function directComposite(
     "-filter_complex", filter,
     "-map", "[out]", "-map", "1:a?",
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-    "-c:a", "aac", "-b:a", "128k",
+    "-r", "30", "-vsync", "cfr",
+    "-c:a", "aac", "-b:a", "192k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
   ], timeoutMs);
@@ -212,6 +213,7 @@ async function cutawayComposite(
   audioFromBackground = false,
   punchZoom = false,
   punchZoomCuesSec: readonly number[] = [],
+  dissolveLeadInSec = 0,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   if (!buildEnableExpr(personRangesSec)) {
@@ -220,9 +222,15 @@ async function cutawayComposite(
     // no person ranges must skip the composite and ship the base render instead.
     throw new Error("cutaway composite requires at least one valid person range");
   }
+  const hasOptions = punchZoom || dissolveLeadInSec > 0;
   const filter = buildCutawayCompositeFilter(
     personRangesSec,
-    punchZoom ? { punchZoom: true, cueTimesSec: punchZoomCuesSec } : undefined,
+    hasOptions
+      ? {
+          ...(punchZoom ? { punchZoom: true, cueTimesSec: punchZoomCuesSec } : {}),
+          ...(dissolveLeadInSec > 0 ? { dissolveLeadInSec } : {}),
+        }
+      : undefined,
   );
   if (!filter) throw new Error("cutaway composite requires at least one valid person range");
   console.log("[cutaway-composite] filter:", filter);
@@ -231,7 +239,8 @@ async function cutawayComposite(
     "-filter_complex", filter,
     "-map", "[out]", "-map", audioFromBackground ? "0:a?" : "1:a?",
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-    "-c:a", "aac", "-b:a", "128k",
+    "-r", "30", "-vsync", "cfr",
+    "-c:a", "aac", "-b:a", "192k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
   ], timeoutMs);
@@ -301,8 +310,9 @@ async function chromakeyComposite(
     // Direct URL mode: audio lives in avatarPath (input 1), not bgPath
     "-map", audioFromAvatar ? "1:a?" : "0:a?",
     "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
+    "-r", "30", "-vsync", "cfr",
     "-threads", "0",
-    "-c:a", "aac", "-b:a", "128k",
+    "-c:a", "aac", "-b:a", "192k",
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
     outPath,
@@ -391,7 +401,7 @@ async function fadeCompositeAgainstBackground(
     "-map", "[out]", "-map", "0:a?",
     "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
     "-threads", "0",
-    "-c:a", "aac", "-b:a", "128k",
+    "-c:a", "aac", "-b:a", "192k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
   ], timeoutMs);
@@ -629,7 +639,7 @@ async function applyBookendSegmented(
   await runFfmpeg(ffmpegPath, [
     "-y", "-i", videoOnlyPath, "-i", bgPath,
     "-map", "0:v", "-map", "1:a?",
-    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
     "-shortest", "-movflags", "+faststart",
     outPath,
   ], timeoutMs);
@@ -673,6 +683,7 @@ export async function POST(req: Request) {
     personRanges = [],
     punchZoom = false,
     punchZoomCuesSec = [],
+    cutawayDissolveLeadInSec = 0,
   } = body ?? {};
 
   const layout = clampAvatarLayout(avatarLayout);
@@ -807,6 +818,12 @@ export async function POST(req: Request) {
     if (mode === "direct") {
       await directComposite(bgTmp, avatarTmp, outPath, sourceFadeWindows, ffmpegTimeoutMs);
     } else if (mode === "cutaway") {
+      const safeLeadInSec =
+        typeof cutawayDissolveLeadInSec === "number"
+        && Number.isFinite(cutawayDissolveLeadInSec)
+        && cutawayDissolveLeadInSec > 0
+          ? Math.min(0.5, cutawayDissolveLeadInSec)
+          : 0;
       await cutawayComposite(
         bgTmp,
         avatarTmp,
@@ -816,6 +833,7 @@ export async function POST(req: Request) {
         cutawayAudioFromBackground === true,
         punchZoom === true,
         Array.isArray(punchZoomCuesSec) ? punchZoomCuesSec : [],
+        safeLeadInSec,
       );
     } else if (mode === "rembg") {
       const rembgRawPath = path.join(rendersDir, `composite-${ts}-rembg-raw.mp4`);

@@ -281,6 +281,10 @@ export async function POST(req: Request) {
   };
   const preferenceBlock = brollPreferencePromptBlock(brollPreference);
   const preferenceRegion = normalizeBrollRegionPreference(brollRegionPreference);
+  const rawScriptAndScenes = `${typeof script === "string" ? script : ""} ${Array.isArray(scenes) ? scenes.join(" ") : ""}`;
+  const autoThaiContextHint = !preferenceRegion && /[\u0E00-\u0E7F]{4,}/.test(rawScriptAndScenes)
+    ? "THAI NARRATION CONTEXT: The spoken script is in Thai. Unless the script explicitly names a Western/foreign country, prefer Asian, Southeast Asian, or culturally neutral environments when people, homes, markets, money, or city streets appear; avoid defaulting to US dollar bills or Western-only street scenes."
+    : "";
   // A pinned Stock Mood replaces the legacy style outright, so the no-op log
   // must not keep naming a style that had no effect on a single query.
   const preferenceStyle = stockMood ? undefined : normalizeBrollVisualStyle(brollVisualStyle);
@@ -440,7 +444,7 @@ export async function POST(req: Request) {
   "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
 }
 Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
-${preferenceBlock ? `\n${preferenceBlock}` : ""}
+${preferenceBlock ? `\n${preferenceBlock}` : ""}${autoThaiContextHint ? `\n${autoThaiContextHint}` : ""}
 
 Script: ${fullScript.slice(0, 1500)}`;
       const raw = (await callLLM(analysisPrompt, 400, false)).trim();
@@ -692,13 +696,16 @@ Script: ${cleanScript.slice(0, 1500)}`;
   // ไม่ผูกกับ scenes — แตกหัวข้อจาก script เป็น N มุมที่ต่างกัน (เช่น script เรื่องเดียว
   // B-roll=5 → 5 มุมภาพที่ต่างกัน ไม่ซ้ำ)
   if (manualClips > 0) {
+    const alignedWindowsBlock = sceneList.length === manualClips
+      ? `\n═══ TIMELINE WINDOWS (1 QUERY PER WINDOW IN EXACT ORDER) ═══\n${sceneList.map((s, idx) => `[Window ${idx + 1}] ${s}`).join("\n")}\n═══ END WINDOWS ═══\n`
+      : "";
     const manualPrompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
 ═══ FULL SCRIPT ═══
 ${cleanScript}
 ═══ END SCRIPT ═══
-${directionBlock}
-Generate EXACTLY ${manualClips} Pexels stock search queries that together illustrate this script.
+${alignedWindowsBlock}${directionBlock}${autoThaiContextHint ? `${autoThaiContextHint}\n` : ""}
+Generate EXACTLY ${manualClips} Pexels stock search queries that together illustrate this script.${sceneList.length === manualClips ? ` Match query i (1..${manualClips}) directly to [Window i]'s spoken meaning in exact chronological order.` : ""}
 Even if the script focuses on one topic, break it into ${manualClips} DISTINCT visual angles
 (wide shot, close-up detail, people, environment, action, result, metaphor…).
 

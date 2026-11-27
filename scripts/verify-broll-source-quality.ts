@@ -22,16 +22,16 @@ check("clamp: ≥FullHD ranks equal (no provider bias)",
   `${clampedLongSide(3840, 2160)} === ${clampedLongSide(1920, 1080)}`);
 check("clamp: sharper sub-HD beats softer", clampedLongSide(1280, 720) > clampedLongSide(854, 480));
 
-// ── pickPixabayVariant (#8, RETUNED 2026-06-16 for normalize cost; cap fall-up ≤1280, only if medium <480) ──
+// ── pickPixabayVariant (#8 Full-HD floor ≤1920 while blocking 4K per #63) ──
 {
-  // healthy medium (≥480 long) → keep medium, never download large/4K
+  // healthy HD medium (≥1080 long) → keep medium, never download large/4K
   const r = pickPixabayVariant({ url: "med", width: 1280, height: 720 }, { url: "lg", width: 3840, height: 2160 });
-  check("pick: healthy medium kept (avoids 4K)", r.url === "med" && r.width === 1280);
+  check("pick: ≥1080 medium kept (avoids 4K)", r.url === "med" && r.width === 1280);
 }
 {
-  // COMMON case: medium 360×640 (sub-720 but ≥480) → KEEP medium now (speed: no 1920p decode tax)
+  // COMMON case: medium 360×640 or 540×960 (sub-1080) + Full-HD large (1080×1920 ≤1920) → upgrade to crisp Full-HD
   const r = pickPixabayVariant({ url: "med", width: 360, height: 640 }, { url: "lg", width: 1080, height: 1920 });
-  check("pick: 480–720 medium kept (no large fall-up = pre-#8 speed)", r.url === "med" && r.height === 640);
+  check("pick: sub-1080 medium + 1080×1920 large → upgrade to Full-HD", r.url === "lg" && r.height === 1920);
 }
 {
   // genuinely tiny medium (<480) + modest large (≤1280) → upgrade to large
@@ -39,14 +39,14 @@ check("clamp: sharper sub-HD beats softer", clampedLongSide(1280, 720) > clamped
   check("pick: <480 medium + ≤1280 large → upgrade", r.url === "lg" && r.height === 1280);
 }
 {
-  // tiny medium but large >1280 → keep medium (cap decode cost)
-  const r = pickPixabayVariant({ url: "med", width: 240, height: 360 }, { url: "lg", width: 1080, height: 1920 });
-  check("pick: <480 medium but large >1280 → keep medium (cost cap)", r.url === "med");
+  // 540×960 medium + 1080×1920 large → upgrade to Full-HD
+  const r = pickPixabayVariant({ url: "med", width: 540, height: 960 }, { url: "lg", width: 1080, height: 1920 });
+  check("pick: 540×960 medium + 1080×1920 large → upgrade to Full-HD", r.url === "lg" && r.height === 1920);
 }
 {
-  // tiny medium + large is 4K → MUST keep medium (respect #63, don't pull 4K)
+  // sub-1080 medium + large is 4K (>1920) → MUST keep medium (respect #63, don't pull 4K)
   const r = pickPixabayVariant({ url: "med", width: 240, height: 360 }, { url: "lg", width: 2160, height: 3840 });
-  check("pick: #63-respect — tiny medium but 4K large → keep medium (no 4K)", r.url === "med");
+  check("pick: #63-respect — sub-1080 medium but 4K large → keep medium (no 4K)", r.url === "med");
 }
 {
   // medium missing → fall back to large (legacy medium ?? large)

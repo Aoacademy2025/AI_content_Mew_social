@@ -66,6 +66,6 @@ export function sceneDiversityClause(input: {
   const action = input.action.trim() || "the action named by this scene";
   const gesture = input.allowPointing
     ? "A pointing gesture is allowed only because this scene action asks for it."
-    : "No pointing hand and no pointing finger.";
+    : "Hands stay engaged with the scene's objects or in a calm natural posture. No pointing hand and no pointing finger.";
   return `Scene place: ${place}. Scene action: ${action}. Shot scale: ${input.shotScale}. ${gesture}`;
 }

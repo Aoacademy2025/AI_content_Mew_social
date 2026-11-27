@@ -251,6 +251,8 @@ export function buildV2BurnConfig(
   tailHoldMs = 0,
   /** EP5/S2 backlog #3: subtle transition sound effects ("none" | "subtle"). */
   sfxMode?: SfxMode,
+  /** Optional word-level timestamps for frame-accurate Karaoke/Highlight sync. */
+  words?: readonly V2TimedWord[] | null,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -258,7 +260,8 @@ export function buildV2BurnConfig(
   const fontWeight = resolveV2FontWeight(cfg);
   let frameCursor = 0;
   const layers = normalizeEditorLayerVisibility(layerVisibility);
-  const keywordPopups = layers.subtitles ? captions.flatMap((c, idx) => {
+  const timedWords = Array.isArray(words) ? words : [];
+  const rawPopups = layers.subtitles ? captions.flatMap((c, idx) => {
     if (frameCursor >= durationInFrames) return [];
     const ov = overrides[idx] ?? {};
     const textColor = ov.textColor ?? cfg.textColor;
@@ -279,8 +282,31 @@ export function buildV2BurnConfig(
     const start = Math.min(Math.max(frameCursor, popup.start), durationInFrames - 1);
     const end = Math.min(Math.max(popup.end, start + 1), durationInFrames);
     frameCursor = end;
-    return [{ ...popup, start, end }];
+    const matchedWords = timedWords
+      .filter((w) => w && typeof w.word === "string" && w.word.trim() && w.endMs > c.startMs + 20 && w.startMs < c.endMs - 20)
+      .map((w) => ({
+        word: w.word,
+        startFrame: Math.max(start, Math.round((w.startMs / 1000) * fps)),
+        endFrame: Math.min(end, Math.max(start + 1, Math.round((w.endMs / 1000) * fps))),
+      }));
+    return [{
+      ...popup,
+      start,
+      end,
+      ...(matchedWords.length > 0 ? { words: matchedWords } : {}),
+    }];
   }) : [];
+  const keywordPopups = rawPopups.map((popup, idx) => {
+    const prev = idx > 0 ? rawPopups[idx - 1] : undefined;
+    const next = idx + 1 < rawPopups.length ? rawPopups[idx + 1] : undefined;
+    const contiguousPrev = prev ? popup.start - prev.end <= 2 : false;
+    const contiguousNext = next ? next.start - popup.end <= 2 : false;
+    return {
+      ...popup,
+      ...(contiguousPrev ? { contiguousPrev: true } : {}),
+      ...(contiguousNext ? { contiguousNext: true } : {}),
+    };
+  });
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs, cfg.verticalPos);
   const tailHoldFrames = Math.round((clampTailHoldMs(tailHoldMs) / 1000) * fps);

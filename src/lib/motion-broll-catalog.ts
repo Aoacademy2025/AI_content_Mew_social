@@ -504,11 +504,11 @@ export const MOTION_TEMPLATE_CATALOG: readonly MotionTemplateCatalogEntry[] = [
     description: "การ์ดตัวเลขพุ่งขึ้นสไตล์โมเดิร์น HTML+GSAP พร้อมกราฟเรืองแสงตามสีแบรนด์",
     defaultBackgroundVariant: "dark-grid",
     defaultProps: {
-      headerText: "KINETIC DATA",
-      title: "+340%",
-      subtitle: "อัตราการดูจนจบเพิ่มขึ้นเมื่อใช้ Motion B-Roll",
-      items: ["Frame-accurate", "Brand CI Synced", "Zero Stock Cost"],
-      badgeText: "HYPERFRAME",
+      headerText: "KEY METRICS",
+      title: "สรุปผลลัพธ์ชัดเจน",
+      subtitle: "ไฮไลต์ข้อมูลสำคัญตามจังหวะเนื้อหา",
+      items: ["ประเด็นหลักชัดเจน", "ข้อมูลเข้าใจง่าย", "นำไปใช้งานได้จริง"],
+      badgeText: "INSIGHT",
       backgroundVariant: "dark-grid",
     },
   },
@@ -520,10 +520,10 @@ export const MOTION_TEMPLATE_CATALOG: readonly MotionTemplateCatalogEntry[] = [
     description: "แผนผังขั้นตอนโมเดิร์นเรียงการ์ดพร้อมเส้นแสงวิ่งเชื่อมตามจังหวะพูด",
     defaultBackgroundVariant: "dark-grid",
     defaultProps: {
-      headerText: "WORKFLOW ENGINE",
-      title: "Brand + Motion Pipeline",
-      items: ["เลือกธีมช่อง", "AI แปลงบทเป็นฉาก", "ซิงค์สีแบรนด์", "เรนเดอร์ 9:16"],
-      badgeText: "AUTO",
+      headerText: "PROCESS FLOW",
+      title: "ลำดับขั้นตอนสำคัญ",
+      items: ["เริ่มต้นวางแผน", "ลงมือทำตามระบบ", "ตรวจสอบคุณภาพ", "สรุปผลลัพธ์"],
+      badgeText: "STEP FLOW",
       backgroundVariant: "dark-grid",
     },
   },
@@ -584,13 +584,13 @@ export const MOTION_TEMPLATE_CATALOG: readonly MotionTemplateCatalogEntry[] = [
     description: "หน้าจอแชตโซเชียลเด้งข้อความถาม-ตอบตามจังหวะพูด พร้อมจุดกำลังพิมพ์และอิโมจิรีแอ็กชัน",
     defaultBackgroundVariant: "dark-grid",
     defaultProps: {
-      headerText: "Mew Social Official",
-      title: "ทำยังไงให้คลิปดูแพงขึ้นครับ?",
+      headerText: "VERIFIED CHAT",
+      title: "คำถามที่พบบ่อย",
       subtitle: "ตอบกลับทันที · Online",
       items: [
-        "ทำไมตัดคลิปออกมาแล้วยังดูเหมือนดราฟต์ครับ?",
-        "เพราะยังขาด Motion B-Roll ที่คุมสีแบรนด์ครับ!",
-        "พอเปลี่ยนมาใช้โหมดนี้ ยอดดูจนจบพุ่งทันที 🔥",
+        "เริ่มต้นจากจุดไหนดีที่สุดครับ?",
+        "โฟกัสจุดที่สร้างผลลัพธ์ชัดที่สุดก่อนเลยครับ!",
+        "ทำตามขั้นตอนนี้เห็นความต่างทันที 🔥",
       ],
       badgeText: "ACTIVE NOW",
       backgroundVariant: "dark-grid",
@@ -1157,27 +1157,30 @@ export function planMotionSceneForWindow(input: {
         ? trimPhraseAtWordBoundary(extractedPhrases[1], 16)
         : entry.defaultProps.rightText;
 
-  const props = normalizeMotionSceneProps(
+    // Synthesize topic-derived subtitle instead of hardcoded internal repo file paths
+    const cleanSpokenSubtitle = trimPhraseAtWordBoundary(stripLeadingConjunction(text), 46);
+    const props = normalizeMotionSceneProps(
     {
       ...entry.defaultProps,
       headerText: stepHeader,
       title: shortTitle,
       subtitle:
-        autoBoardStyle === "terminal-spec"
-          ? "scout.md · hook-check"
+        cleanSpokenSubtitle ||
+        (autoBoardStyle === "terminal-spec"
+          ? "SUMMARY · KEY CHECKPOINTS"
           : autoBoardStyle === "script-table"
-            ? "voice/mewsocial-script.json"
+            ? "STRUCTURED BREAKDOWN"
             : autoBoardStyle === "pronounce-map"
-              ? "brand.json · style-lock"
+              ? "KEY POINTS · ACTION PLAN"
               : autoBoardStyle === "audio-waveform"
-                ? "voice/mewsocial-voice.wav"
+                ? "VOICE & RHYTHM TIMELINE"
                 : autoBoardStyle === "code-editor"
-                  ? "remotion/MotionBrollScene.tsx"
+                  ? "SYSTEM BLUEPRINT"
                   : autoBoardStyle === "lufs-meter"
-                    ? "ffmpeg · ebur128 (-15.4 LUFS)"
+                    ? "BALANCE & CLARITY METER"
                     : autoBoardStyle === "contact-sheet-qa"
-                      ? "qa · contact-sheet"
-                      : trimPhraseAtWordBoundary(text, 60),
+                      ? "QUALITY CHECKLIST"
+                      : entry.defaultProps.subtitle),
       items,
       leftText,
       rightText,

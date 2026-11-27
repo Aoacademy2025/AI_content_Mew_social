@@ -264,6 +264,31 @@ export function bgmGainAt(
   return mix.volume * (1 - (1 - DUCK_RATIO) * duckAmountAt(ms, mix.segments));
 }
 
+export const BGM_FADE_IN_MS = 250;
+export const BGM_FADE_OUT_MS = 650;
+
+/**
+ * Broadcast-ready BGM gain envelope at `ms` across `[0, totalDurationMs]`:
+ * combines smooth entry fade-in (`250ms`), end fade-out (`650ms`), and optional
+ * speech ducking so background music never starts with a click, masks voiceover,
+ * or cuts off abruptly on the final frame.
+ */
+export function bgmEnvelopeGainAt(
+  ms: number,
+  totalDurationMs: number,
+  mix: { volume: number; ducking: boolean; segments?: readonly SpeechSegment[] | null },
+): number {
+  const base = bgmGainAt(Math.max(0, ms), mix);
+  if (base <= 0) return 0;
+  const safeMs = Math.max(0, ms);
+  const fadeIn = BGM_FADE_IN_MS > 0 ? Math.min(1, safeMs / BGM_FADE_IN_MS) : 1;
+  const fadeOut =
+    Number.isFinite(totalDurationMs) && totalDurationMs > BGM_FADE_OUT_MS
+      ? Math.min(1, Math.max(0, (totalDurationMs - safeMs) / BGM_FADE_OUT_MS))
+      : 1;
+  return base * Math.min(fadeIn, fadeOut);
+}
+
 /** Validate the burn's audioMix prop (render route + composition). No voice → null: the burn
  *  must never produce a silent video, so callers fall back to the base audio. */
 export function normalizeAudioMix(value: unknown): SubtitleAudioMix | null {

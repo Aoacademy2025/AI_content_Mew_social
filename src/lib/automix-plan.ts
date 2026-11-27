@@ -181,6 +181,92 @@ export function distributeAutoMixAiSlots(
   };
 }
 
+const AI_AFFINITY_RE =
+  /(?:ไทย|กรุงเทพ|บาท|ตลาดนัด|ส้มตำ|กะเพรา|วัด|ซอย|วินมอเตอร์ไซค์|แม่ค้า|คอนโด|รถไฟฟ้า|เหมือน|เปรียบเหมือน|ความลับ|เบื้องหลัง|กับดัก|จิตวิทยา|ความรู้สึก|ฝัน|จินตนาการ|สมอง|อัลกอริทึม|ระบบอัตโนมัติ|อนาคต|metaphor|surreal|thai|bangkok)/iu;
+const VIDEO_AFFINITY_RE =
+  /(?:เดิน|วิ่ง|พิมพ์|ขับ|เท|ชง|ถ่าย|เปิด|กด|เลื่อน|พูดคุย|ประชุม|ออกกำลังกาย|ทำอาหาร|typing|walking|running|pouring|cooking|driving|working|scrolling)/iu;
+
+/**
+ * Semantically route AutoMix slots across `sceneTexts` while preserving the EXACT
+ * per-source budget (`video`, `photo`, `ai` counts) and `slot[0] !== "ai"` hook invariant
+ * from `planAutoMixSources`. Culturally specific Thai / metaphorical / abstract beats
+ * receive the paid `"ai"` budget instead of landing on generic stock, while concrete
+ * physical motion beats prefer `"video"`.
+ */
+export function planSemanticAutoMixSources(
+  n: number,
+  weights: AutoMixWeights,
+  sceneTexts?: readonly string[],
+): AutoMixSource[] {
+  const base = planAutoMixSources(n, weights);
+  if (!sceneTexts || sceneTexts.length === 0 || base.length <= 1) return base;
+
+  const aiCount = base.filter((s) => s === "ai").length;
+  const photoCount = base.filter((s) => s === "photo").length;
+  const videoCount = base.filter((s) => s === "video").length;
+  const distinctTypes = Number(aiCount > 0) + Number(photoCount > 0) + Number(videoCount > 0);
+  if (distinctTypes <= 1) return base;
+
+  const scores = base.map((_, idx) => {
+    const text = (sceneTexts[idx] ?? "").trim();
+    const aiMatch = AI_AFFINITY_RE.test(text) ? 2 : 0;
+    const vidMatch = VIDEO_AFFINITY_RE.test(text) ? 2 : 0;
+    return { idx, aiScore: aiMatch - vidMatch * 0.5, vidScore: vidMatch - aiMatch * 0.5 };
+  });
+
+  const hasSemanticSignal = scores.some((s) => s.aiScore !== 0 || s.vidScore !== 0);
+  if (!hasSemanticSignal) return base;
+
+  const keepFirstNonAi = base[0] !== "ai" && aiCount < base.length;
+  const assigned = new Array<AutoMixSource | null>(base.length).fill(null);
+
+  // 1. Place `aiCount` slots on highest AI-affinity indices (avoiding slot 0 when base[0] !== "ai"
+  //    and preferring non-adjacent indices first so AI beats stay evenly paced).
+  if (aiCount > 0) {
+    const aiCandidates = scores
+      .filter((s) => !(keepFirstNonAi && s.idx === 0))
+      .sort((a, b) => {
+        if (b.aiScore !== a.aiScore) return b.aiScore - a.aiScore;
+        const aWasAi = base[a.idx] === "ai" ? 1 : 0;
+        const bWasAi = base[b.idx] === "ai" ? 1 : 0;
+        return bWasAi - aWasAi || a.idx - b.idx;
+      });
+    let placedAi = 0;
+    for (const c of aiCandidates) {
+      if (placedAi >= aiCount) break;
+      const prevAi = c.idx > 0 && assigned[c.idx - 1] === "ai";
+      const nextAi = c.idx + 1 < assigned.length && assigned[c.idx + 1] === "ai";
+      if (prevAi || nextAi) continue;
+      assigned[c.idx] = "ai";
+      placedAi++;
+    }
+    for (const c of aiCandidates) {
+      if (placedAi >= aiCount) break;
+      if (assigned[c.idx] !== null) continue;
+      assigned[c.idx] = "ai";
+      placedAi++;
+    }
+  }
+
+  // 2. Place `videoCount` slots on highest video-affinity remaining indices.
+  if (videoCount > 0) {
+    const vidCandidates = scores
+      .filter((s) => assigned[s.idx] === null)
+      .sort((a, b) => {
+        if (b.vidScore !== a.vidScore) return b.vidScore - a.vidScore;
+        const aWasVid = base[a.idx] === "video" ? 1 : 0;
+        const bWasVid = base[b.idx] === "video" ? 1 : 0;
+        return bWasVid - aWasVid || a.idx - b.idx;
+      });
+    for (let i = 0; i < videoCount && i < vidCandidates.length; i++) {
+      assigned[vidCandidates[i]!.idx] = "video";
+    }
+  }
+
+  // 3. Fill remaining `photoCount` slots.
+  return assigned.map((val, idx) => val ?? (photoCount > 0 ? "photo" : base[idx]!));
+}
+
 /**
  * Pick `n` evenly-spaced indices from [0, total) (ascending, unique). Used to choose
  * which captions become active b-roll pieces when the cadence cap wants fewer pieces

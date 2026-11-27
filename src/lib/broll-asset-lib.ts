@@ -292,7 +292,7 @@ export async function searchPixabay(query: string, pixabayKey: string, minDurati
   );
 }
 
-export const KEN_BURNS_DURATION_SEC = 5;
+export const KEN_BURNS_DURATION_SEC = 6;
 const KEN_BURNS_WIDTH = 1080;
 const KEN_BURNS_HEIGHT = 1920;
 const KEN_BURNS_TOTAL_ZOOM = 0.15;
@@ -317,29 +317,21 @@ export async function applyKenBurns(
     : KEN_BURNS_DURATION_SEC;
   const totalFrames = Math.max(1, Math.ceil(resolvedDurationSec * TARGET_FPS));
   const zoomStep = kenBurnsZoomStepForFrames(totalFrames).toFixed(9);
-  // Cover-crop to 9:16 BEFORE zoompan so non-9:16 stills (landscape photos, kie
-  // images off-ratio) get cropped like everywhere else (objectFit:"cover"),
-  // never stretched. Scale to a larger 1350x2400 (9:16) intermediate first so
-  // the zoompan zoom stays crisp, then crop to that exact box; zoompan then
-  // does its usual zoom/pan and downsamples to the final 1080x1920 output.
-  // out_range=tv (backlog #10): a still image is decoded full-range (JPEG/PNG convention
-  // — libavcodec tags it yuvj420p/pc, often with a legacy/default matrix like bt470bg).
-  // Without this, that full-range tag + those actual 0-255 sample values ride untouched
-  // through crop/zoompan into the encode, and ffmpeg's encoder then auto-promotes the
-  // requested "-pix_fmt yuv420p" BACK to yuvj420p to avoid lying about the range — so the
-  // Ken Burns clip comes out full-range/yuvj420p/bt470bg while every other B-roll clip in
-  // this system (uploaded video via normalizeForRemotion, stock downloads) is tv/bt709.
-  // Measured effect on a real export: ~12 levels darker with crushed blacks (backlog #10).
-  // `out_range=tv` does a REAL numeric rescale here (not just a tag), converging the still
-  // onto the same tv/bt709 domain as everything else it gets composited with.
+  // Cover-crop to target aspect BEFORE zoompan so non-9:16 stills (landscape photos,
+  // kie images off-ratio) get cropped like everywhere else (objectFit:"cover"),
+  // never stretched. Oversample to 2x target resolution (2160x3840 for 9:16) with
+  // lanczos before zoompan so integer-pixel zoompan crop coordinates step at half-pixel
+  // precision in final 1080p space instead of visibly wobbling/stalling on alternate frames.
+  // `out_range=tv` (backlog #10) performs a real numeric rescale from JPEG/PNG full-range
+  // into studio-swing tv/bt709 levels matching every other normalized B-roll clip.
   const kbDimensions = options.aspectRatio === "16:9"
-    ? { outW: 1920, outH: 1080, scaleW: 2400, scaleH: 1350 }
+    ? { outW: 1920, outH: 1080, scaleW: 3840, scaleH: 2160 }
     : options.aspectRatio === "1:1"
-      ? { outW: 1080, outH: 1080, scaleW: 1350, scaleH: 1350 }
+      ? { outW: 1080, outH: 1080, scaleW: 2160, scaleH: 2160 }
       : options.aspectRatio === "4:5"
-        ? { outW: 1080, outH: 1350, scaleW: 1350, scaleH: 1688 }
-        : { outW: KEN_BURNS_WIDTH, outH: KEN_BURNS_HEIGHT, scaleW: 1350, scaleH: 2400 };
-  const zoompan = `scale=${kbDimensions.scaleW}:${kbDimensions.scaleH}:force_original_aspect_ratio=increase:out_range=tv,crop=${kbDimensions.scaleW}:${kbDimensions.scaleH},zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${kbDimensions.outW}x${kbDimensions.outH}:fps=${TARGET_FPS}`;
+        ? { outW: 1080, outH: 1350, scaleW: 2160, scaleH: 2700 }
+        : { outW: KEN_BURNS_WIDTH, outH: KEN_BURNS_HEIGHT, scaleW: 2160, scaleH: 3840 };
+  const zoompan = `scale=${kbDimensions.scaleW}:${kbDimensions.scaleH}:force_original_aspect_ratio=increase:flags=lanczos:out_range=tv,crop=${kbDimensions.scaleW}:${kbDimensions.scaleH},zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${kbDimensions.outW}x${kbDimensions.outH}:fps=${TARGET_FPS}`;
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [

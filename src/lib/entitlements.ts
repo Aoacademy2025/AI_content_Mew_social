@@ -1,11 +1,14 @@
 import { withPrismaOperation } from "@/lib/prisma-operation";
-import type { User } from "@prisma/client";
+import type { Prisma, User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { MONTHLY_GRANT, resetMonthlyGranted } from "@/lib/credits";
 import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
-import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import {
+  resolvePaidEquivalentEntitlement,
+  resolvePaidEquivalentEntitlementWithHistory,
+} from "@/lib/paid-equivalent-entitlement.server";
 import {
   excludeLiveTrialingSubscriptionWhere,
   hasLiveStripeSubscription,
@@ -180,6 +183,113 @@ export function classifyEntitlement(user: EntitlementUser, now: Date = new Date(
     action: "REVIEW",
     reason: "paid_plan_without_expiry_or_active_subscription",
     expiresAt: null,
+  };
+}
+
+export type EffectiveEntitlementResolution = EntitlementDecision & {
+  hasLapsedGrantOrCoupon: boolean;
+};
+
+type EffectiveEntitlementInput = EntitlementUser & {
+  suspended?: boolean;
+  trialEndedAt?: Date | null;
+  bundleGrantId?: string | null;
+  bundleSubscriptionId?: string | null;
+  bundleAmountThb?: number | null;
+};
+
+/**
+ * Non-mutating entitlement resolution that checks durable Paid-Equivalent
+ * evidence (`AdministratorGrant`, `CouponRedemption` GRANT, `Payment`, `Bundle`)
+ * before falling back to row-level `classifyEntitlement`.
+ *
+ * Used by MCP auth/tools/quotes/tokens and background media-import lanes where
+ * an account may hold an active grant/coupon alongside a stale `trialEndsAt <= now`
+ * (or where a grant/coupon was revoked or expired before `syncUserEntitlement`
+ * rewrote `User.plan`).
+ */
+export async function resolveEffectiveEntitlement(
+  user: EffectiveEntitlementInput,
+  now: Date = new Date(),
+  db: Prisma.TransactionClient = prisma,
+): Promise<EffectiveEntitlementResolution> {
+  const { decision: paidEquivalent, hasAnyGrantOrCouponEvidence, hasLapsedGrantOrCoupon } =
+    await resolvePaidEquivalentEntitlementWithHistory(
+      {
+        id: user.id,
+        plan: user.plan,
+        suspended: Boolean(user.suspended),
+        planExpiresAt: user.planExpiresAt,
+        stripeSubscriptionId: user.stripeSubscriptionId,
+        subStatus: user.subStatus,
+        bundleGrantId: user.bundleGrantId ?? null,
+        bundleSubscriptionId: user.bundleSubscriptionId ?? null,
+        bundleAccessExpiresAt: user.bundleAccessExpiresAt ?? null,
+        bundleStatus: user.bundleStatus ?? null,
+        bundleAmountThb: user.bundleAmountThb ?? null,
+      },
+      now,
+      db,
+    );
+
+  if (user.suspended) {
+    return {
+      effectivePlan: "FREE",
+      source: "FREE",
+      action: "DOWNGRADE",
+      reason: "suspended",
+      expiresAt: null,
+      hasLapsedGrantOrCoupon,
+    };
+  }
+
+  if (paidEquivalent.canUsePaidFeatures) {
+    const source: EntitlementDecision["source"] = paidEquivalent.source === "subscription"
+      ? "SUBSCRIPTION"
+      : paidEquivalent.source === "bundle"
+        ? "BUNDLE"
+        : paidEquivalent.source === "paid_term"
+          ? "TIMED_PLAN"
+          : "PERMANENT_OR_MANUAL";
+    return {
+      effectivePlan: paidEquivalent.effectivePlan,
+      source,
+      action: "KEEP",
+      reason: `paid_equivalent:${paidEquivalent.source}`,
+      expiresAt: paidEquivalent.expiresAt,
+      hasLapsedGrantOrCoupon: false,
+    };
+  }
+
+  if (hasLiveStripeSubscription(user, preserveTrialOnConvertEnabled()) && user.subStatus !== "active") {
+    return {
+      effectivePlan: user.plan,
+      source: "SUBSCRIPTION",
+      action: "KEEP",
+      reason: "stripe_trialing_subscription",
+      expiresAt: user.planExpiresAt,
+      hasLapsedGrantOrCoupon,
+    };
+  }
+
+  const classified = classifyEntitlement(user, now);
+  if (
+    classified.source === "PERMANENT_OR_MANUAL"
+    && (hasAnyGrantOrCouponEvidence || Boolean(user.trialEndedAt))
+  ) {
+    return {
+      effectivePlan: "FREE",
+      source: "EXPIRED_PLAN",
+      action: "DOWNGRADE",
+      reason: "grant_or_coupon_inactive",
+      expiresAt: null,
+      hasLapsedGrantOrCoupon: true,
+    };
+  }
+
+  return {
+    ...classified,
+    hasLapsedGrantOrCoupon,
   };
 }
 

@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isPaid } from "@/lib/plan-limits";
-import { classifyEntitlement } from "@/lib/entitlements";
 import { apiError } from "@/lib/api-error";
 import { createMcpToken, listMcpTokens, countActiveMcpTokens } from "@/lib/mcp/token";
 import { canCreateMcpTokenForUser, getMcpStarterTrialStatus } from "@/lib/mcp/starter-trial";
@@ -24,7 +22,7 @@ export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!canCreateMcpTokenForUser(user)) {
+    if (!(await canCreateMcpTokenForUser(user))) {
       return NextResponse.json({ error: "บัญชีนี้ยังไม่สามารถสร้าง MCP token ได้ กรุณาตรวจสอบสถานะบัญชีหรืออัปเกรดที่ https://studio.heroaiengine.com/pricing" }, { status: 403 });
     }
     if ((await countActiveMcpTokens(user.id)) >= 10) {

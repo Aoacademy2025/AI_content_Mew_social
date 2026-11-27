@@ -604,9 +604,16 @@ export async function clearPendingEditDraftIfRevision(
 
 /** The export's burn config, built exactly the way the web editor builds it (`buildV2BurnConfig`). */
 export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase, "videoUrl" | "preview">) {
-  const effectiveSfx = effectiveSfxMode(
-    draft.sfxMode ?? (base.preview.config as { sfxMode?: unknown } | undefined)?.sfxMode,
-  );
+  const baseConfigSfx = (base.preview.config as { sfxMode?: unknown } | undefined)?.sfxMode;
+  const requestedSfx = effectiveSfxMode(draft.sfxMode ?? baseConfigSfx);
+  // If the base video already baked `sfxMode: "subtle"` into its audio track and isn't being
+  // muted/replaced by a `backgroundMusic` edit (or `direct` avatar audio), skip re-baking SFX
+  // on the overlay pass so whooshes/pops never double-layer.
+  const baseAlreadyHasAudibleSfx =
+    baseConfigSfx === "subtle"
+    && base.preview.avatarMode !== "direct"
+    && !draft.backgroundMusic;
+  const effectiveSfx = requestedSfx === "subtle" && !baseAlreadyHasAudibleSfx ? "subtle" : "none";
   const rawBgVideos = Array.isArray((base.preview.config as { bgVideos?: unknown } | undefined)?.bgVideos)
     ? ((base.preview.config as { bgVideos: Array<{ start?: number; brollEnabled?: boolean; src?: string }> }).bgVideos)
     : [];
@@ -636,6 +643,7 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     draft.headlineHook,
     draft.tailHoldMs,
     effectiveSfx,
+    base.preview.words,
   );
   return sfxCues && sfxCues.length > 0 ? { ...burn, sfxCues } : burn;
 }

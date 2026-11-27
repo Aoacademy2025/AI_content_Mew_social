@@ -329,6 +329,67 @@ export async function resolvePaidEquivalentEntitlement(
   }, now);
 }
 
+export type PaidEquivalentHistorySummary = {
+  decision: PaidEquivalentDecision;
+  hasAnyGrantOrCouponEvidence: boolean;
+  hasLapsedGrantOrCoupon: boolean;
+};
+
+function summarizeGrantOrCouponHistory(
+  evidence: Pick<PaidEquivalentEvidence, "couponRedemptions" | "administratorGrants">,
+  now: Date,
+): Pick<PaidEquivalentHistorySummary, "hasAnyGrantOrCouponEvidence" | "hasLapsedGrantOrCoupon"> {
+  const hasAnyGrantOrCouponEvidence =
+    evidence.administratorGrants.length > 0
+    || evidence.couponRedemptions.some((redemption) => redemption.outcome !== "PROMO_ONLY");
+
+  const hasLapsedGrantOrCoupon =
+    evidence.administratorGrants.some(
+      (grant) =>
+        grant.revokedAt !== null
+        || (!grant.permanent && grant.expiresAt !== null && grant.expiresAt <= now),
+    )
+    || evidence.couponRedemptions.some((redemption) => {
+      if (redemption.outcome === "PROMO_ONLY") return false;
+      const durable = redemption.outcome && redemption.outcome !== "LEGACY";
+      const expiresAt = durable
+        ? redemption.entitlementExpiresAt ?? null
+        : redemption.coupon.durationDays > 0
+          ? new Date(redemption.redeemedAt.getTime() + redemption.coupon.durationDays * DAY_MS)
+          : null;
+      return Boolean(expiresAt && expiresAt <= now);
+    });
+
+  return { hasAnyGrantOrCouponEvidence, hasLapsedGrantOrCoupon };
+}
+
+export async function resolvePaidEquivalentEntitlementWithHistory(
+  user: PaidEquivalentEvidence["user"] & { id: string },
+  now: Date = new Date(),
+  db: Prisma.TransactionClient = prisma,
+): Promise<PaidEquivalentHistorySummary> {
+  const [payments, couponRedemptions, administratorGrants] = await Promise.all([
+    db.payment.findMany({
+      where: { userId: user.id, status: "PAID", periodDays: { gt: 0 } },
+      orderBy: [{ paidAt: "desc" }, { createdAt: "desc" }],
+      select: PAYMENT_EVIDENCE_SELECT,
+    }),
+    db.couponRedemption.findMany({
+      where: { userId: user.id, coupon: { type: "GRANT" } },
+      select: COUPON_EVIDENCE_SELECT,
+    }),
+    db.administratorGrant.findMany({ where: { userId: user.id }, select: GRANT_EVIDENCE_SELECT }),
+  ]);
+  const decision = decidePaidEquivalentEntitlement(
+    { user, payments, couponRedemptions, administratorGrants },
+    now,
+  );
+  return {
+    decision,
+    ...summarizeGrantOrCouponHistory({ couponRedemptions, administratorGrants }, now),
+  };
+}
+
 export function paidEquivalentPlanAsPrisma(plan: PaidEquivalentPlan): Plan {
   return plan;
 }

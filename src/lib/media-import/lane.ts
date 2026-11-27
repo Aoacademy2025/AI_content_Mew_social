@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { MediaImport } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { classifyEntitlement } from "@/lib/entitlements";
+import { resolveEffectiveEntitlement } from "@/lib/entitlements";
 import { normalizedMarkerPath } from "@/lib/broll-asset-lib";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { MAX_BROLL_IMAGE_BYTES, MAX_BROLL_VIDEO_BYTES } from "@/lib/media-import/broll-pipeline";
@@ -332,7 +332,7 @@ async function processClaimedImport(row: MediaImport, deps: ProcessDeps): Promis
 
       if (!code) {
         const user = await prisma.user.findUnique({ where: { id: row.userId } });
-        const plan = user ? classifyEntitlement(user).effectivePlan : "FREE";
+        const plan = user ? (await resolveEffectiveEntitlement(user)).effectivePlan : "FREE";
         const result = await deps.processStaged({ importId: row.id, purpose, plan, stocksDir: deps.stocksDir });
         if (!result.ok) {
           code = LANE_CODES.has(result.errorCode) ? (result.errorCode as MediaImportLaneErrorCode) : "process_failed";

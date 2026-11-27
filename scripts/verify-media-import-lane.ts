@@ -434,8 +434,9 @@ async function main(): Promise<void> {
       l.start();
       const done = await waitFor(async () => (await prisma.mediaImport.count({ where: { status: { in: ["ready", "failed"] } } })) === 3, 60_000);
       check("three imports finished", done);
+      const { KEN_BURNS_DURATION_SEC } = await import("../src/lib/broll-asset-lib");
       const img = await rowOf(upImg.id);
-      check("upload image → ready, Ken Burns clip in stocks, 5000 ms", img.status === "ready" && /^\/api\/stocks\/broll-upload-[\w-]+\.mp4$/.test(img.resultSrc ?? "") && img.durationMs === 5000
+      check(`upload image → ready, Ken Burns clip in stocks, ${KEN_BURNS_DURATION_SEC * 1000} ms`, img.status === "ready" && /^\/api\/stocks\/broll-upload-[\w-]+\.mp4$/.test(img.resultSrc ?? "") && img.durationMs === KEN_BURNS_DURATION_SEC * 1000
         && fs.existsSync(path.join(stocksDir, path.basename(img.resultSrc ?? "x"))), JSON.stringify(img));
       const vid = await rowOf(urlVid.id);
       check("url video → ready, normalized clip in stocks with its duration", vid.status === "ready" && (vid.resultSrc ?? "").startsWith("/api/stocks/") && (vid.durationMs ?? 0) > 500, JSON.stringify(vid));

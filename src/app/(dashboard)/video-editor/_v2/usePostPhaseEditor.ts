@@ -2178,6 +2178,14 @@ export function usePostPhaseEditor(
         avatarVisible: effectiveLayerVisibility.avatar,
       });
       setExp({ phase: "saving" });
+      const exportMusic = changedMusic && musicVoiceSrc ? changedMusic : undefined;
+      const baseConfigSfx = (preview?.config as { sfxMode?: unknown } | undefined)?.sfxMode;
+      const baseAlreadyHasAudibleSfx =
+        baseConfigSfx === "subtle"
+        && preview?.avatarMode !== "direct"
+        && !exportMusic;
+      const effectiveOverlaySfx =
+        cfg.sfxMode === "subtle" && !baseAlreadyHasAudibleSfx ? "subtle" : "none";
       const overlay = buildV2BurnConfig(
         exportVideoUrl,
         captions,
@@ -2189,9 +2197,9 @@ export function usePostPhaseEditor(
         effectiveLayerVisibility,
         resolvedHeadlineHook,
         tailHoldMs,
+        effectiveOverlaySfx,
+        preview?.words,
       );
-      // EP5 U7: only a changed music is sent; the server re-mixes it from the source's own voice.
-      const exportMusic = changedMusic && musicVoiceSrc ? changedMusic : undefined;
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
