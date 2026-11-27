@@ -216,10 +216,11 @@ export async function generateHeroScriptTool(
   user: User,
   args: GenerateHeroScriptArgs,
 ): Promise<GenerateHeroScriptSuccess | BrandScriptToolFailure> {
-  // 1. Entitlement & rollout check (mirrors requireHeroScriptUser).
+  // 1. Entitlement & rollout check (MCP script tool stays paid-equivalent/internal only;
+  //    Web Studio grants bounded 3-script sample access on Conversion Trial per HERO-131).
   const access = await resolveHeroScriptAccess(user);
-  if (!access.canUse) {
-    if (access.reason === "payment_required") {
+  if (!access.canUse || access.cohort === "trial") {
+    if (access.reason === "payment_required" || access.cohort === "trial") {
       return fail(
         "payment_required",
         "ฟีเจอร์เขียนสคริปต์ AI (Hero Script) ใช้ได้เฉพาะสมาชิกที่ชำระเงินแล้ว (ไม่รวมช่วงทดลองใช้) — อัปเกรดเพื่อใช้งาน",

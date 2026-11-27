@@ -2240,7 +2240,7 @@ async function main() {
     ok(heroScriptGenerationLimit("free") === HERO_SCRIPT_FREE_GENERATIONS,
       "generation quota: FREE limit is 3 full scripts");
     ok(heroScriptGenerationLimit("trial") === HERO_SCRIPT_TRIAL_GENERATIONS,
-      "generation quota: TRIAL limit is 10 full scripts");
+      "generation quota: TRIAL limit is 3 full scripts");
     const paidReservation = await reserveScriptGeneration("no-row-needed", "paid");
     ok(paidReservation.allowed && paidReservation.reservationId === null,
       "generation quota: paid cohort is unlimited and creates no quota row");
@@ -2295,7 +2295,7 @@ async function main() {
     }
     const trialBlocked = await reserveScriptGeneration("hs-quota-trial", "trial");
     ok(!trialBlocked.allowed && trialBlocked.used === HERO_SCRIPT_TRIAL_GENERATIONS,
-      "generation quota: TRIAL blocks the 11th full script in the rolling window");
+      "generation quota: TRIAL blocks the 4th full script in the rolling window");
   }
 
   // ── Hero Script v2: quick presets, 1-click quick generate, preferredStructure,

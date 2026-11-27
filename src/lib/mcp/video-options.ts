@@ -237,7 +237,7 @@ export async function getVideoOptions(
       description: tpl.description,
     })),
     templatesHowToChoose:
-      "มี 2 แนวทางหลัก: (1) สไตล์สำเร็จรูป 1 คลิก — เลือก templateId คู่กับ brollSource (\"stock\" | \"hero-ai-image\" | \"automix\") หรือเลือกธีมโมชัน motionThemeId (\"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") ตอน create_video_job หรือ prepare_video_job ระบบจะตั้งโทนภาพหรือสร้างฉากโมชันด้วยโค้ด + Brand CI ทั้งคลิปให้อัตโนมัติตั้งแต่รอบแรก (0 เครดิตภาพเมื่อใช้ motionThemeId) (2) สื่อเฉพาะทางของผู้ใช้ — เลือก brollSource: \"external\" ระบบจะพักงานแบบ hold เพื่อให้เติมภาพ/วิดีโอหรือฉาก Motion/HyperFrames เข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window ก่อน export_video",
+      "มี 2 แนวทางหลัก: (1) สไตล์สำเร็จรูป 1 คลิก — เลือก templateId คู่กับ brollSource (\"stock\" | \"hero-ai-image\" | \"automix\") หรือเลือกธีมโมชัน motionThemeId (\"paper-cutout-doc\" | \"social-chat-sim\" | \"apple-bento-glass\" | \"doodle-explainer\" | \"cue-step-board\" | \"hyperframe-kinetic\") ตอน create_video_job หรือ prepare_video_job ระบบจะตั้งโทนภาพหรือสร้างฉากโมชันด้วยโค้ด + Brand CI ทั้งคลิปให้อัตโนมัติตั้งแต่รอบแรก (0 เครดิตภาพเมื่อใช้ motionThemeId) (2) สื่อเฉพาะทางของผู้ใช้ — เลือก brollSource: \"external\" ระบบจะพักงานแบบ hold เพื่อให้เติมภาพ/วิดีโอหรือฉาก Motion/HyperFrames เข้า windows[] ผ่าน batch_edit_video หรือ replace_broll_window ก่อน export_video",
     subtitleModes: ["sentence", "1", "2", "3", "4"] as const,
     subtitlePositions: ["top", "middle", "bottom"] as const,
     // Resolution order: explicit args → templateId defaults → Brand Subtitle Style → default below.

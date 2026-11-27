@@ -1040,6 +1040,19 @@ async function verifyEditorV2ShellBlockedRenderGuards(): Promise<void> {
     if (specifier === "@/lib/use-dynamic-thai-loanwords") {
       return { useDynamicThaiLoanwords: () => 0 };
     }
+    if (specifier === "@/lib/motion-broll-catalog") {
+      return { isMotionThemeId: () => false };
+    }
+    if (specifier === "@/lib/video-template-apply") {
+      return { findFlagshipMotionPreset: () => undefined };
+    }
+    if (specifier === "@/lib/social-post-handoff") {
+      return {
+        HERO_AI_SOCIAL_SCHEDULER_URL: "https://app.heroaiengine.com",
+        buildSocialPostCaptionPack: () => "",
+        buildWeeklySeriesHref: () => "/hero-script",
+      };
+    }
     throw new Error(`Unexpected EditorV2Shell import: ${specifier}`);
   };
 

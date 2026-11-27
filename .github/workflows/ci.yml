@@ -477,6 +477,7 @@ jobs:
           npm run verify:mcp-wave3-backlog
           npm run verify:mcp-wave4-backlog
           npm run verify:production-video-quality
+          npm run verify:hero-ops-wave1
 
       - name: Build
         run: npm run build

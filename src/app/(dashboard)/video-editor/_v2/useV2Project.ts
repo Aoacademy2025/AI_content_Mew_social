@@ -511,14 +511,20 @@ export function useV2Project() {
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [brandContentPreflightId, setBrandContentPreflightId] = useState<string | null>(null);
-  const [hasPersistedVisualPin, setHasPersistedVisualPin] = useState(false);
+  const [hasPersistedVisualPin, setHasPersistedVisualPinRaw] = useState(false);
+  const setHasPersistedVisualPin = useCallback((next: boolean) => {
+    setHasPersistedVisualPinRaw((prev) => prev === next ? prev : next);
+  }, []);
   // ADR 0059 amendment + wave 1b (D1): a pin alone no longer says anything
   // about AI images — every plan can own one. This mirrors the render-time
   // predicate (`hasAdmittedPersistedPin`) exactly, so the Editor never offers
   // an AI-image action the render would refuse. NOT implied by (and does not
   // imply) `hasPersistedVisualPin` — see the comment on the server response
   // shape in `editor-projects.ts`.
-  const [hasAdmittedVisualPin, setHasAdmittedVisualPin] = useState(false);
+  const [hasAdmittedVisualPin, setHasAdmittedVisualPinRaw] = useState(false);
+  const setHasAdmittedVisualPin = useCallback((next: boolean) => {
+    setHasAdmittedVisualPinRaw((prev) => prev === next ? prev : next);
+  }, []);
   const [projectReady, setProjectReadyRaw] = useState(false);
   const projectReadyRef = useRef(false);
   const setProjectReady = useCallback((next: boolean) => {
@@ -1170,7 +1176,13 @@ export function useV2Project() {
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
   //    "idle" until the first user-driven change, then "saving" → "saved". ──
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveStatus, setSaveStatusRaw] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const saveStatusRef = useRef<"idle" | "saving" | "saved" | "error">("idle");
+  const setSaveStatus = useCallback((next: "idle" | "saving" | "saved" | "error") => {
+    if (saveStatusRef.current === next) return;
+    saveStatusRef.current = next;
+    setSaveStatusRaw(next);
+  }, []);
   const [saveRevision, setSaveRevision] = useState(0);
   const [bootstrapRetryRevision, setBootstrapRetryRevision] = useState(0);
   const autosaveGenerationRef = useRef(0);
@@ -1320,11 +1332,16 @@ export function useV2Project() {
   }
 
   function applyServerProjectMetadata(project: Record<string, unknown>): void {
-    setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
-    setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
-    setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
-    setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
-    setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+    const nextStatus = typeof project.status === "string" ? project.status as ProjectStatus : "draft";
+    const nextActiveJobId = typeof project.activeJobId === "string" ? project.activeJobId : null;
+    const nextActiveExportJobId = typeof project.activeExportJobId === "string" ? project.activeExportJobId : null;
+    const nextLatestVideoId = typeof project.latestVideoId === "string" ? project.latestVideoId : null;
+    const nextMedia = (project.previewMediaState as ProjectMediaState | null | undefined) ?? null;
+    setProjectStatus((prev) => prev === nextStatus ? prev : nextStatus);
+    setActiveJobId((prev) => prev === nextActiveJobId ? prev : nextActiveJobId);
+    setActiveExportJobId((prev) => prev === nextActiveExportJobId ? prev : nextActiveExportJobId);
+    setLatestVideoId((prev) => prev === nextLatestVideoId ? prev : nextLatestVideoId);
+    setPreviewMediaState((prev) => JSON.stringify(prev) === JSON.stringify(nextMedia) ? prev : nextMedia);
     setHasPersistedVisualPin(project.hasPersistedVisualPin === true);
     setHasAdmittedVisualPin(project.hasAdmittedVisualPin === true);
   }
@@ -1584,6 +1601,10 @@ export function useV2Project() {
     tracker.latestLocal = latestLocal;
     latestDraftRef.current = latestLocal;
     stagedUserDraftMutationTokenRef.current = userDraftMutationTokenRef.current;
+    // HERO-46: batch saveStatus="saving" synchronously into the discrete input commit
+    // (SyncLane) instead of queuing a DefaultLane state update from the passive autosave
+    // useEffect, which incremented React's nestedUpdateCount across rapid insertText bursts.
+    setSaveStatus("saving");
     const journalWritten = writeEditorProjectRecoveryJournal(browserStorage(), {
       version: 1,
       projectId,
@@ -1592,7 +1613,7 @@ export function useV2Project() {
       draft: latestLocal.draft,
     });
     if (!journalWritten) clearEditorProjectRecoveryJournal(browserStorage(), projectId);
-  }, [setRecoveryState]);
+  }, [setRecoveryState, setSaveStatus]);
   stageExplicitUserDraftMutationRef.current = stageExplicitUserDraftMutation;
 
   const createServerProject = useCallback(async (
@@ -1758,6 +1779,8 @@ export function useV2Project() {
     setTemplateIdRaw(undefined);
     setSfxModeRaw(undefined);
     setBrollTransitionRaw(undefined);
+    setMotionThemeIdRaw(null);
+    setMotionMascotRaw(null);
     templatePickedMusicRef.current = null;
     // Fix round 1 (PR-B whole-branch review, B3): createdVia has no setXRaw of its own
     // (T9 — it is never a user edit), so it is not touched by any of the setXRaw calls
@@ -2563,7 +2586,7 @@ export function useV2Project() {
     tracker.latestLocal = latestLocal;
     latestDraftRef.current = latestLocal;
     const generation = tracker.generation;
-    setSaveStatus("saving");
+    if (hasSaveRetry) setSaveStatus("saving");
     const t = setTimeout(() => {
       const saveProjectId = projectId;
       if (!ownsAutosaveLineage(tracker, generation) || tracker.blocked) return;

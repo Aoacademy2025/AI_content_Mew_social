@@ -17,6 +17,11 @@ import {
 } from "lucide-react";
 import { activeStylePacks, type ActiveStylePackId } from "@/lib/style-pack-catalog";
 import { featuredMotionThemes, type MotionThemeId } from "@/lib/motion-broll-catalog";
+import {
+  buildSocialPostCaptionPack,
+  buildWeeklySeriesHref,
+  HERO_AI_SOCIAL_SCHEDULER_URL,
+} from "@/lib/social-post-handoff";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
 import {
@@ -391,8 +396,25 @@ export function PostPhaseMobile({
           <a href={ed.exp.url} download={downloadFilename} className="block" onClick={emitFirstClipViewed}>
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          <BtnSecondary
+            style={{ width: "100%", minHeight: 46 }}
+            onClick={() => {
+              emitFirstClipViewed();
+              const pack = buildSocialPostCaptionPack({
+                script,
+                headline: ed.headlineHook?.headline,
+              });
+              void navigator.clipboard?.writeText(pack.captionText).catch(() => {});
+              toast.success("คัดลอกแคปชันพร้อมแฮชแท็กแล้ว · กำลังเปิดหน้าตั้งเวลาโพสต์");
+              window.open(HERO_AI_SOCIAL_SCHEDULER_URL, "_blank", "noopener,noreferrer");
+            }}
+          >
+            ตั้งเวลาโพสต์ลงโซเชียล (Hero AI)
+          </BtnSecondary>
           <a href="/videos" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
-          <a href="/hero-script" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>คิดสคริปต์คลิปถัดไป (Hero Script)</BtnSecondary></a>
+          <a href={buildWeeklySeriesHref({ script, headline: ed.headlineHook?.headline })} className="block" onClick={emitFirstClipViewed}>
+            <BtnSecondary style={{ width: "100%", minHeight: 46 }}>ต่อยอดซีรีส์รายสัปดาห์ (Hero Script)</BtnSecondary>
+          </a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

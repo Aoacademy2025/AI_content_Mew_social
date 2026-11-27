@@ -644,6 +644,19 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/style-pack-catalog") {
       return { isActiveStylePackId: () => false };
     }
+    if (specifier === "@/lib/motion-broll-catalog") {
+      return { isMotionThemeId: () => false };
+    }
+    if (specifier === "@/lib/video-template-apply") {
+      return { findFlagshipMotionPreset: () => null };
+    }
+    if (specifier === "@/lib/social-post-handoff") {
+      return {
+        HERO_AI_SOCIAL_SCHEDULER_URL: "https://app.heroaiengine.com/?utm_source=hero_studio",
+        buildSocialPostCaptionPack: () => ({ hookLine: "", bodySummary: "", hashtags: [], captionText: "" }),
+        buildWeeklySeriesHref: () => "/hero-script",
+      };
+    }
     if (specifier === "@/lib/first-clip-starter") {
       return {
         findFirstClipStarter: () => undefined,

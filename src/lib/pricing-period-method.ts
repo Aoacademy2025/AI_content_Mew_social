@@ -103,3 +103,69 @@ export function seedMethodFromCancelReturn(
   if (cancelReturn.method === "card") return "card";
   return periodPromptpayOffered(period, ctx) ? "promptpay" : defaultMethod;
 }
+
+export type CheckoutFallbackOffer = {
+  plan: PaidTier;
+  reason: "cancelled_annual_card" | "cancelled_annual_promptpay" | "cancelled_generic" | "checkout_recovery";
+  offerAnnualPromptpay: boolean;
+  monthlyFallbackMethod: PaymentMethod;
+};
+
+/**
+ * HERO-130: Resolve immediate 1-click PromptPay QR and/or lower-ticket 30-day
+ * monthly fallback when a buyer returns from a failed/canceled annual checkout
+ * or clicks a checkout-recovery link (`?source=checkout_recovery`).
+ */
+export function resolveAnnualCheckoutFallback(
+  input: {
+    paymentResult?: string | null;
+    acquisitionSource?: string | null;
+    preferredPeriod?: Period | null;
+    cancelReturn: { plan?: PaidTier; period?: Period; method?: PaymentMethod };
+  },
+  ctx: PromptpayCtx,
+): CheckoutFallbackOffer | null {
+  const plan: PaidTier = input.cancelReturn.plan ?? "PRO";
+  const monthlyFallbackMethod: PaymentMethod = ctx.monthlyOffered[plan] ? "promptpay" : "card";
+
+  if (input.paymentResult === "cancelled") {
+    if (input.cancelReturn.period === "monthly") {
+      return null;
+    }
+    if (input.cancelReturn.period === "annual" && input.cancelReturn.method === "card") {
+      return {
+        plan,
+        reason: "cancelled_annual_card",
+        offerAnnualPromptpay: true,
+        monthlyFallbackMethod,
+      };
+    }
+    if (input.cancelReturn.period === "annual" && input.cancelReturn.method === "promptpay") {
+      return {
+        plan,
+        reason: "cancelled_annual_promptpay",
+        offerAnnualPromptpay: false,
+        monthlyFallbackMethod,
+      };
+    }
+    if (!input.cancelReturn.period) {
+      return {
+        plan,
+        reason: "cancelled_generic",
+        offerAnnualPromptpay: true,
+        monthlyFallbackMethod,
+      };
+    }
+  }
+
+  if (input.acquisitionSource === "checkout_recovery" && (input.preferredPeriod ?? "annual") === "annual") {
+    return {
+      plan,
+      reason: "checkout_recovery",
+      offerAnnualPromptpay: true,
+      monthlyFallbackMethod,
+    };
+  }
+
+  return null;
+}

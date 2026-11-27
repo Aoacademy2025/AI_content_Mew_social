@@ -643,36 +643,92 @@ export async function prepareBrollRenderAssets(
   const probeByLocalPath = new Map<string, Promise<number | null>>();
   let resolutionDroppedAssetCount = 0;
 
+  type ResolvedAssetSlot =
+    | { kind: "skip"; asset: BrollCoverageAsset; actualDurationSec: number | null }
+    | { kind: "resolved"; asset: BrollCoverageAsset; src: string; localPath: string | null; probeRequired: boolean; usable: boolean }
+    | { kind: "dropped" };
+
+  const slots: ResolvedAssetSlot[] = [];
+  const uniquePathsToProbe: string[] = [];
+  const seenPaths = new Set<string>();
+
   for (const asset of assets) {
     if (asset.brollEnabled === false || isMotionBrollUri(asset.src)) {
-      probedAssets.push({
+      slots.push({
+        kind: "skip",
         asset: { ...asset },
         actualDurationSec: isMotionBrollUri(asset.src) ? durationSec + 10 : null,
-        probeRequired: false,
       });
       continue;
     }
     try {
       const resolved = options.resolveAsset(asset.src);
       const probeRequired = resolved.localPath !== null;
-      let actualDurationSec: number | null = null;
-      if (probeRequired && options.isUsableLocalFile(resolved.localPath as string)) {
-        const localPath = resolved.localPath as string;
-        let pendingProbe = probeByLocalPath.get(localPath);
-        if (!pendingProbe) {
-          pendingProbe = options.probeDurationSec(localPath);
-          probeByLocalPath.set(localPath, pendingProbe);
-        }
-        actualDurationSec = await pendingProbe;
+      const usable = probeRequired && options.isUsableLocalFile(resolved.localPath as string);
+      if (usable && resolved.localPath && !seenPaths.has(resolved.localPath)) {
+        seenPaths.add(resolved.localPath);
+        uniquePathsToProbe.push(resolved.localPath);
       }
-      probedAssets.push({
-        asset: { ...asset, src: resolved.src },
-        actualDurationSec,
+      slots.push({
+        kind: "resolved",
+        asset,
+        src: resolved.src,
+        localPath: resolved.localPath,
         probeRequired,
+        usable,
       });
     } catch (error) {
       resolutionDroppedAssetCount += 1;
       options.onResolutionError?.(asset, error);
+      slots.push({ kind: "dropped" });
+    }
+  }
+
+  // HERO-58: Probe unique local media files with bounded concurrency (4) instead of
+  // spawning sequential ffprobe child processes one-by-one before queueing the render.
+  const PROBE_CONCURRENCY = 4;
+  let probeCursor = 0;
+  const runProbeWorker = async () => {
+    while (probeCursor < uniquePathsToProbe.length) {
+      const localPath = uniquePathsToProbe[probeCursor];
+      probeCursor += 1;
+      if (!localPath) continue;
+      const p = Promise.resolve().then(() => options.probeDurationSec(localPath));
+      probeByLocalPath.set(localPath, p);
+      await p.catch(() => null);
+    }
+  };
+  if (uniquePathsToProbe.length > 0) {
+    await Promise.all(
+      Array.from(
+        { length: Math.min(PROBE_CONCURRENCY, uniquePathsToProbe.length) },
+        () => runProbeWorker(),
+      ),
+    );
+  }
+
+  for (const slot of slots) {
+    if (slot.kind === "dropped") continue;
+    if (slot.kind === "skip") {
+      probedAssets.push({
+        asset: slot.asset,
+        actualDurationSec: slot.actualDurationSec,
+        probeRequired: false,
+      });
+      continue;
+    }
+    try {
+      const actualDurationSec = slot.usable && slot.localPath
+        ? await (probeByLocalPath.get(slot.localPath) ?? Promise.resolve(null))
+        : null;
+      probedAssets.push({
+        asset: { ...slot.asset, src: slot.src },
+        actualDurationSec,
+        probeRequired: slot.probeRequired,
+      });
+    } catch (error) {
+      resolutionDroppedAssetCount += 1;
+      options.onResolutionError?.(slot.asset, error);
     }
   }
 

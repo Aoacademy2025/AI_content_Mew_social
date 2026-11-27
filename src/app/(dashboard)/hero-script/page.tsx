@@ -59,6 +59,7 @@ type HandoffOperation = {
 export default function HeroScriptPage() {
   const router = useRouter();
   const [plan, setPlan] = useState("FREE");
+  const [heroScriptCohort, setHeroScriptCohort] = useState<string | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [availableProfiles, setAvailableProfiles] = useState<BrandProfile[] | null>(null);
   const [activeTab, setActiveTab] = useState<"write" | "library">("write");
@@ -126,8 +127,23 @@ export default function HeroScriptPage() {
   useEffect(() => {
     fetchMe().then((me) => {
       if (me) setPlan((me.effectivePlan ?? me.plan) || "FREE");
+      setHeroScriptCohort(typeof me?.heroScriptCohort === "string" ? me.heroScriptCohort : null);
       setAccountId(typeof me?.id === "string" ? me.id : null);
     });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const seed = params.get("seriesSeed")?.trim();
+    if (!seed) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("seriesSeed");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+    const timer = window.setTimeout(() => {
+      setTopic((prev) => prev.trim() ? prev : seed.slice(0, 280));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -512,6 +528,19 @@ export default function HeroScriptPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {heroScriptCohort === "trial" && (
+                <span
+                  data-testid="hero-script-trial-sample-pill"
+                  className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold"
+                  style={{
+                    background: HS_COLOR.violetSoft,
+                    border: `1px solid ${HS_COLOR.violetBorder}`,
+                    color: HS_COLOR.violet,
+                  }}
+                >
+                  ทดลองฟรี 3 สคริปต์ · ส่งเข้าตัดต่อได้ทันที
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => { void requestWorkspaceAction({ kind: "new" }); }}

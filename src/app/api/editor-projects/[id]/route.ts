@@ -19,12 +19,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (!project) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
     // T8 (ADR 0064, G21): surface the agent's unexported draft, scoped to this project's
-    // CURRENT base job — a separate, minimal lookup so this stays additive and avoids
-    // importing the MCP module into editor-projects.ts (see its own circular-import note).
-    const pendingEditRow = await prisma.editorProject.findFirst({
-      where: { id, userId: user.id },
-      select: { activeJobId: true, pendingEditJson: true, pendingEditRevision: true },
-    });
+    // CURRENT base job — skip the extra query in Step 1/2 draft state when activeJobId is null.
+    const pendingEditRow = project.activeJobId
+      ? await prisma.editorProject.findFirst({
+          where: { id, userId: user.id },
+          select: { activeJobId: true, pendingEditJson: true, pendingEditRevision: true },
+        })
+      : null;
     const pendingEdit = pendingEditRow ? await pendingEditForWebResolved(user.id, pendingEditRow) : null;
 
     const external = project.activeJobId ? await externalMediaContext(user.id, project.activeJobId) : null;

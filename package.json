@@ -196,6 +196,7 @@
     "verify:mcp-brand-kit-inheritance": "node --conditions=react-server --import tsx scripts/verify-mcp-brand-kit-inheritance.ts",
     "verify:mcp-paid-equivalent": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-mcp-paid-equivalent-entitlement.ts",
     "verify:production-video-quality": "tsx scripts/verify-production-video-quality-upgrades.ts",
+    "verify:hero-ops-wave1": "tsx scripts/verify-hero-ops-wave1.ts",
     "verify:mcp-all": "npm run verify:mcp-parity && npm run verify:mcp-audit-status && npm run verify:mcp-audit-insights && npm run verify:mcp-orchestrator-steps && npm run verify:mcp-pipeline-timeout && npm run verify:mcp-token && npm run verify:mcp-videojob && npm run verify:mcp-tool-gating && npm run verify:mcp-chain-linkage && npm run verify:mcp-edit-draft && npm run verify:mcp-edit-tools && npm run verify:mcp-transport-disconnect && npm run verify:mcp-background-music && npm run verify:mcp-video-edit-link && npm run verify:mcp-stock-gate && npm run verify:mcp-database-busy && npm run verify:mcp-batch-and-script-tools && npm run verify:mcp-brand-kit-inheritance && npm run verify:mcp-paid-equivalent",
     "verify:mcp-ci-coverage": "tsx scripts/verify-mcp-ci-coverage.ts",
     "verify:mcp-tool-gating": "node --conditions=react-server --import tsx scripts/verify-mcp-tool-gating.ts",
