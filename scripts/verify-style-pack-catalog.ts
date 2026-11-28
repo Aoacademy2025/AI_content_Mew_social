@@ -7,8 +7,8 @@ import { normalizeSubtitleStylePresetConfig } from "../src/lib/editor-style-pres
 import { isHeadlineHookPreset } from "../src/lib/headline-hook";
 import { isSfxMode } from "../src/lib/transition-sfx";
 
-assert.equal(cat.STYLE_PACKS.length, 18);
-assert.equal(cat.activeStylePacks().length, 13);
+assert.equal(cat.STYLE_PACKS.length, 21);
+assert.equal(cat.activeStylePacks().length, 16);
 assert.deepEqual(
   cat.activeStylePacks().map((p) => p.id),
   [...cat.ACTIVE_STYLE_PACK_IDS],

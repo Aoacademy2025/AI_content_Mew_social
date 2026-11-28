@@ -367,6 +367,9 @@ export const batchEditVideoInputShape = {
 
 export const exportVideoInputShape = {
   jobId: z.string().describe("jobId ที่ได้จาก create_video_job (exportMode \"hold\")"),
+  dualTikTokExport: z.boolean().optional().describe(
+    "true = สร้างไฟล์คู่สำหรับ TikTok เพิ่มอีก 1 ไฟล์ (tiktokSoundVideoUrl: วิดีโอเดียวกันแต่ตัดเสียงเพลงออก เหลือเสียงพูด+เสียงคลิปจริง+SFX ที่ -14 LUFS เพื่อใส่เพลงกระแสใน TikTok โดยไม่ติดลิขสิทธิ์)",
+  ),
 } satisfies z.ZodRawShape;
 
 export type EditToolFailure = {
@@ -3027,8 +3030,16 @@ async function exportWithWindowEdits(user: User, root: McpChainRow, initial: Pen
  * failed attempt → `enqueueEditorExport` (the web's own enqueue, in-flight cap included).
  * T13: with pending B-roll window edits it first re-renders them (exportWithWindowEdits).
  */
-export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Promise<unknown> {
+export async function exportVideoTool(
+  user: User,
+  jobId: unknown,
+  depth = 0,
+  opts?: { dualTikTokExport?: boolean },
+): Promise<unknown> {
   if (invalidJobId(jobId)) return UNKNOWN_JOB;
+  if (opts?.dualTikTokExport !== undefined && typeof opts.dualTikTokExport !== "boolean") {
+    return editToolFailure("invalid_input", "dualTikTokExport ต้องเป็น true หรือ false", "ส่ง dualTikTokExport เป็น boolean หรือเว้นว่างไว้");
+  }
   const held = await resolveHeldRoot(user.id, jobId as string);
   if (!held.ok) return held.failure;
   const { root } = held;
@@ -3087,11 +3098,14 @@ export async function exportVideoTool(user: User, jobId: unknown, depth = 0): Pr
 
   let result: Awaited<ReturnType<typeof enqueueEditorExport>>;
   try {
+    const burnConfig = toBurnConfig(state.draft, state.base);
     result = await enqueueEditorExport({
       user,
       brandVisualAccess: await resolveBrandVisualAccess(user),
       sourceJobId: state.base.id,
-      subtitleOverlayConfig: toBurnConfig(state.draft, state.base),
+      subtitleOverlayConfig: opts?.dualTikTokExport !== undefined
+        ? { ...burnConfig, dualTikTokExport: opts.dualTikTokExport }
+        : burnConfig,
       editorSnapshot: toEditorSnapshotDraft(state.draft),
       idempotencyKey,
       ...(script ? { exportScript: script } : {}),
@@ -3338,7 +3352,7 @@ export function registerEditTools(server: McpServer, principal: GatingPrincipal,
       inputSchema: exportVideoInputShape,
     },
     async (args, extra) =>
-      runTool("export_video", extra, (p) => exportVideoTool(p.user, args.jobId), args, { next: RUN_NEXT }),
+      runTool("export_video", extra, (p) => exportVideoTool(p.user, args.jobId, 0, { dualTikTokExport: args.dualTikTokExport }), args, { next: RUN_NEXT }),
     { next: GATE_NEXT },
   );
 }

@@ -334,7 +334,7 @@ export function parseJsonResponse(raw: string | null | undefined): unknown | nul
 // regenerate run on the PRO model. Both ids are env-overridable so prod can
 // move to a newer model without a code change.
 
-export const HERO_SCRIPT_MODEL_FAST_DEFAULT = "gemini-2.5-flash";
+export const HERO_SCRIPT_MODEL_FAST_DEFAULT = "gemini-3.8-flash";
 /** Amended 2026-07-31 (plan doc updated): the original default `gemini-2.5-pro`
  *  returns 404 "no longer available to new users" on the project's server key;
  *  `gemini-pro-latest` was verified working live. */

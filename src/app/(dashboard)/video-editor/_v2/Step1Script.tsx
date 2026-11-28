@@ -8,8 +8,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { PenLine, Clapperboard, GripVertical, Crown, Sparkles, NotebookPen } from "lucide-react";
+import { PenLine, Clapperboard, GripVertical, Crown, Sparkles, NotebookPen, Wand2 } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
+import { StoryDirectorStep1Panel } from "./StoryDirectorStep1Panel";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
 import { estimateClipSecV2, countWordsV2 } from "./estimate";
@@ -52,11 +53,13 @@ function fallbackClipFileName(url: string): string {
 export function Step1Script({
   p,
   onNext,
+  onExpressRender,
   firstClipPath = false,
   firstClipScriptOnly = false,
 }: {
   p: V2Project;
   onNext: () => void;
+  onExpressRender?: () => void;
   firstClipPath?: boolean;
   firstClipScriptOnly?: boolean;
 }) {
@@ -68,15 +71,24 @@ export function Step1Script({
   const totalSec = useMemo(() => estimateClipSecV2(p.script, p.ttsSpeed), [p.script, p.ttsSpeed]);
   const wordCount = useMemo(() => countWordsV2(p.script), [p.script]);
   const [selectedSeg, setSelectedSeg] = useState(0);
+  const [storyDirectorOpen, setStoryDirectorOpen] = useState<boolean>(
+    () => Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0,
+  );
   const dragIdx = useRef<number | null>(null);
   const uploadDurationLabel = p.clipDurationSec > 0 ? fmtTime(p.clipDurationSec) : null;
   const clipDurationViolation = p.mode === "upload" && p.clipDurationSec > 0
     ? audioDurationLimitViolation(p.clipDurationSec * 1000, p.plan ?? "FREE")
     : null;
-  const scriptDurationViolation = p.mode === "script" && totalSec > 0
+  const scriptDurationViolation = p.mode === "script" && !storyDirectorOpen && totalSec > 0
     ? audioDurationLimitViolation(totalSec * 1000, p.plan ?? "FREE")
     : null;
-  const showScriptSegments = p.mode !== "upload";
+  const hasPlannedStoryFootage = Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0;
+  const storyHidesScriptBox =
+    p.mode === "script"
+    && storyDirectorOpen
+    && !firstClipScriptOnly
+    && p.storyVoiceMode === "real-moments";
+  const showScriptSegments = p.mode !== "upload" && !storyHidesScriptBox;
   const activeClipUrls = useMemo(
     () => (Array.isArray(p.clipUrls) && p.clipUrls.length > 0 ? p.clipUrls : p.clipUrl ? [p.clipUrl] : []),
     [p.clipUrl, p.clipUrls],
@@ -114,19 +126,25 @@ export function Step1Script({
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
+  const isStoryExpressReady =
+    p.mode === "script" && storyDirectorOpen && hasPlannedStoryFootage && Boolean(onExpressRender);
   const ctaDisabled = p.mode === "upload"
     ? (!p.canUploadOwnMedia || !p.clipUrl || Boolean(clipDurationViolation))
-    : !lines.length;
+    : storyDirectorOpen
+      ? !hasPlannedStoryFootage && !lines.length
+      : !lines.length;
   const primaryCta = (
     <BtnPrimary
       className="w-full"
       disabled={ctaDisabled}
       style={ctaDisabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
-      onClick={onNext}
+      onClick={isStoryExpressReady ? onExpressRender : onNext}
     >
-      {firstClipPath && p.mode === "script"
-        ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →"
-        : "ถัดไป: เลือกองค์ประกอบ →"}
+      {isStoryExpressReady
+        ? "🎬 สร้างวิดีโอพร้อมโพสต์เลย →"
+        : firstClipPath && p.mode === "script"
+          ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →"
+          : "ถัดไป: เลือกองค์ประกอบ →"}
     </BtnPrimary>
   );
 
@@ -169,21 +187,38 @@ export function Step1Script({
       <div className="flex min-w-0 flex-1 flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
         {/* Conversion Trial stays on Narrative Source; paid-equivalent users retain upload. */}
         {firstClipScriptOnly ? null : (
-        <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
+        <div className="grid grid-cols-3 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
-            selected={p.mode === "script"}
-            onClick={() => p.setMode("script")}
+            selected={p.mode === "script" && !storyDirectorOpen}
+            onClick={() => {
+              setStoryDirectorOpen(false);
+              p.setMode("script");
+            }}
             icon={<PenLine size={17} strokeWidth={1.6} />}
             title="พิมพ์สคริปต์"
-            desc="ระบบสร้างเสียง + บีโรล + ซับให้ทั้งหมด"
+            desc="ยังไม่มีคลิป · ให้ AI พากย์เสียง + หาภาพ + ทำซับให้ครบ"
           />
           <ModeCard
             selected={p.mode === "upload"}
             disabled={!CLIP_CUTAWAY_ON}
-            onClick={() => CLIP_CUTAWAY_ON && p.setMode("upload")}
+            onClick={() => {
+              if (!CLIP_CUTAWAY_ON) return;
+              setStoryDirectorOpen(false);
+              p.setMode("upload");
+            }}
             icon={<Clapperboard size={17} strokeWidth={1.6} />}
-            title="ใช้คลิปที่ถ่ายเอง"
-            desc={CLIP_CUTAWAY_ON ? "อัปคลิป 9:16 หรือ 16:9 · ต่อสูงสุด 5 คลิป · ตัดจังหวะเงียบ + แทรกบีโรลอัตโนมัติ" : "เร็ว ๆ นี้"}
+            title="ใช้คลิปพูดของตัวเอง"
+            desc={CLIP_CUTAWAY_ON ? "มีคลิปพูดหน้ากล้อง 1–5 ช่วง · ตัดจังหวะเงียบ + ถอดซับ + แทรก B-roll" : "เร็ว ๆ นี้"}
+          />
+          <ModeCard
+            selected={p.mode === "script" && storyDirectorOpen}
+            onClick={() => {
+              p.setMode("script");
+              setStoryDirectorOpen(true);
+            }}
+            icon={<Wand2 size={17} strokeWidth={1.6} />}
+            title="โยนฟุตเทจให้ AI ตัด"
+            desc="มีหลายคลิป/รูป Vlog · AI คัดช็อตตามบีต ดึงเสียงจริง + ขึ้นป้ายไฮไลต์"
           />
         </div>
         )}
@@ -346,6 +381,24 @@ export function Step1Script({
             })}
           </div>
         </section>
+
+        {/* โหมด AI ผู้กำกับฟุตเทจ (โยนหลายคลิป+รูปให้ AI วางโครงเรื่องและตัดตามบีต) */}
+        {p.mode === "script" && storyDirectorOpen && !firstClipScriptOnly ? (
+          p.canUploadOwnMedia ? (
+            <StoryDirectorStep1Panel
+              p={p}
+              onExpressRender={onExpressRender}
+              onOpenStep2={onNext}
+            />
+          ) : (
+            <div
+              className="flex items-center justify-center p-6"
+              style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
+            >
+              <LockedUploadPanel />
+            </div>
+          )
+        ) : null}
 
         {/* โหมดอัปคลิปเอง (cutaway) */}
         {p.mode === "upload" && !firstClipScriptOnly ? (
@@ -582,7 +635,7 @@ export function Step1Script({
               </div>
             )}
           </div>
-        ) : (
+        ) : storyHidesScriptBox ? null : (
         <div
           className="flex min-h-0 flex-1 flex-col"
           style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
@@ -706,17 +759,25 @@ export function Step1Script({
       >
         <div className="px-5 pt-5 pb-3">
           <div style={{ font: `500 13.5px ${font.heading}` }}>
-            {p.mode === "upload" ? "โหมดใช้คลิปของคุณ" : lines.length ? "ระบบแบ่งเซ็กเมนต์ให้แล้ว" : "เซ็กเมนต์จะขึ้นที่นี่"}
+            {p.mode === "upload"
+              ? "โหมดใช้คลิปของคุณ"
+              : storyHidesScriptBox
+                ? "โหมดผู้กำกับฟุตเทจ (TikTok Vlog)"
+                : lines.length
+                  ? "ระบบแบ่งเซ็กเมนต์ให้แล้ว"
+                  : "เซ็กเมนต์จะขึ้นที่นี่"}
           </div>
           <div style={{ fontSize: 11, color: color.textFaint, marginTop: 2 }}>
             {p.mode === "upload"
               ? p.canUploadOwnMedia ? "ซับ + บีโรลจะถูกสร้างจากเสียงในคลิปหลังกดเรนเดอร์" : "อัปโหลดคลิปส่วนตัวเปิดให้ Pro ขึ้นไป"
-              : "ลากการ์ดเพื่อสลับลำดับ"}
+              : storyHidesScriptBox
+                ? "ใช้เสียงพูด/เชียร์จริงในคลิป + เพลง + ป้ายข้อความอัตโนมัติ"
+                : "ลากการ์ดเพื่อสลับลำดับ"}
           </div>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-2 lg:overflow-y-auto max-lg:overflow-visible px-5 pb-3">
-          {!showScriptSegments && (
+          {p.mode === "upload" && (
             <div
               className="flex flex-1 flex-col justify-center gap-3 text-center"
               style={{ fontSize: 12, color: color.textFaint, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 160, padding: 18 }}
@@ -737,6 +798,31 @@ export function Step1Script({
                 )
               ) : (
                 <span style={{ lineHeight: 1.65 }}>อัปเกรดเป็น Pro เพื่ออัปโหลดคลิปส่วนตัว</span>
+              )}
+            </div>
+          )}
+          {storyHidesScriptBox && (
+            <div
+              className="flex flex-1 flex-col justify-center gap-3 text-center"
+              style={{ fontSize: 12, color: color.textFaint, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 160, padding: 18 }}
+            >
+              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "rgba(124,92,255,.16)", color: color.primary300 }}>
+                <Wand2 size={18} strokeWidth={1.8} />
+              </div>
+              {hasPlannedStoryFootage ? (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ font: `500 13px ${font.heading}`, color: color.text }}>
+                    พร้อมสร้างคลิป ({Array.isArray(p.storyBgVideos) ? p.storyBgVideos.length : 0} ช็อตตามบีต)
+                  </span>
+                  <span style={{ lineHeight: 1.65 }}>
+                    กดปุ่มด้านล่างเพื่อเรนเดอร์ทันทีโดยไม่ต้องผ่านหน้าตั้งค่าเสียง — หลังเรนเดอร์แก้ข้อความและสลับเพลงได้ฟรี
+                  </span>
+                </div>
+              ) : (
+                <span style={{ lineHeight: 1.65 }}>
+                  1) อัปโหลดคลิป/รูปทางซ้าย<br />
+                  2) พิมพ์โจทย์สั้น ๆ 1 บรรทัด แล้วกดให้ AI คัดช็อต
+                </span>
               )}
             </div>
           )}

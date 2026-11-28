@@ -900,6 +900,7 @@ export function EditorV2Shell() {
       ) : null}
 
       {job.phase === "done" && job.output?.preview && p.mode === "script" &&
+        Boolean(job.output.preview.voiceUrl) &&
         !shouldShowUnavailablePreview(job.phase, job.mediaState) ? (
         <NarrationDurationReview
           targetSec={p.scriptTargetDurationSec}
@@ -985,6 +986,7 @@ export function EditorV2Shell() {
         <Step1Script
           p={p}
           onNext={() => setStep(1)}
+          onExpressRender={() => void handleRender()}
           firstClipPath={firstClipPath}
           firstClipScriptOnly={firstClipScriptOnly}
         />
@@ -1367,6 +1369,19 @@ function ExportedView({ job, script, headline, onNewProject, onEditPreview, expi
           {videoUrl && (
             <a href={videoUrl} download={downloadFilename} onClick={emitFirstClipViewed}>
               <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
+            </a>
+          )}
+          {job.output?.tiktokSoundVideoUrl && (
+            <a
+              href={job.output.tiktokSoundVideoUrl}
+              download={downloadFilename.replace(/\.mp4$/i, "-forTikTokSound.mp4")}
+              onClick={emitFirstClipViewed}
+            >
+              <BtnSecondary>
+                <span className="flex items-center gap-2">
+                  <Download size={14} /> ดาวน์โหลดไฟล์ TikTok (ไร้เพลง)
+                </span>
+              </BtnSecondary>
             </a>
           )}
           <BtnSecondary

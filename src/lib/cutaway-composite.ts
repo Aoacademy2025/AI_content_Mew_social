@@ -1,5 +1,5 @@
 import { buildEnableExpr } from "@/lib/cutaway-plan";
-import { planPunchZoomIntervals } from "@/lib/presenter-punch-zoom";
+import { planPunchZoomIntervals, type PunchZoomInterval } from "@/lib/presenter-punch-zoom";
 
 export type CutawayPersonRange = { start: number; end: number };
 
@@ -36,6 +36,43 @@ function applyDissolveLeadIn(
 }
 
 /**
+ * When `[0:v]` cross-dissolves `timelineAligned` presenter segments (`1.00x`) into and
+ * out of B-roll (`dissolveLeadInSec > 0`), any `1.15x` punch-zoom interval that starts
+ * right at an incoming dissolve (`r.start > 0.05`) or ends right at an outgoing B-roll
+ * dissolve (`r.end` before another range) would snap `1.15x <-> 1.00x` on the exact
+ * transition frame. Keep only interior jump-cut zoom beats (or closing tail beats that
+ * do not hand off to B-roll) so every B-roll dissolve stays 100% scale-continuous.
+ */
+function filterDissolveSafeZoomIntervals(
+  zoomIntervals: readonly PunchZoomInterval[],
+  originalRanges: readonly CutawayPersonRange[],
+  effectiveRanges: readonly CutawayPersonRange[],
+  dissolveLeadInSec: number | undefined,
+): PunchZoomInterval[] {
+  const lead = Number(dissolveLeadInSec);
+  if (!Number.isFinite(lead) || lead <= 0) return [...zoomIntervals];
+
+  const entryDissolveTimes: number[] = [];
+  const exitDissolveTimes: number[] = [];
+  for (let i = 0; i < effectiveRanges.length; i += 1) {
+    const orig = originalRanges[i];
+    const eff = effectiveRanges[i]!;
+    if (orig && orig.start > 0.05) {
+      entryDissolveTimes.push(eff.start);
+    }
+    if (i < effectiveRanges.length - 1) {
+      exitDissolveTimes.push(eff.end);
+    }
+  }
+
+  return zoomIntervals.filter((z) => {
+    const touchesEntryDissolve = entryDissolveTimes.some((t) => Math.abs(z.start - t) <= 0.05);
+    const touchesExitDissolve = exitDissolveTimes.some((t) => Math.abs(z.end - t) <= 0.05);
+    return !touchesEntryDissolve && !touchesExitDissolve;
+  });
+}
+
+/**
  * Build the full-frame presenter-over-B-roll graph used by upload cutaway.
  *
  * The uploaded presenter keeps playing on its original timeline while `enable`
@@ -55,9 +92,15 @@ export function buildCutawayCompositeFilter(
   if (!enableExpr) return null;
 
   if (options?.punchZoom) {
-    const zoomIntervals = planPunchZoomIntervals(
+    const rawZoomIntervals = planPunchZoomIntervals(
       effectiveRanges,
       options.cueTimesSec,
+    );
+    const zoomIntervals = filterDissolveSafeZoomIntervals(
+      rawZoomIntervals,
+      personRangesSec,
+      effectiveRanges,
+      options.dissolveLeadInSec,
     );
     const zoomEnableExpr = buildEnableExpr(zoomIntervals);
     if (zoomEnableExpr) {

@@ -249,6 +249,19 @@ export function PostPhase({
           <a href={exportedUrl} download={downloadFilename} onClick={emitFirstClipViewed}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          {(ed.exp.tiktokSoundUrl || job.output?.tiktokSoundVideoUrl) ? (
+            <a
+              href={ed.exp.tiktokSoundUrl ?? job.output?.tiktokSoundVideoUrl ?? exportedUrl}
+              download={downloadFilename.replace(/\.mp4$/i, "-forTikTokSound.mp4")}
+              onClick={emitFirstClipViewed}
+            >
+              <BtnSecondary>
+                <span className="flex items-center gap-2">
+                  <Download size={14} /> ดาวน์โหลดไฟล์ TikTok (ไร้เพลง)
+                </span>
+              </BtnSecondary>
+            </a>
+          ) : null}
           <BtnSecondary
             onClick={() => {
               emitFirstClipViewed();
@@ -1272,6 +1285,19 @@ export function PostPhase({
         </span>
         {!ed.adjustingAvatar && (
           <div className="flex items-center gap-3">
+            <label
+              className="flex cursor-pointer items-center gap-1.5"
+              title="สร้างไฟล์คู่ไร้เพลงประกอบ เหลือเสียงพูด+เสียงคลิปจริง+SFX เพื่อนำไปใส่เพลงกระแสใน TikTok โดยไม่ติดลิขสิทธิ์"
+              style={{ fontSize: 11.5, color: color.textSecondary }}
+            >
+              <input
+                type="checkbox"
+                checked={ed.dualTikTokExport}
+                onChange={(e) => ed.setDualTikTokExport(e.target.checked)}
+                className="accent-violet-500"
+              />
+              <span>ไฟล์คู่ TikTok (ไร้เพลง)</span>
+            </label>
             <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
               เริ่มโปรเจกต์ใหม่
             </button>

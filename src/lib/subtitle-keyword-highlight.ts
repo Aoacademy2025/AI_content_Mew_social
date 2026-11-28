@@ -71,6 +71,10 @@ const THAI_STOP_WORDS = new Set([
   "ถ้า",
   "จึง",
   "ต้อง",
+  "ไม่ต้อง",
+  "จำเป็น",
+  "ไม่จำเป็น",
+  "ไม่จำเป็นต้อง",
   "แบบ",
   "เรื่อง",
   "อย่าง",
@@ -81,6 +85,15 @@ const THAI_STOP_WORDS = new Set([
   "สิ่ง",
   "ตอน",
   "วัน",
+  "ทุกวัน",
+  "ต่อไป",
+  "อีกต่อไป",
+  "เหมือน",
+  "ธรรมดา",
+  "เหลือ",
+  "แค่",
+  "ตัวเอง",
+  "ทันทีที่",
   "the",
   "and",
   "for",
@@ -129,58 +142,84 @@ const POWER_WORDS = new Set([
   "เปอร์เซ็นต์",
   "เท่า",
   "ทันที",
-  "ง่าย",
-  "จริง",
   "กำไร",
   "ขาดทุน",
   "ยอดขาย",
   "ยอดวิว",
   "เทคนิค",
-  "วิธี",
+  "การตลาด",
+  "สร้างแบรนด์",
+  "อัตโนมัติ",
+  "มืออาชีพ",
   "สรุป",
-  "จบ",
-  "ครบ",
   "คุ้ม",
-  "เร็ว",
-  "ไว",
   "ฟรีๆ",
-  "เปลี่ยน",
   "สำเร็จ",
   "พลาด",
 ]);
 
-const NUMERIC_TOKEN_RE = /[\d\u0E50-\u0E59]+(?:[.,][\d\u0E50-\u0E59]+)*(?:%|x|X|เท่า|บาท|วิ|วินาที|นาที|ชั่วโมง|วัน|ปี|เดือน|คน|ข้อ|แบบ|ล้าน|แสน|หมื่น|พัน)?|[฿$€¥]\s*[\d\u0E50-\u0E59]+/u;
+const COMPOUND_POWER_ROOTS = [
+  "ยอดขาย",
+  "ยอดวิว",
+  "กำไร",
+  "ขาดทุน",
+  "เทคนิค",
+  "การตลาด",
+  "สร้างแบรนด์",
+  "อัตโนมัติ",
+  "มืออาชีพ",
+  "ความลับ",
+  "ไวรัล",
+  "ประหยัดเวลา",
+] as const;
+
+const NUMERIC_TOKEN_RE = /[\d\u0E50-\u0E59]+(?:[.,][\d\u0E50-\u0E59]+)*(?:%|x|X|เท่า|บาท|วิ|วินาที|นาที|ชั่วโมง|ชม\.?|วัน|สัปดาห์|เดือน|ปี|คน|ข้อ|ขั้นตอน|แอป|คลิก|ซีน|เฟรม|แบบ|ล้าน|แสน|หมื่น|พัน)?|[฿$€¥]\s*[\d\u0E50-\u0E59]+/u;
+const THAI_SPOKEN_QUANTITY_RE = /^(?:(?:หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|ยี่สิบ|สามสิบ|ห้าสิบ|ร้อย|พัน|หมื่น|แสน|ล้าน)+(?:ชั่วโมง|ชม|นาที|วินาที|วิ|วัน|สัปดาห์|เดือน|ปี|เท่า|เปอร์เซ็นต์|บาท|แอป|คลิก|ขั้นตอน|ข้อ|ซีน|เฟรม|คลิป|หัวข้อ)|คลิกเดียว|ที่เดียว|คำต่อคำ)$/u;
+const UNIT_CLASSIFIER_RE = /^(?:ชั่วโมง|ชม\.?|นาที|วินาที|วิ|วัน|สัปดาห์|เดือน|ปี|บาท|เท่า|เปอร์เซ็นต์|แอป|คลิก|ขั้นตอน|ข้อ|ซีน|เฟรม|คลิป|คน|หัวข้อ)$/u;
+const PURE_NUMERIC_OR_THAI_NUM_RE = /^(?:[+-]?[\d\u0E50-\u0E59]+(?:[.,][\d\u0E50-\u0E59]+)*|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|ยี่สิบ|สามสิบ|ห้าสิบ|ร้อย|พัน|หมื่น|แสน|ล้าน)$/u;
 const LATIN_ACRONYM_OR_TERM_RE = /^[A-Za-z][A-Za-z0-9+-]{1,}$/u;
 
 function cleanToken(raw: string): string {
-  return raw.replace(/^[^\p{L}\p{M}\p{N}฿$€¥%]+|[^\p{L}\p{M}\p{N}%]+$/gu, "").trim();
+  return raw
+    .replace(/[\u2060\u200B\uFEFF]/gu, "")
+    .replace(/^[^\p{L}\p{M}\p{N}฿$€¥%]+|[^\p{L}\p{M}\p{N}%]+$/gu, "")
+    .trim();
 }
 
 export function scoreSubtitleTokenForHighlight(rawToken: string): number {
   const token = cleanToken(rawToken);
   if (!token) return 0;
 
-  if (NUMERIC_TOKEN_RE.test(token)) {
+  if (NUMERIC_TOKEN_RE.test(token) || THAI_SPOKEN_QUANTITY_RE.test(token)) {
     return 100 + Math.min(15, baseGraphemeCount(token));
   }
 
   const lower = token.toLowerCase();
-  if (POWER_WORDS.has(token) || POWER_WORDS.has(lower)) {
-    return 85 + Math.min(10, baseGraphemeCount(token));
-  }
-
   if (THAI_STOP_WORDS.has(token) || THAI_STOP_WORDS.has(lower)) {
     return 0;
   }
 
-  if (LATIN_ACRONYM_OR_TERM_RE.test(token) && token.length >= 2) {
-    return 75 + Math.min(10, token.length);
+  // Never highlight negated modal auxiliaries like "ไม่จำเป็น" / "ไม่ต้อง" / "ไม่ควร"
+  if (/^ไม่(?:จำเป็น|ต้อง|ควร|ใช่|ค่อย|อาจ)/u.test(token)) {
+    return 0;
   }
 
-  const graphemes = baseGraphemeCount(token);
-  if (graphemes < 3) return 0;
+  if (POWER_WORDS.has(token) || POWER_WORDS.has(lower)) {
+    return 85 + Math.min(10, baseGraphemeCount(token));
+  }
 
-  return 30 + Math.min(25, graphemes * 3);
+  if (COMPOUND_POWER_ROOTS.some((root) => token.includes(root))) {
+    return 80 + Math.min(10, baseGraphemeCount(token));
+  }
+
+  if (LATIN_ACRONYM_OR_TERM_RE.test(token) && token.length >= 2) {
+    return 78 + Math.min(10, token.length);
+  }
+
+  // Restraint over randomness: ordinary verbs/nouns that are not numbers, named Latin
+  // terms, or curated high-salience domain keywords receive 0 so cards never highlight
+  // arbitrary words just because they are 3+ characters long.
+  return 0;
 }
 
 /**
@@ -208,15 +247,20 @@ export function selectHighlightedTokenIndices(
     return new Set();
   }
 
-  // If the card only has 1 token, don't highlight it unless it's a number/power word,
-  // and for 2-token cards highlight at most 1 token so the card retains contrast.
-  const effectiveCap = wordTokens.length <= 2
-    ? 1
-    : Math.min(maxHighlights, Math.max(1, Math.floor(wordTokens.length / 2)));
-
   const candidates = wordTokens
     .filter((item) => item.score > 0 && (wordTokens.length > 1 || item.score >= 75))
     .sort((a, b) => b.score - a.score || a.wordIdx - b.wordIdx);
+
+  if (candidates.length === 0) return new Set();
+
+  // Highlight up to 2 tokens only when comparing two numeric/quantity anchors (score >= 100,
+  // e.g. "300% ใน 7 วัน" or "สามชั่วโมง เหลือ สิบนาที"); for non-numeric power words, cap at 1
+  // focal keyword per card so the subtitle never looks like random multi-colored patchwork.
+  const hasMultipleNumericStats = candidates.filter((item) => item.score >= 100).length >= 2;
+  const baseCap = wordTokens.length <= 2
+    ? 1
+    : Math.min(maxHighlights, Math.max(1, Math.floor(wordTokens.length / 2)));
+  const effectiveCap = hasMultipleNumericStats ? baseCap : Math.min(1, baseCap);
 
   const chosen = new Set<number>();
   for (const candidate of candidates) {
@@ -225,6 +269,38 @@ export function selectHighlightedTokenIndices(
   }
 
   return chosen;
+}
+
+/**
+ * Expands highlighted numeric word indices to include an immediately following unit/classifier
+ * token (e.g. `3` + `ชั่วโมง`, `10` + `นาที`, `7` + `วัน`) when rendered visually on a caption card,
+ * so numbers and their units read as a single cohesive semantic highlight.
+ */
+export function expandUnitCompanionIndices(
+  parts: readonly HighlightableToken[],
+  highlightedWordIndices: ReadonlySet<number>,
+): Set<number> {
+  if (highlightedWordIndices.size === 0) return new Set();
+  const expanded = new Set(highlightedWordIndices);
+  const wordPartIndices: { wordIdx: number; partIdx: number; clean: string }[] = [];
+  let wordIdx = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i]!.isWordLike) continue;
+    wordPartIndices.push({ wordIdx, partIdx: i, clean: cleanToken(parts[i]!.text) });
+    wordIdx += 1;
+  }
+  for (let k = 0; k < wordPartIndices.length - 1; k++) {
+    const cur = wordPartIndices[k]!;
+    const nxt = wordPartIndices[k + 1]!;
+    if (!highlightedWordIndices.has(cur.wordIdx)) continue;
+    if (!PURE_NUMERIC_OR_THAI_NUM_RE.test(cur.clean)) continue;
+    if (!UNIT_CLASSIFIER_RE.test(nxt.clean)) continue;
+    const between = parts.slice(cur.partIdx + 1, nxt.partIdx).map((p) => p.text).join("");
+    if (/^\s*$/u.test(between)) {
+      expanded.add(nxt.wordIdx);
+    }
+  }
+  return expanded;
 }
 
 /**

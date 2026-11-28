@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { geminiGenerateText } from "@/lib/gemini";
+import { geminiGenerateText, GEMINI_FAST_LITE_MODEL } from "@/lib/gemini";
 import { mapCardTextsToRangesTolerant, type CardPiece } from "@/lib/tts-timing";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
@@ -103,7 +103,9 @@ ${text}
 ━━━ OUTPUT — JSON เท่านั้น ไม่มี markdown ━━━
 {"cards":[{"text":"...","tag":"hook"},{"text":"...","tag":"body"},...]}`;
 
-    const raw = await geminiGenerateText(apiKey, prompt, 8192, 0);
+    const raw = await geminiGenerateText(apiKey, prompt, 8192, 0, {
+      model: GEMINI_FAST_LITE_MODEL,
+    });
 
     // Strip markdown fences if the model added them, then take the outer JSON.
     const jsonText = raw.replace(/```(?:json)?/g, "").trim();

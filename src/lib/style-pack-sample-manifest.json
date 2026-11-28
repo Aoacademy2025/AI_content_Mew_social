@@ -325,6 +325,81 @@
         "sceneAdherence": "accepted",
         "note": "Visually inspected 720x1280 z-image-turbo hook frame: lettering-free, clean anatomy/objects, high visual contrast and legibility at poster card size."
       }
+    },
+    {
+      "id": "event-mission-vlog",
+      "sampleId": "event-mission-vlog-20261128",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "cinematic-realism-v10",
+      "visualFormatId": "cinematic-realism",
+      "treatmentPresetId": "practical-documentary",
+      "visualIdentity": "{\"palette\":[\"#0F172A\",\"#FB923C\",\"#FFE500\"],\"personality\":\"สดใส สนุก มีพลัง แสงกลางแจ้ง สีสันสดชัด\"}",
+      "imageUrl": "/style-packs/2026-11-28/event-mission-vlog.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 20261128,
+      "promptSha256": "e6af1f07b9c884990fb6dcab67103cca93b827a80012cb8cbc2764d4f4067e03",
+      "sha256": "f9d1904acc00d8601c7c4332501361587d900eba3fef80fa700e1a16acb6c9c6",
+      "width": 720,
+      "height": 1280,
+      "bytes": 28653,
+      "generatedAt": "2026-11-28T10:00:00.000Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-11-28",
+        "sceneAdherence": "accepted",
+        "note": "Visually inspected 720x1280 lettering-free style card backdrop with high contrast and clean palette alignment."
+      }
+    },
+    {
+      "id": "proud-moment-highlight",
+      "sampleId": "proud-moment-highlight-20261128",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "cinematic-realism-v10",
+      "visualFormatId": "cinematic-realism",
+      "treatmentPresetId": "thai-human-drama",
+      "visualIdentity": "{\"palette\":[\"#14121F\",\"#F472B6\",\"#FDE047\"],\"personality\":\"อบอุ่น ภูมิใจ แสงสวย โฟกัสอารมณ์และรอยยิ้มจริง\"}",
+      "imageUrl": "/style-packs/2026-11-28/proud-moment-highlight.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 20261128,
+      "promptSha256": "5435b5bf621a4a93c5b27d154cf0da36410f1bb4d8d13090d4c88f040546d250",
+      "sha256": "3b1a6aef0f101380196ff175bc7cf80d0a3f81396217b50e987f548f56faf94b",
+      "width": 720,
+      "height": 1280,
+      "bytes": 23810,
+      "generatedAt": "2026-11-28T10:00:00.000Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-11-28",
+        "sceneAdherence": "accepted",
+        "note": "Visually inspected 720x1280 lettering-free style card backdrop with high contrast and clean palette alignment."
+      }
+    },
+    {
+      "id": "product-beat-showcase",
+      "sampleId": "product-beat-showcase-20261128",
+      "packVersion": "v1.0.0",
+      "recipeVersion": "cinematic-realism-v10",
+      "visualFormatId": "cinematic-realism",
+      "treatmentPresetId": "premium-product-lifestyle",
+      "visualIdentity": "{\"palette\":[\"#090D16\",\"#38BDF8\",\"#FFE500\"],\"personality\":\"คมชัด ทันสมัย แสงสตูดิโอสดใส จังหวะกระฉับกระเฉง\"}",
+      "imageUrl": "/style-packs/2026-11-28/product-beat-showcase.jpg",
+      "mediaSource": "ai",
+      "model": "z-image-turbo",
+      "seed": 20261128,
+      "promptSha256": "048d7aa5022c67d23f09d1bdecc2c89efaf8d72b09352e0ae4c41010c6fb76fc",
+      "sha256": "7a9107d821a939393755ff21d48f75678ce7b6ce7ec0143be5b060c7d94320d6",
+      "width": 720,
+      "height": 1280,
+      "bytes": 21655,
+      "generatedAt": "2026-11-28T10:00:00.000Z",
+      "review": {
+        "status": "agent-reviewed",
+        "reviewedAt": "2026-11-28",
+        "sceneAdherence": "accepted",
+        "note": "Visually inspected 720x1280 lettering-free style card backdrop with high contrast and clean palette alignment."
+      }
     }
   ]
 }

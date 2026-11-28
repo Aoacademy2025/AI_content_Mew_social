@@ -2,7 +2,10 @@ import { GoogleGenAI } from "@google/genai";
 import { getGeminiErrorInfo, type GeminiErrorKind } from "./gemini-errors";
 import { providerError, type ProviderErrorCode } from "./provider-errors";
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+export const GEMINI_MODEL = "gemini-3.8-flash";
+export const GEMINI_FAST_LITE_MODEL = "gemini-3.5-flash-lite";
+export const GEMINI_DIRECTOR_FLASH_MODEL = "gemini-3.8-flash";
+export const GEMINI_DIRECTOR_NEON_MODEL = "gemini-4-neon";
 // PR-5 budget: text generation must never hang a route for minutes.
 const GEMINI_TEXT_TIMEOUT_MS = 120_000;
 const MAX_ATTEMPTS = 3; // 1 call + 2 retries on retryable failures
@@ -62,13 +65,14 @@ export async function geminiGenerateText(
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
+      const omitThinking = thinkingBudget === 0 && model.includes("flash-lite");
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           maxOutputTokens,
           temperature,
-          thinkingConfig: { thinkingBudget },  // 0 = disable thinking — JSON output must not be prefixed with thought text
+          ...(omitThinking ? {} : { thinkingConfig: { thinkingBudget } }),
           ...(responseMimeType ? { responseMimeType } : {}),
           ...(responseJsonSchema ? { responseJsonSchema } : {}),
           abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
@@ -105,7 +109,15 @@ export async function geminiGenerateVision(
   prompt: string,
   images: { mimeType: string; dataBase64: string }[],
   maxOutputTokens = 1024,
+  options: GeminiTextOptions = {},
 ): Promise<string> {
+  const {
+    model = GEMINI_MODEL,
+    thinkingBudget = 0,
+    responseMimeType,
+    responseJsonSchema,
+  } = options;
+  const omitThinking = thinkingBudget === 0 && model.includes("flash-lite");
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
   const parts = [
     { text: prompt },
@@ -114,12 +126,14 @@ export async function geminiGenerateVision(
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model,
         contents: [{ role: "user", parts }],
         config: {
           maxOutputTokens,
           temperature: 0,
-          thinkingConfig: { thinkingBudget: 0 },
+          ...(omitThinking ? {} : { thinkingConfig: { thinkingBudget } }),
+          ...(responseMimeType ? { responseMimeType } : {}),
+          ...(responseJsonSchema ? { responseJsonSchema } : {}),
           abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
         },
       });

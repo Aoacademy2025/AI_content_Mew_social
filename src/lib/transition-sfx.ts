@@ -10,7 +10,20 @@
 
 export const SFX_MODES = ["none", "subtle"] as const;
 export type SfxMode = (typeof SFX_MODES)[number];
-export type TransitionSfxKind = "whoosh" | "pop";
+export const TRANSITION_SFX_KINDS = [
+  "whoosh",
+  "pop",
+  "shutter",
+  "ding",
+  "drumroll",
+  "boom",
+  "record-scratch",
+] as const;
+export type TransitionSfxKind = (typeof TRANSITION_SFX_KINDS)[number];
+
+export function isTransitionSfxKind(value: unknown): value is TransitionSfxKind {
+  return typeof value === "string" && (TRANSITION_SFX_KINDS as readonly string[]).includes(value);
+}
 
 export const DEFAULT_SFX_MODE: SfxMode = "none";
 export const SFX_SUBTLE_DB = -18;
@@ -108,18 +121,35 @@ export function planTransitionSfxCues(opts: PlanTransitionSfxOptions): Transitio
   return selected;
 }
 
+const SFX_DURATION_BY_KIND: Record<TransitionSfxKind, number> = {
+  whoosh: 0.22,
+  pop: 0.12,
+  shutter: 0.18,
+  ding: 0.34,
+  drumroll: 0.55,
+  boom: 0.48,
+  "record-scratch": 0.38,
+};
+
+export function sfxDurationSecForKind(kind: TransitionSfxKind): number {
+  return SFX_DURATION_BY_KIND[kind] ?? 0.15;
+}
+
 /**
- * Synthesizes a clean, broadcast-grade 16-bit stereo 48000 Hz PCM WAV buffer for `"whoosh"` or `"pop"`.
- * - `"whoosh"`: Swept dual-stage resonant bandpass air movement with subtle stereo width and zero
- *   metallic FM sine whistle.
- * - `"pop"`: Warm tactile transient with integrated-phase pitch drop (360 Hz -> 130 Hz) and smooth
- *   click-free raised-cosine attack.
+ * Synthesizes a clean, broadcast-grade 16-bit stereo 48000 Hz PCM WAV buffer for any `TransitionSfxKind`:
+ * - `"whoosh"`: Swept dual-stage resonant bandpass air movement with subtle stereo width.
+ * - `"pop"`: Warm tactile transient with integrated-phase pitch drop (360 Hz -> 130 Hz).
+ * - `"shutter"`: Mechanical SLR dual-curtain click for `hero-freeze-card` freeze moments.
+ * - `"ding"`: Shimmering harmonic chime (E6 + E7 + B6) for `checklist-pop` ticks.
+ * - `"drumroll"`: Crisp snare buzz crescendo + rim accent for `countdown` builds.
+ * - `"boom"`: Warm sub-bass drop (96 Hz -> 38 Hz) for beat-drop / hero reveal impacts.
+ * - `"record-scratch"`: Vinyl pitch-scrub chirp for playful `blooper-end` fake endings.
  * Deterministic (seeded PRNG) so tests and builds remain byte-reproducible.
  */
 export function synthesizeTransitionSfxWavBytes(kind: TransitionSfxKind): Uint8Array {
   const sampleRate = 48000;
   const numChannels = 2;
-  const durationSec = kind === "whoosh" ? 0.22 : 0.12;
+  const durationSec = sfxDurationSecForKind(kind);
   const numSamples = Math.max(1, Math.round(sampleRate * durationSec));
   const blockAlign = numChannels * 2;
   const dataBytes = numSamples * blockAlign;
@@ -158,15 +188,18 @@ export function synthesizeTransitionSfxWavBytes(kind: TransitionSfxKind): Uint8A
     return (seedR / 0xffffffff) * 2 - 1;
   };
 
-  // Chamberlin state-variable bandpass states for L/R air-whoosh
+  // Chamberlin state-variable bandpass states for L/R air-whoosh & filtered noise
   let bpL = 0;
   let lpL = 0;
   let bpR = 0;
   let lpR = 0;
   let phase = 0;
+  let phase2 = 0;
+  let phase3 = 0;
 
   for (let i = 0; i < numSamples; i++) {
     const progress = i / numSamples;
+    const tSec = i / sampleRate;
     let outL = 0;
     let outR = 0;
 
@@ -202,6 +235,86 @@ export function synthesizeTransitionSfxWavBytes(kind: TransitionSfxKind): Uint8A
       const panR = 0.92 + 0.08 * progress;
       outL = (bpL * 0.72 + lpL * 0.18 + subBody) * env * panL * 0.9;
       outR = (bpR * 0.72 + lpR * 0.18 + subBody) * env * panR * 0.9;
+    } else if (kind === "shutter") {
+      // Mechanical camera shutter: 1st curtain click at t=0.004s, 2nd mirror return click at t=0.068s
+      const click1T = Math.max(0, tSec - 0.003);
+      const click1Env = tSec >= 0.003 ? Math.exp(-click1T * 95) : 0;
+      const click2T = Math.max(0, tSec - 0.068);
+      const click2Env = tSec >= 0.068 ? Math.exp(-click2T * 78) * 0.85 : 0;
+      const nL = nextRandL();
+      const nR = nextRandR();
+      const f = 0.34;
+      const hpL = nL - lpL - 0.5 * bpL;
+      bpL += f * hpL;
+      lpL += f * bpL;
+      const hpR = nR - lpR - 0.5 * bpR;
+      bpR += f * hpR;
+      lpR += f * bpR;
+      phase += (2 * Math.PI * (1450 - 650 * progress)) / sampleRate;
+      const mech = Math.sin(phase) * 0.35;
+      const env = click1Env + click2Env;
+      outL = (bpL * 0.75 + mech) * env * 0.88;
+      outR = (bpR * 0.75 + mech) * env * 0.88;
+    } else if (kind === "ding") {
+      // Bright harmonic checklist chime: E6 (1318.5Hz) + B6 (1975.5Hz) + E7 (2637Hz)
+      const attackSamples = Math.max(1, Math.round(sampleRate * 0.003));
+      const attack = i < attackSamples ? 0.5 - 0.5 * Math.cos((Math.PI * i) / attackSamples) : 1;
+      const env1 = Math.exp(-tSec * 8.5);
+      const env2 = Math.exp(-tSec * 14.0);
+      const env3 = Math.exp(-tSec * 20.0);
+      phase += (2 * Math.PI * 1318.51) / sampleRate;
+      phase2 += (2 * Math.PI * 1975.53) / sampleRate;
+      phase3 += (2 * Math.PI * 2637.02) / sampleRate;
+      const bell = Math.sin(phase) * 0.58 * env1 + Math.sin(phase2) * 0.24 * env2 + Math.sin(phase3) * 0.18 * env3;
+      outL = bell * attack * 0.82;
+      outR = bell * attack * 0.86;
+    } else if (kind === "drumroll") {
+      // Snare buzz roll crescendo (16 strokes/sec) + crisp rim accent at 85%
+      const rollFreq = 18;
+      const strokePhase = (tSec * rollFreq) % 1;
+      const strokeEnv = Math.exp(-strokePhase * 5.2);
+      const crescendo = Math.pow(Math.min(1, progress / 0.86), 1.4) * (progress > 0.88 ? Math.exp(-(progress - 0.88) * 18) : 1);
+      const rimT = Math.max(0, progress - 0.84);
+      const rimEnv = progress >= 0.84 ? Math.exp(-rimT * 32) * 1.15 : 0;
+      const nL = nextRandL();
+      const nR = nextRandR();
+      const f = 0.26;
+      const hpL = nL - lpL - 0.65 * bpL;
+      bpL += f * hpL;
+      lpL += f * bpL;
+      const hpR = nR - lpR - 0.65 * bpR;
+      bpR += f * hpR;
+      lpR += f * bpR;
+      phase += (2 * Math.PI * 215) / sampleRate;
+      const body = Math.sin(phase) * 0.3;
+      const gain = strokeEnv * crescendo * 0.62 + rimEnv * 0.55;
+      outL = (bpL * 0.8 + body) * gain;
+      outR = (bpR * 0.8 + body) * gain;
+    } else if (kind === "boom") {
+      // Cinematic beat-drop impact: punchy 98Hz -> 38Hz sub sweep + warm air transient
+      const attackSamples = Math.max(1, Math.round(sampleRate * 0.004));
+      const attack = i < attackSamples ? 0.5 - 0.5 * Math.cos((Math.PI * i) / attackSamples) : 1;
+      const decay = Math.exp(-progress * 5.6);
+      const freq = 38 + 62 * Math.exp(-progress * 11);
+      phase += (2 * Math.PI * freq) / sampleRate;
+      const nL = nextRandL();
+      const nR = nextRandR();
+      const punch = Math.exp(-progress * 28) * 0.26;
+      const sub = Math.tanh(Math.sin(phase) * 1.35) * 0.78;
+      outL = (sub + nL * punch) * attack * decay * 0.88;
+      outR = (sub + nR * punch) * attack * decay * 0.88;
+    } else if (kind === "record-scratch") {
+      // Classic vinyl scratch: back-and-forth pitch scrub chirp + needle friction texture
+      const env = Math.sin(Math.PI * Math.min(1, progress * 1.04)) * (progress > 0.85 ? (1 - progress) / 0.15 : 1);
+      const scrubMod = Math.sin(progress * Math.PI * 5.5);
+      const freq = 340 + 1180 * Math.abs(scrubMod) * (0.45 + 0.55 * (1 - progress));
+      phase += (2 * Math.PI * freq) / sampleRate;
+      phase2 += (2 * Math.PI * freq * 1.98) / sampleRate;
+      const nL = nextRandL();
+      const nR = nextRandR();
+      const vinyl = Math.tanh(Math.sin(phase) * 1.6 + Math.sin(phase2) * 0.65) * 0.62;
+      outL = (vinyl + nL * 0.22) * env * 0.82;
+      outR = (vinyl + nR * 0.22) * env * 0.82;
     } else {
       // Warm organic pop: 2.5ms raised-cosine attack + integrated pitch drop (360Hz -> 130Hz)
       const attackSamples = Math.max(1, Math.round(sampleRate * 0.0025));

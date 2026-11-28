@@ -398,6 +398,20 @@ export function PostPhaseMobile({
           <a href={exportedUrl} download={downloadFilename} className="block" onClick={emitFirstClipViewed}>
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          {(ed.exp.tiktokSoundUrl || job.output?.tiktokSoundVideoUrl) ? (
+            <a
+              href={ed.exp.tiktokSoundUrl ?? job.output?.tiktokSoundVideoUrl ?? exportedUrl}
+              download={downloadFilename.replace(/\.mp4$/i, "-forTikTokSound.mp4")}
+              className="block"
+              onClick={emitFirstClipViewed}
+            >
+              <BtnSecondary style={{ width: "100%", minHeight: 46 }}>
+                <span className="flex items-center justify-center gap-2">
+                  <Download size={15} /> ดาวน์โหลดไฟล์ TikTok (ไร้เพลง)
+                </span>
+              </BtnSecondary>
+            </a>
+          ) : null}
           <BtnSecondary
             style={{ width: "100%", minHeight: 46 }}
             onClick={() => {

@@ -1,4 +1,75 @@
 import { rebaseWebPendingMedia, StaleWebApplyError } from "@/lib/mcp/pending-edit-draft";
+import { normalizeStoryOverlays, type StoryOverlayItem } from "@/lib/story-overlays";
+import { materializeSmoothSlowMoSegments } from "@/lib/story-director-analyzer.server";
+import type { StoryMomentCaption, StoryVoiceMode } from "@/lib/story-director-planner";
+import type { BrollVideo } from "@/remotion/types";
+import fs from "node:fs";
+import path from "node:path";
+
+function resolveCompanionTikTokUrl(burnedUrl: string, requested: boolean): string | undefined {
+  if (!requested || !burnedUrl || !burnedUrl.endsWith(".mp4")) return undefined;
+  const companionUrl = burnedUrl.replace(/\.mp4$/i, "-tiktok-nobgm.mp4");
+  const baseName = companionUrl.split("/").pop() ?? "";
+  if (!baseName) return undefined;
+  const p1 = path.join(process.cwd(), "public", "renders", baseName);
+  const p2 = path.join(process.cwd(), "renders", baseName);
+  if (fs.existsSync(p1) || fs.existsSync(p2)) return companionUrl;
+  return undefined;
+}
+
+function scaleStoryPlanToDuration(
+  rawBgVideos: readonly BrollVideo[],
+  rawOverlays: readonly StoryOverlayItem[] | undefined,
+  actualDurationMs: number,
+): {
+  bgVideos: BrollVideo[];
+  storyOverlays: StoryOverlayItem[];
+  shotFaceZones: Array<{ startMs: number; endMs: number; faceBoxes: NonNullable<BrollVideo["faceBoxes"]> }>;
+} {
+  const actualSec = Math.max(1, actualDurationMs / 1000);
+  const plannedEndSec = Math.max(
+    1,
+    rawBgVideos.reduce((mx, v) => Math.max(mx, Number(v.end) || 0), 0),
+  );
+  const ratio = actualSec / plannedEndSec;
+  const snapSec = (s: number) => Math.round(Math.max(0, s) * 30) / 30;
+
+  const bgVideos: BrollVideo[] = rawBgVideos.map((v, idx, arr) => {
+    const start = idx === 0 ? 0 : snapSec(v.start * ratio);
+    const end = idx === arr.length - 1 ? snapSec(actualSec) : Math.max(start + 1 / 30, snapSec(v.end * ratio));
+    return {
+      ...v,
+      start,
+      end,
+      sourceIndex: idx,
+    };
+  });
+  for (let i = 1; i < bgVideos.length; i += 1) {
+    bgVideos[i]!.start = bgVideos[i - 1]!.end;
+    if (bgVideos[i]!.end <= bgVideos[i]!.start) {
+      bgVideos[i]!.end = snapSec(bgVideos[i]!.start + 0.5);
+    }
+  }
+
+  const scaledOverlays = normalizeStoryOverlays(
+    (rawOverlays ?? []).map((ov) => ({
+      ...ov,
+      startMs: Math.round(ov.startMs * ratio),
+      endMs: Math.round(ov.endMs * ratio),
+    })),
+    actualDurationMs,
+  );
+
+  const shotFaceZones = bgVideos
+    .filter((v) => Array.isArray(v.faceBoxes) && v.faceBoxes.length > 0)
+    .map((v) => ({
+      startMs: Math.round(v.start * 1000),
+      endMs: Math.round(v.end * 1000),
+      faceBoxes: v.faceBoxes!,
+    }));
+
+  return { bgVideos, storyOverlays: scaledOverlays, shotFaceZones };
+}
 import { validateExternalMediaExport, validateExternalWindowEdits } from "@/lib/external-media.server";
 import { authorExternalMediaPlan } from "@/lib/external-media";
 import { checkpointedBudgetCaller, holdVideoBudget } from "./video-budget-checkpoint";
@@ -328,6 +399,12 @@ interface CreateInput {
   motionThemeId?: MotionThemeId;
   motionMascot?: MotionMascotId;
   brandPalette?: string[];
+  /** Story Director pre-planned multi-clip EDL, transparent story overlays, Real-Moments voice mode, and Dual TikTok export flag. */
+  storyBgVideos?: BrollVideo[];
+  storyOverlays?: StoryOverlayItem[];
+  storyVoiceMode?: StoryVoiceMode;
+  storyMomentCaptions?: StoryMomentCaption[];
+  dualTikTokExport?: boolean;
   /** EP5 #17: TTS speed multiplier (0.85..1.25) and/or target duration in seconds (5..600). */
   ttsSpeed?: number;
   targetDurationSec?: number;
@@ -2039,11 +2116,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       emitStage(phaseName, "done", exportDuration);
       console.log(`[mcp-worker] job ${jobId} EXPORT total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s source=${input.sourceJobId}`);
 
+      const exportWantsDualTikTok = Boolean(
+        (exportOverlayConfig as Record<string, unknown>)?.dualTikTokExport === true
+        || input.dualTikTokExport === true,
+      );
+      const exportTikTokSoundUrl = resolveCompanionTikTokUrl(burnedUrl, exportWantsDualTikTok);
+
       const completion = await finishJobWithTransition(jobId, {
         version: 2,
         mode: "export",
         sourceJobId: input.sourceJobId,
         videoUrl: burnedUrl,
+        ...(exportTikTokSoundUrl ? { tiktokSoundVideoUrl: exportTikTokSoundUrl } : {}),
         subtitleQa: exportSubtitleQa,
         subtitleEvidence: {
           captions: finalCaptions,
@@ -2652,350 +2736,471 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       return;
     }
 
-    // 1. TTS
-    if (!ttsStepAlreadyEntered) await step("tts", 10);
-    let tts: { voiceUrl: string; audioDurationMs?: number; timing?: unknown };
-    if (provider === "elevenlabs") {
-      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
-        "/api/videos/tts",
-        { text: narrationText, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
-      );
-    } else if (provider === "omnivoice") {
-      if (resumedHeroVoiceTts) {
-        tts = resumedHeroVoiceTts;
-      } else {
-        let started;
-        try {
-          started = await startHeroVoiceGeneration({
-            userId,
-            plan: user.plan,
-            text: narrationText,
-            voiceId: input.omniVoiceId ?? "voice_01",
-            speed: 1,
-            studio: false,
-            idempotencyKey: `video-job-${jobId}`,
-            backend: input.voiceBackend,
-          });
-        } catch (error) {
-          if (error instanceof HeroVoiceGenerationError) {
-            throw new HeroVoiceProviderFailureError(error.message, error.code);
-          }
-          throw error;
-        }
-        const result = await settleHeroVoiceJob(started.job);
-        if (!result) return;
-        tts = result;
-      }
-    } else {
-      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
-        "/api/videos/tts-gemini",
-        { text: narrationText, voiceName: resolveGeminiVoiceId(input.geminiVoiceName || user.geminiVoiceName), ...(input.geminiVoiceStyle ? { style: input.geminiVoiceStyle } : {}) },
-      );
+    // Pre-materialize any Story Director slow-mo shots (`playbackRate < 1`) at true 30fps
+    // optical-flow (`minterpolate`) so Remotion plays every frame smoothly without frame-hold stutter.
+    if (
+      Array.isArray(input.storyBgVideos)
+      && input.storyBgVideos.some((v) => typeof v.playbackRate === "number" && v.playbackRate < 0.99 && !v.stillImage)
+    ) {
+      input.storyBgVideos = await materializeSmoothSlowMoSegments(input.storyBgVideos, {
+        outDir: path.join(process.cwd(), "public", "stocks"),
+        urlPrefix: "/api/stocks",
+      });
     }
-    const prepareGeneratedTts = async (
-      candidate: { voiceUrl: string; audioDurationMs?: number; timing?: unknown },
-    ): Promise<number> => {
-      let candidateDurationMs = typeof candidate.audioDurationMs === "number" && candidate.audioDurationMs > 0
-        ? Math.round(candidate.audioDurationMs)
-        : durationFromTtsTiming(candidate.timing);
-      if (candidateDurationMs <= 0) {
-        const measured = await caller.post<{ durationMs?: number }>(
-          "/api/videos/audio-duration",
-          { audioUrl: candidate.voiceUrl },
-        );
-        candidateDurationMs = typeof measured.durationMs === "number" && measured.durationMs > 0
-          ? Math.round(measured.durationMs)
-          : 0;
-      }
-      if (candidateDurationMs <= 0) {
-        throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
-      }
 
-      if (input.ttsSpeed !== undefined || input.targetDurationSec !== undefined) {
-        const paced = await applyTtsPaceToGeneratedAudio({
-          voiceUrl: candidate.voiceUrl,
-          audioDurationMs: candidateDurationMs,
-          timing: candidate.timing as TtsTiming | undefined,
-          ttsSpeed: input.ttsSpeed,
-          targetDurationSec: input.targetDurationSec,
-        });
-        candidate.voiceUrl = paced.voiceUrl;
-        candidateDurationMs = Math.max(1, Math.round(paced.audioDurationMs));
-        candidate.audioDurationMs = candidateDurationMs;
-        if (paced.timing !== undefined) {
-          candidate.timing = paced.timing;
-        }
-        if (paced.pace.warning) {
-          jobWarnings.push(paced.pace.warning);
-        }
-      }
+    const realMomentsStoryMode =
+      input.storyVoiceMode === "real-moments"
+      && Array.isArray(input.storyBgVideos)
+      && input.storyBgVideos.length > 0
+      && (!input.avatarMode || input.avatarMode === "none");
 
-      await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(candidateDurationMs / 1_000));
-
-      // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
-      // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
-      // authoritative backstop for direct callers.
-      const durationViolation = audioDurationLimitViolation(candidateDurationMs, user.plan);
+    // 1. TTS (skipped in Story Director `real-moments` Vlog mode — uses real clip audio + BGM + reaction captions)
+    let tts: { voiceUrl: string; audioDurationMs?: number; timing?: unknown };
+    let audioDurationMs: number;
+    if (realMomentsStoryMode) {
+      tts = { voiceUrl: "" };
+      const storyEndSec = Math.max(
+        2,
+        input.storyBgVideos!.reduce((mx, v) => Math.max(mx, Number(v.end) || 0), 0),
+      );
+      audioDurationMs = Math.max(2000, Math.round(storyEndSec * 1000));
+      await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(audioDurationMs / 1_000));
+      const durationViolation = audioDurationLimitViolation(audioDurationMs, user.plan);
       if (durationViolation) {
-        // Coded so the job carries `duration_exceeded`, not `tts_unknown` (HERO-87).
         throw new PipelineApiError(durationViolation.code, `${durationViolation.message} — ${durationViolation.userAction}`);
       }
-
-      // The calibrated script estimate rejects known-unsupported requests before
-      // TTS. This exact post-TTS backstop catches estimator undershoot before any
-      // caption, stock, render, or HeyGen spend begins.
-      const fullAvatarDurationViolation = avatarFullDurationViolation({
-        mode: input.avatarMode,
-        durationSec: candidateDurationMs / 1_000,
-      });
-      if (fullAvatarDurationViolation) {
-        throw new PipelineApiError(fullAvatarDurationViolation.code, `${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`);
+    } else {
+      if (!ttsStepAlreadyEntered) await step("tts", 10);
+      if (provider === "elevenlabs") {
+        tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+          "/api/videos/tts",
+          { text: narrationText, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
+        );
+      } else if (provider === "omnivoice") {
+        if (resumedHeroVoiceTts) {
+          tts = resumedHeroVoiceTts;
+        } else {
+          let started;
+          try {
+            started = await startHeroVoiceGeneration({
+              userId,
+              plan: user.plan,
+              text: narrationText,
+              voiceId: input.omniVoiceId ?? "voice_01",
+              speed: 1,
+              studio: false,
+              idempotencyKey: `video-job-${jobId}`,
+              backend: input.voiceBackend,
+            });
+          } catch (error) {
+            if (error instanceof HeroVoiceGenerationError) {
+              throw new HeroVoiceProviderFailureError(error.message, error.code);
+            }
+            throw error;
+          }
+          const result = await settleHeroVoiceJob(started.job);
+          if (!result) return;
+          tts = result;
+        }
+      } else {
+        tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+          "/api/videos/tts-gemini",
+          { text: narrationText, voiceName: resolveGeminiVoiceId(input.geminiVoiceName || user.geminiVoiceName), ...(input.geminiVoiceStyle ? { style: input.geminiVoiceStyle } : {}) },
+        );
       }
+      const prepareGeneratedTts = async (
+        candidate: { voiceUrl: string; audioDurationMs?: number; timing?: unknown },
+      ): Promise<number> => {
+        let candidateDurationMs = typeof candidate.audioDurationMs === "number" && candidate.audioDurationMs > 0
+          ? Math.round(candidate.audioDurationMs)
+          : durationFromTtsTiming(candidate.timing);
+        if (candidateDurationMs <= 0) {
+          const measured = await caller.post<{ durationMs?: number }>(
+            "/api/videos/audio-duration",
+            { audioUrl: candidate.voiceUrl },
+          );
+          candidateDurationMs = typeof measured.durationMs === "number" && measured.durationMs > 0
+            ? Math.round(measured.durationMs)
+            : 0;
+        }
+        if (candidateDurationMs <= 0) {
+          throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
+        }
 
-      // Web parity + provider-spend guard: a split intro/outro must leave a real
-      // middle interval. Stop immediately after exact TTS duration, before keyword
-      // LLM, stock downloads, base render, or either HeyGen generation.
-      const avatarDurationViolation = avatarBookendDurationViolation({
-        mode: input.avatarMode,
-        audioDurationMs: candidateDurationMs,
-        introSec: input.avatarIntroSecs ?? 5,
-        tailSec: input.avatarTailSecs ?? 5,
-      });
-      if (avatarDurationViolation) throw new Error(avatarDurationViolation.message);
-      return candidateDurationMs;
-    };
-    const audioDurationMs = await prepareGeneratedTts(tts);
+        if (input.ttsSpeed !== undefined || input.targetDurationSec !== undefined) {
+          const paced = await applyTtsPaceToGeneratedAudio({
+            voiceUrl: candidate.voiceUrl,
+            audioDurationMs: candidateDurationMs,
+            timing: candidate.timing as TtsTiming | undefined,
+            ttsSpeed: input.ttsSpeed,
+            targetDurationSec: input.targetDurationSec,
+          });
+          candidate.voiceUrl = paced.voiceUrl;
+          candidateDurationMs = Math.max(1, Math.round(paced.audioDurationMs));
+          candidate.audioDurationMs = candidateDurationMs;
+          if (paced.timing !== undefined) {
+            candidate.timing = paced.timing;
+          }
+          if (paced.pace.warning) {
+            jobWarnings.push(paced.pace.warning);
+          }
+        }
+
+        await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(candidateDurationMs / 1_000));
+
+        // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
+        // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
+        // authoritative backstop for direct callers.
+        const durationViolation = audioDurationLimitViolation(candidateDurationMs, user.plan);
+        if (durationViolation) {
+          // Coded so the job carries `duration_exceeded`, not `tts_unknown` (HERO-87).
+          throw new PipelineApiError(durationViolation.code, `${durationViolation.message} — ${durationViolation.userAction}`);
+        }
+
+        // The calibrated script estimate rejects known-unsupported requests before
+        // TTS. This exact post-TTS backstop catches estimator undershoot before any
+        // caption, stock, render, or HeyGen spend begins.
+        const fullAvatarDurationViolation = avatarFullDurationViolation({
+          mode: input.avatarMode,
+          durationSec: candidateDurationMs / 1_000,
+        });
+        if (fullAvatarDurationViolation) {
+          throw new PipelineApiError(fullAvatarDurationViolation.code, `${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`);
+        }
+
+        // Web parity + provider-spend guard: a split intro/outro must leave a real
+        // middle interval. Stop immediately after exact TTS duration, before keyword
+        // LLM, stock downloads, base render, or either HeyGen generation.
+        const avatarDurationViolation = avatarBookendDurationViolation({
+          mode: input.avatarMode,
+          audioDurationMs: candidateDurationMs,
+          introSec: input.avatarIntroSecs ?? 5,
+          tailSec: input.avatarTailSecs ?? 5,
+        });
+        if (avatarDurationViolation) throw new Error(avatarDurationViolation.message);
+        return candidateDurationMs;
+      };
+      audioDurationMs = await prepareGeneratedTts(tts);
+    }
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);
-    // Sentence-mode PARITY with the web editor: the editor first calls /api/videos/split-script
-    // (an LLM that cuts on natural breath points — keeps a number and its unit together, never
-    // splits mid-phrase) and feeds those cards into captionsFromTtsTiming. Without it the MCP
-    // path fell back to the greedy char-cap splitter, so cards broke mid-phrase and the renderer's
-    // word-break wrapped them awkwardly ("ตัดคำ/เว้นบรรทัดเพี้ยน"). Text-only over the exact TTS
-    // text (timing stays 100% TTS-derived), server-validated verbatim; ANY failure → viralCards
-    // null → byte-identical to the old deterministic cards (fail-open). Only sentence mode uses
-    // these cards — word modes re-split capRes.words below, so skip the extra call there.
-    const wantsSentenceCards = resolvedSubtitleCardLen === "sentence";
-    let subtitleTimingSource: SubtitleTimingSource = provider === "elevenlabs"
-      ? "provider_alignment"
-      : "tts_segment_timing";
+    let subtitleTimingSource: SubtitleTimingSource = realMomentsStoryMode
+      ? "avatar_script_clock"
+      : provider === "elevenlabs"
+        ? "provider_alignment"
+        : "tts_segment_timing";
     let subtitleSpeechCoverage: SubtitleSpeechCoverage | undefined;
-    const timingForCards = tts.timing as TtsTiming | null;
-    const fullTextForCards = (timingForCards?.segments ?? []).map((segment) => segment.text).join("");
-    let viralCards: ScriptCard[] | null = null;
-    if (wantsSentenceCards && fullTextForCards.length >= 120) {
-      try {
-        const split = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
-          text: fullTextForCards,
-          maxCardChars: maxCardCharsFor(cardBudgetSize),
-        });
-        viralCards = Array.isArray(split.cards) ? split.cards : null;
-      } catch { /* fail-open → deterministic sentence cards */ }
-    }
+    let capRes: NonNullable<ReturnType<typeof captionsFromSpokenScript>>;
+    let subtitleVerification: SubtitleVerification | undefined;
+    let captions: OrchCaption[];
+    let durMs: number;
+    let subtitleQa: ReturnType<typeof validateSubtitleQuality>;
 
-    // ── Timing ladder (ADR 0056) ──────────────────────────────────────────────
-    // 1. The provider clock always renders unless something better is proven. It is exact
-    //    by arithmetic for ElevenLabs and deterministic for Gemini/Hero AI Voice.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(cardBudgetSize), viralCards);
-    if (!capRes || capRes.captions.length === 0) {
-      // The provider returned no usable timing (the tts-gemini single-call fallback):
-      // spread the exact narration over the measured duration instead of refusing the clip.
-      capRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor(cardBudgetSize));
-      subtitleTimingSource = "avatar_script_clock";
-    }
-    if (!capRes || capRes.captions.length === 0) {
-      // Nothing to show. Route it through the same policy as every other site so a subtitle
-      // finding can only stop a render via subtitleQualityShouldFailJob (ADR 0056).
-      const emptyQa = validateSubtitleQuality({
-        script: narrationText,
-        captions: [],
-        audioDurationMs,
-        timingSource: subtitleTimingSource,
+    if (realMomentsStoryMode) {
+      const scriptFallbackLines = (input.script ?? "")
+        .split(/\n+/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const rawMomentCards: OrchCaption[] =
+        Array.isArray(input.storyMomentCaptions) && input.storyMomentCaptions.length > 0
+          ? input.storyMomentCaptions.map((c, idx, arr) => ({
+              text: c.text.trim(),
+              startMs: Math.max(0, Math.round(c.startMs)),
+              endMs: Math.min(audioDurationMs, Math.max(Math.round(c.startMs) + 500, Math.round(c.endMs))),
+              tag: c.tag ?? (idx === 0 ? "hook" : idx === arr.length - 1 ? "cta" : "body"),
+            }))
+          : input.storyBgVideos!.map((seg, idx, arr) => {
+              const sMs = Math.round(seg.start * 1000) + 120;
+              const eMs = Math.max(sMs + 600, Math.round(seg.end * 1000) - 100);
+              const text =
+                scriptFallbackLines[idx]
+                || seg.title?.trim()
+                || (idx === 0 ? "เปิดโมเมนต์จริง!" : idx === arr.length - 1 ? "เก็บครบทุกความประทับใจ!" : `ไฮไลต์ช็อตที่ ${idx + 1}`);
+              return {
+                text,
+                startMs: Math.min(sMs, Math.max(0, audioDurationMs - 650)),
+                endMs: Math.min(audioDurationMs, eMs),
+                tag: idx === 0 ? ("hook" as const) : idx === arr.length - 1 ? ("cta" as const) : ("body" as const),
+              };
+            });
+      durMs = audioDurationMs;
+      const repairedMoment = repairCaptionTiming(rawMomentCards, durMs);
+      captions = repairedMoment.captions;
+      // Build deterministic word offsets across `captions` so Editor v2's PostPhase card-length
+      // regrouper and export snapshot validator work identically to TTS previews.
+      const synthWords: NonNullable<ReturnType<typeof captionsFromSpokenScript>>["words"] = [];
+      let fullTextAcc = "";
+      captions.forEach((card, cardIdx) => {
+        if (cardIdx > 0) fullTextAcc += " ";
+        const cardTokens = card.text.split(/\s+/).filter(Boolean);
+        const spanMs = Math.max(100, card.endMs - card.startMs);
+        const totalChars = cardTokens.reduce((s, w) => s + w.length, 0) || 1;
+        let cursorMs = card.startMs;
+        cardTokens.forEach((tok, tokIdx) => {
+          if (tokIdx > 0) fullTextAcc += " ";
+          const startChar = fullTextAcc.length;
+          fullTextAcc += tok;
+          const endChar = fullTextAcc.length;
+          const tokDur = tokIdx === cardTokens.length - 1
+            ? Math.max(40, card.endMs - cursorMs)
+            : Math.max(40, Math.round((tok.length / totalChars) * spanMs));
+          const wordEndMs = Math.min(card.endMs, cursorMs + tokDur);
+          synthWords.push({
+            word: tok,
+            startMs: cursorMs,
+            endMs: Math.max(cursorMs + 20, wordEndMs),
+            startChar,
+            endChar,
+          });
+          cursorMs = wordEndMs;
+        });
       });
-      if (emptyQa.status !== "passed") {
+      capRes = {
+        captions,
+        words: synthWords,
+        fullText: fullTextAcc,
+        audioDurationMs: durMs,
+      };
+      subtitleVerification = {
+        status: "skipped",
+        durationMs: 0,
+        ttsCaptions: captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs })),
+      };
+      subtitleQa = validateSubtitleQuality({
+        script: fullTextAcc,
+        captions,
+        audioDurationMs: durMs,
+        timingSource: subtitleTimingSource,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
+      });
+    } else {
+      // Sentence-mode PARITY with the web editor: the editor first calls /api/videos/split-script
+      // (an LLM that cuts on natural breath points — keeps a number and its unit together, never
+      // splits mid-phrase) and feeds those cards into captionsFromTtsTiming. Without it the MCP
+      // path fell back to the greedy char-cap splitter, so cards broke mid-phrase and the renderer's
+      // word-break wrapped them awkwardly ("ตัดคำ/เว้นบรรทัดเพี้ยน"). Text-only over the exact TTS
+      // text (timing stays 100% TTS-derived), server-validated verbatim; ANY failure → viralCards
+      // null → byte-identical to the old deterministic cards (fail-open). Only sentence mode uses
+      // these cards — word modes re-split capRes.words below, so skip the extra call there.
+      const wantsSentenceCards = resolvedSubtitleCardLen === "sentence";
+      const timingForCards = tts.timing as TtsTiming | null;
+      const fullTextForCards = (timingForCards?.segments ?? []).map((segment) => segment.text).join("");
+      let viralCards: ScriptCard[] | null = null;
+      if (wantsSentenceCards && fullTextForCards.length >= 120) {
+        try {
+          const split = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
+            text: fullTextForCards,
+            maxCardChars: maxCardCharsFor(cardBudgetSize),
+          });
+          viralCards = Array.isArray(split.cards) ? split.cards : null;
+        } catch { /* fail-open → deterministic sentence cards */ }
+      }
+
+      // ── Timing ladder (ADR 0056) ──────────────────────────────────────────────
+      // 1. The provider clock always renders unless something better is proven. It is exact
+      //    by arithmetic for ElevenLabs and deterministic for Gemini/Hero AI Voice.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let resolvedCapRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(cardBudgetSize), viralCards);
+      if (!resolvedCapRes || resolvedCapRes.captions.length === 0) {
+        // The provider returned no usable timing (the tts-gemini single-call fallback):
+        // spread the exact narration over the measured duration instead of refusing the clip.
+        resolvedCapRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor(cardBudgetSize));
+        subtitleTimingSource = "avatar_script_clock";
+      }
+      if (!resolvedCapRes || resolvedCapRes.captions.length === 0) {
+        // Nothing to show. Route it through the same policy as every other site so a subtitle
+        // finding can only stop a render via subtitleQualityShouldFailJob (ADR 0056).
+        const emptyQa = validateSubtitleQuality({
+          script: narrationText,
+          captions: [],
+          audioDurationMs,
+          timingSource: subtitleTimingSource,
+        });
+        if (emptyQa.status !== "passed") {
+          emitTelemetry({
+            name: "subtitle_quality_report",
+            category: emptyQa.status === "failed" ? "error" : "pipeline",
+            source: "server",
+            step: "captions",
+            status: emptyQa.code,
+            properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+          });
+          if (subtitleQualityShouldFailJob(emptyQa)) {
+            throw new SubtitleAlignmentFailureError(
+              `ไม่มีข้อความซับสำหรับคลิปนี้ (${emptyQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
+              emptyQa.code,
+              provider,
+            );
+          }
+        }
+        // Unreachable: an empty caption list is always a Blocking Subtitle Code. Kept as a
+        // non-subtitle guard so the ladder can never fall through with nothing to render.
+        throw new Error("สร้างซับสำหรับคลิปนี้ไม่สำเร็จ — กรุณาลองใหม่อีกครั้ง");
+      }
+      capRes = resolvedCapRes;
+      const ttsCaptions = capRes.captions.map((caption) => ({ startMs: caption.startMs, endMs: caption.endMs }));
+
+      // 2. ONE bounded acoustic alignment (Gemini / Hero AI Voice — ElevenLabs already ships
+      //    real word timing). Success promotes it to the render clock; anything else keeps the
+      //    provider clock and is recorded. It never retries, never regenerates the narration.
+      // Local acoustic work shares the existing verification wall-clock window.
+      // Off is byte-for-byte legacy timing. Shadow never changes a rendered clock.
+      const acousticMode = provider === "gemini" ? acousticSubtitleMode(userId) : "off";
+      const acousticAttempt = acousticMode !== "off"
+        ? (deps.acousticWorker ?? runAcousticSubtitleWorker)({ audioUrl: tts.voiceUrl, text: narrationText,
+            audioDurationMs, mode: acousticMode,
+            budgetMs: acousticBudgetMs(audioDurationMs, Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS) || 45_000,
+              Math.min(subtitleVerifyBudgetMs(), ACOUSTIC_BUDGET_CEILING_MS)) })
+        : null;
+      let verification: SubtitleAlignmentAttempt = { status: "skipped", durationMs: 0, ttsCaptions };
+      if (provider !== "elevenlabs") {
+        verification = await alignNarrationOnce({
+          caller,
+          audioUrl: tts.voiceUrl,
+          narrationText,
+          maxCardChars: maxCardCharsFor(cardBudgetSize),
+          budgetMs: subtitleVerifyBudgetMs(),
+          audioDurationMs,
+          ttsCaptions,
+        });
         emitTelemetry({
-          name: "subtitle_quality_report",
-          category: emptyQa.status === "failed" ? "error" : "pipeline",
+          name: "subtitle_verification_done",
+          category: "pipeline",
           source: "server",
           step: "captions",
-          status: emptyQa.code,
-          properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+          status: verification.status,
+          value: verification.durationMs,
+          properties: {
+            pipelineRunId,
+            jobId,
+            via: "mcp",
+            provider,
+            durationMs: verification.durationMs,
+            ...(verification.method ? { method: verification.method } : {}),
+            ...(verification.partialCoveragePermille !== undefined
+              ? { partialCoveragePermille: verification.partialCoveragePermille } : {}),
+            ...(verification.similarityPermille !== undefined ? { similarityPermille: verification.similarityPermille } : {}),
+            ...(verification.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: verification.medianAbsStartDeltaMs } : {}),
+            ...(verification.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: verification.maxAbsStartDeltaMs } : {}),
+            ...(verification.code ? { code: verification.code } : {}),
+          },
         });
-        if (subtitleQualityShouldFailJob(emptyQa)) {
+        if (verification.status === "aligned" && verification.capRes) {
+          capRes = verification.capRes;
+          subtitleTimingSource = "forced_alignment";
+          subtitleSpeechCoverage = verification.speechCoverage;
+        }
+      }
+      if (acousticAttempt) {
+        const selection = selectAcousticSubtitleClock({ text: narrationText,
+          maxCardChars: maxCardCharsFor(cardBudgetSize), existingTimingSource: subtitleTimingSource,
+          result: await acousticAttempt,
+          // Measure the remote alignment against the acoustic clock before either
+          // renders. Report only — the selection above does not read it.
+          ...(subtitleTimingSource === "forced_alignment" ? { existingWords: capRes.words } : {}) });
+        const persistedAcousticEvidence = { ...selection.evidence };
+        delete persistedAcousticEvidence.phaseTimingsMs;
+        delete persistedAcousticEvidence.timeoutPhase;
+        delete persistedAcousticEvidence.audioLengthBucket;
+        verification.acoustic = persistedAcousticEvidence;
+        if (selection.replacement) {
+          capRes = selection.replacement;
+          // Interpolated spans must retain warning provenance through checkpoints
+          // and export, even when the previous remote clock was fully aligned.
+          subtitleTimingSource = "partial_forced_alignment";
+          if (selection.evidence.status === "aligned") {
+            subtitleTimingSource = "forced_alignment";
+            verification = { status: "aligned", method: "ctc", ttsCaptions,
+              durationMs: selection.evidence.durationMs, acoustic: persistedAcousticEvidence };
+          }
+        }
+        try {
+          console.info("[subtitle-acoustic-phase] " + JSON.stringify({
+            status: selection.evidence.status,
+            mode: acousticMode,
+            ...(selection.evidence.audioLengthBucket
+              ? { audioLengthBucket: selection.evidence.audioLengthBucket } : {}),
+            ...(selection.evidence.timeoutPhase ? { timeoutPhase: selection.evidence.timeoutPhase } : {}),
+            ...(selection.evidence.phaseTimingsMs?.lockWait !== undefined
+              ? { lockWaitMs: selection.evidence.phaseTimingsMs.lockWait } : {}),
+            ...(selection.evidence.phaseTimingsMs?.modelLoad !== undefined
+              ? { modelLoadMs: selection.evidence.phaseTimingsMs.modelLoad } : {}),
+            ...(selection.evidence.phaseTimingsMs?.audioDecode !== undefined
+              ? { audioDecodeMs: selection.evidence.phaseTimingsMs.audioDecode } : {}),
+            ...(selection.evidence.phaseTimingsMs?.emissions !== undefined
+              ? { emissionsMs: selection.evidence.phaseTimingsMs.emissions } : {}),
+            ...(selection.evidence.phaseTimingsMs?.alignment !== undefined
+              ? { alignmentMs: selection.evidence.phaseTimingsMs.alignment } : {}),
+            modelRevision: selection.evidence.modelRevision,
+          }));
+        } catch { /* diagnostics must never affect rendering */ }
+        emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
+          step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
+          properties: { jobId, provider, mode: acousticMode, applied: selection.evidence.applied,
+            cacheHit: selection.evidence.cacheHit ?? false,
+            verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
+            totalWordCount: selection.evidence.totalWordCount ?? 0,
+            ...(selection.evidence.disagreementMaxMs !== undefined
+              ? { disagreementMaxMs: selection.evidence.disagreementMaxMs } : {}),
+            ...(selection.evidence.disagreementMedianMs !== undefined
+              ? { disagreementMedianMs: selection.evidence.disagreementMedianMs } : {}),
+            modelRevision: selection.evidence.modelRevision } });
+      }
+      subtitleVerification = subtitleVerificationEvidence(verification);
+
+      const baseCaptions = capRes.captions as OrchCaption[];
+      const rawWordModeCaptions = resolvedSubtitleCardLen !== "sentence"
+        ? cardsByWordCount(capRes.words, parseInt(resolvedSubtitleCardLen), capRes.fullText, cardBudgetSize)
+        : baseCaptions;
+      const wordModeCaptions = verification.acoustic?.applied
+        ? mergeShortAcousticCards(mergeUncertainCaptionCards(rawWordModeCaptions,
+            verification.acoustic.uncertainRanges ?? [], capRes.fullText, maxCardCharsFor(cardBudgetSize)),
+            capRes.fullText, SUBTITLE_MIN_CARD_MS)
+        : rawWordModeCaptions;
+      durMs = capRes.audioDurationMs || audioDurationMs;
+      // 2b. Card Line Budget, once over the finished track (after LLM cards and merges): an
+      //     over-budget card splits at Thai word boundaries; everything else is untouched.
+      const budgetedCaptions = enforceCardLineBudget(wordModeCaptions, capRes.words, capRes.fullText,
+        resolvedSubtitleCardLen, cardBudgetSize);
+      // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
+      //    monotonic, never shorter than the render floor.
+      const repairedTiming = repairCaptionTiming(budgetedCaptions, durMs);
+      captions = repairedTiming.captions;
+      subtitleQa = validateSubtitleQuality({
+        script: capRes.fullText,
+        captions,
+        audioDurationMs: durMs,
+        timingSource: subtitleTimingSource,
+        speechCoverage: subtitleSpeechCoverage,
+        cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
+      });
+      if (subtitleQa.status !== "passed") {
+        emitTelemetry({
+          name: "subtitle_quality_report",
+          category: subtitleQa.status === "failed" ? "error" : "pipeline",
+          source: "server",
+          step: "captions",
+          status: subtitleQa.code,
+          properties: {
+            pipelineRunId,
+            jobId,
+            via: "mcp",
+            provider,
+            timingSource: subtitleTimingSource,
+            repaired: repairedTiming.repaired,
+            dropped: repairedTiming.dropped,
+            verification: verification.status,
+          },
+        });
+        // Only "nothing to show" stops a render (ADR 0056); every other finding is a report.
+        if (subtitleQualityShouldFailJob(subtitleQa)) {
           throw new SubtitleAlignmentFailureError(
-            `ไม่มีข้อความซับสำหรับคลิปนี้ (${emptyQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
-            emptyQa.code,
+            `ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
+            subtitleQa.code,
             provider,
           );
         }
-      }
-      // Unreachable: an empty caption list is always a Blocking Subtitle Code. Kept as a
-      // non-subtitle guard so the ladder can never fall through with nothing to render.
-      throw new Error("สร้างซับสำหรับคลิปนี้ไม่สำเร็จ — กรุณาลองใหม่อีกครั้ง");
-    }
-    const ttsCaptions = capRes.captions.map((caption) => ({ startMs: caption.startMs, endMs: caption.endMs }));
-
-    // 2. ONE bounded acoustic alignment (Gemini / Hero AI Voice — ElevenLabs already ships
-    //    real word timing). Success promotes it to the render clock; anything else keeps the
-    //    provider clock and is recorded. It never retries, never regenerates the narration.
-    // Local acoustic work shares the existing verification wall-clock window.
-    // Off is byte-for-byte legacy timing. Shadow never changes a rendered clock.
-    const acousticMode = provider === "gemini" ? acousticSubtitleMode(userId) : "off";
-    const acousticAttempt = acousticMode !== "off"
-      ? (deps.acousticWorker ?? runAcousticSubtitleWorker)({ audioUrl: tts.voiceUrl, text: narrationText,
-          audioDurationMs, mode: acousticMode,
-          budgetMs: acousticBudgetMs(audioDurationMs, Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS) || 45_000,
-            Math.min(subtitleVerifyBudgetMs(), ACOUSTIC_BUDGET_CEILING_MS)) })
-      : null;
-    let verification: SubtitleAlignmentAttempt = { status: "skipped", durationMs: 0, ttsCaptions };
-    if (provider !== "elevenlabs") {
-      verification = await alignNarrationOnce({
-        caller,
-        audioUrl: tts.voiceUrl,
-        narrationText,
-        maxCardChars: maxCardCharsFor(cardBudgetSize),
-        budgetMs: subtitleVerifyBudgetMs(),
-        audioDurationMs,
-        ttsCaptions,
-      });
-      emitTelemetry({
-        name: "subtitle_verification_done",
-        category: "pipeline",
-        source: "server",
-        step: "captions",
-        status: verification.status,
-        value: verification.durationMs,
-        properties: {
-          pipelineRunId,
-          jobId,
-          via: "mcp",
-          provider,
-          durationMs: verification.durationMs,
-          ...(verification.method ? { method: verification.method } : {}),
-          ...(verification.partialCoveragePermille !== undefined
-            ? { partialCoveragePermille: verification.partialCoveragePermille } : {}),
-          ...(verification.similarityPermille !== undefined ? { similarityPermille: verification.similarityPermille } : {}),
-          ...(verification.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: verification.medianAbsStartDeltaMs } : {}),
-          ...(verification.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: verification.maxAbsStartDeltaMs } : {}),
-          ...(verification.code ? { code: verification.code } : {}),
-        },
-      });
-      if (verification.status === "aligned" && verification.capRes) {
-        capRes = verification.capRes;
-        subtitleTimingSource = "forced_alignment";
-        subtitleSpeechCoverage = verification.speechCoverage;
-      }
-    }
-    if (acousticAttempt) {
-      const selection = selectAcousticSubtitleClock({ text: narrationText,
-        maxCardChars: maxCardCharsFor(cardBudgetSize), existingTimingSource: subtitleTimingSource,
-        result: await acousticAttempt,
-        // Measure the remote alignment against the acoustic clock before either
-        // renders. Report only — the selection above does not read it.
-        ...(subtitleTimingSource === "forced_alignment" ? { existingWords: capRes.words } : {}) });
-      const persistedAcousticEvidence = { ...selection.evidence };
-      delete persistedAcousticEvidence.phaseTimingsMs;
-      delete persistedAcousticEvidence.timeoutPhase;
-      delete persistedAcousticEvidence.audioLengthBucket;
-      verification.acoustic = persistedAcousticEvidence;
-      if (selection.replacement) {
-        capRes = selection.replacement;
-        // Interpolated spans must retain warning provenance through checkpoints
-        // and export, even when the previous remote clock was fully aligned.
-        subtitleTimingSource = "partial_forced_alignment";
-        if (selection.evidence.status === "aligned") {
-          subtitleTimingSource = "forced_alignment";
-          verification = { status: "aligned", method: "ctc", ttsCaptions,
-            durationMs: selection.evidence.durationMs, acoustic: persistedAcousticEvidence };
-        }
-      }
-      try {
-        console.info("[subtitle-acoustic-phase] " + JSON.stringify({
-          status: selection.evidence.status,
-          mode: acousticMode,
-          ...(selection.evidence.audioLengthBucket
-            ? { audioLengthBucket: selection.evidence.audioLengthBucket } : {}),
-          ...(selection.evidence.timeoutPhase ? { timeoutPhase: selection.evidence.timeoutPhase } : {}),
-          ...(selection.evidence.phaseTimingsMs?.lockWait !== undefined
-            ? { lockWaitMs: selection.evidence.phaseTimingsMs.lockWait } : {}),
-          ...(selection.evidence.phaseTimingsMs?.modelLoad !== undefined
-            ? { modelLoadMs: selection.evidence.phaseTimingsMs.modelLoad } : {}),
-          ...(selection.evidence.phaseTimingsMs?.audioDecode !== undefined
-            ? { audioDecodeMs: selection.evidence.phaseTimingsMs.audioDecode } : {}),
-          ...(selection.evidence.phaseTimingsMs?.emissions !== undefined
-            ? { emissionsMs: selection.evidence.phaseTimingsMs.emissions } : {}),
-          ...(selection.evidence.phaseTimingsMs?.alignment !== undefined
-            ? { alignmentMs: selection.evidence.phaseTimingsMs.alignment } : {}),
-          modelRevision: selection.evidence.modelRevision,
-        }));
-      } catch { /* diagnostics must never affect rendering */ }
-      emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
-        step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
-        properties: { jobId, provider, mode: acousticMode, applied: selection.evidence.applied,
-          cacheHit: selection.evidence.cacheHit ?? false,
-          verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
-          totalWordCount: selection.evidence.totalWordCount ?? 0,
-          ...(selection.evidence.disagreementMaxMs !== undefined
-            ? { disagreementMaxMs: selection.evidence.disagreementMaxMs } : {}),
-          ...(selection.evidence.disagreementMedianMs !== undefined
-            ? { disagreementMedianMs: selection.evidence.disagreementMedianMs } : {}),
-          modelRevision: selection.evidence.modelRevision } });
-    }
-    const subtitleVerification = subtitleVerificationEvidence(verification);
-
-    const baseCaptions = capRes.captions as OrchCaption[];
-    const rawWordModeCaptions = resolvedSubtitleCardLen !== "sentence"
-      ? cardsByWordCount(capRes.words, parseInt(resolvedSubtitleCardLen), capRes.fullText, cardBudgetSize)
-      : baseCaptions;
-    const wordModeCaptions = verification.acoustic?.applied
-      ? mergeShortAcousticCards(mergeUncertainCaptionCards(rawWordModeCaptions,
-          verification.acoustic.uncertainRanges ?? [], capRes.fullText, maxCardCharsFor(cardBudgetSize)),
-          capRes.fullText, SUBTITLE_MIN_CARD_MS)
-      : rawWordModeCaptions;
-    const durMs = capRes.audioDurationMs || audioDurationMs;
-    // 2b. Card Line Budget, once over the finished track (after LLM cards and merges): an
-    //     over-budget card splits at Thai word boundaries; everything else is untouched.
-    const budgetedCaptions = enforceCardLineBudget(wordModeCaptions, capRes.words, capRes.fullText,
-      resolvedSubtitleCardLen, cardBudgetSize);
-    // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
-    //    monotonic, never shorter than the render floor.
-    const repairedTiming = repairCaptionTiming(budgetedCaptions, durMs);
-    const captions = repairedTiming.captions;
-    const subtitleQa = validateSubtitleQuality({
-      script: capRes.fullText,
-      captions,
-      audioDurationMs: durMs,
-      timingSource: subtitleTimingSource,
-      speechCoverage: subtitleSpeechCoverage,
-      cardLineBudget: { mode: resolvedSubtitleCardLen, size: cardBudgetSize },
-    });
-    if (subtitleQa.status !== "passed") {
-      emitTelemetry({
-        name: "subtitle_quality_report",
-        category: subtitleQa.status === "failed" ? "error" : "pipeline",
-        source: "server",
-        step: "captions",
-        status: subtitleQa.code,
-        properties: {
-          pipelineRunId,
-          jobId,
-          via: "mcp",
-          provider,
-          timingSource: subtitleTimingSource,
-          repaired: repairedTiming.repaired,
-          dropped: repairedTiming.dropped,
-          verification: verification.status,
-        },
-      });
-      // Only "nothing to show" stops a render (ADR 0056); every other finding is a report.
-      if (subtitleQualityShouldFailJob(subtitleQa)) {
-        throw new SubtitleAlignmentFailureError(
-          `ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
-          subtitleQa.code,
-          provider,
-        );
       }
     }
 
@@ -3270,7 +3475,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ? { brollDisabled: true, backgroundColors: resolvedBrandPalette }
           : {}),
         ...buildConfigPayload(
-        captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
+        captions, stock.results ?? [], tts.voiceUrl || "__story_real_moments__", durMs, captions.map((c) => c.text),
         kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
         aligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
         // Task 5: when window mode is off (aligned.windows empty) and this is an AI-gen /
@@ -3319,8 +3524,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
         })
       : undefined;
-    const scriptBgmDuckSegments = input.bgmFile
+    const scriptBgmDuckSegments = input.bgmFile && !realMomentsStoryMode
       ? speechSegments({ words: capRes.words, captions })
+      : [];
+    const storyScaled = Array.isArray(input.storyBgVideos) && input.storyBgVideos.length > 0
+      ? scaleStoryPlanToDuration(input.storyBgVideos, input.storyOverlays, durMs)
+      : null;
+    const standaloneStoryOverlays = !storyScaled && Array.isArray(input.storyOverlays) && input.storyOverlays.length > 0
+      ? normalizeStoryOverlays(input.storyOverlays, durMs)
       : [];
     // When `!input.previewMode` (direct 1-pass render + Step 8 burn), leave `sfxMode` off
     // `baseConfig` so Step 8's `SubtitleOverlayComposition` burn renders transition SFX
@@ -3328,7 +3539,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const bakeSfxIntoBase = Boolean(input.previewMode) && resolvedSfxMode === "subtle";
     const baseConfig = {
       ...rawScriptConfig,
-      ...(scriptConfiguredBgVideos ? { bgVideos: scriptConfiguredBgVideos } : {}),
+      ...(realMomentsStoryMode ? { voiceFile: "" } : {}),
+      ...(storyScaled
+        ? {
+            bgVideos: storyScaled.bgVideos,
+            backgroundColors: undefined,
+            ...(storyScaled.storyOverlays.length > 0 ? { storyOverlays: storyScaled.storyOverlays } : {}),
+            ...(storyScaled.shotFaceZones.length > 0 ? { shotFaceZones: storyScaled.shotFaceZones } : {}),
+          }
+        : scriptConfiguredBgVideos
+          ? { bgVideos: scriptConfiguredBgVideos }
+          : standaloneStoryOverlays.length > 0
+            ? { storyOverlays: standaloneStoryOverlays }
+            : {}),
+      ...(input.dualTikTokExport ? { dualTikTokExport: true } : {}),
       keywordPopups: [] as unknown[],
       ...(input.bgmFile
         ? {
@@ -3465,7 +3689,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           captions,
           config: baseConfig,
           voiceUrl: tts.voiceUrl,
-          voiceModel: galleryVoiceModelForInput(input, user, provider),
+          voiceModel: realMomentsStoryMode ? "real-moments" : galleryVoiceModelForInput(input, user, provider),
           audioDurationMs: durMs,
           speechCoverage: subtitleSpeechCoverage,
           avatarModel,
@@ -3492,8 +3716,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
-      videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel, avatarVideoUrl, voiceModel: galleryVoiceModelForInput(input, user, provider),
+      videoUrl: finalBase, audioUrl: tts.voiceUrl || null, thumbnail: null, script: input.script.trim() || null,
+      avatarModel, avatarVideoUrl, voiceModel: realMomentsStoryMode ? "real-moments" : galleryVoiceModelForInput(input, user, provider),
       sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 
@@ -3518,21 +3742,33 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           totalDurationSec: durMs / 1000,
         })
       : undefined;
+    const directBurnOverlay = buildBurnConfig(
+      finalBase,
+      captions,
+      durMs,
+      heroSubtitleDesign,
+      RENDER_FPS,
+      scriptHook,
+      resolvedSfxMode,
+      scriptSfxCues,
+      capRes.words,
+    );
+    const enrichedDirectBurnOverlay = {
+      ...directBurnOverlay,
+      ...(Array.isArray((baseConfig as { storyOverlays?: unknown }).storyOverlays)
+        ? { storyOverlays: (baseConfig as { storyOverlays: unknown }).storyOverlays }
+        : {}),
+      ...(Array.isArray((baseConfig as { shotFaceZones?: unknown }).shotFaceZones)
+        ? { shotFaceZones: (baseConfig as { shotFaceZones: unknown }).shotFaceZones }
+        : {}),
+      ...(input.dualTikTokExport ? { dualTikTokExport: true } : {}),
+    };
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
-      subtitleOverlayConfig: buildBurnConfig(
-        finalBase,
-        captions,
-        durMs,
-        heroSubtitleDesign,
-        RENDER_FPS,
-        scriptHook,
-        resolvedSfxMode,
-        scriptSfxCues,
-        capRes.words,
-      ),
+      subtitleOverlayConfig: enrichedDirectBurnOverlay,
       parentJobId: jobId,
     });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
+    const directTikTokSoundUrl = resolveCompanionTikTokUrl(burnedUrl, Boolean(input.dualTikTokExport));
 
     const billingReceipt = process.env.RENDER_VIA_QUEUE === "1"
       ? await getVideoJobBillingReceipt({ videoJobId: jobId, userId })
@@ -3553,6 +3789,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     await finishJob(jobId, {
       videoUrl: burnedUrl,
+      ...(directTikTokSoundUrl ? { tiktokSoundVideoUrl: directTikTokSoundUrl } : {}),
       videoId: created.id,
       subtitleQa,
       ...(jobWarnings.length > 0 ? { warnings: jobWarnings } : {}),

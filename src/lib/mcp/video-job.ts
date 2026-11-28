@@ -479,6 +479,8 @@ export interface SubtitleAuditEvidence {
 export interface ParsedVideoJobOutput {
   version: 1 | 2;
   videoUrl?: string;
+  /** Companion BGM-free MP4 (`-c:v copy` + voice/clip-audio/SFX at -14 LUFS) when `dualTikTokExport` was requested. */
+  tiktokSoundVideoUrl?: string;
   videoId?: string;
   sourceJobId?: string;
   subtitleQa?: SubtitleQualityReport;
@@ -518,6 +520,9 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
+      ...(typeof raw.tiktokSoundVideoUrl === "string" && raw.tiktokSoundVideoUrl
+        ? { tiktokSoundVideoUrl: raw.tiktokSoundVideoUrl }
+        : {}),
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
       sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
       ...(subtitleQa ? { subtitleQa } : {}),

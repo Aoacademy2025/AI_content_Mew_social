@@ -4,6 +4,8 @@ import type { HeadlineHookConfig } from "../lib/headline-hook";
 import type { BrollFit, BrollTransition } from "../lib/broll-window-style";
 import type { SfxMode, TransitionSfxCue } from "../lib/transition-sfx";
 import type { MotionTemplateConfig } from "../lib/motion-broll-catalog";
+import type { FaceBox } from "../lib/face-safe-placement";
+import type { StoryOverlayItem } from "../lib/story-overlays";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -66,10 +68,20 @@ export interface BrollVideo {
   /** Asset provenance survives into the post-render editor. Scene Reroll uses
    *  this server-authored value to distinguish an existing AI Visual Beat from
    *  Stock/Upload without inspecting filenames or accepting browser claims. */
-  provider?: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met" | "motion";
+  provider?: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met" | "motion" | "upload";
   contentProfile?: string;
   selectionReason?: string;
   relevanceScore?: number;
+  /** Story Director: preserve and play native clip audio (speech Q&A, cheers, hugs) while auto-ducking BGM. */
+  keepClipAudio?: boolean;
+  /** Linear gain for native clip audio when `keepClipAudio` is true (0..1.5, default 1.0). */
+  clipAudioVolume?: number;
+  /** Playback rate for speed ramps (`0.55` smooth slow-mo peak action, `1.0` normal). */
+  playbackRate?: number;
+  /** Freeze the frame for the last N frames of this segment (e.g. `hero-freeze-card` shutter hold). */
+  freezeAtEndFrames?: number;
+  /** Detected or specified normalized face bounding boxes (0..1) in this shot for face-safe caption/sticker placement. */
+  faceBoxes?: FaceBox[];
 }
 
 export type SubtitleStylePreset =
@@ -172,6 +184,14 @@ export interface SubtitleOverlayConfig {
   subtitleStatCards?: boolean;
   sfxMode?: SfxMode;
   sfxCues?: TransitionSfxCue[];
+  /** Story Director: transparent overlays rendered over real footage (`hero-freeze-card`, `chapter-pill`, `checklist-pop`, `countdown`, `callout-sticker`, `blooper-end`). */
+  storyOverlays?: StoryOverlayItem[];
+  /** Story Director: automatically shift captions & callout stickers away from detected `faceBoxes`. */
+  faceSafePlacement?: boolean;
+  /** Per-shot face boxes carried from base preview into burn/export (`startMs..endMs`). */
+  shotFaceZones?: Array<{ startMs: number; endMs: number; faceBoxes: FaceBox[] }>;
+  /** Dual Social Export: also mux a companion `_tiktok-nobgm.mp4` (`-c:v copy`, voice + clip audio + SFX at -14 LUFS, no BGM). */
+  dualTikTokExport?: boolean;
   bgmFile?: string;
   bgmVolume?: number;
   /** Optional pre-computed speech spans (ms) for automatic BGM speech ducking on base renders. */
@@ -219,6 +239,12 @@ export interface ShortVideoConfig {
   subtitleStatCards?: boolean;
   sfxMode?: SfxMode;
   sfxCues?: TransitionSfxCue[];
+  /** Story Director: transparent overlays rendered over real footage. */
+  storyOverlays?: StoryOverlayItem[];
+  /** Story Director: automatically shift captions & callout stickers away from `bgVideos[].faceBoxes` (default true when `faceBoxes` exist). */
+  faceSafePlacement?: boolean;
+  /** Dual Social Export: also mux a companion `_tiktok-nobgm.mp4` (`-c:v copy`, voice + clip audio + SFX at -14 LUFS, no BGM). */
+  dualTikTokExport?: boolean;
   /** Subtle Ken Burns motion (slow zoom) on b-roll so it isn't a static slideshow.
    *  Set by generate-config from env STOCK_KEN_BURNS; default off. */
   kenBurns?: boolean;

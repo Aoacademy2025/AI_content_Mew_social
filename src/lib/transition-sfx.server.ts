@@ -2,26 +2,25 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   SFX_SUBTLE_DB,
+  TRANSITION_SFX_KINDS,
   synthesizeTransitionSfxWavBytes,
   type TransitionSfxCue,
   type TransitionSfxKind,
 } from "./transition-sfx";
 
 /**
- * Server-side helpers for EP5/S2 Backlog #3 — Subtle Transition Sound Effects:
- * - Materializes deterministic `whoosh.wav` and `pop.wav` assets on disk when needed.
+ * Server-side helpers for EP5/S2 Backlog #3 & Story Director Event SFX:
+ * - Materializes deterministic 48kHz stereo PCM WAV assets on disk when needed.
  * - Builds FFmpeg `adelay` + `volume=-18dB` + `amix` filter graphs for mixing transition SFX
  *   cues into a rendered audio/video stream without clipping or ducking the presenter voice.
  */
 
 export function ensureTransitionSfxWavFiles(targetDir: string): Record<TransitionSfxKind, string> {
   fs.mkdirSync(targetDir, { recursive: true });
-  const paths: Record<TransitionSfxKind, string> = {
-    whoosh: path.join(targetDir, "sfx-subtle-whoosh.wav"),
-    pop: path.join(targetDir, "sfx-subtle-pop.wav"),
-  };
-  for (const kind of ["whoosh", "pop"] as const) {
-    const filePath = paths[kind];
+  const paths = {} as Record<TransitionSfxKind, string>;
+  for (const kind of TRANSITION_SFX_KINDS) {
+    const filePath = path.join(targetDir, `sfx-subtle-${kind}.wav`);
+    paths[kind] = filePath;
     if (!fs.existsSync(filePath) || fs.statSync(filePath).size < 100) {
       fs.writeFileSync(filePath, Buffer.from(synthesizeTransitionSfxWavBytes(kind)));
     }

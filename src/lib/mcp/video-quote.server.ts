@@ -31,6 +31,15 @@ import { mcpBrollJobFields } from "./broll-source";
 import { withVideoJobSqliteRetry } from "./video-job";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { isMotionMascotId, isMotionThemeId, type MotionMascotId, type MotionThemeId } from "@/lib/motion-broll-catalog";
+import { analyzeUploadedFootageItems } from "@/lib/story-director-analyzer.server";
+import {
+  buildStoryDirectorPlan,
+  buildStoryDirectorPlanFromVisionSelection,
+  isStoryVoiceMode,
+  type StoryDirectorPlan,
+  type StoryVoiceMode,
+  type VisionDirectorSelection,
+} from "@/lib/story-director-planner";
 import type { createMcpVideoJob } from "./chain-export";
 type VideoJobInput = Parameters<typeof createMcpVideoJob>[1];
 import {
@@ -83,7 +92,106 @@ export async function prepareVideoQuote(
   const input = normalizeQuoteInput(parsed.data);
   const clip = parseClipJobArgs(input);
   if (!clip.ok) return clip.failure;
-  let durationSeconds = estimateClipSecV2(input.script ?? "");
+  let storyPlan: StoryDirectorPlan | null = null;
+  if (Array.isArray(input.storyUploadIds) && input.storyUploadIds.length > 0) {
+    if (clip.clip) {
+      return quoteFailure(
+        "invalid_input",
+        "ใช้ storyUploadIds ร่วมกับ clipUrl/clipUploadId พร้อมกันไม่ได้",
+        "เลือกส่ง storyUploadIds สำหรับโหมดผู้กำกับฟุตเทจ หรือส่ง clipUploadId สำหรับโหมดคลิปพิธีกรอย่างใดอย่างหนึ่ง",
+      );
+    }
+    const cleanStoryIds = input.storyUploadIds.map((s) => s.trim()).filter(Boolean);
+    const rows = await prisma.mediaImport.findMany({
+      where: { userId: user.id, id: { in: cleanStoryIds } },
+      select: { id: true, status: true, purpose: true, resultSrc: true, durationMs: true },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const sid of cleanStoryIds) {
+      const row = byId.get(sid);
+      if (!row || row.status !== "ready" || !row.resultSrc) {
+        return quoteFailure(
+          "story_import_required",
+          "ไฟล์ฟุตเทจใน storyUploadIds ยังไม่พร้อมหรือไม่ใช่ของบัญชีนี้",
+          "อัปโหลดไฟล์ผ่าน create_upload_url (kind: video หรือ image) ให้พร้อมก่อน แล้วเรียก prepare_video_job / create_video_job ใหม่",
+        );
+      }
+    }
+    const analyzed = await analyzeUploadedFootageItems(
+      cleanStoryIds.map((sid, idx) => {
+        const r = byId.get(sid)!;
+        return {
+          id: r.id,
+          src: r.resultSrc!,
+          filename: `ช็อต ${idx + 1}`,
+          stillImage: r.purpose === "broll_image",
+          durationSec: r.durationMs ? r.durationMs / 1000 : 5,
+        };
+      }),
+    );
+    const resolvedStoryVoiceMode: StoryVoiceMode = isStoryVoiceMode(input.storyVoiceMode)
+      ? input.storyVoiceMode
+      : input.storyEdlJson
+        ? "real-moments"
+        : "tts";
+    if (typeof input.storyEdlJson === "string" && input.storyEdlJson.trim()) {
+      let parsedSelection: VisionDirectorSelection | null = null;
+      try {
+        parsedSelection = JSON.parse(input.storyEdlJson) as VisionDirectorSelection;
+      } catch {
+        return quoteFailure(
+          "invalid_input",
+          "storyEdlJson ไม่ใช่ JSON ที่ถูกต้อง",
+          "ส่ง storyEdlJson เป็น JSON object ที่มี shots: [{ clipIndex, inSec, outSec, ... }]",
+        );
+      }
+      if (!parsedSelection || !Array.isArray(parsedSelection.shots) || parsedSelection.shots.length === 0) {
+        return quoteFailure(
+          "invalid_input",
+          "storyEdlJson ต้องมีรายการ shots อย่างน้อย 1 ช็อต",
+          "ตรวจผลจาก inspect_footage_pack แล้วระบุ shots: [{ clipIndex, inSec, outSec, captionText }] ใน storyEdlJson",
+        );
+      }
+      storyPlan = buildStoryDirectorPlanFromVisionSelection({
+        brief: input.storyBrief ?? input.title ?? input.script ?? "",
+        templateId: input.templateId ?? null,
+        voiceMode: resolvedStoryVoiceMode,
+        clips: analyzed,
+        selection: parsedSelection,
+        targetDurationSec: input.targetDurationSec,
+      });
+    } else {
+      storyPlan = buildStoryDirectorPlan({
+        brief: input.storyBrief ?? input.title ?? input.script ?? "",
+        templateId: input.templateId ?? null,
+        voiceMode: resolvedStoryVoiceMode,
+        clips: analyzed,
+        targetDurationSec: input.targetDurationSec,
+        authoredScriptLines: input.script?.trim()
+          ? input.script.split(/\n+/).map((l) => l.trim()).filter(Boolean)
+          : null,
+        authoredHeadline: input.headlineHook ?? input.visualHook ?? null,
+        authoredSubheadline: input.headlineHookSubtext ?? null,
+      });
+    }
+    if (!input.script?.trim() && storyPlan.voiceMode === "tts") {
+      input.script = storyPlan.script;
+    }
+    if (!input.templateId) {
+      input.templateId = storyPlan.templateId;
+    }
+  }
+  const storyRealMomentsSec = storyPlan?.voiceMode === "real-moments"
+    ? Math.max(
+        2,
+        Math.round(
+          storyPlan.bgVideos.reduce((mx, v) => Math.max(mx, Number(v.end) || 0), 0) * 100,
+        ) / 100,
+      )
+    : 0;
+  let durationSeconds = storyRealMomentsSec > 0
+    ? storyRealMomentsSec
+    : estimateClipSecV2(input.script ?? "");
   let quoteWarnings: string[] = [];
   let presenter: { id: string; resultSrc: string | null; durationMs: number | null } | null = null;
   const presenters: Array<{ id: string; resultSrc: string | null; durationMs: number | null }> = [];
@@ -131,11 +239,12 @@ export async function prepareVideoQuote(
   // Advisory only: the exact post-TTS gate decides. Presenter clips are exact and gated at import.
   const planLengthWarning = presenter ? null : estimatedDurationPlanWarning(durationSeconds, effectivePlan);
   if (planLengthWarning) quoteWarnings = [...quoteWarnings, `${planLengthWarning.message} — ${planLengthWarning.userAction}`];
-  const execution = await resolveQuoteExecution(user, effectivePlan, input, presenters, parsed.data.brollSource !== undefined);
+  const execution = await resolveQuoteExecution(user, effectivePlan, input, presenters, parsed.data.brollSource !== undefined, storyPlan);
   if ("error" in execution) return execution;
   const hasMotionTheme = Boolean(execution.jobInput.motionThemeId);
+  const hasStoryFootage = Boolean(storyPlan);
   const source = input.brollSource ?? "stock";
-  const noAutomaticBroll = hasMotionTheme || source === "external" || clip.clip?.cutawayLayout === "fillYourself";
+  const noAutomaticBroll = hasMotionTheme || hasStoryFootage || source === "external" || clip.clip?.cutawayLayout === "fillYourself";
   const usesImages = !noAutomaticBroll && (source === "hero-ai-image" || source === "automix");
   const access = usesImages ? await resolveHeroAiImageAccess(user) : null;
   if (access && !access.canUse) return quoteFailure("image_access_required", "บัญชียังไม่มีสิทธิ์สร้างภาพ Hero AI Image", "ตรวจสิทธิ์ทดลองหรือแผนใน Studio หรือให้ผู้ใช้เลือกแหล่งสื่ออื่นด้วยตนเอง");
@@ -150,12 +259,12 @@ export async function prepareVideoQuote(
   const remainingMinutes = pricing.minuteQuotaLive ? Math.max(0, Math.floor(minuteQuota.minutesLimit - minuteQuota.minutesUsed)) : minutesFromSeconds(durationSeconds);
   const voiceProvider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
   const baseReceipt = buildQuoteReceipt({
-    source, durationSeconds, exactDuration: Boolean(presenter), remainingMinutes,
+    source, durationSeconds, exactDuration: Boolean(presenter || storyRealMomentsSec > 0), remainingMinutes,
     totalMinutes: pricing.minuteQuotaLive ? minuteQuota.minutesLimit : remainingMinutes,
     availableCredits: balance.total, reservedCredits: reserved + (pendingRender._sum.fundedCreditsSpent ?? 0),
     trialImageAllowance: trial ? { remaining: trial.remainingImages, limit: trial.limitImages } : null,
     hasAvatar: !presenter && Boolean(input.avatarMode && input.avatarMode !== "none"), avatarEngine: input.avatarEngine,
-    voiceProvider: presenter ? undefined : voiceProvider, noAutomaticBroll, pricing,
+    voiceProvider: presenter || storyRealMomentsSec > 0 ? undefined : voiceProvider, noAutomaticBroll, pricing,
   });
   const receipt: QuoteReceipt = quoteWarnings.length > 0 ? { ...baseReceipt, warnings: quoteWarnings } : baseReceipt;
   // Bound unconsumed rows. The transaction prevents concurrent prepares bypassing the cap.
@@ -181,6 +290,7 @@ async function resolveQuoteExecution(
   input: ReturnType<typeof normalizeQuoteInput>,
   presenters: Array<{ id: string; resultSrc: string | null }>,
   explicitBrollSource = false,
+  storyPlan: StoryDirectorPlan | null = null,
 ): Promise<QuoteExecution | QuoteFailure> {
   const presenter = presenters[0] ?? null;
   const avatar = resolveAvatarRequest(input, user);
@@ -280,7 +390,8 @@ async function resolveQuoteExecution(
     ?? (templatePack && TEMPLATE_TTS_SPEED_BY_PACING[templatePack.pacing] !== 1
       ? TEMPLATE_TTS_SPEED_BY_PACING[templatePack.pacing]
       : undefined);
-  if (!presenter && voiceProvider === "elevenlabs" && !voiceId) {
+  const isStoryRealMoments = storyPlan?.voiceMode === "real-moments";
+  if (!presenter && !isStoryRealMoments && voiceProvider === "elevenlabs" && !voiceId) {
     return quoteFailure("voice_setup_required", "ยังไม่ได้เลือกเสียง ElevenLabs สำหรับงานนี้", "เลือกเสียงใน Studio หรือส่ง voiceId ที่ต้องการ แล้วเรียก prepare_video_job ใหม่");
   }
   const resolvedMusicMood = brandVd?.musicMood !== undefined ? brandVd.musicMood : (templatePack?.musicMood ?? null);
@@ -319,7 +430,7 @@ async function resolveQuoteExecution(
     ? brandLookup.logoOverlay
     : null;
   const jobInput: VideoJobInput = {
-    script: presenter ? "" : input.script!, title: input.title,
+    script: presenter || isStoryRealMoments ? (input.script ?? "") : input.script!, title: input.title,
     ...(templatePack && templateSnapshot ? { templateId: templatePack.id, templateSnapshot } : {}),
     ...(resolvedMotionThemeId ? { motionThemeId: resolvedMotionThemeId } : {}),
     ...(resolvedMotionMascot ? { motionMascot: resolvedMotionMascot } : {}),
@@ -361,7 +472,21 @@ async function resolveQuoteExecution(
     ...(initialHeadlineHook ? { headlineHook: initialHeadlineHook } : {}),
     ...(input.subtitleMode ? { subtitleMode: input.subtitleMode } : {}),
     ...(input.subtitlePosition ? { subtitlePosition: input.subtitlePosition } : {}),
-    ...(source === "external" || input.cutawayLayout === "fillYourself" || resolvedMotionThemeId ? { stockSource: "none" } : mcpBrollJobFields(source)),
+    ...(storyPlan
+      ? {
+          storyBgVideos: storyPlan.bgVideos,
+          storyOverlays: storyPlan.storyOverlays,
+          storyVoiceMode: storyPlan.voiceMode,
+          ...(storyPlan.momentCaptions.length > 0 ? { storyMomentCaptions: storyPlan.momentCaptions } : {}),
+          dualTikTokExport: input.dualTikTokExport ?? storyPlan.dualTikTokExport,
+          stockSource: "none",
+        }
+      : {
+          ...(input.dualTikTokExport !== undefined ? { dualTikTokExport: input.dualTikTokExport } : {}),
+          ...(source === "external" || input.cutawayLayout === "fillYourself" || resolvedMotionThemeId
+            ? { stockSource: "none" }
+            : mcpBrollJobFields(source)),
+        }),
   };
   return {
     jobInput,

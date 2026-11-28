@@ -136,7 +136,7 @@ export type ExportState =
   | { phase: "idle" }
   | { phase: "burning"; progress: number }
   | { phase: "saving" }
-  | { phase: "done"; url: string }
+  | { phase: "done"; url: string; tiktokSoundUrl?: string | null }
   | { phase: "error"; message: string };
 
 // Phase 2 per-window b-roll editing (Task 11) — batched, applied via the free
@@ -1609,6 +1609,9 @@ export function usePostPhaseEditor(
   const committedRef = useRef<V2Caption[]>(cloneCaptions(captions));
   const [historyLen, setHistoryLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
+  const [dualTikTokExport, setDualTikTokExport] = useState<boolean>(() =>
+    Boolean((preview?.config as { dualTikTokExport?: unknown } | undefined)?.dualTikTokExport),
+  );
 
   // T8 (ADR 0064, G21): apply a (re)loaded draft once per distinct revision. This covers BOTH
   // the normal case — `pendingEdit` arrives asynchronously after this hook's first render, so the
@@ -2186,7 +2189,7 @@ export function usePostPhaseEditor(
         && !exportMusic;
       const effectiveOverlaySfx =
         cfg.sfxMode === "subtle" && !baseAlreadyHasAudibleSfx ? "subtle" : "none";
-      const overlay = buildV2BurnConfig(
+      const baseOverlay = buildV2BurnConfig(
         exportVideoUrl,
         captions,
         preview?.audioDurationMs ?? 0,
@@ -2200,6 +2203,17 @@ export function usePostPhaseEditor(
         effectiveOverlaySfx,
         preview?.words,
       );
+      const baseCfgRecord = (preview?.config ?? {}) as Record<string, unknown>;
+      const overlay = {
+        ...baseOverlay,
+        ...(Array.isArray(baseCfgRecord.storyOverlays) && baseCfgRecord.storyOverlays.length > 0
+          ? { storyOverlays: baseCfgRecord.storyOverlays }
+          : {}),
+        ...(Array.isArray(baseCfgRecord.shotFaceZones) && baseCfgRecord.shotFaceZones.length > 0
+          ? { shotFaceZones: baseCfgRecord.shotFaceZones }
+          : {}),
+        ...(dualTikTokExport ? { dualTikTokExport: true } : {}),
+      };
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
@@ -2477,6 +2491,8 @@ export function usePostPhaseEditor(
     restorableSubtitleDraft,
     restoreSubtitleDraft,
     discardSubtitleDraft,
+    dualTikTokExport,
+    setDualTikTokExport,
     exportVideo,
   };
 }

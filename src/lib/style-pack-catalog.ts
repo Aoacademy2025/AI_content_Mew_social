@@ -28,6 +28,9 @@ export const ACTIVE_STYLE_PACK_IDS = [
   "ai-tech-doc",
   "true-crime",
   "self-growth",
+  "event-mission-vlog",
+  "proud-moment-highlight",
+  "product-beat-showcase",
 ] as const;
 export type ActiveStylePackId = (typeof ACTIVE_STYLE_PACK_IDS)[number];
 
@@ -76,6 +79,27 @@ export type StockMood = {
   fallbackQueries: string[]; // 5 plain 2-4 word Pexels phrases
 };
 
+export type StoryDirectorPackRecipe = {
+  /** Lock cuts to musical BPM beat grid (`0.95–1.55s` cuts). */
+  beatSync: boolean;
+  /** Default BPM when audio track onset tempo is neutral. */
+  defaultBpm: number;
+  /** Keep native clip speech/cheers on Cold Open shot while auto-ducking BGM. */
+  keepColdOpenAudio: boolean;
+  /** Insert camera shutter freeze-frame + character/title card on hero reveal. */
+  heroFreezeIntro: boolean;
+  /** Show top corner progress pills (`ภารกิจ 1/2`, `ภารกิจ 2/2`). */
+  chapterPills: boolean;
+  /** Pop sequential `✓` checklist items synced to beats. */
+  checklistPop: boolean;
+  /** Apply `0.58x` smooth slow-mo on the peak action clip. */
+  slowMoPeakShot: boolean;
+  /** Reserve final ~2.4s for fake fade-out + record-scratch behind-the-scenes gag. */
+  blooperTail: boolean;
+  /** Default Dual Social Export (`_withMusic` + `_tiktok-nobgm`) toggle ON. */
+  dualTikTokExportDefault: boolean;
+};
+
 export type StylePack = {
   id: StylePackId;
   version: "v1.0.0";
@@ -97,6 +121,8 @@ export type StylePack = {
   punchZoom: boolean;
   brollTransition: BrollTransition;
   scriptTone: string; // Thai, feeds script.tone
+  /** Optional 1-click AI Story Director multi-clip recipe for real footage packs. */
+  storyDirector?: StoryDirectorPackRecipe;
 };
 
 export const STYLE_PACKS: readonly StylePack[] = [
@@ -463,6 +489,123 @@ export const STYLE_PACKS: readonly StylePack[] = [
     punchZoom: true,
     brollTransition: "dissolve",
     scriptTone: "พูดตรงใจคนดู ประโยคสั้นหนักแน่น ไล่ระดับอารมณ์ จบด้วยแรงผลักดันให้ลงมือทำ",
+  },
+  {
+    id: "event-mission-vlog",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "ภารกิจสนุก · กิจกรรม",
+    tagline: "ตัดไวตามบีต ป้ายภารกิจ+เสียงคลิปจริง",
+    visualFormatId: "cinematic-realism",
+    treatmentPresetId: "practical-documentary",
+    palette: ["#0F172A", "#FB923C", "#FFE500"],
+    personality: "สดใส สนุก มีพลัง แสงกลางแจ้ง สีสันสดชัด",
+    stockMood: {
+      queryToken: "festival",
+      positive: ["sports day", "cheering crowd", "running track", "team celebration", "parade", "smiling kids", "sunny stadium", "medal ceremony"],
+      avoid: ["horror", "dark alley", "sadness", "corporate boardroom"],
+      direction: "vibrant outdoor event vlog energy, bright natural daylight, warm orange and sunny yellow accents, snappy joyful pace",
+      fallbackQueries: ["sports event cheering", "running race track", "outdoor festival crowd", "team high five", "medal celebration outdoor"],
+    },
+    pacing: "fast",
+    musicMood: "upbeat",
+    subtitle: { preset: "box-rounded", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: false, fontWeight: 600, fontSize: 60, textColor: "#FFFFFF", accentColor: "#FFE500", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "viral",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
+    scriptTone: "เล่าสนุกเหมือนพาไปอยู่ในเหตุการณ์จริง แบ่งภารกิจชัดเจน เก็บโมเมนต์เรียลและตบท้ายอารมณ์ดี",
+    storyDirector: {
+      beatSync: true,
+      defaultBpm: 126,
+      keepColdOpenAudio: true,
+      heroFreezeIntro: true,
+      chapterPills: true,
+      checklistPop: true,
+      slowMoPeakShot: true,
+      blooperTail: true,
+      dualTikTokExportDefault: true,
+    },
+  },
+  {
+    id: "proud-moment-highlight",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "ไฮไลต์ความประทับใจ",
+    tagline: "เปิดตัวเท่ สโลว์โมชัน โมเมนต์ภูมิใจ",
+    visualFormatId: "cinematic-realism",
+    treatmentPresetId: "thai-human-drama",
+    palette: ["#14121F", "#F472B6", "#FDE047"],
+    personality: "อบอุ่น ภูมิใจ แสงสวย โฟกัสอารมณ์และรอยยิ้มจริง",
+    stockMood: {
+      queryToken: "celebration",
+      positive: ["proud family", "applause", "stage spotlight", "trophy", "graduation", "warm hug", "smiling portrait", "confetti"],
+      avoid: ["horror", "crime", "angry crowd", "dark factory"],
+      direction: "heartwarming proud milestone highlight, golden daylight and soft bokeh, rose pink and warm gold accents, uplifting rhythm",
+      fallbackQueries: ["family hug celebration", "crowd applause outdoor", "winner holding medal", "happy child smiling", "confetti celebration stage"],
+    },
+    pacing: "normal",
+    musicMood: "upbeat",
+    subtitle: { preset: "box-rounded", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: false, fontWeight: 600, fontSize: 60, textColor: "#FFFFFF", accentColor: "#FDE047", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "banner",
+    highlightKeywords: true,
+    statCards: false,
+    sfxMode: "subtle",
+    punchZoom: false,
+    brollTransition: "cut",
+    scriptTone: "เล่าด้วยความภูมิใจและอบอุ่น เปิดด้วยเสียงจริงของโมเมนต์สำคัญ ขยายจังหวะพีคให้น่าจดจำ",
+    storyDirector: {
+      beatSync: true,
+      defaultBpm: 120,
+      keepColdOpenAudio: true,
+      heroFreezeIntro: true,
+      chapterPills: false,
+      checklistPop: true,
+      slowMoPeakShot: true,
+      blooperTail: true,
+      dualTikTokExportDefault: true,
+    },
+  },
+  {
+    id: "product-beat-showcase",
+    version: "v1.0.0",
+    status: "active",
+    thaiLabel: "รีวิวตัดไวตามบีต",
+    tagline: "ตัดกระชับเข้าบีต ชูจุดเด่นขายคล่อง",
+    visualFormatId: "cinematic-realism",
+    treatmentPresetId: "premium-product-lifestyle",
+    palette: ["#090D16", "#38BDF8", "#FFE500"],
+    personality: "คมชัด ทันสมัย แสงสตูดิโอสดใส จังหวะกระฉับกระเฉง",
+    stockMood: {
+      queryToken: "showcase",
+      positive: ["product showcase", "hands unboxing", "lifestyle gadget", "coffee bar", "modern studio", "fashion lookbook", "skincare bottle", "happy customer"],
+      avoid: ["horror", "ruins", "sadness", "blurry"],
+      direction: "crisp commercial beat-cut showcase, clean bright highlights, electric sky-blue and yellow accents, energetic pacing",
+      fallbackQueries: ["hands unboxing product", "modern product studio", "coffee shop aesthetic", "skincare bottle closeup", "fashion street style"],
+    },
+    pacing: "fast",
+    musicMood: "upbeat",
+    subtitle: { preset: "box-rounded", effect: "pop", cardLen: "3", fontFamily: "Kanit", bold: false, fontWeight: 600, fontSize: 60, textColor: "#FFFFFF", accentColor: "#FFE500", shadow: false, outline: false, outlineSize: 2, verticalPos: 76 },
+    headlineHookPreset: "stat-burst",
+    highlightKeywords: true,
+    statCards: true,
+    sfxMode: "subtle",
+    punchZoom: true,
+    brollTransition: "cut",
+    scriptTone: "เปิดด้วยจุดขายที่เห็นภาพทันที ไล่เช็กลิสต์จุดเด่นตามจังหวะเพลง ปิดด้วยคำชวนตัดสินใจสั้นกระชับ",
+    storyDirector: {
+      beatSync: true,
+      defaultBpm: 128,
+      keepColdOpenAudio: false,
+      heroFreezeIntro: true,
+      chapterPills: false,
+      checklistPop: true,
+      slowMoPeakShot: true,
+      blooperTail: false,
+      dualTikTokExportDefault: true,
+    },
   },
   {
     id: "dark-story",

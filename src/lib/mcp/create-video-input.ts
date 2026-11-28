@@ -142,6 +142,16 @@ export const createVideoJobInputShape = {
     .describe("ใช้คู่กับคลิปพิธีกร: ความเร็วคลิปหลังตัดช่องว่างเงียบ (1.0–1.25; ค่าเริ่มต้น 1.10)"),
   punchZoom: z.boolean().optional()
     .describe("true = ซูมสลับจังหวะ 1.00x ↔ 1.15x บนภาพพิธีกรอัตโนมัติตามรอยตัดหรือประโยค โดยไม่กระทบตำแหน่งซับไตเติล"),
+  storyUploadIds: z.array(z.string().max(64)).min(1).max(20).optional()
+    .describe("รายการ uploadId ของฟุตเทจจริง (วิดีโอ/รูปจาก create_upload_url kind video/image ที่อัปโหลดพร้อมแล้ว) ให้ AI Story Director ตัดสลับตามจังหวะบีต เปิดด้วยเสียงคลิปจริง สโลว์โมชันช็อตพีค และขึ้นป้ายเล่าเรื่องอัตโนมัติ (0 เครดิตภาพ AI)"),
+  storyBrief: z.string().max(1000).optional()
+    .describe("โจทย์สั้น ๆ 1–2 บรรทัดสำหรับโหมดผู้กำกับฟุตเทจ (ใช้คู่กับ storyUploadIds เมื่อต้องการให้ระบบร่างสคริปต์และวางป้ายภารกิจ/ไฮไลต์ให้อัตโนมัติ)"),
+  storyVoiceMode: z.enum(["real-moments", "tts"]).optional()
+    .describe("โหมดเสียงสำหรับ AI Story Director (ใช้คู่กับ storyUploadIds): real-moments = สไตล์ TikTok Vlog ใช้เสียงพูด/เชียร์จริงในคลิป + เพลง + ป้ายข้อความรีแอคชัน โดยไม่มีเสียง AI พากย์ทับ; tts = สร้างเสียงพากย์ AI บรรยายตามสคริปต์"),
+  storyEdlJson: z.string().max(16000).optional()
+    .describe("JSON string ของแผนคัดช็อต (VisionDirectorSelection: { headline, subheadline, shots: [{ clipIndex, inSec, outSec, role, keepClipAudio, slowMo, heroFreeze, captionText }], checklistItems, ... }) ที่ Agent ของคุณคัดเลือกเองจาก inspect_footage_pack — ใช้สมองโมเดลของคุณเอง 100% โดยไม่เสียเครดิตวิเคราะห์ AI ฝั่งเซิร์ฟเวอร์"),
+  dualTikTokExport: z.boolean().optional()
+    .describe("true = ส่งออกไฟล์คู่สำหรับ TikTok เพิ่มอีก 1 ลิงก์ (tiktokSoundVideoUrl: วิดีโอเดียวกันแต่ตัดเสียงเพลงออก เหลือเสียงพูด+เสียงคลิปจริง+SFX ที่ -14 LUFS เพื่อนำไปใส่เพลงกระแสใน TikTok โดยไม่ติดลิขสิทธิ์)"),
   quoteId: z.string().min(1).max(64).optional(),
   idempotencyKey: z.string().max(120).optional(),
 } satisfies z.ZodRawShape;

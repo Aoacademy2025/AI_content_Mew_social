@@ -34,7 +34,7 @@ import {
   KEN_BURNS_DURATION_SEC,
 } from "@/lib/broll-asset-lib";
 import { resolveSafeInputDemuxer } from "@/lib/media-probe-args";
-import { ffprobeDimensions, ffprobeDurationSec } from "@/lib/upload-media-probe";
+import { ffprobeDimensions, ffprobeDurationSec, ffprobeVideoStreamMeta } from "@/lib/upload-media-probe";
 
 export type BrollUploadKind = "image" | "video";
 
@@ -144,7 +144,14 @@ async function streamToFile(file: File, outPath: string): Promise<void> {
 }
 
 export type BrollPipelineError = { error: string; message: string; status: number };
-export type BrollPipelineSuccess = { src: string; clipDuration: number; stillImage?: boolean };
+export type BrollPipelineSuccess = {
+  src: string;
+  clipDuration: number;
+  stillImage?: boolean;
+  hasAudio?: boolean;
+  sourceFps?: number | null;
+  isLivePhotoCadence?: boolean;
+};
 export type BrollPipelineResult =
   | { ok: true; value: BrollPipelineSuccess }
   | { ok: false; value: BrollPipelineError };
@@ -157,8 +164,11 @@ export async function runBrollPipeline(params: {
   kind: BrollUploadKind;
   ext: string;
   stocksDir: string;
+  /** Story Director: preserve original audio & auto-smooth ~20fps Live Photo video clips. */
+  preserveAudio?: boolean;
+  smoothLivePhoto?: boolean;
 }): Promise<BrollPipelineResult> {
-  const { file, kind, ext, stocksDir } = params;
+  const { file, kind, ext, stocksDir, preserveAudio, smoothLivePhoto } = params;
 
   // Output name is 100% server-generated — the client filename never contributes a path
   // component. The `/api/stocks/[filename]` route only serves flat basenames, so this
@@ -227,7 +237,17 @@ export async function runBrollPipeline(params: {
       };
     }
 
-    const normalizeResult = await normalizeForRemotion(outPath, { inputFormat });
+    const streamMeta = preserveAudio || smoothLivePhoto !== undefined
+      ? ffprobeVideoStreamMeta(outPath, inputFormat)
+      : null;
+    const shouldSmoothLivePhoto = smoothLivePhoto ?? Boolean(streamMeta?.isLivePhotoCadence);
+    const normalizeResult = preserveAudio || shouldSmoothLivePhoto
+      ? await normalizeForRemotion(outPath, {
+          inputFormat,
+          preserveAudio: Boolean(preserveAudio && streamMeta?.hasAudio),
+          smoothLivePhoto: shouldSmoothLivePhoto,
+        })
+      : await normalizeForRemotion(outPath, { inputFormat });
     if (normalizeResult.status === "failed") {
       safeUnlink(outPath);
       safeUnlink(normalizedMarkerPath(outPath));
@@ -245,7 +265,18 @@ export async function runBrollPipeline(params: {
       return { ok: false, value: { error: "probe_failed", message: "อ่านความยาววิดีโอไม่สำเร็จ", status: 502 } };
     }
 
-    return { ok: true, value: { src: `/api/stocks/${outFile}`, clipDuration } };
+    return {
+      ok: true,
+      value: {
+        src: `/api/stocks/${outFile}`,
+        clipDuration,
+        ...(streamMeta ? {
+          hasAudio: streamMeta.hasAudio,
+          sourceFps: streamMeta.fps,
+          isLivePhotoCadence: streamMeta.isLivePhotoCadence,
+        } : {}),
+      },
+    };
   } catch (e) {
     safeUnlink(outPath);
     safeUnlink(normalizedMarkerPath(outPath));

@@ -12,6 +12,12 @@ import { isActiveStylePackId, type ActiveStylePackId, type MusicMood } from "@/l
 import { isBrollTransition, type BrollTransition } from "@/lib/broll-window-style";
 import { isMotionMascotId, isMotionThemeId, type MotionMascotId, type MotionThemeId } from "@/lib/motion-broll-catalog";
 import { isSfxMode, type SfxMode } from "@/lib/transition-sfx";
+import {
+  isStoryVoiceMode,
+  type StoryDirectorModelTier,
+  type StoryMomentCaption,
+  type StoryVoiceMode,
+} from "@/lib/story-director-planner";
 import { resolveStep1TemplateDefaults } from "@/lib/video-template-apply";
 import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
@@ -122,6 +128,14 @@ interface V2Draft {
   /** Brand Kit / Step 2 Motion B-Roll defaults (0 credits, rendered live in Remotion). */
   motionThemeId?: MotionThemeId | null;
   motionMascot?: MotionMascotId | null;
+  /** Story Director Step 1 pre-planned footage, overlays, brief, voice/model toggles, and Dual TikTok export toggle. */
+  storyDirectorBrief?: string;
+  storyBgVideos?: unknown[];
+  storyOverlays?: unknown[];
+  storyVoiceMode?: StoryVoiceMode;
+  storyModelTier?: StoryDirectorModelTier;
+  storyMomentCaptions?: StoryMomentCaption[];
+  dualTikTokExport?: boolean;
   /** T9 (ADR 0063): set once by an MCP `create_video_job` at project creation
    *  (`src/lib/mcp/chain-export.ts`, `MCP_PROJECT_CREATED_VIA`). Read-only pass-through —
    *  no setter exists here, so it never becomes a user edit. Only the literal "mcp" is
@@ -937,6 +951,55 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  const [storyDirectorBriefState, setStoryDirectorBriefFromUser, setStoryDirectorBriefRaw] = useUserDraftState<string | undefined>(
+    typeof d.storyDirectorBrief === "string" ? d.storyDirectorBrief : undefined,
+    "storyDirectorBrief",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [storyBgVideosState, setStoryBgVideosFromUser, setStoryBgVideosRaw] = useUserDraftState<unknown[] | undefined>(
+    Array.isArray(d.storyBgVideos) && d.storyBgVideos.length > 0 ? d.storyBgVideos : undefined,
+    "storyBgVideos",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [storyOverlaysState, setStoryOverlaysFromUser, setStoryOverlaysRaw] = useUserDraftState<unknown[] | undefined>(
+    Array.isArray(d.storyOverlays) && d.storyOverlays.length > 0 ? d.storyOverlays : undefined,
+    "storyOverlays",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [dualTikTokExportState, setDualTikTokExportFromUser, setDualTikTokExportRaw] = useUserDraftState<boolean | undefined>(
+    typeof d.dualTikTokExport === "boolean" ? d.dualTikTokExport : undefined,
+    "dualTikTokExport",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [storyVoiceModeState, setStoryVoiceModeFromUser, setStoryVoiceModeRaw] = useUserDraftState<StoryVoiceMode | undefined>(
+    isStoryVoiceMode(d.storyVoiceMode) ? d.storyVoiceMode : undefined,
+    "storyVoiceMode",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [storyModelTierState, setStoryModelTierFromUser, setStoryModelTierRaw] = useUserDraftState<StoryDirectorModelTier | undefined>(
+    d.storyModelTier === "flash" || d.storyModelTier === "neon" ? d.storyModelTier : undefined,
+    "storyModelTier",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  const [storyMomentCaptionsState, setStoryMomentCaptionsFromUser, setStoryMomentCaptionsRaw] = useUserDraftState<StoryMomentCaption[] | undefined>(
+    Array.isArray(d.storyMomentCaptions) && d.storyMomentCaptions.length > 0 ? d.storyMomentCaptions : undefined,
+    "storyMomentCaptions",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const templatePickedMusicRef = useRef<string | null>(null);
   const selectVideoTemplate = useCallback((nextId: ActiveStylePackId | null) => {
     if (!canAcceptUserMutation()) return;
@@ -1067,6 +1130,13 @@ export function useV2Project() {
       ...(brollTransitionState ? { brollTransition: brollTransitionState } : {}),
       ...(motionThemeIdState ? { motionThemeId: motionThemeIdState } : {}),
       ...(motionMascotState ? { motionMascot: motionMascotState } : {}),
+      ...(storyDirectorBriefState ? { storyDirectorBrief: storyDirectorBriefState } : {}),
+      ...(storyBgVideosState && storyBgVideosState.length > 0 ? { storyBgVideos: storyBgVideosState } : {}),
+      ...(storyOverlaysState && storyOverlaysState.length > 0 ? { storyOverlays: storyOverlaysState } : {}),
+      ...(storyVoiceModeState ? { storyVoiceMode: storyVoiceModeState } : {}),
+      ...(storyModelTierState ? { storyModelTier: storyModelTierState } : {}),
+      ...(storyMomentCaptionsState && storyMomentCaptionsState.length > 0 ? { storyMomentCaptions: storyMomentCaptionsState } : {}),
+      ...(typeof dualTikTokExportState === "boolean" ? { dualTikTokExport: dualTikTokExportState } : {}),
       // T9: pass through from effectiveDraftRef (never from React state — there is no
       // setter), so the field this hook never edits still rides every autosave/new-project
       // payload exactly as applyDraft() last hydrated it.
@@ -1172,6 +1242,13 @@ export function useV2Project() {
     setBrollTransitionRaw(isBrollTransition(next.brollTransition) ? next.brollTransition : undefined);
     setMotionThemeIdRaw(isMotionThemeId(next.motionThemeId) ? next.motionThemeId : null);
     setMotionMascotRaw(isMotionMascotId(next.motionMascot) ? next.motionMascot : null);
+    setStoryDirectorBriefRaw(typeof next.storyDirectorBrief === "string" ? next.storyDirectorBrief : undefined);
+    setStoryBgVideosRaw(Array.isArray(next.storyBgVideos) && next.storyBgVideos.length > 0 ? next.storyBgVideos : undefined);
+    setStoryOverlaysRaw(Array.isArray(next.storyOverlays) && next.storyOverlays.length > 0 ? next.storyOverlays : undefined);
+    setStoryVoiceModeRaw(isStoryVoiceMode(next.storyVoiceMode) ? next.storyVoiceMode : undefined);
+    setStoryModelTierRaw(next.storyModelTier === "flash" || next.storyModelTier === "neon" ? next.storyModelTier : undefined);
+    setStoryMomentCaptionsRaw(Array.isArray(next.storyMomentCaptions) && next.storyMomentCaptions.length > 0 ? next.storyMomentCaptions : undefined);
+    setDualTikTokExportRaw(typeof next.dualTikTokExport === "boolean" ? next.dualTikTokExport : undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -2787,7 +2864,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, geminiVoiceStyle, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId, avatarEngine,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, templateIdState, sfxModeState, brollTransitionState, motionThemeIdState, motionMascotState, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, backgroundMusic, ttsSpeedState, tightenState, punchZoomState, clipUrlsState, clipNamesState, presenterFitState, templateIdState, sfxModeState, brollTransitionState, motionThemeIdState, motionMascotState, storyDirectorBriefState, storyBgVideosState, storyOverlaysState, storyVoiceModeState, storyModelTierState, storyMomentCaptionsState, dualTikTokExportState, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2840,6 +2917,13 @@ export function useV2Project() {
     brollTransition: brollTransitionState, setBrollTransition: setBrollTransitionFromUser,
     motionThemeId: motionThemeIdState, setMotionThemeId: setMotionThemeIdFromUser,
     motionMascot: motionMascotState, setMotionMascot: setMotionMascotFromUser,
+    storyDirectorBrief: storyDirectorBriefState ?? "", setStoryDirectorBrief: setStoryDirectorBriefFromUser,
+    storyBgVideos: storyBgVideosState, setStoryBgVideos: setStoryBgVideosFromUser,
+    storyOverlays: storyOverlaysState, setStoryOverlays: setStoryOverlaysFromUser,
+    storyVoiceMode: (storyVoiceModeState ?? "real-moments") as StoryVoiceMode, setStoryVoiceMode: setStoryVoiceModeFromUser,
+    storyModelTier: (storyModelTierState ?? "neon") as StoryDirectorModelTier, setStoryModelTier: setStoryModelTierFromUser,
+    storyMomentCaptions: storyMomentCaptionsState, setStoryMomentCaptions: setStoryMomentCaptionsFromUser,
+    dualTikTokExport: Boolean(dualTikTokExportState), setDualTikTokExport: setDualTikTokExportFromUser,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,

@@ -120,6 +120,7 @@ import { isActiveStylePackId, stylePack } from "@/lib/style-pack-catalog";
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
 import { isSfxMode } from "@/lib/transition-sfx";
 import { isMotionMascotId, isMotionThemeId } from "@/lib/motion-broll-catalog";
+import { isStoryVoiceMode, type StoryMomentCaption } from "@/lib/story-director-planner";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -155,6 +156,8 @@ type Body = {
   templateId?: unknown; sfxMode?: unknown;
   // Motion B-Roll & HyperFrames theme + mascot
   motionThemeId?: unknown; motionMascot?: unknown;
+  // Story Director pre-planned multi-clip EDL, transparent overlays, Real-Moments voice mode, and Dual TikTok export
+  storyBgVideos?: unknown; storyOverlays?: unknown; storyVoiceMode?: unknown; storyMomentCaptions?: unknown; dualTikTokExport?: unknown;
   // Editor v2 durable export (mode: "export")
   subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
   // T8 (ADR 0064, G21): the Pending Edit Draft revision the Post phase loaded, if any.
@@ -451,11 +454,15 @@ export async function POST(req: Request) {
       }
     }
 
+    const storyVoiceMode = !uploadMode && isStoryVoiceMode(body.storyVoiceMode) ? body.storyVoiceMode : undefined;
+    const hasStoryBgVideos = !uploadMode && Array.isArray(body.storyBgVideos) && body.storyBgVideos.length > 0;
+    const storyRealMomentsMode = hasStoryBgVideos && storyVoiceMode === "real-moments";
+
     const script = typeof body.script === "string" ? body.script.trim() : "";
-    if (!uploadMode && (!script || script.length > 20000)) {
+    if (!uploadMode && ((!script && !storyRealMomentsMode) || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
-    const ttsSpeed = !uploadMode ? num(body.ttsSpeed, TTS_SPEED_MIN, TTS_SPEED_MAX) : undefined;
+    const ttsSpeed = !uploadMode && !storyRealMomentsMode ? num(body.ttsSpeed, TTS_SPEED_MIN, TTS_SPEED_MAX) : undefined;
     const targetDurationSec = !uploadMode
       ? num(body.targetDurationSec, TARGET_DURATION_SEC_MIN, TARGET_DURATION_SEC_MAX)
       : undefined;
@@ -468,18 +475,35 @@ export async function POST(req: Request) {
       : undefined;
     const punchZoom = typeof body.punchZoom === "boolean" ? body.punchZoom : undefined;
 
-    const rawEstimatedScriptDurationSec = uploadMode ? 0 : estimateClipSecV2(script);
+    const storyPlannedDurationSec = storyRealMomentsMode && Array.isArray(body.storyBgVideos)
+      ? Math.max(
+          2,
+          Math.round(
+            body.storyBgVideos.reduce((mx: number, v: unknown) => {
+              const end = v && typeof v === "object" ? Number((v as { end?: unknown }).end) : 0;
+              return Number.isFinite(end) ? Math.max(mx, end) : mx;
+            }, 0),
+          ),
+        )
+      : 0;
+    const rawEstimatedScriptDurationSec = uploadMode
+      ? 0
+      : storyRealMomentsMode
+        ? storyPlannedDurationSec
+        : estimateClipSecV2(script);
     const estimatedScriptDurationSec = uploadMode
       ? 0
-      : Math.max(
-          1,
-          Math.round(
-            estimatePacedDurationSeconds(rawEstimatedScriptDurationSec, {
-              ttsSpeed,
-              targetDurationSec,
-            }).durationSeconds,
-          ),
-        );
+      : storyRealMomentsMode
+        ? storyPlannedDurationSec
+        : Math.max(
+            1,
+            Math.round(
+              estimatePacedDurationSeconds(rawEstimatedScriptDurationSec, {
+                ttsSpeed,
+                targetDurationSec,
+              }).durationSeconds,
+            ),
+          );
     const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode)
       ? body.avatarMode
       : undefined;
@@ -551,7 +575,7 @@ export async function POST(req: Request) {
     const omniVoiceId = str(body.omniVoiceId, 64);
     let voiceBackend: OmniVoiceBackend | undefined;
     const hasMotionTheme = isMotionThemeId(body.motionThemeId);
-    let requestedSource = hasMotionTheme
+    let requestedSource = hasMotionTheme || hasStoryBgVideos
       ? "none"
       : typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource)
         ? body.stockSource
@@ -560,13 +584,13 @@ export async function POST(req: Request) {
     let requestedImageModel = str(body.imageModel, 60);
     // Conversion Trial sample clip spends the 8-image Hero AI Image allowance.
     // GRANT/paid First-Clip Path keeps the caller's stock/AI choice (#267).
-    if (firstClip.reason === "conversion_trial" && !uploadMode && !hasMotionTheme) {
+    if (firstClip.reason === "conversion_trial" && !uploadMode && !hasMotionTheme && !hasStoryBgVideos) {
       requestedSource = "kie-image";
       requestedImageEngine = "runpod";
       requestedImageModel = requestedImageModel || "z-image-turbo";
     }
 
-    if (!uploadMode && voiceProvider === "omnivoice") {
+    if (!uploadMode && !storyRealMomentsMode && voiceProvider === "omnivoice") {
       if (!isOmniVoiceUserAllowed(user)) {
         return NextResponse.json({ error: "not_enabled", message: "Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
       }
@@ -613,8 +637,8 @@ export async function POST(req: Request) {
     }
 
     // Key guards — same checks as MCP create_video_job, same wording surface (web shows toasts)
-    // upload mode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียง (Gemini ยังจำเป็น: transcribe/keywords)
-    const useEleven = !uploadMode && (voiceProvider === "elevenlabs" || (!voiceProvider && user.ttsProvider === "elevenlabs"));
+    // upload mode & storyRealMomentsMode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียงพากย์
+    const useEleven = !uploadMode && !storyRealMomentsMode && (voiceProvider === "elevenlabs" || (!voiceProvider && user.ttsProvider === "elevenlabs"));
     // Plan gate BEFORE the job row exists (#301). `/api/videos/tts` already refuses a
     // FREE account, but only once the pipeline reaches the TTS step — the customer has
     // waited, minutes are reserved, and the refusal lands in VideoJob.errorMessage with
@@ -654,7 +678,7 @@ export async function POST(req: Request) {
     // real script fails under it), never an estimate of this script's length. An
     // account whose Hero credit wallet can fund overflow is exempt, same as the
     // in-pipeline gate (`allowOverCeiling` in /api/videos/tts-gemini).
-    const narrationEngine = uploadMode
+    const narrationEngine = uploadMode || storyRealMomentsMode
       ? "upload"
       : useEleven
         ? "elevenlabs"
@@ -1044,9 +1068,51 @@ export async function POST(req: Request) {
     const templateSnapshot = templateId ? stylePackSnapshotOf(stylePack(templateId)) : undefined;
     const motionThemeId = isMotionThemeId(body.motionThemeId) ? body.motionThemeId : undefined;
     const motionMascot = isMotionMascotId(body.motionMascot) ? body.motionMascot : undefined;
+    const dualTikTokExport = body.dualTikTokExport === true ? true : undefined;
+    // Validate ownership of any Story Director pre-planned footage (`storyBgVideos`)
+    let verifiedStoryBgVideos: Record<string, unknown>[] | undefined;
+    if (!uploadMode && Array.isArray(body.storyBgVideos) && body.storyBgVideos.length > 0) {
+      const candidateSegs = body.storyBgVideos.slice(0, 48).filter(
+        (v): v is Record<string, unknown> => Boolean(v && typeof v === "object" && typeof (v as { src?: unknown }).src === "string"),
+      );
+      const uniqueSrcs = [...new Set(candidateSegs.map((v) => String(v.src).trim()).filter(Boolean))];
+      if (uniqueSrcs.length > 0) {
+        const owned = await prisma.mediaImport.findMany({
+          where: { userId: user.id, status: "ready", resultSrc: { in: uniqueSrcs } },
+          select: { resultSrc: true },
+        });
+        const ownedSet = new Set(owned.map((r) => r.resultSrc ?? ""));
+        const allowed = candidateSegs.filter((v) => ownedSet.has(String(v.src).trim()));
+        if (allowed.length > 0) verifiedStoryBgVideos = allowed;
+      }
+    }
+    if (storyRealMomentsMode && !verifiedStoryBgVideos) {
+      return NextResponse.json(
+        { error: "invalid_story_footage", message: "ไม่พบฟุตเทจพร้อมใช้งานสำหรับโหมดผู้กำกับฟุตเทจ กรุณาอัปโหลดใหม่" },
+        { status: 400 },
+      );
+    }
+    const storyMomentCaptions: StoryMomentCaption[] | undefined =
+      verifiedStoryBgVideos && Array.isArray(body.storyMomentCaptions) && body.storyMomentCaptions.length > 0
+        ? body.storyMomentCaptions
+            .slice(0, 48)
+            .flatMap((c): StoryMomentCaption[] => {
+              if (!c || typeof c !== "object") return [];
+              const item = c as { text?: unknown; startMs?: unknown; endMs?: unknown; tag?: unknown };
+              const text = typeof item.text === "string" ? item.text.trim().slice(0, 200) : "";
+              const startMs = Number(item.startMs);
+              const endMs = Number(item.endMs);
+              if (!text || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
+              const tag = item.tag === "hook" || item.tag === "body" || item.tag === "cta" ? item.tag : undefined;
+              return [{ text, startMs: Math.max(0, Math.round(startMs)), endMs: Math.round(endMs), ...(tag ? { tag } : {}) }];
+            })
+        : undefined;
+    const rawStoryOverlays = Array.isArray(body.storyOverlays) && body.storyOverlays.length > 0
+      ? body.storyOverlays.slice(0, 24)
+      : undefined;
     const sfxMode = isSfxMode(body.sfxMode)
       ? body.sfxMode
-      : (motionThemeId ? "subtle" : undefined);
+      : ((motionThemeId || verifiedStoryBgVideos) ? "subtle" : undefined);
     const brollTransition = isBrollTransition(body.brollTransition) ? body.brollTransition : undefined;
 
     try {
@@ -1069,12 +1135,25 @@ export async function POST(req: Request) {
           ...(geminiVoiceStyle !== "neutral" ? { geminiVoiceStyle } : {}),
           ...(omniVoiceId ? { omniVoiceId } : {}),
           ...(voiceBackend ? { voiceBackend } : {}),
-          ...(avatar.kind === "ok" && avatarLayout
+          ...(avatar.kind === "ok" && avatarLayout && !storyRealMomentsMode
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarEngine: avatar.avatarEngine, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
           ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
-          ...(motionThemeId ? { stockSource: "none", motionThemeId } : stockSource ? { stockSource } : {}),
+          ...(verifiedStoryBgVideos
+            ? {
+                stockSource: "none",
+                storyBgVideos: verifiedStoryBgVideos,
+                ...(storyVoiceMode ? { storyVoiceMode } : {}),
+                ...(storyMomentCaptions?.length ? { storyMomentCaptions } : {}),
+              }
+            : motionThemeId
+              ? { stockSource: "none", motionThemeId }
+              : stockSource
+                ? { stockSource }
+                : {}),
+          ...(rawStoryOverlays ? { storyOverlays: rawStoryOverlays } : {}),
+          ...(dualTikTokExport ? { dualTikTokExport: true } : {}),
           ...(motionMascot ? { motionMascot } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(brollRegionPreference ? { brollRegionPreference } : {}),

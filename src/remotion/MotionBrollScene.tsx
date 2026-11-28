@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef } from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { cardCutBoundaries } from "../lib/tts-timing";
 import {
   DEFAULT_THEME_BRAND_CI,
   motionTemplateEntry,
@@ -22,6 +23,11 @@ function easeOutBack(x: number): number {
   return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
 }
 
+function easeOutCubic(x: number): number {
+  const t = clamp01(x);
+  return 1 - Math.pow(1 - t, 3);
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const clean = (hex || "").trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(56, 189, 248, ${alpha})`;
@@ -29,6 +35,191 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(clean.slice(2, 4), 16);
   const b = parseInt(clean.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+const THAI_SCRIPT_RE = /[\u0E00-\u0E7F]/u;
+
+function cleanDisplayString(raw: string): string {
+  return (raw || "")
+    .replace(/[\u2060\u200B\uFEFF]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Optically calibrates font weight on 2D Canvas so Thai vowels and loop counters stay crisp
+ * and open (600–700 instead of 800–900 Black which smudges Thai tone marks).
+ */
+function opticalCanvasWeight(requestedWeight: number, text: string): number {
+  if (!THAI_SCRIPT_RE.test(text)) return requestedWeight;
+  if (requestedWeight >= 800) return 700;
+  if (requestedWeight >= 700) return 600;
+  return requestedWeight;
+}
+
+/**
+ * Draws a single line of Thai/English text, scaling font size smoothly down to `minSize`
+ * when needed instead of chopping Thai words mid-syllable or accordion-squishing glyphs.
+ */
+function drawFittedText(
+  ctx: CanvasRenderingContext2D,
+  rawText: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  baseSize: number,
+  minSize: number,
+  weight: number,
+  fontStack: string,
+  align: CanvasTextAlign = "center",
+  color?: string,
+): { width: number; fontSize: number } {
+  const text = cleanDisplayString(rawText);
+  if (!text) return { width: 0, fontSize: baseSize };
+  const w = opticalCanvasWeight(weight, text);
+  let size = baseSize;
+  ctx.font = `${w} ${size}px ${fontStack}`;
+  let measured = ctx.measureText(text).width;
+  if (measured > maxWidth && measured > 0) {
+    size = Math.max(minSize, Math.floor(baseSize * (maxWidth / measured)));
+    ctx.font = `${w} ${size}px ${fontStack}`;
+    measured = ctx.measureText(text).width;
+  }
+  ctx.textAlign = align;
+  if (color) ctx.fillStyle = color;
+  if (measured > maxWidth * 1.04) {
+    ctx.fillText(text, x, y, maxWidth);
+    return { width: maxWidth, fontSize: size };
+  }
+  ctx.fillText(text, x, y);
+  return { width: measured, fontSize: size };
+}
+
+/**
+ * Splits Thai/English text onto at most `maxLines` balanced word-boundary lines that fit
+ * `maxWidth`, then draws them cleanly with proper Thai vertical spacing.
+ */
+function wrapCanvasTextLines(
+  ctx: CanvasRenderingContext2D,
+  rawText: string,
+  maxWidth: number,
+  fontSize: number,
+  weight: number,
+  fontStack: string,
+  maxLines = 2,
+): { lines: string[]; fontSize: number; weight: number } {
+  const text = cleanDisplayString(rawText);
+  const w = opticalCanvasWeight(weight, text);
+  if (!text) return { lines: [], fontSize, weight: w };
+
+  const tryWrapAtSize = (sz: number): string[] => {
+    ctx.font = `${w} ${sz}px ${fontStack}`;
+    if (ctx.measureText(text).width <= maxWidth || maxLines <= 1) {
+      return [text];
+    }
+    const cuts = cardCutBoundaries(text);
+    if (cuts.length === 0) return [text];
+
+    if (maxLines === 2) {
+      // Pick the most balanced cut where line 1 fits maxWidth (preferring both <= maxWidth)
+      const valid = cuts.filter((c) => {
+        const l1 = text.slice(0, c).trim();
+        const l2 = text.slice(c).trim();
+        return l1.length > 0 && l2.length > 0 && ctx.measureText(l1).width <= maxWidth && ctx.measureText(l2).width <= maxWidth;
+      });
+      const pool = valid.length > 0 ? valid : cuts;
+      let bestCut = pool[0]!;
+      let bestDiff = Infinity;
+      for (const c of pool) {
+        const w1 = ctx.measureText(text.slice(0, c).trim()).width;
+        const w2 = ctx.measureText(text.slice(c).trim()).width;
+        const diff = Math.abs(w1 - w2);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestCut = c;
+        }
+      }
+      const l1 = text.slice(0, bestCut).trim();
+      const l2 = text.slice(bestCut).trim();
+      return l1 && l2 ? [l1, l2] : [text];
+    }
+
+    const edges = [0, ...cuts, text.length];
+    const segments: string[] = [];
+    for (let i = 0; i < edges.length - 1; i++) {
+      const seg = text.slice(edges[i], edges[i + 1]);
+      if (seg) segments.push(seg);
+    }
+    const lines: string[] = [];
+    let current = "";
+    for (const seg of segments) {
+      const candidate = (current + seg).trim();
+      if (current && ctx.measureText(candidate).width > maxWidth && lines.length < maxLines - 1) {
+        lines.push(current.trim());
+        current = seg.trimStart();
+      } else {
+        current += seg;
+      }
+    }
+    if (current.trim()) lines.push(current.trim());
+    return lines;
+  };
+
+  let sz = fontSize;
+  let lines = tryWrapAtSize(sz);
+  const minSz = Math.max(13, Math.floor(fontSize * 0.74));
+  while (
+    sz > minSz &&
+    lines.some((line) => {
+      ctx.font = `${w} ${sz}px ${fontStack}`;
+      return ctx.measureText(line).width > maxWidth;
+    })
+  ) {
+    sz -= 1;
+    lines = tryWrapAtSize(sz);
+  }
+  return { lines, fontSize: sz, weight: w };
+}
+
+function drawWrappedText(
+  ctx: CanvasRenderingContext2D,
+  rawText: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  baseSize: number,
+  weight: number,
+  fontStack: string,
+  align: CanvasTextAlign = "left",
+  color = "#FFFFFF",
+  maxLines = 2,
+  lineHeightMultiplier = 1.38,
+): number {
+  const { lines, fontSize, weight: w } = wrapCanvasTextLines(
+    ctx,
+    rawText,
+    maxWidth,
+    baseSize,
+    weight,
+    fontStack,
+    maxLines,
+  );
+  if (lines.length === 0) return 0;
+  ctx.font = `${w} ${fontSize}px ${fontStack}`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  const lineH = Math.round(fontSize * lineHeightMultiplier);
+  const startY = y - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((line, idx) => {
+    const measured = ctx.measureText(line).width;
+    const ly = startY + idx * lineH;
+    if (measured > maxWidth * 1.04) {
+      ctx.fillText(line, x, ly, maxWidth);
+    } else {
+      ctx.fillText(line, x, ly);
+    }
+  });
+  return lines.length * lineH;
 }
 
 const STACK_PILL_PALETTE = [
@@ -52,6 +243,7 @@ export function paintMotionBrollCanvas(
   canvas: HTMLCanvasElement | null,
   config: MotionTemplateConfig,
   progress: number,
+  options?: { suppressTopHeader?: boolean },
 ) {
   const ctx = canvas?.getContext("2d");
   if (!canvas || !ctx) return;
@@ -60,6 +252,8 @@ export function paintMotionBrollCanvas(
   const H = canvas.height;
   const s = W / 540; // Base coordinate space = 540x960 (scales cleanly to 1080x1920)
   const p = clamp01(progress);
+  const suppressTopHeader = options?.suppressTopHeader === true;
+  const topShift = suppressTopHeader ? 78 : 0;
 
   const entry = motionTemplateEntry(config.templateId);
   const brand = normalizeMotionBrandCi(config.brandCi, config.themeId);
@@ -74,10 +268,9 @@ export function paintMotionBrollCanvas(
   const bw = 540;
   const bh = 960;
   // Subtle continuous ambient camera drift across p ∈ [0, 1] so scenes stay alive
-  // in the second half of the window instead of freezing like a static slide.
-  const camScale = 1 + 0.028 * p;
-  const camDriftX = Math.sin(p * Math.PI * 1.5) * 3.5;
-  const camDriftY = -4.5 * Math.sin(p * Math.PI);
+  const camScale = 1 + 0.024 * p;
+  const camDriftX = Math.sin(p * Math.PI * 1.5) * 3;
+  const camDriftY = -4 * Math.sin(p * Math.PI);
   ctx.translate(bw / 2 + camDriftX, bh / 2 + camDriftY);
   ctx.scale(camScale, camScale);
   ctx.translate(-bw / 2, -bh / 2);
@@ -87,44 +280,44 @@ export function paintMotionBrollCanvas(
   if (bgVariant === "sky-desert") {
     const skyGrad = ctx.createLinearGradient(0, 0, 0, bh * 0.64);
     skyGrad.addColorStop(0, "#4CB5F5");
-    skyGrad.addColorStop(1, "#72CCF9");
+    skyGrad.addColorStop(1, "#79D0FA");
     ctx.fillStyle = skyGrad;
     ctx.fillRect(0, 0, bw, bh * 0.64);
 
     // Rotating Sun with crisp rays
     ctx.save();
-    ctx.translate(bw * 0.81, bh * 0.19);
+    ctx.translate(bw * 0.82, bh * 0.18 + topShift * 0.4);
     ctx.rotate(p * Math.PI * 0.45);
     ctx.strokeStyle = "#111827";
-    ctx.lineWidth = 4.5;
+    ctx.lineWidth = 4;
     ctx.lineCap = "round";
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2;
       ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * 42, Math.sin(a) * 42);
-      ctx.lineTo(Math.cos(a) * 56, Math.sin(a) * 56);
+      ctx.moveTo(Math.cos(a) * 40, Math.sin(a) * 40);
+      ctx.lineTo(Math.cos(a) * 54, Math.sin(a) * 54);
       ctx.stroke();
     }
     ctx.fillStyle = "#FACC15";
     ctx.beginPath();
-    ctx.arc(0, 0, 32, 0, Math.PI * 2);
+    ctx.arc(0, 0, 30, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
 
-    // Floating Cloud with subtle outline
-    const cloudX = 95 + Math.sin(p * Math.PI * 2) * 14;
-    const cloudY = 185;
+    // Floating Cloud
+    const cloudX = 92 + Math.sin(p * Math.PI * 2) * 14;
+    const cloudY = 182 + topShift * 0.3;
     ctx.save();
-    ctx.fillStyle = "#FFFFFF";
+    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
     ctx.beginPath();
-    ctx.arc(cloudX, cloudY, 24, 0, Math.PI * 2);
-    ctx.arc(cloudX + 25, cloudY - 8, 29, 0, Math.PI * 2);
-    ctx.arc(cloudX + 52, cloudY, 22, 0, Math.PI * 2);
+    ctx.arc(cloudX, cloudY, 22, 0, Math.PI * 2);
+    ctx.arc(cloudX + 24, cloudY - 8, 28, 0, Math.PI * 2);
+    ctx.arc(cloudX + 50, cloudY, 20, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    // Layered Sand Dunes (3 distinct tones + hand-drawn ink horizon lines)
+    // Layered Sand Dunes
     ctx.fillStyle = "#E7BC91";
     ctx.beginPath();
     ctx.moveTo(0, bh * 0.61);
@@ -134,7 +327,7 @@ export function paintMotionBrollCanvas(
     ctx.closePath();
     ctx.fill();
     ctx.strokeStyle = "#111827";
-    ctx.lineWidth = 4;
+    ctx.lineWidth = 3.6;
     ctx.stroke();
 
     ctx.fillStyle = "#C69C72";
@@ -154,28 +347,25 @@ export function paintMotionBrollCanvas(
     ctx.lineTo(bw, bh * 0.76);
     ctx.stroke();
   } else if (bgVariant === "dark-grid") {
-    // Rich dark navy studio backdrop with radial spotlight glow
     const bgGrad = ctx.createLinearGradient(0, 0, 0, bh);
-    bgGrad.addColorStop(0, "#0B1120");
-    bgGrad.addColorStop(0.65, brand.backgroundColor || "#111827");
-    bgGrad.addColorStop(1, "#1E1B18");
+    bgGrad.addColorStop(0, "#080D1A");
+    bgGrad.addColorStop(0.62, brand.backgroundColor || "#0F172A");
+    bgGrad.addColorStop(1, "#16141B");
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, bw, bh);
 
-    // Subtle dot matrix
-    ctx.fillStyle = "rgba(148, 163, 184, 0.13)";
-    for (let y = 26; y < bh * 0.76; y += 32) {
-      for (let x = 26; x < bw; x += 32) {
+    ctx.fillStyle = "rgba(148, 163, 184, 0.10)";
+    for (let y = 28; y < bh * 0.76; y += 34) {
+      for (let x = 28; x < bw; x += 34) {
         ctx.beginPath();
-        ctx.arc(x, y, 1.6, 0, Math.PI * 2);
+        ctx.arc(x, y, 1.4, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // Ambient Brand CI Spotlight behind the board & presenter
-    const glow = ctx.createRadialGradient(bw * 0.55, bh * 0.44, 20, bw * 0.55, bh * 0.44, 340);
-    glow.addColorStop(0, hexToRgba(brand.primaryColor, 0.22));
-    glow.addColorStop(0.55, hexToRgba(brand.primaryColor, 0.07));
+    const glow = ctx.createRadialGradient(bw * 0.52, bh * 0.4, 18, bw * 0.52, bh * 0.4, 340);
+    glow.addColorStop(0, hexToRgba(brand.primaryColor, 0.24));
+    glow.addColorStop(0.55, hexToRgba(brand.primaryColor, 0.08));
     glow.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, bw, bh);
@@ -183,17 +373,17 @@ export function paintMotionBrollCanvas(
     // cream-dots (Doodle editorial dot-grid paper)
     ctx.fillStyle = brand.backgroundColor || "#FDF8EC";
     ctx.fillRect(0, 0, bw, bh);
-    ctx.fillStyle = "rgba(180, 165, 140, 0.35)";
+    ctx.fillStyle = "rgba(180, 165, 140, 0.32)";
     for (let y = 28; y < bh; y += 38) {
       for (let x = 28; x < bw; x += 38) {
         ctx.beginPath();
-        ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+        ctx.arc(x, y, 2.2, 0, Math.PI * 2);
         ctx.fill();
       }
     }
   }
 
-  // Helper: Rounded card with thick ink outline + offset shadow
+  // Helper: Soft rounded card/pill with clean ink outline + subtle shadow
   const drawCard = (
     x: number,
     y: number,
@@ -202,12 +392,12 @@ export function paintMotionBrollCanvas(
     fill: string,
     radius = 16,
     strokeColor = "#111827",
-    lineWidth = 4.5,
+    lineWidth = 3.6,
   ) => {
     ctx.save();
-    ctx.fillStyle = "rgba(17, 24, 39, 0.18)";
+    ctx.fillStyle = "rgba(17, 24, 39, 0.14)";
     ctx.beginPath();
-    ctx.roundRect(x + 5, y + 7, w, h, radius);
+    ctx.roundRect(x + 4, y + 6, w, h, radius);
     ctx.fill();
 
     ctx.fillStyle = fill;
@@ -220,7 +410,7 @@ export function paintMotionBrollCanvas(
     ctx.restore();
   };
 
-  // Helper: Expressive Stickman / Mascot character with living head-bob, eye blink & pointing arm
+  // Helper: Expressive Stickman / Mascot character (Ref 1 & Ref 2 signature presenter)
   const drawStickman = (
     x: number,
     y: number,
@@ -238,14 +428,13 @@ export function paintMotionBrollCanvas(
     ctx.translate(x, y);
     ctx.scale(scale, scale);
     ctx.strokeStyle = "#111827";
-    ctx.lineWidth = 4.8;
+    ctx.lineWidth = 4.6;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
     const swing = Math.sin(walkPhase * Math.PI * 4) * 15;
 
-    // Ground contact shadow
-    ctx.fillStyle = "rgba(17, 24, 39, 0.18)";
+    ctx.fillStyle = "rgba(17, 24, 39, 0.16)";
     ctx.beginPath();
     ctx.ellipse(2, 128, 34, 7, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -306,7 +495,6 @@ export function paintMotionBrollCanvas(
       ctx.stroke();
     }
 
-    // Head group with subtle bob & tilt
     ctx.save();
     ctx.translate(0, headBob);
     ctx.rotate(headTilt);
@@ -344,7 +532,6 @@ export function paintMotionBrollCanvas(
         ctx.fill();
       }
     } else {
-      // Round White Head with soft inner shading on left edge
       ctx.fillStyle = "#FFFFFF";
       ctx.beginPath();
       ctx.arc(0, -68, 56, 0, Math.PI * 2);
@@ -362,7 +549,6 @@ export function paintMotionBrollCanvas(
       ctx.arc(0, -68, 56, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Eyes (with natural blink)
       ctx.fillStyle = "#111827";
       if (isBlinking) {
         ctx.lineWidth = 4;
@@ -372,7 +558,7 @@ export function paintMotionBrollCanvas(
         ctx.moveTo(12, -76);
         ctx.lineTo(24, -76);
         ctx.stroke();
-        ctx.lineWidth = 4.8;
+        ctx.lineWidth = 4.6;
       } else {
         ctx.beginPath();
         ctx.arc(-12, -76, 4.5, 0, Math.PI * 2);
@@ -382,7 +568,7 @@ export function paintMotionBrollCanvas(
 
       if (mascot === "stickman-glasses") {
         ctx.strokeStyle = brand.primaryColor || "#111827";
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 3.8;
         ctx.beginPath();
         ctx.arc(-12, -76, 13, 0, Math.PI * 2);
         ctx.stroke();
@@ -394,7 +580,7 @@ export function paintMotionBrollCanvas(
         ctx.lineTo(5, -76);
         ctx.stroke();
         ctx.strokeStyle = "#111827";
-        ctx.lineWidth = 4.8;
+        ctx.lineWidth = 4.6;
       } else if (mascot === "stickman-cap") {
         ctx.fillStyle = brand.primaryColor || "#3B82F6";
         ctx.beginPath();
@@ -419,9 +605,8 @@ export function paintMotionBrollCanvas(
         ctx.arc(4, -52, 6.5, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Red comic shock zig-zags on both sides of head (Ref 1 style)
         ctx.strokeStyle = "#EF4444";
-        ctx.lineWidth = 3.8;
+        ctx.lineWidth = 3.6;
         ctx.beginPath();
         ctx.moveTo(-78, -95);
         ctx.lineTo(-64, -104);
@@ -442,7 +627,7 @@ export function paintMotionBrollCanvas(
     ctx.restore();
   };
 
-  // ── THEME A: CUE STEP BOARD & HYPERFRAME KINETIC (Ref 2 Studio Desk + Rich Board) ──
+  // ── THEME A: CUE STEP BOARD & HYPERFRAME KINETIC (Ref 2 Studio Presenter + Open Visual Stage) ──
   if (config.themeId === "cue-step-board" || config.themeId === "hyperframe-kinetic") {
     const boardStyle: CueBoardStyle =
       props.boardStyle ??
@@ -454,394 +639,269 @@ export function paintMotionBrollCanvas(
             ? "pronounce-map"
             : "terminal-spec");
 
-    // 1. Dark Board Card with subtle -1.5deg tilt & neon rim
-    const cardEnter = easeOutBack(clamp01(p / 0.16));
+    const stageEnter = easeOutCubic(clamp01(p / 0.16));
+    const stageTopY = suppressTopHeader ? -118 : -210;
+    const stageHeight = suppressTopHeader ? 320 : 412;
     ctx.save();
-    ctx.translate(bw / 2, 285);
-    ctx.scale(cardEnter, cardEnter);
-    ctx.rotate(-0.018);
+    ctx.translate(bw / 2, suppressTopHeader ? 364 : 286);
+    ctx.scale(0.94 + 0.06 * stageEnter, 0.94 + 0.06 * stageEnter);
 
-    // Outer ambient shadow
-    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-    ctx.beginPath();
-    ctx.roundRect(-228, -212, 464, 434, 22);
-    ctx.fill();
-
-    // Card surface
-    ctx.fillStyle = "#161F30";
-    ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.65);
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.roundRect(-232, -218, 464, 430, 20);
-    ctx.fill();
-    ctx.stroke();
-
-    // Step Pill + Segmented Progress Bar inside top of Card (Ref 2 exact layout)
-    const stepText = trimPhraseAtWordBoundary(props.headerText ?? "STEP 1/9", 14);
-    ctx.fillStyle = brand.primaryColor;
-    ctx.beginPath();
-    ctx.roundRect(-200, -190, 96, 30, 8);
-    ctx.fill();
-    ctx.fillStyle = "#090D16";
-    ctx.font = `900 15px ${font}`;
-    ctx.textAlign = "center";
-    ctx.fillText(stepText, -152, -170);
-
-    const totalSegs = 9;
-    const stepMatch = stepText.match(/(\d+)\s*\/\s*(\d+)/);
-    const activeSegs = stepMatch ? Math.min(totalSegs, Math.max(1, parseInt(stepMatch[1], 10))) : Math.ceil(p * 6);
-    for (let i = 0; i < totalSegs; i++) {
-      ctx.fillStyle = i < activeSegs ? brand.primaryColor : "rgba(255,255,255,0.14)";
-      ctx.beginPath();
-      ctx.roundRect(-90 + i * 32, -179, 25, 7, 3.5);
-      ctx.fill();
-    }
-
-    // Main Card Title + Monospace topic subtitle
-    ctx.fillStyle = "#FFFFFF";
-    ctx.font = `900 31px ${font}`;
-    ctx.textAlign = "left";
-    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หัวข้อสำคัญ", 22), -200, -124, 400);
-
-    ctx.fillStyle = "#94A3B8";
-    ctx.font = `500 16px ${monoFont}`;
-    ctx.fillText(trimPhraseAtWordBoundary(props.subtitle ?? "SUMMARY · KEY INSIGHT", 36), -200, -96, 400);
-
-    // Divider line
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    // Subtle open glass stage (delicate hairline instead of heavy thick rectangular box)
+    const stageGrad = ctx.createLinearGradient(0, stageTopY, 0, 210);
+    stageGrad.addColorStop(0, "rgba(15, 23, 42, 0.72)");
+    stageGrad.addColorStop(1, "rgba(15, 23, 42, 0.32)");
+    ctx.fillStyle = stageGrad;
+    ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.35);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(-200, -78);
-    ctx.lineTo(200, -78);
+    ctx.roundRect(-232, stageTopY, 464, stageHeight, 28);
+    ctx.fill();
     ctx.stroke();
+
+    if (!suppressTopHeader) {
+      // Minimal step indicator dots + tag
+      const stepText = trimPhraseAtWordBoundary(props.headerText ?? "STEP 1/4", 18);
+      ctx.fillStyle = hexToRgba(brand.primaryColor, 0.18);
+      ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.6);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(-202, -184, 114, 28, 14);
+      ctx.fill();
+      ctx.stroke();
+      drawFittedText(ctx, stepText, -145, -165, 96, 13.5, 11, 700, monoFont, "center", brand.primaryColor);
+
+      const stepMatch = stepText.match(/(\d+)\s*\/\s*(\d+)/);
+      const totalSegs = stepMatch ? Math.min(8, Math.max(3, parseInt(stepMatch[2]!, 10))) : 5;
+      const activeSegs = stepMatch ? Math.min(totalSegs, Math.max(1, parseInt(stepMatch[1]!, 10))) : Math.ceil(p * totalSegs);
+      for (let i = 0; i < totalSegs; i++) {
+        ctx.fillStyle = i < activeSegs ? brand.primaryColor : "rgba(255,255,255,0.14)";
+        ctx.beginPath();
+        ctx.roundRect(-72 + i * 32, -173, 24, 6, 3);
+        ctx.fill();
+      }
+
+      // Main Visual Title (hidden when HeadlineHookOverlay already leads at top of screen)
+      drawFittedText(
+        ctx,
+        props.title ?? "สรุปประเด็นสำคัญ",
+        0,
+        -122,
+        412,
+        28,
+        19,
+        700,
+        font,
+        "center",
+        "#F8FAFC",
+      );
+    }
 
     const items =
       props.items && props.items.length > 0
         ? props.items
         : ["สรุปประเด็นสำคัญ", "ขั้นตอนที่นำไปใช้ได้จริง", "ผลลัพธ์ที่ตรวจสอบได้"];
 
-    // Specialized Rich Board Content (8 distinct production layouts)
     if (boardStyle === "comment-cta") {
-      // Glowing CTA Board with Typewriter Input Box
-      drawCard(-196, -42, 392, 82, "#FFFFFF", 41, brand.primaryColor, 4);
-      const word = props.rightText ?? "สนใจ";
-      const chars = Math.max(1, Math.floor(clamp01((p - 0.12) / 0.42) * word.length));
-      ctx.fillStyle = "#0F172A";
-      ctx.font = `900 34px ${font}`;
-      ctx.textAlign = "left";
-      ctx.fillText(`💬  ${word.slice(0, chars)}`, -164, 11, 296);
+      // Interactive Floating Search / Comment Capsule with Live Typing
+      const kw = cleanDisplayString(props.rightText ?? "สนใจ");
+      const typedLen = Math.max(1, Math.floor(clamp01((p - 0.08) / 0.42) * kw.length));
+      const shownKw = kw.slice(0, typedLen);
 
-      // Blinking cursor
-      if (Math.floor(p * 12) % 2 === 0) {
-        const textW = ctx.measureText(`💬  ${word.slice(0, chars)}`).width;
-        ctx.fillStyle = brand.primaryColor;
-        ctx.fillRect(-160 + textW, -18, 4, 36);
-      }
-
-      // Send Paper Plane icon on right of input
-      ctx.strokeStyle = "#0F172A";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+      ctx.strokeStyle = brand.primaryColor;
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(145, -2);
-      ctx.lineTo(172, -12);
-      ctx.lineTo(160, 14);
-      ctx.lineTo(154, 3);
-      ctx.closePath();
-      ctx.stroke();
-
-      if (p > 0.32) {
-        const bp = easeOutBack(clamp01((p - 0.32) / 0.18));
-        ctx.save();
-        ctx.translate(0, 108);
-        ctx.scale(bp, bp);
-        drawCard(-180, -28, 360, 56, brand.primaryColor, 14, "#0F172A", 3.5);
-        ctx.fillStyle = "#090D16";
-        ctx.font = `800 22px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "เดี๋ยวส่งรายละเอียดให้ในแชต", 26), 0, 8);
-        ctx.restore();
-      }
-    } else if (boardStyle === "audio-waveform") {
-      // Waveform box + timing pills (Ref 2 Step 4/9)
-      ctx.fillStyle = "#0B1120";
-      ctx.strokeStyle = "rgba(255,255,255,0.12)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(-200, -58, 400, 150, 12);
+      ctx.roundRect(-192, -52, 384, 78, 39);
       ctx.fill();
       ctx.stroke();
 
-      // Center playhead axis
-      ctx.strokeStyle = "rgba(255,255,255,0.22)";
-      ctx.beginPath();
-      ctx.moveTo(-190, 17);
-      ctx.lineTo(190, 17);
-      ctx.stroke();
+      const { width: kwW } = drawFittedText(
+        ctx,
+        `💬  พิมพ์ "${shownKw}"`,
+        -156,
+        -4,
+        290,
+        27,
+        18,
+        700,
+        font,
+        "left",
+        "#0F172A",
+      );
 
-      const totalBars = 58;
-      const activeBars = Math.floor(clamp01((p - 0.05) / 0.65) * totalBars);
-      for (let i = 0; i < totalBars; i++) {
-        const bx = -184 + i * 6.3;
-        const amp =
-          (Math.sin(i * 0.65 + p * 8) * 0.45 + Math.cos(i * 1.3) * 0.35 + 0.35) *
-          (i % 9 === 0 ? 18 : 56);
-        const hBar = Math.max(6, Math.min(62, amp));
-        ctx.fillStyle = i <= activeBars ? brand.primaryColor : "rgba(148,163,184,0.25)";
-        ctx.fillRect(bx, 17 - hBar, 3.6, hBar * 2);
+      if (Math.floor(p * 12) % 2 === 0) {
+        ctx.fillStyle = brand.primaryColor;
+        ctx.fillRect(Math.min(132, -152 + kwW + 4), -26, 3.5, 30);
       }
 
-      const timingTags = ["hook 4.2s", "body 11.8s", "proof 9.4s", "cta 5.6s"];
-      timingTags.forEach((tag, idx) => {
-        const tx = -196 + idx * 100;
-        ctx.fillStyle = "rgba(30, 41, 59, 0.95)";
-        ctx.strokeStyle = "rgba(255,255,255,0.15)";
-        ctx.beginPath();
-        ctx.roundRect(tx, 112, 92, 34, 8);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = "#E2E8F0";
-        ctx.font = `600 14px ${monoFont}`;
-        ctx.textAlign = "center";
-        ctx.fillText(tag, tx + 46, 134);
-      });
-    } else if (boardStyle === "lufs-meter") {
-      // Big LUFS readout + Voice vs BGM db bars (Ref 2 Step 8/9)
-      const lufsVal = (-32 + clamp01(p / 0.45) * 16.6).toFixed(1);
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `900 58px ${font}`;
-      ctx.textAlign = "left";
-      ctx.fillText(lufsVal, -200, -10);
-      ctx.fillStyle = "#94A3B8";
-      ctx.font = `700 22px ${monoFont}`;
-      ctx.fillText("LUFS", -24, -10);
-
-      // Meter bar 1: Voice
-      const bar1 = clamp01((p - 0.1) / 0.45);
-      ctx.fillStyle = "#E2E8F0";
-      ctx.font = `700 18px ${font}`;
-      ctx.fillText("เสียงพูด (ชัดสุด)", -200, 38);
-      ctx.fillStyle = "rgba(255,255,255,0.12)";
-      ctx.beginPath();
-      ctx.roundRect(-45, 22, 240, 18, 9);
-      ctx.fill();
+      // Send Circle Button
       ctx.fillStyle = brand.primaryColor;
       ctx.beginPath();
-      ctx.roundRect(-45, 22, 210 * bar1, 18, 9);
+      ctx.arc(152, -13, 26, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = "#090D16";
+      ctx.font = `700 20px ${font}`;
+      ctx.textAlign = "center";
+      ctx.fillText("➤", 154, -6);
 
-      // Meter bar 2: BGM -10 dB
-      ctx.fillStyle = "#94A3B8";
-      ctx.fillText("เพลงประกอบ -10 dB", -200, 82);
-      ctx.fillStyle = "rgba(255,255,255,0.12)";
-      ctx.beginPath();
-      ctx.roundRect(-45, 66, 240, 14, 7);
-      ctx.fill();
-      ctx.fillStyle = "#64748B";
-      ctx.beginPath();
-      ctx.roundRect(-45, 66, 115 * bar1, 14, 7);
-      ctx.fill();
-
-      // Bottom highlight banner inside card
       if (p > 0.28) {
         const bp = easeOutBack(clamp01((p - 0.28) / 0.18));
         ctx.save();
-        ctx.translate(0, 142);
+        ctx.translate(0, 92);
         ctx.scale(bp, bp);
-        ctx.fillStyle = brand.primaryColor;
-        ctx.beginPath();
-        ctx.roundRect(-196, -22, 392, 44, 10);
-        ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `800 19px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText("เสียงพูดชัดสุด · เอฟเฟกต์ลงตรงจังหวะภาพ", 0, 7);
-        ctx.restore();
-      }
-    } else if (boardStyle === "pronounce-map") {
-      // Left -> Right pills (Key Points Breakdown)
-      const pairs = [
-        ["POINT 01", "จุดสำคัญอันดับแรก"],
-        ["POINT 02", "แนวทางปฏิบัติจริง"],
-        ["POINT 03", "ข้อควรระวังหลัก"],
-        ["POINT 04", "สรุปผลลัพธ์ที่ได้"],
-      ];
-      pairs.forEach(([left, right], idx) => {
-        const at = 0.08 + idx * 0.14;
-        if (p < at) return;
-        const rp = easeOutBack(clamp01((p - at) / 0.16));
-        const y = -40 + idx * 54;
-        ctx.save();
-        ctx.translate(0, y);
-        ctx.scale(rp, rp);
-
-        ctx.fillStyle = "#263248";
-        ctx.strokeStyle = "rgba(255,255,255,0.16)";
+        ctx.fillStyle = hexToRgba(brand.primaryColor, 0.2);
+        ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.65);
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.roundRect(-200, -20, 148, 40, 10);
+        ctx.roundRect(-178, -24, 356, 48, 24);
         ctx.fill();
         ctx.stroke();
-
-        ctx.fillStyle = "#F8FAFC";
-        ctx.font = `700 16px ${monoFont}`;
-        ctx.textAlign = "center";
-        ctx.fillText(left, -126, 6, 134);
-
-        ctx.fillStyle = brand.primaryColor;
-        ctx.font = `900 20px ${font}`;
-        ctx.fillText("→", -30, 7);
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `800 19px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(items[idx] ?? right, 20), -6, 7, 202);
+        drawFittedText(
+          ctx,
+          props.badgeText ?? "ส่งรายละเอียดให้ในแชตทันที",
+          0,
+          6,
+          324,
+          19,
+          14,
+          600,
+          font,
+          "center",
+          "#F8FAFC",
+        );
         ctx.restore();
-      });
-    } else if (boardStyle === "code-editor") {
-      // Structured Blueprint Lines + bottom highlight pill
-      const codeLines = props.codeLines ?? [
-        `const topic = "${trimPhraseAtWordBoundary(props.title ?? "หัวข้อหลัก", 18)}";`,
-        `  step1: "${trimPhraseAtWordBoundary(items[0] ?? "วิเคราะห์ต้นเหตุ", 20)}",`,
-        `  step2: "${trimPhraseAtWordBoundary(items[1] ?? "ลงมือแก้ไขตรงจุด", 20)}",`,
-        `  step3: "${trimPhraseAtWordBoundary(items[2] ?? "วัดผลลัพธ์ชัดเจน", 20)}",`,
-        `  status: "VERIFIED",`,
-        `};`,
-      ];
-      codeLines.forEach((line, idx) => {
-        const at = 0.05 + idx * 0.08;
-        if (p < at) return;
-        ctx.fillStyle = idx === 1 || idx === 2 ? brand.primaryColor : "#E2E8F0";
-        ctx.font = `500 15.5px ${monoFont}`;
-        ctx.textAlign = "left";
-        ctx.fillText(line, -196, -42 + idx * 28, 392);
-      });
-
-      if (p > 0.3) {
-        const bp = easeOutBack(clamp01((p - 0.3) / 0.18));
-        ctx.save();
-        ctx.translate(0, 146);
-        ctx.scale(bp, bp);
-        ctx.fillStyle = brand.primaryColor;
+      }
+    } else if (boardStyle === "audio-waveform") {
+      // Open Symmetrical Voice Spectrum + Floating Rhythm Nodes
+      const totalBars = 48;
+      const activeBars = Math.floor(clamp01((p - 0.04) / 0.65) * totalBars);
+      for (let i = 0; i < totalBars; i++) {
+        const bx = -188 + i * 8;
+        const wave =
+          (Math.sin(i * 0.58 + p * 8) * 0.45 + Math.cos(i * 1.15) * 0.35 + 0.38) *
+          (i % 8 === 0 ? 20 : 58);
+        const hBar = Math.max(6, Math.min(64, wave));
+        ctx.fillStyle = i <= activeBars ? brand.primaryColor : "rgba(148,163,184,0.22)";
         ctx.beginPath();
-        ctx.roundRect(-196, -22, 392, 44, 10);
+        ctx.roundRect(bx, 2 - hBar, 4.5, hBar * 2, 2.2);
         ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `800 17.5px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "สรุปโครงสร้างเข้าใจง่ายในภาพเดียว", 28), 0, 7, 372);
-        ctx.restore();
       }
-    } else if (boardStyle === "contact-sheet-qa") {
-      // 4x2 Thumbnail QA Grid with green checkmarks (Ref 2 Step 9/9)
-      for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 4; c++) {
-          const idx = r * 4 + c;
-          const at = 0.06 + idx * 0.06;
-          if (p < at) continue;
-          const cp = easeOutBack(clamp01((p - at) / 0.14));
-          const gx = -196 + c * 100;
-          const gy = -54 + r * 114;
-          ctx.save();
-          ctx.translate(gx + 44, gy + 50);
-          ctx.scale(cp, cp);
-          ctx.fillStyle = idx % 2 === 0 ? "#1E293B" : "#0F172A";
-          ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.55);
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.roundRect(-44, -50, 88, 100, 8);
-          ctx.fill();
-          ctx.stroke();
 
-          // Mini preview bars inside thumbnail
-          ctx.fillStyle = brand.primaryColor;
-          ctx.fillRect(-32, -34, 48, 8);
-          ctx.fillStyle = "rgba(255,255,255,0.25)";
-          ctx.fillRect(-32, -18, 64, 6);
-          ctx.fillRect(-32, -6, 52, 6);
-
-          // Check badge
-          ctx.fillStyle = brand.primaryColor;
-          ctx.beginPath();
-          ctx.arc(28, 34, 10, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#090D16";
-          ctx.font = `900 12px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText("✓", 28, 38);
-          ctx.restore();
-        }
-      }
-    } else if (boardStyle === "script-table") {
-      // Structured Rows (01..04)
-      const rows = [
-        ["01", items[0] ?? "ประเด็นสำคัญข้อแรก"],
-        ["02", items[1] ?? "รายละเอียดที่ต้องรู้"],
-        ["03", items[2] ?? "แนวทางนำไปปรับใช้"],
-        ["04", items[3] ?? props.badgeText ?? "สรุปผลลัพธ์ชัดเจน"],
-      ];
-      rows.forEach(([tag, desc], idx) => {
-        const at = 0.08 + idx * 0.14;
-        if (p < at) return;
-        const y = -36 + idx * 54;
-        ctx.fillStyle = brand.primaryColor;
-        ctx.font = `700 17px ${monoFont}`;
-        ctx.textAlign = "left";
-        ctx.fillText(tag, -196, y);
-
-        ctx.fillStyle = "#F8FAFC";
-        ctx.font = `600 19px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(desc, 25), -138, y, 330);
-
-        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      // Clean floating pills below spectrum
+      items.slice(0, 2).forEach((item, idx) => {
+        const cx = idx === 0 ? -98 : 98;
+        ctx.fillStyle = "rgba(30, 41, 59, 0.85)";
+        ctx.strokeStyle = "rgba(255,255,255,0.14)";
+        ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.moveTo(-196, y + 18);
-        ctx.lineTo(196, y + 18);
+        ctx.roundRect(cx - 90, 98, 180, 42, 21);
+        ctx.fill();
         ctx.stroke();
+        drawFittedText(ctx, item, cx, 125, 160, 16, 12, 600, font, "center", "#E2E8F0");
+      });
+    } else if (boardStyle === "lufs-meter") {
+      // Visual Radial Speedometer / Efficiency Arc + Clean Comparison Bars
+      const sweep = easeOutCubic(clamp01(p / 0.55));
+      ctx.save();
+      ctx.translate(-112, 22);
+      ctx.lineWidth = 12;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(255,255,255,0.10)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 68, Math.PI * 0.75, Math.PI * 2.25);
+      ctx.stroke();
+
+      ctx.strokeStyle = brand.primaryColor;
+      ctx.beginPath();
+      ctx.arc(0, 0, 68, Math.PI * 0.75, Math.PI * (0.75 + 1.5 * sweep));
+      ctx.stroke();
+
+      drawFittedText(
+        ctx,
+        props.badgeText ?? "100%",
+        0,
+        8,
+        104,
+        24,
+        15,
+        700,
+        font,
+        "center",
+        "#FFFFFF",
+      );
+      ctx.restore();
+
+      // Right side clean progress bars
+      items.slice(0, 3).forEach((item, idx) => {
+        const y = -28 + idx * 54;
+        const barP = easeOutCubic(clamp01((p - 0.08 - idx * 0.1) / 0.35));
+        drawFittedText(ctx, item, -20, y - 8, 214, 17, 13, 600, font, "left", "#F1F5F9");
+        ctx.fillStyle = "rgba(255,255,255,0.10)";
+        ctx.beginPath();
+        ctx.roundRect(-20, y + 4, 212, 10, 5);
+        ctx.fill();
+        ctx.fillStyle = idx === 0 ? brand.primaryColor : idx === 1 ? (brand.accentColor || "#38BDF8") : "#34D399";
+        ctx.beginPath();
+        ctx.roundRect(-20, y + 4, (204 - idx * 24) * barP, 10, 5);
+        ctx.fill();
       });
     } else {
-      // terminal-spec (Key Insight Summary + checklist pills)
-      ctx.fillStyle = "#CBD5E1";
-      ctx.font = `500 16px ${monoFont}`;
-      ctx.textAlign = "left";
-      ctx.fillText(`> TOPIC: ${trimPhraseAtWordBoundary(props.headerText ?? "KEY INSIGHT", 26)}`, -196, -44, 392);
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `700 16px ${monoFont}`;
-      ctx.fillText(`### ${trimPhraseAtWordBoundary(props.title ?? "สรุปประเด็นหลัก", 28)}`, -196, -16, 392);
-      ctx.fillStyle = brand.primaryColor;
-      ctx.fillText(`    STATUS  ·  ${trimPhraseAtWordBoundary(props.badgeText ?? "VERIFIED", 20)}`, -196, 10, 392);
+      // Connected Visual Step Nodes (① ──▶ ② ──▶ ③) instead of nested rectangular markdown boxes!
+      const nodeCount = Math.min(3, Math.max(2, items.length));
+      const startY = -46;
+      const gapY = 78;
 
-      items.slice(0, 2).forEach((item, idx) => {
-        const at = 0.22 + idx * 0.18;
+      // Vertical glowing spine connecting step circles
+      const spineP = easeOutCubic(clamp01((p - 0.08) / 0.5));
+      ctx.strokeStyle = hexToRgba(brand.primaryColor, 0.45);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-162, startY);
+      ctx.lineTo(-162, startY + gapY * (nodeCount - 1) * spineP);
+      ctx.stroke();
+
+      items.slice(0, nodeCount).forEach((item, idx) => {
+        const at = 0.06 + idx * 0.14;
         if (p < at) return;
-        const ip = easeOutBack(clamp01((p - at) / 0.16));
-        const y = 62 + idx * 58;
+        const np = easeOutBack(clamp01((p - at) / 0.18));
+        const y = startY + idx * gapY;
+
         ctx.save();
         ctx.translate(0, y);
-        ctx.scale(ip, ip);
-        drawCard(-196, -22, 392, 46, "rgba(15, 23, 42, 0.9)", 12, hexToRgba(brand.primaryColor, 0.45), 2);
-        ctx.fillStyle = brand.primaryColor;
-        ctx.beginPath();
-        ctx.roundRect(-182, -12, 26, 26, 6);
-        ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `900 16px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText("✓", -169, 7);
+        ctx.scale(np, np);
 
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `700 20px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(item, 24), -142, 7, 326);
+        // Glowing numbered circle node
+        ctx.fillStyle = idx === nodeCount - 1 ? brand.primaryColor : "#1E293B";
+        ctx.strokeStyle = brand.primaryColor;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(-162, 0, 22, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = idx === nodeCount - 1 ? "#090D16" : "#F8FAFC";
+        ctx.font = `700 16px ${monoFont}`;
+        ctx.textAlign = "center";
+        ctx.fillText(`0${idx + 1}`, -162, 6);
+
+        // Clean frameless text with subtle bottom accent divider
+        drawFittedText(ctx, item, -124, 7, 318, 21, 15, 600, font, "left", "#F8FAFC");
+
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-124, 24);
+        ctx.lineTo(188, 24);
+        ctx.stroke();
         ctx.restore();
       });
     }
 
     ctx.restore();
 
-    // 2. Studio Desk + Lamp + Brand-colored Mug + Keyboard + Drawers at bottom (Ref 2 exact layout)
+    // 2. Studio Desk + Lamp + Brand Mug + Presenter + Stacking Step Pills (Ref 2 signature)
     const deskTopY = 760;
 
-    // Desk Lamp on left
     ctx.save();
     ctx.strokeStyle = "#64748B";
     ctx.lineWidth = 6;
@@ -855,14 +915,12 @@ export function paintMotionBrollCanvas(
     ctx.beginPath();
     ctx.roundRect(62, deskTopY - 8, 44, 10, 5);
     ctx.fill();
-    // Lamp head
     ctx.fillStyle = "#64748B";
     ctx.beginPath();
     ctx.arc(104, 642, 22, Math.PI * 0.85, Math.PI * 2.15);
     ctx.fill();
     ctx.restore();
 
-    // Presenter Mascot centered behind the desk (with glowing rim outline like Ref 2)
     ctx.save();
     ctx.shadowColor = brand.primaryColor;
     ctx.shadowBlur = 14;
@@ -876,34 +934,27 @@ export function paintMotionBrollCanvas(
     );
     ctx.restore();
 
-    // Stacking Step Pills on right side above the desk (Ref 2 signature progression stack)
-    const stackLabels = props.stackLabels ?? ["ไอเดีย", "บท", "ซับ", "Brand CI"];
-    stackLabels.slice(0, 8).forEach((lbl, idx) => {
+    const stackLabels = props.stackLabels ?? ["ไอเดีย", "บท", "เสียง", "โพสต์"];
+    stackLabels.slice(0, 7).forEach((lbl, idx) => {
       const sy = deskTopY - 26 - idx * 28;
       const isTop = idx === stackLabels.length - 1;
       const pop = isTop ? easeOutBack(clamp01((p - 0.1) / 0.2)) : 1;
-      const pillColor =
-        isTop
-          ? brand.primaryColor
-          : STACK_PILL_PALETTE[idx % STACK_PILL_PALETTE.length];
+      const pillColor = isTop ? brand.primaryColor : STACK_PILL_PALETTE[idx % STACK_PILL_PALETTE.length]!;
       ctx.save();
       ctx.translate(454, sy);
       ctx.scale(pop, pop);
       ctx.fillStyle = pillColor;
       ctx.strokeStyle = "#0F172A";
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.roundRect(-52, -12, 104, 24, 6);
+      ctx.roundRect(-52, -12, 104, 24, 8);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#090D16";
-      ctx.font = `800 14px ${font}`;
-      ctx.textAlign = "center";
-      ctx.fillText(trimPhraseAtWordBoundary(lbl, 10), 0, 5);
+      drawFittedText(ctx, lbl, 0, 5, 90, 13.5, 10, 600, font, "center", "#090D16");
       ctx.restore();
     });
 
-    // Coffee Mug in Brand Primary Color on left of keyboard
+    // Coffee Mug
     ctx.save();
     ctx.fillStyle = brand.primaryColor;
     ctx.strokeStyle = "#0F172A";
@@ -917,7 +968,7 @@ export function paintMotionBrollCanvas(
     ctx.stroke();
     ctx.restore();
 
-    // Desk Surface & Drawers
+    // Desk Surface
     ctx.fillStyle = "#4A3728";
     ctx.fillRect(0, deskTopY, bw, bh - deskTopY);
     ctx.fillStyle = "#5C4433";
@@ -929,7 +980,6 @@ export function paintMotionBrollCanvas(
     ctx.lineTo(bw, deskTopY);
     ctx.stroke();
 
-    // Keyboard centered on desk edge
     ctx.fillStyle = "#1E293B";
     ctx.strokeStyle = "#0F172A";
     ctx.lineWidth = 2.5;
@@ -941,46 +991,21 @@ export function paintMotionBrollCanvas(
       ctx.fillStyle = k === 4 ? brand.primaryColor : "#475569";
       ctx.fillRect(bw / 2 - 68 + k * 14, deskTopY - 9, 10, 8);
     }
-
-    // Two Desk Drawers
-    const drawDrawer = (dx: number) => {
-      ctx.fillStyle = "#3D2D20";
-      ctx.strokeStyle = "#271C15";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(dx, deskTopY + 38, 195, 92, 10);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#A89F91";
-      ctx.beginPath();
-      ctx.roundRect(dx + 76, deskTopY + 80, 42, 8, 4);
-      ctx.fill();
-    };
-    drawDrawer(38);
-    drawDrawer(bw - 233);
   } else if (config.themeId === "paper-cutout-doc") {
-    // ── THEME C: PAPER CUTOUT DOCUMENTARY (Vox / Johnny Harris Editorial Collage) ──
-    // Craft paper / vintage newsprint grid + torn edges + masking tape + live highlighter sweep
-    ctx.fillStyle = "#EAE2D3";
+    // ── THEME C: PAPER CUTOUT DOCUMENTARY (Tactile Editorial Collage + Marker Sweep) ──
+    ctx.fillStyle = "#ECE4D5";
     ctx.fillRect(0, 0, bw, bh);
 
-    // Subtle editorial rule lines & micro-grain dots
-    ctx.strokeStyle = "rgba(120, 108, 90, 0.14)";
-    ctx.lineWidth = 1;
-    for (let y = 40; y < bh; y += 36) {
-      ctx.beginPath();
-      ctx.moveTo(24, y);
-      ctx.lineTo(bw - 24, y);
-      ctx.stroke();
-    }
-    for (let x = 36; x < bw; x += 54) {
-      ctx.beginPath();
-      ctx.moveTo(x, 24);
-      ctx.lineTo(x, bh - 24);
-      ctx.stroke();
+    // Subtle warm paper dot texture (no dense grid lines)
+    ctx.fillStyle = "rgba(120, 108, 90, 0.16)";
+    for (let y = 36; y < bh; y += 36) {
+      for (let x = 36; x < bw; x += 36) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
-    // Helper: Torn-edge newspaper clipping card with masking tape
     const drawPaperClipping = (
       cx: number,
       cy: number,
@@ -994,349 +1019,248 @@ export function paintMotionBrollCanvas(
       ctx.translate(cx, cy);
       ctx.rotate(tiltRad);
 
-      // Deep collage drop shadow
-      ctx.fillStyle = "rgba(28, 25, 23, 0.24)";
+      ctx.fillStyle = "rgba(28, 25, 23, 0.18)";
       ctx.beginPath();
-      ctx.roundRect(-w / 2 + 7, -h / 2 + 10, w, h, 4);
+      ctx.roundRect(-w / 2 + 6, -h / 2 + 9, w, h, 6);
       ctx.fill();
 
-      // Main paper body with jagged torn bottom edge
       ctx.fillStyle = paperColor;
-      ctx.strokeStyle = "#292524";
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "rgba(41, 37, 36, 0.78)";
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(-w / 2, -h / 2);
       ctx.lineTo(w / 2, -h / 2);
-      ctx.lineTo(w / 2, h / 2 - 8);
+      ctx.lineTo(w / 2, h / 2 - 7);
       const zigSteps = 18;
       for (let i = zigSteps; i >= 0; i--) {
         const zx = -w / 2 + (w * i) / zigSteps;
-        const zy = h / 2 - (i % 2 === 0 ? 8 : 0);
+        const zy = h / 2 - (i % 2 === 0 ? 7 : 0);
         ctx.lineTo(zx, zy);
       }
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Translucent masking tape at top center
       if (showTape) {
         ctx.save();
         ctx.translate(0, -h / 2 - 2);
-        ctx.rotate(-0.04);
-        ctx.fillStyle = "rgba(234, 215, 167, 0.82)";
-        ctx.strokeStyle = "rgba(120, 102, 68, 0.45)";
-        ctx.lineWidth = 1.5;
-        ctx.fillRect(-58, -13, 116, 26);
-        ctx.strokeRect(-58, -13, 116, 26);
+        ctx.rotate(-0.035);
+        ctx.fillStyle = "rgba(234, 215, 167, 0.85)";
+        ctx.fillRect(-52, -11, 104, 22);
         ctx.restore();
       }
       ctx.restore();
     };
 
-    // Top Editorial Masthead Tag
-    const headerTag = trimPhraseAtWordBoundary(props.headerText ?? "INVESTIGATION FILE", 22);
-    ctx.save();
-    ctx.translate(bw / 2, 74);
-    ctx.rotate(-0.015);
-    ctx.fillStyle = "#1C1917";
-    ctx.fillRect(-195, -22, 390, 44);
-    ctx.fillStyle = "#FAF6EE";
-    ctx.font = `900 18px ${monoFont}`;
-    ctx.textAlign = "center";
-    ctx.fillText(`📰  ${headerTag}  ·  DOC #2026`, 0, 6);
-    ctx.restore();
+    if (!suppressTopHeader && props.headerText) {
+      const headerTag = trimPhraseAtWordBoundary(props.headerText, 26);
+      ctx.save();
+      ctx.translate(bw / 2, 74);
+      ctx.rotate(-0.012);
+      ctx.fillStyle = "#1C1917";
+      ctx.beginPath();
+      ctx.roundRect(-165, -20, 330, 40, 8);
+      ctx.fill();
+      drawFittedText(ctx, headerTag, 0, 6, 300, 16, 12, 600, font, "center", "#FAF6EE");
+      ctx.restore();
+    }
 
     const items =
       props.items && props.items.length > 0
         ? props.items
-        : ["คนดูตัดสินใน 3 วินาทีแรก", "เปิดคลิปช้า = คนปัดทิ้ง 78%", "ต้องขึ้นคำตอบตั้งแต่ประโยคแรก"];
+        : ["คนดูตัดสินใน 3 วินาทีแรก", "เปิดคลิปช้าคนปัดทิ้งทันที", "ขึ้นภาพตรงเนื้อหาอัตโนมัติ"];
 
     if (config.templateId === "paper.evidence-dossier") {
-      // 2 Polaroid Evidence Frames connected by Red Investigation String + Pushpins
       const p1 = easeOutBack(clamp01((p - 0.04) / 0.18));
       const p2 = easeOutBack(clamp01((p - 0.18) / 0.18));
 
-      // Polaroid 1 (Left-Top)
+      // Left Polaroid
       ctx.save();
-      ctx.translate(158, 290);
+      ctx.translate(158, 295 + topShift);
       ctx.scale(p1, p1);
-      ctx.rotate(-0.055);
-      ctx.fillStyle = "rgba(28, 25, 23, 0.25)";
-      ctx.fillRect(-108 + 6, -124 + 8, 216, 248);
-      ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "#1C1917";
-      ctx.lineWidth = 3;
-      ctx.fillRect(-108, -124, 216, 248);
-      ctx.strokeRect(-108, -124, 216, 248);
-
-      // Dark archival photo area inside Polaroid 1
+      ctx.rotate(-0.05);
+      drawPaperClipping(0, 0, 216, 244, 0, "#FFFFFF", false);
       ctx.fillStyle = "#1E293B";
-      ctx.fillRect(-92, -106, 184, 152);
-      // Red declining retention graph inside photo
+      ctx.fillRect(-92, -104, 184, 138);
       ctx.strokeStyle = "#EF4444";
-      ctx.lineWidth = 5;
+      ctx.lineWidth = 4.5;
       ctx.beginPath();
-      ctx.moveTo(-74, -76);
-      ctx.lineTo(-22, -52);
-      ctx.lineTo(18, -14);
-      ctx.lineTo(74, 24);
+      ctx.moveTo(-72, -70);
+      ctx.lineTo(-20, -48);
+      ctx.lineTo(18, -12);
+      ctx.lineTo(72, 20);
       ctx.stroke();
-      ctx.fillStyle = "#F8FAFC";
-      ctx.font = `800 15px ${monoFont}`;
-      ctx.textAlign = "left";
-      ctx.fillText("BEFORE", -78, -82);
-
-      // Caption on Polaroid bottom
-      ctx.fillStyle = "#1C1917";
-      ctx.font = `900 20px ${font}`;
-      ctx.textAlign = "center";
-      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "แบบเดิมที่พบบ่อย", 18), 0, 82, 192);
-      ctx.fillStyle = "#DC2626";
-      ctx.font = `800 16px ${font}`;
-      ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "❌ เสียเวลาและผิดพลาดง่าย", 20), 0, 106, 192);
-
-      // Red Pushpin
+      drawFittedText(ctx, props.leftText ?? "วิธีเดิม", 0, 68, 188, 19, 14, 700, font, "center", "#1C1917");
+      drawFittedText(ctx, items[0] ?? "ใช้เวลานาน", 0, 96, 188, 15.5, 12, 600, font, "center", "#DC2626");
       ctx.fillStyle = "#DC2626";
       ctx.beginPath();
-      ctx.arc(0, -116, 11, 0, Math.PI * 2);
+      ctx.arc(0, -114, 9, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
       ctx.restore();
 
-      // Polaroid 2 (Right-Bottom)
+      // Right Polaroid
       if (p > 0.16) {
         ctx.save();
-        ctx.translate(382, 435);
+        ctx.translate(382, 425 + topShift);
         ctx.scale(p2, p2);
         ctx.rotate(0.045);
-        ctx.fillStyle = "rgba(28, 25, 23, 0.25)";
-        ctx.fillRect(-108 + 6, -124 + 8, 216, 248);
-        ctx.fillStyle = "#FFFFFF";
-        ctx.strokeStyle = "#1C1917";
-        ctx.lineWidth = 3;
-        ctx.fillRect(-108, -124, 216, 248);
-        ctx.strokeRect(-108, -124, 216, 248);
-
+        drawPaperClipping(0, 0, 216, 244, 0, "#FFFFFF", false);
         ctx.fillStyle = "#0F172A";
-        ctx.fillRect(-92, -106, 184, 152);
-        // Rising Brand CI retention bar inside photo
+        ctx.fillRect(-92, -104, 184, 138);
         ctx.strokeStyle = brand.primaryColor;
-        ctx.lineWidth = 5.5;
+        ctx.lineWidth = 5;
         ctx.beginPath();
-        ctx.moveTo(-74, 18);
-        ctx.lineTo(-22, -26);
-        ctx.lineTo(24, -44);
-        ctx.lineTo(74, -82);
+        ctx.moveTo(-72, 16);
+        ctx.lineTo(-20, -24);
+        ctx.lineTo(24, -42);
+        ctx.lineTo(72, -78);
         ctx.stroke();
-        ctx.fillStyle = brand.accentColor || "#FACC15";
-        ctx.font = `800 15px ${monoFont}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "RESULT · VERIFIED", 18), -78, 34, 160);
-
-        ctx.fillStyle = "#1C1917";
-        ctx.font = `900 20px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "แนวทางที่แม่นยำกว่า", 18), 0, 82, 192);
-        ctx.fillStyle = "#15803D";
-        ctx.font = `800 16px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(items[1] ?? "✓ เห็นผลลัพธ์ชัดเจนทันที", 20), 0, 106, 192);
-
-        // Red Pushpin
+        drawFittedText(ctx, props.rightText ?? "แนวทางใหม่", 0, 68, 188, 19, 14, 700, font, "center", "#1C1917");
+        drawFittedText(ctx, items[1] ?? "เห็นผลลัพธ์ไว", 0, 96, 188, 15.5, 12, 600, font, "center", "#15803D");
         ctx.fillStyle = "#DC2626";
         ctx.beginPath();
-        ctx.arc(0, -116, 11, 0, Math.PI * 2);
+        ctx.arc(0, -114, 9, 0, Math.PI * 2);
         ctx.fill();
-        ctx.stroke();
         ctx.restore();
       }
 
-      // Red Investigation String connecting the two pushpins
+      // Red thread connecting pushpins
       if (p > 0.28) {
         const sp = clamp01((p - 0.28) / 0.22);
         ctx.save();
         ctx.strokeStyle = "#DC2626";
-        ctx.lineWidth = 4;
-        ctx.setLineDash([8, 4]);
+        ctx.lineWidth = 3.2;
+        ctx.setLineDash([7, 4]);
         ctx.beginPath();
-        ctx.moveTo(158, 174);
-        ctx.quadraticCurveTo(270, 265, 158 + (382 - 158) * sp, 174 + (319 - 174) * sp);
+        ctx.moveTo(158, 181 + topShift);
+        ctx.quadraticCurveTo(270, 265 + topShift, 158 + (382 - 158) * sp, 181 + topShift + 130 * sp);
         ctx.stroke();
-        ctx.restore();
-      }
-
-      // Bottom Torn Dossier Summary Note
-      if (p > 0.36) {
-        const np = easeOutBack(clamp01((p - 0.36) / 0.18));
-        ctx.save();
-        ctx.translate(bw / 2, 645);
-        ctx.scale(np, np);
-        drawPaperClipping(0, 0, 448, 118, -0.012, "#FEF9C3", true);
-        ctx.fillStyle = "#1C1917";
-        ctx.font = `900 24px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "หลักฐานเปรียบเทียบชัด", 22), 0, -12);
-        ctx.fillStyle = "#DC2626";
-        ctx.font = `800 20px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "พิสูจน์แล้วจากดาต้าจริง", 24), 0, 26);
         ctx.restore();
       }
     } else if (config.templateId === "paper.quote-stamp") {
-      // Editorial Cutout Quote + Slamming Rubber Stamp
       const clipEnter = easeOutBack(clamp01(p / 0.18));
       ctx.save();
-      ctx.translate(bw / 2, 330);
+      ctx.translate(bw / 2, 345 + topShift);
       ctx.scale(clipEnter, clipEnter);
-      drawPaperClipping(0, 0, 456, 340, -0.02, "#FAF6EE", true);
+      drawPaperClipping(0, 0, 456, 330, -0.016, "#FAF6EE", true);
 
-      // Giant serif quotation marks
-      ctx.fillStyle = "rgba(220, 38, 38, 0.18)";
-      ctx.font = `900 120px Georgia, serif`;
+      ctx.fillStyle = "rgba(220, 38, 38, 0.15)";
+      ctx.font = `900 108px Georgia, serif`;
       ctx.textAlign = "left";
-      ctx.fillText("“", -204, -52);
+      ctx.fillText("“", -200, -48);
 
-      // Highlighted Quote Headline
-      const hlSweep = clamp01((p - 0.14) / 0.32);
-      ctx.fillStyle = "rgba(250, 204, 21, 0.78)";
-      ctx.fillRect(-190, -82, 380 * hlSweep, 46);
+      const hlSweep = easeOutCubic(clamp01((p - 0.12) / 0.32));
+      ctx.fillStyle = "rgba(250, 204, 21, 0.72)";
+      ctx.beginPath();
+      ctx.roundRect(-190, -82, 380 * hlSweep, 44, 6);
+      ctx.fill();
 
-      ctx.fillStyle = "#1C1917";
-      ctx.font = `900 29px ${font}`;
-      ctx.textAlign = "center";
-      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "กฏเหล็กของช่องที่โตไว", 22), 0, -48);
+      drawFittedText(ctx, props.title ?? "หัวใจสำคัญของคลิปสั้น", 0, -52, 376, 26, 18, 700, font, "center", "#1C1917");
 
       items.slice(0, 2).forEach((line, idx) => {
-        ctx.fillStyle = "#292524";
-        ctx.font = `700 22px ${font}`;
-        ctx.fillText(`• ${trimPhraseAtWordBoundary(line, 24)}`, 0, 12 + idx * 44);
+        drawFittedText(ctx, `•  ${line}`, 0, 14 + idx * 46, 390, 20, 15, 600, font, "center", "#292524");
       });
       ctx.restore();
 
-      // Rubber Stamp Slam Effect (scales from 2.4x -> 1.0x with ink border)
       if (p > 0.34) {
         const rawStamp = clamp01((p - 0.34) / 0.14);
-        const stampScale = rawStamp < 1 ? 2.2 - 1.2 * rawStamp : 1.0;
+        const stampScale = rawStamp < 1 ? 1.9 - 0.9 * rawStamp : 1.0;
         ctx.save();
-        ctx.translate(bw / 2 + 78, 535);
-        ctx.rotate(-0.18);
+        ctx.translate(bw / 2 + 68, 535 + topShift * 0.5);
+        ctx.rotate(-0.14);
         ctx.scale(stampScale, stampScale);
-
-        ctx.fillStyle = "rgba(254, 242, 242, 0.92)";
+        ctx.fillStyle = "rgba(254, 242, 242, 0.94)";
         ctx.strokeStyle = "#DC2626";
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 4.5;
         ctx.beginPath();
-        ctx.roundRect(-142, -44, 284, 88, 10);
+        ctx.roundRect(-138, -36, 276, 72, 12);
         ctx.fill();
         ctx.stroke();
-
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.roundRect(-132, -34, 264, 68, 6);
-        ctx.stroke();
-
-        ctx.fillStyle = "#DC2626";
-        ctx.font = `900 28px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "APPROVED · ทำตามได้ทันที", 18), 0, 10);
+        drawFittedText(ctx, props.badgeText ?? "นำไปใช้ได้ทันที", 0, 8, 246, 22, 15, 700, font, "center", "#DC2626");
         ctx.restore();
       }
     } else {
-      // Default: paper.headline-highlighter (Vox Newspaper Clipping + Live Yellow Highlighter Sweep)
+      // paper.headline-highlighter: Clean Editorial Cutout Strips + Marker Sweep (zero fake English newspaper boilerplate)
       const clipEnter = easeOutBack(clamp01(p / 0.16));
       ctx.save();
-      ctx.translate(bw / 2, 355);
+      ctx.translate(bw / 2, 360 + topShift);
       ctx.scale(clipEnter, clipEnter);
-      drawPaperClipping(0, 0, 464, 420, -0.018, "#FAF6EE", true);
+      drawPaperClipping(0, 0, 462, 390, -0.015, "#FAF6EE", true);
 
-      // Newspaper metadata header
-      ctx.fillStyle = "#57534E";
-      ctx.font = `700 14px ${monoFont}`;
-      ctx.textAlign = "left";
-      ctx.fillText("THE CREATOR TIMES  ·  SPECIAL REPORT", -202, -162);
-      ctx.strokeStyle = "#1C1917";
-      ctx.lineWidth = 3;
+      // Headline marker sweep
+      const sweep1 = easeOutCubic(clamp01((p - 0.1) / 0.28));
+      ctx.fillStyle = "rgba(250, 204, 21, 0.82)";
       ctx.beginPath();
-      ctx.moveTo(-202, -146);
-      ctx.lineTo(202, -146);
-      ctx.stroke();
-
-      // Main Headline with Live Yellow Marker Sweep
-      const sweep1 = clamp01((p - 0.12) / 0.28);
-      ctx.fillStyle = "rgba(250, 204, 21, 0.85)";
-      ctx.beginPath();
-      ctx.roundRect(-204, -126, 408 * sweep1, 54, 6);
+      ctx.roundRect(-198, -138, 396 * sweep1, 52, 8);
       ctx.fill();
 
-      ctx.fillStyle = "#1C1917";
-      ctx.font = `900 30px ${font}`;
-      ctx.textAlign = "left";
-      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "ทำไมคนเลื่อนผ่านใน 3 วิแรก?", 22), -194, -88);
+      drawFittedText(
+        ctx,
+        props.title ?? "ทำไมคนเลื่อนผ่านใน 3 วิแรก?",
+        0,
+        -104,
+        384,
+        26,
+        18,
+        700,
+        font,
+        "center",
+        "#1C1917",
+      );
 
-      // Sub-items with progressive marker sweeps & red editorial underlines
       items.slice(0, 3).forEach((item, idx) => {
-        const at = 0.22 + idx * 0.15;
+        const at = 0.2 + idx * 0.14;
         if (p < at) return;
-        const rowSweep = clamp01((p - at) / 0.22);
-        const y = -18 + idx * 74;
+        const rowSweep = easeOutCubic(clamp01((p - at) / 0.22));
+        const y = -22 + idx * 72;
 
-        // Faux newspaper body lines in background
-        ctx.fillStyle = "rgba(168, 162, 158, 0.28)";
-        ctx.fillRect(-194, y - 24, 388, 8);
-        ctx.fillRect(-194, y + 22, 310, 8);
+        ctx.fillStyle = idx === 1 ? hexToRgba(brand.primaryColor, 0.24) : "rgba(254, 240, 138, 0.72)";
+        ctx.beginPath();
+        ctx.roundRect(-192, y - 20, 384 * rowSweep, 42, 8);
+        ctx.fill();
 
-        // Live Highlighter strip on key phrase
-        ctx.fillStyle = idx === 1 ? hexToRgba(brand.primaryColor, 0.32) : "rgba(253, 224, 71, 0.78)";
-        ctx.fillRect(-196, y - 18, 392 * rowSweep, 38);
+        drawFittedText(
+          ctx,
+          `${idx + 1}.  ${item}`,
+          -176,
+          y + 8,
+          352,
+          20,
+          14,
+          600,
+          font,
+          "left",
+          "#1C1917",
+        );
 
-        ctx.fillStyle = "#1C1917";
-        ctx.font = `800 22px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(`${idx + 1}. ${trimPhraseAtWordBoundary(item, 24)}`, -186, y + 8);
-
-        // Hand-drawn Red Pen Underline on last item
         if (idx === 2 && rowSweep > 0.5) {
           ctx.strokeStyle = "#DC2626";
-          ctx.lineWidth = 4;
+          ctx.lineWidth = 3.2;
           ctx.beginPath();
-          ctx.moveTo(-186, y + 18);
-          ctx.quadraticCurveTo(0, y + 24, -186 + 360 * rowSweep, y + 16);
+          ctx.moveTo(-176, y + 20);
+          ctx.quadraticCurveTo(0, y + 26, -176 + 340 * rowSweep, y + 18);
           ctx.stroke();
         }
       });
       ctx.restore();
-
-      // Bottom Red Editorial Badge
-      if (p > 0.45) {
-        const bp = easeOutBack(clamp01((p - 0.45) / 0.16));
-        ctx.save();
-        ctx.translate(bw / 2, 628);
-        ctx.scale(bp, bp);
-        ctx.rotate(0.02);
-        drawCard(-155, -26, 310, 52, "#DC2626", 10, "#1C1917", 3.5);
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `900 21px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "KEY FINDING · อินไซต์สำคัญ", 22), 0, 8);
-        ctx.restore();
-      }
     }
   } else if (config.themeId === "social-chat-sim") {
-    // ── THEME D: SOCIAL CHAT & NOTIFICATION SIMULATOR (Modern Mobile Glass UI) ──
+    // ── THEME D: SOCIAL CHAT CONVERSATION (Frameless Organic Floating Bubbles, Readable Medium Thai) ──
     const bgGrad = ctx.createLinearGradient(0, 0, 0, bh);
-    bgGrad.addColorStop(0, "#090D16");
+    bgGrad.addColorStop(0, "#080C16");
     bgGrad.addColorStop(0.5, "#0F172A");
-    bgGrad.addColorStop(1, "#090D16");
+    bgGrad.addColorStop(1, "#080C16");
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, bw, bh);
 
-    // Dual Brand CI ambient glow orbs
-    const orb1 = ctx.createRadialGradient(120, 220, 10, 120, 220, 260);
+    const orb1 = ctx.createRadialGradient(110, 230, 10, 110, 230, 280);
     orb1.addColorStop(0, hexToRgba(brand.primaryColor, 0.28));
     orb1.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = orb1;
     ctx.fillRect(0, 0, bw, bh);
 
-    const orb2 = ctx.createRadialGradient(420, 520, 10, 420, 520, 260);
-    orb2.addColorStop(0, hexToRgba(brand.accentColor, 0.22));
+    const orb2 = ctx.createRadialGradient(430, 500, 10, 430, 500, 280);
+    orb2.addColorStop(0, hexToRgba(brand.accentColor, 0.20));
     orb2.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = orb2;
     ctx.fillRect(0, 0, bw, bh);
@@ -1345,247 +1269,183 @@ export function paintMotionBrollCanvas(
       props.items && props.items.length > 0
         ? props.items
         : [
-            "พี่ครับ ทำไมลงคลิปทุกวันแต่ยอดวิวนิ่ง?",
+            "ทำไมลงคลิปทุกวันแต่ยอดวิวนิ่ง?",
             "เพราะ 3 วิแรกยังไม่ได้บอกคำตอบที่คนดูอยากรู้ครับ",
-            "ลองเปลี่ยนมาเปิดด้วยผลลัพธ์ + ซับคำสำคัญดูครับ 🔥",
+            "ลองเปิดด้วยผลลัพธ์ชัดๆ ตั้งแต่วินาทีแรกดูครับ",
           ];
 
-    // Frosted Phone Container Frame (top & center area, leaving bottom for subtitles)
-    const frameEnter = easeOutBack(clamp01(p / 0.14));
-    ctx.save();
-    ctx.translate(bw / 2, 355);
-    ctx.scale(frameEnter, frameEnter);
-
-    // Glass phone shell
-    ctx.fillStyle = "rgba(15, 23, 42, 0.84)";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.roundRect(-236, -295, 472, 575, 34);
-    ctx.fill();
-    ctx.stroke();
-
-    // Top Dynamic Island + Status Header
-    ctx.fillStyle = "#020617";
-    ctx.beginPath();
-    ctx.roundRect(-62, -278, 124, 24, 12);
-    ctx.fill();
-
-    // Profile Header Bar inside phone
-    ctx.fillStyle = "rgba(30, 41, 59, 0.75)";
-    ctx.beginPath();
-    ctx.roundRect(-216, -240, 432, 64, 18);
-    ctx.fill();
-
-    // Avatar Circle with Brand Ring + Online Dot
-    const avatarInitial = (props.title ?? props.headerText ?? "★").trim().charAt(0).toUpperCase() || "★";
-    ctx.fillStyle = brand.primaryColor;
-    ctx.beginPath();
-    ctx.arc(-176, -208, 22, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#090D16";
-    ctx.font = `900 18px ${font}`;
-    ctx.textAlign = "center";
-    ctx.fillText(avatarInitial, -176, -201);
-
-    ctx.fillStyle = "#22C55E";
-    ctx.beginPath();
-    ctx.arc(-159, -192, 6, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "#F8FAFC";
-    ctx.font = `800 20px ${font}`;
-    ctx.textAlign = "left";
-    ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "ข้อความสำคัญ", 22), -142, -212, 340);
-    ctx.fillStyle = brand.primaryColor;
-    ctx.font = `600 14px ${monoFont}`;
-    ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "ACTIVE NOW · VERIFIED", 26), -142, -190, 340);
-
-    if (config.templateId === "chat.notification-stack") {
-      // Stacked iOS Glass Notification Banners cascading in with spring physics
-      items.slice(0, 3).forEach((alertText, idx) => {
-        const at = 0.08 + idx * 0.16;
-        if (p < at) return;
-        const np = easeOutBack(clamp01((p - at) / 0.18));
-        const y = -118 + idx * 112;
-        ctx.save();
-        ctx.translate(0, y);
-        ctx.scale(np, np);
-
-        ctx.fillStyle = idx === 2 ? hexToRgba(brand.primaryColor, 0.22) : "rgba(30, 41, 59, 0.92)";
-        ctx.strokeStyle = idx === 2 ? brand.primaryColor : "rgba(255, 255, 255, 0.16)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.roundRect(-208, -44, 416, 92, 20);
-        ctx.fill();
-        ctx.stroke();
-
-        // App Icon Badge
-        ctx.fillStyle = idx === 0 ? "#EF4444" : idx === 1 ? "#F59E0B" : brand.primaryColor;
-        ctx.beginPath();
-        ctx.roundRect(-190, -24, 48, 48, 12);
-        ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `900 22px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(idx === 0 ? "!" : idx === 1 ? "⚡" : "✓", -166, 8);
-
-        // Notification Title + Timestamp
-        ctx.fillStyle = "#94A3B8";
-        ctx.font = `700 13px ${monoFont}`;
-        ctx.textAlign = "left";
-        ctx.fillText(idx === 2 ? "HIGHLIGHT · NOW" : `UPDATE · ${idx + 1}m ago`, -128, -14);
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `800 20px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(alertText, 25), -128, 18, 320);
-        ctx.restore();
-      });
-    } else if (config.templateId === "chat.viral-comment-reply") {
-      // Pinned Creator Comment Card + Auto-Reply DM Input Box
-      const c1 = easeOutBack(clamp01((p - 0.06) / 0.16));
+    // Floating Profile Pill at top (no giant outer phone rectangle!)
+    if (!suppressTopHeader) {
+      const headerEnter = easeOutCubic(clamp01(p / 0.14));
       ctx.save();
-      ctx.translate(0, -88);
-      ctx.scale(c1, c1);
-      ctx.fillStyle = "rgba(30, 41, 59, 0.95)";
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
-      ctx.lineWidth = 2;
+      ctx.translate(bw / 2, 102);
+      ctx.scale(headerEnter, headerEnter);
+      ctx.fillStyle = "rgba(30, 41, 59, 0.76)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.roundRect(-208, -64, 416, 128, 22);
+      ctx.roundRect(-195, -28, 390, 56, 28);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = "#F43F5E";
+      ctx.fillStyle = brand.primaryColor;
       ctx.beginPath();
-      ctx.roundRect(-190, -48, 128, 26, 8);
+      ctx.arc(-158, 0, 18, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `800 13px ${font}`;
-      ctx.textAlign = "center";
-      ctx.fillText("📌 คอมเมนต์ปักหมุด", -126, -30);
+      ctx.fillStyle = "#22C55E";
+      ctx.beginPath();
+      ctx.arc(-144, 13, 5, 0, Math.PI * 2);
+      ctx.fill();
 
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `800 22px ${font}`;
-      ctx.textAlign = "left";
-      ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "อยากได้เทมเพลตนี้ ต้องทำยังไงครับ?", 24), -190, 8);
-      ctx.fillStyle = "#94A3B8";
-      ctx.font = `600 15px ${font}`;
-      ctx.fillText("❤️ 1.4K   ·   ดูการตอบกลับของครีเอเตอร์", -190, 40);
+      drawFittedText(
+        ctx,
+        props.title ?? "บทสนทนาจากลูกค้าจริง",
+        -126,
+        7,
+        296,
+        19,
+        14,
+        600,
+        font,
+        "left",
+        "#F8FAFC",
+      );
       ctx.restore();
+    }
 
-      // Creator Auto-Reply Bubble with Typewriter Keyword
+    const drawSpeechBubble = (
+      side: "left" | "right",
+      cy: number,
+      text: string,
+      appearAt: number,
+      accentFill = false,
+      reaction?: string,
+    ) => {
+      if (p < appearAt) return;
+      const bp = easeOutBack(clamp01((p - appearAt) / 0.18));
+      const bubbleW = 382;
+      const wrapped = wrapCanvasTextLines(ctx, text, bubbleW - 52, 19.5, 500, font, 2);
+      const lineH = Math.round(wrapped.fontSize * 1.42);
+      const bubbleH = Math.max(74, wrapped.lines.length * lineH + 34);
+      const cx = side === "left" ? 246 : 294;
+
+      ctx.save();
+      ctx.translate(cx, cy + topShift);
+      ctx.scale(bp, bp);
+
+      // Avatar dot beside bubble
+      const avatarX = side === "left" ? -bubbleW / 2 - 24 : bubbleW / 2 + 24;
+      ctx.fillStyle = side === "left" ? "#334155" : brand.primaryColor;
+      ctx.beginPath();
+      ctx.arc(avatarX, bubbleH / 2 - 18, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = side === "left" ? "#E2E8F0" : "#090D16";
+      ctx.font = `600 13px ${font}`;
+      ctx.textAlign = "center";
+      ctx.fillText(side === "left" ? "?" : "✓", avatarX, bubbleH / 2 - 13);
+
+      // Soft elevation shadow
+      ctx.fillStyle = "rgba(0, 0, 0, 0.32)";
+      ctx.beginPath();
+      ctx.roundRect(-bubbleW / 2, -bubbleH / 2 + 8, bubbleW, bubbleH, 24);
+      ctx.fill();
+
+      // Bubble body
+      ctx.fillStyle = accentFill ? brand.primaryColor : "rgba(30, 41, 59, 0.90)";
+      ctx.strokeStyle = accentFill ? hexToRgba("#FFFFFF", 0.25) : "rgba(255, 255, 255, 0.14)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-bubbleW / 2, -bubbleH / 2, bubbleW, bubbleH, 24);
+      ctx.fill();
+      ctx.stroke();
+
+      // Readable medium-weight (500-600) wrapped Thai text — NEVER heavy 900 or truncated!
+      const textColor = accentFill ? "#090D16" : "#F8FAFC";
+      drawWrappedText(
+        ctx,
+        text,
+        -bubbleW / 2 + 26,
+        4,
+        bubbleW - 52,
+        19.5,
+        accentFill ? 600 : 500,
+        font,
+        "left",
+        textColor,
+        2,
+        1.42,
+      );
+
+      if (reaction) {
+        ctx.fillStyle = "#0F172A";
+        ctx.strokeStyle = "rgba(255,255,255,0.22)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.roundRect(bubbleW / 2 - 96, bubbleH / 2 - 14, 78, 28, 14);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#F8FAFC";
+        ctx.font = `600 13.5px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillText(reaction, bubbleW / 2 - 57, bubbleH / 2 + 5);
+      }
+      ctx.restore();
+    };
+
+    if (config.templateId === "chat.viral-comment-reply") {
+      drawSpeechBubble("left", 250, items[0] ?? "อยากได้ระบบนี้ ต้องเริ่มยังไงครับ?", 0.05, false, "❤️ 1.4K");
+
       if (p > 0.22) {
         const c2 = easeOutBack(clamp01((p - 0.22) / 0.18));
-        const kw = props.rightText ?? "สนใจ";
+        const kw = cleanDisplayString(props.rightText ?? "สนใจ");
         ctx.save();
-        ctx.translate(0, 78);
+        ctx.translate(bw / 2, 435 + topShift);
         ctx.scale(c2, c2);
         ctx.fillStyle = brand.primaryColor;
         ctx.beginPath();
-        ctx.roundRect(-208, -56, 416, 112, 24);
+        ctx.roundRect(-210, -58, 420, 116, 28);
         ctx.fill();
 
-        ctx.fillStyle = "#090D16";
-        ctx.font = `900 32px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(`💬 พิมพ์คอมเมนต์ "${kw}"`, 0, -4, 384);
-        ctx.font = `800 19px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ส่งรายละเอียดให้ในแชตทันที ⚡", 24), 0, 32, 384);
+        drawFittedText(ctx, `💬  พิมพ์คอมเมนต์ "${kw}"`, 0, -6, 376, 28, 19, 700, font, "center", "#090D16");
+        drawFittedText(
+          ctx,
+          props.badgeText ?? "ส่งรายละเอียดให้ในแชตทันที",
+          0,
+          30,
+          376,
+          18,
+          14,
+          600,
+          font,
+          "center",
+          "rgba(9, 13, 22, 0.85)",
+        );
         ctx.restore();
       }
     } else {
-      // Default: chat.dm-conversation (Incoming & Outgoing Chat Bubbles + Typing Indicator + Emoji Reactions)
-      // Bubble 1 (Incoming Left)
-      if (p > 0.05) {
-        const b1 = easeOutBack(clamp01((p - 0.05) / 0.16));
-        ctx.save();
-        ctx.translate(-18, -118);
-        ctx.scale(b1, b1);
-        ctx.fillStyle = "#1E293B";
-        ctx.strokeStyle = "rgba(255,255,255,0.12)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(-194, -38, 368, 76, 20);
-        ctx.fill();
-        ctx.stroke();
+      // Both dm-conversation & notification-stack use clean staggered organic conversation bubbles
+      drawSpeechBubble("left", 225, items[0] ?? "ลูกค้าทักถามข้อมูลเข้ามาพร้อมกัน", 0.05, false);
+      drawSpeechBubble("right", 365, items[1] ?? "ตอบกลับครบทุกคำถามทันทีแบบเป็นธรรมชาติ", 0.20, true);
+      drawSpeechBubble("left", 505, items[2] ?? "ปิดการขายได้ไวขึ้นแม้ไม่ได้เฝ้าหน้าจอ", 0.36, false, "🔥 99+");
 
-        ctx.fillStyle = "#F8FAFC";
-        ctx.font = `700 20px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "ทำไมลงคลิปทุกวันแต่คนเลื่อนผ่าน?", 24), -174, 7);
-        ctx.restore();
-      }
-
-      // Bubble 2 (Outgoing Right - Brand Primary Color)
-      if (p > 0.2) {
-        const b2 = easeOutBack(clamp01((p - 0.2) / 0.16));
-        ctx.save();
-        ctx.translate(18, -12);
-        ctx.scale(b2, b2);
-        ctx.fillStyle = brand.primaryColor;
-        ctx.beginPath();
-        ctx.roundRect(-174, -42, 368, 84, 22);
-        ctx.fill();
-
-        ctx.fillStyle = "#090D16";
-        ctx.font = `800 20px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(items[1] ?? "เพราะ 3 วิแรกยังไม่ได้ขึ้นคำตอบครับ", 24), -154, 7);
-        ctx.restore();
-      }
-
-      // Bubble 3 (Outgoing Right + Emoji Reaction Pill)
-      if (p > 0.36) {
-        const b3 = easeOutBack(clamp01((p - 0.36) / 0.16));
-        ctx.save();
-        ctx.translate(18, 98);
-        ctx.scale(b3, b3);
-        ctx.fillStyle = "rgba(30, 41, 59, 0.95)";
-        ctx.strokeStyle = brand.primaryColor;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.roundRect(-174, -42, 368, 84, 22);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `800 20px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(items[2] ?? "เปิดด้วยภาพคำตอบ + ซับคำสำคัญ 🔥", 24), -154, 7);
-
-        // Floating Emoji Reaction Pill
-        ctx.fillStyle = "#0F172A";
-        ctx.strokeStyle = "rgba(255,255,255,0.22)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(102, 26, 82, 32, 16);
-        ctx.fill();
-        ctx.stroke();
-        ctx.font = `700 15px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText("🔥 ❤️ 99+", 143, 47);
-        ctx.restore();
-      }
-
-      // Live Typing Indicator Pill at bottom of chat
-      const dotBounce = (idx: number) => Math.sin(p * Math.PI * 8 + idx * 1.1) * 4;
+      // Live subtle typing pulse
+      const dotBounce = (idx: number) => Math.sin(p * Math.PI * 8 + idx * 1.1) * 3.5;
       ctx.save();
-      ctx.translate(-138, 212);
-      ctx.fillStyle = "#1E293B";
+      ctx.translate(116, 608 + topShift * 0.5);
+      ctx.fillStyle = "rgba(30, 41, 59, 0.78)";
       ctx.beginPath();
-      ctx.roundRect(-54, -20, 108, 40, 20);
+      ctx.roundRect(-42, -16, 84, 32, 16);
       ctx.fill();
       for (let d = 0; d < 3; d++) {
         ctx.fillStyle = d === 1 ? brand.primaryColor : "#94A3B8";
         ctx.beginPath();
-        ctx.arc(-22 + d * 22, dotBounce(d), 5.5, 0, Math.PI * 2);
+        ctx.arc(-18 + d * 18, dotBounce(d), 4.5, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
     }
-    ctx.restore();
   } else if (config.themeId === "apple-bento-glass") {
-    // ── THEME E: APPLE BENTO GRID / GLASSMORPHISM (Keynote Frosted Glass + Specular Rim) ──
+    // ── THEME E: APPLE KEYNOTE GLASS (Open Luminous Visual Metaphors — De-Boxified!) ──
     const bgGrad = ctx.createLinearGradient(0, 0, bw, bh);
     bgGrad.addColorStop(0, "#050811");
     bgGrad.addColorStop(0.5, "#0B1120");
@@ -1593,343 +1453,423 @@ export function paintMotionBrollCanvas(
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, bw, bh);
 
-    // Ambient Mesh Gradient Orbs behind frosted Bento cards
-    const mesh1 = ctx.createRadialGradient(140, 210, 10, 140, 210, 280);
-    mesh1.addColorStop(0, hexToRgba(brand.primaryColor, 0.34));
+    const mesh1 = ctx.createRadialGradient(145, 220, 10, 145, 220, 290);
+    mesh1.addColorStop(0, hexToRgba(brand.primaryColor, 0.32));
     mesh1.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = mesh1;
     ctx.fillRect(0, 0, bw, bh);
 
-    const mesh2 = ctx.createRadialGradient(410, 480, 10, 410, 480, 280);
-    mesh2.addColorStop(0, hexToRgba(brand.accentColor, 0.28));
+    const mesh2 = ctx.createRadialGradient(405, 470, 10, 405, 470, 290);
+    mesh2.addColorStop(0, hexToRgba(brand.accentColor, 0.24));
     mesh2.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = mesh2;
     ctx.fillRect(0, 0, bw, bh);
 
-    // Helper: Frosted Apple Bento Tile with Specular Top Rim Highlight
-    const drawBentoTile = (
+    const drawGlassCapsule = (
       x: number,
       y: number,
       w: number,
       h: number,
       activeGlow = false,
-      radius = 26,
+      radius = 24,
     ) => {
       ctx.save();
-      ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.34)";
       ctx.beginPath();
-      ctx.roundRect(x + 4, y + 10, w, h, radius);
+      ctx.roundRect(x + 2, y + 8, w, h, radius);
       ctx.fill();
 
-      const tileGrad = ctx.createLinearGradient(x, y, x, y + h);
-      if (activeGlow) {
-        tileGrad.addColorStop(0, hexToRgba(brand.primaryColor, 0.26));
-        tileGrad.addColorStop(1, "rgba(15, 23, 42, 0.88)");
-      } else {
-        tileGrad.addColorStop(0, "rgba(30, 41, 59, 0.78)");
-        tileGrad.addColorStop(1, "rgba(15, 23, 42, 0.88)");
-      }
-      ctx.fillStyle = tileGrad;
-      ctx.strokeStyle = activeGlow
-        ? hexToRgba(brand.primaryColor, 0.85)
-        : "rgba(255, 255, 255, 0.15)";
-      ctx.lineWidth = activeGlow ? 2.5 : 1.8;
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, activeGlow ? hexToRgba(brand.primaryColor, 0.24) : "rgba(30, 41, 59, 0.66)");
+      grad.addColorStop(1, "rgba(15, 23, 42, 0.82)");
+      ctx.fillStyle = grad;
+      ctx.strokeStyle = activeGlow ? hexToRgba(brand.primaryColor, 0.72) : "rgba(255, 255, 255, 0.14)";
+      ctx.lineWidth = activeGlow ? 2 : 1.2;
       ctx.beginPath();
       ctx.roundRect(x, y, w, h, radius);
       ctx.fill();
       ctx.stroke();
-
-      // Top Specular Glass Rim
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(x + radius, y + 1.5);
-      ctx.lineTo(x + w - radius, y + 1.5);
-      ctx.stroke();
       ctx.restore();
     };
 
-    // Keynote Pill Header
-    const topTag = trimPhraseAtWordBoundary(props.headerText ?? "KEY HIGHLIGHTS", 24);
-    ctx.save();
-    ctx.translate(bw / 2, 72);
-    drawBentoTile(-175, -22, 350, 44, false, 22);
-    ctx.fillStyle = brand.primaryColor;
-    ctx.font = `800 15px ${monoFont}`;
-    ctx.textAlign = "center";
-    ctx.fillText(`✦  ${topTag}`, 0, 6, 320);
-    ctx.restore();
+    if (!suppressTopHeader && props.headerText) {
+      const topTag = trimPhraseAtWordBoundary(props.headerText, 28);
+      ctx.save();
+      ctx.translate(bw / 2, 76);
+      drawGlassCapsule(-160, -19, 320, 38, false, 19);
+      drawFittedText(ctx, `✦  ${topTag}`, 0, 5, 290, 13.5, 11, 600, monoFont, "center", brand.primaryColor);
+      ctx.restore();
+    }
 
     const items =
       props.items && props.items.length > 0
         ? props.items
-        : ["ประเด็นสำคัญ 1", "ประเด็นสำคัญ 2", "ประเด็นสำคัญ 3", "สรุปผลลัพธ์"];
+        : ["สคริปต์เปิดฮุกชัด", "เสียงพากย์ไทยธรรมชาติ", "ภาพประกอบเข้าเนื้อหา", "ซับภาษาไทยตัดคำเป๊ะ"];
 
     if (config.templateId === "bento.feature-matrix") {
-      // 2x2 Keynote Bento Grid with Active Spotlight Tile
-      const tiles = [
-        { x: 34, y: 120, w: 226, h: 215, tag: "01 · FOCUS", icon: "⚡" },
-        { x: 280, y: 120, w: 226, h: 215, tag: "02 · INSIGHT", icon: "🎯" },
-        { x: 34, y: 355, w: 226, h: 215, tag: "03 · ACTION", icon: "🚀" },
-        { x: 280, y: 355, w: 226, h: 215, tag: "04 · RESULT", icon: "✨" },
+      // Connected Orbital Hub & 4 Floating Circular Glass Nodes (NO 2x2 rectangular mockup boxes!)
+      const centerX = bw / 2;
+      const centerY = 345 + topShift;
+      const nodePositions = [
+        { x: 138, y: 215 + topShift, icon: "✦" },
+        { x: 402, y: 215 + topShift, icon: "🎙️" },
+        { x: 138, y: 475 + topShift, icon: "🎬" },
+        { x: 402, y: 475 + topShift, icon: "⚡" },
       ];
       const activeIdx = Math.min(3, Math.floor(p * 4));
-      tiles.forEach((t, idx) => {
-        const at = 0.04 + idx * 0.1;
-        if (p < at) return;
-        const tp = easeOutBack(clamp01((p - at) / 0.16));
-        const isCurrent = idx === activeIdx;
+
+      // Animated light beams radiating from Central Core to each orbital node
+      nodePositions.forEach((n, idx) => {
+        const beamP = easeOutCubic(clamp01((p - 0.04 * idx) / 0.25));
+        if (beamP <= 0) return;
         ctx.save();
-        ctx.translate(t.x + t.w / 2, t.y + t.h / 2);
-        ctx.scale(tp, tp);
-        drawBentoTile(-t.w / 2, -t.h / 2, t.w, t.h, isCurrent, 26);
-
-        ctx.fillStyle = isCurrent ? brand.primaryColor : "#94A3B8";
-        ctx.font = `700 13px ${monoFont}`;
-        ctx.textAlign = "left";
-        ctx.fillText(t.tag, -t.w / 2 + 22, -t.h / 2 + 34);
-
-        ctx.font = `900 38px ${font}`;
-        ctx.fillText(t.icon, -t.w / 2 + 22, -4);
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `800 21px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(items[idx] ?? t.tag, 16), -t.w / 2 + 22, 46);
-
-        ctx.fillStyle = isCurrent ? brand.accentColor || "#FACC15" : "rgba(148,163,184,0.65)";
-        ctx.font = `600 14px ${font}`;
-        ctx.fillText(isCurrent ? "● ACTIVE MODULE" : "✓ READY", -t.w / 2 + 22, 78);
+        const beamGrad = ctx.createLinearGradient(centerX, centerY, n.x, n.y);
+        beamGrad.addColorStop(0, hexToRgba(brand.primaryColor, 0.75));
+        beamGrad.addColorStop(1, hexToRgba(brand.accentColor || "#FFE500", idx === activeIdx ? 0.65 : 0.22));
+        ctx.strokeStyle = beamGrad;
+        ctx.lineWidth = idx === activeIdx ? 3 : 1.6;
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(centerX + (n.x - centerX) * beamP, centerY + (n.y - centerY) * beamP);
+        ctx.stroke();
         ctx.restore();
       });
 
-      // Bottom Full-Width Summary Glass Bar
-      if (p > 0.36) {
-        const bp = easeOutBack(clamp01((p - 0.36) / 0.16));
+      // Central Pulsing Core Orb
+      const corePulse = 1 + Math.sin(p * Math.PI * 4) * 0.05;
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(corePulse, corePulse);
+      const coreGlow = ctx.createRadialGradient(0, 0, 8, 0, 0, 72);
+      coreGlow.addColorStop(0, hexToRgba(brand.primaryColor, 0.55));
+      coreGlow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = coreGlow;
+      ctx.beginPath();
+      ctx.arc(0, 0, 72, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+      ctx.strokeStyle = brand.primaryColor;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, 44, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      drawFittedText(ctx, props.badgeText ?? "AI", 0, 6, 68, 16, 12, 700, monoFont, "center", "#FFFFFF");
+      ctx.restore();
+
+      // 4 Floating Circular Icon Orbs + Full Un-Truncated Thai Labels
+      nodePositions.forEach((n, idx) => {
+        const at = 0.05 + idx * 0.09;
+        if (p < at) return;
+        const np = easeOutBack(clamp01((p - at) / 0.18));
+        const isCurrent = idx === activeIdx;
+        const label = cleanDisplayString(items[idx] ?? `องค์ประกอบที่ ${idx + 1}`);
+
         ctx.save();
-        ctx.translate(bw / 2, 628);
-        ctx.scale(bp, bp);
-        drawBentoTile(-236, -34, 472, 68, true, 22);
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `900 22px ${font}`;
+        ctx.translate(n.x, n.y);
+        ctx.scale(np, np);
+
+        // Circular Frosted Orb
+        ctx.fillStyle = isCurrent ? hexToRgba(brand.primaryColor, 0.28) : "rgba(30, 41, 59, 0.78)";
+        ctx.strokeStyle = isCurrent ? (brand.accentColor || brand.primaryColor) : "rgba(255, 255, 255, 0.20)";
+        ctx.lineWidth = isCurrent ? 2.6 : 1.5;
+        ctx.beginPath();
+        ctx.arc(0, -18, 42, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = `600 30px ${font}`;
         ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "4 ระบบหลักทำงานเชื่อมกันอัตโนมัติ", 26), 0, 8);
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillText(n.icon, 0, -7);
+
+        // Open floating pill label underneath orb (generous 216px width — never cuts "ฮุก"!)
+        drawGlassCapsule(-108, 34, 216, 44, isCurrent, 22);
+        drawFittedText(ctx, label, 0, 62, 194, 17.5, 13, 600, font, "center", "#F8FAFC");
+        ctx.restore();
+      });
+
+      // Clean floating summary title below orbital diagram
+      if (p > 0.34 && props.title) {
+        const tp = easeOutCubic(clamp01((p - 0.34) / 0.18));
+        ctx.save();
+        ctx.globalAlpha = tp;
+        drawFittedText(ctx, props.title, bw / 2, 616 + topShift * 0.4, 440, 22, 16, 600, font, "center", "#E2E8F0");
         ctx.restore();
       }
     } else if (config.templateId === "bento.pricing-verdict") {
-      // Old Manual Workflow Card vs Highlighted Pro Bento Verdict Card
-      const c1 = easeOutBack(clamp01((p - 0.04) / 0.16));
+      // Kinetic Time/Effort Compression Flow (or Action Step -> CTA Flow on closing windows)
+      const beforeEnter = easeOutCubic(clamp01((p - 0.04) / 0.18));
+      const strikeP = easeOutCubic(clamp01((p - 0.16) / 0.22));
+      const afterEnter = easeOutBack(clamp01((p - 0.24) / 0.2));
+      const topLineText = props.leftText ?? items[0] ?? "แบบเดิมใช้เวลานาน";
+      const isCtaFlow = /คอมเมนต์|พิมพ์|สั่งซื้อ|ทักแชต|คลิก|เริ่ม/u.test(
+        `${props.rightText ?? ""} ${props.title ?? ""} ${topLineText}`,
+      ) && !/ชั่วโมง|ชม\.|เสียเวลา|ช้า|แพง|ยาก|เดิม/u.test(topLineText);
+
+      // Top: Muted "Before" Timeline Bar (or Clean Step-1 Capsule on CTA windows)
       ctx.save();
-      ctx.translate(bw / 2, 225);
-      ctx.scale(c1, c1);
-      drawBentoTile(-236, -88, 472, 176, false, 26);
+      ctx.translate(bw / 2, 205 + topShift);
+      ctx.globalAlpha = beforeEnter;
+      if (isCtaFlow) {
+        drawGlassCapsule(-180, -34, 360, 52, false, 26);
+        drawFittedText(ctx, `01  ·  ${topLineText}`, 0, -1, 324, 21, 15, 600, font, "center", "#E2E8F0");
+      } else {
+        const { width: topW } = drawFittedText(
+          ctx,
+          topLineText,
+          0,
+          -24,
+          420,
+          24,
+          17,
+          600,
+          font,
+          "center",
+          "#94A3B8",
+        );
 
-      ctx.fillStyle = "#EF4444";
-      ctx.font = `800 15px ${monoFont}`;
-      ctx.textAlign = "left";
-      ctx.fillText("BEFORE · วิธีเดิมที่เสียเปรียบ", -204, -46, 408);
+        // Long red/slate bar representing heavy manual effort
+        ctx.fillStyle = "rgba(239, 68, 68, 0.20)";
+        ctx.strokeStyle = "rgba(239, 68, 68, 0.50)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(-200, -4, 400, 20, 10);
+        ctx.fill();
+        ctx.stroke();
 
-      ctx.fillStyle = "#94A3B8";
-      ctx.font = `800 28px ${font}`;
-      ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? items[0] ?? "ขั้นตอนยุ่งยาก ใช้เวลานาน", 22), -204, 4, 408);
-
-      // Animated red strikethrough line
-      const strikeP = clamp01((p - 0.18) / 0.2);
-      ctx.strokeStyle = "#EF4444";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(-204, -6);
-      ctx.lineTo(-204 + 340 * strikeP, -6);
-      ctx.stroke();
-
-      ctx.fillStyle = "#64748B";
-      ctx.font = `600 18px ${font}`;
-      ctx.fillText(trimPhraseAtWordBoundary(props.subtitle ?? "× ต้นทุนแฝงสูง   × คุมมาตรฐานยาก", 34), -204, 52, 408);
+        // Clean centered strike-through sweep across the old text only
+        if (strikeP > 0 && topW > 0) {
+          const halfW = Math.min(180, topW / 2 + 12);
+          ctx.strokeStyle = "rgba(239, 68, 68, 0.88)";
+          ctx.lineWidth = 2.8;
+          ctx.beginPath();
+          ctx.moveTo(-halfW, -31);
+          ctx.lineTo(-halfW + halfW * 2 * strikeP, -31);
+          ctx.stroke();
+        }
+      }
       ctx.restore();
 
-      // Bottom Highlighted Bento Verdict Card
-      if (p > 0.22) {
-        const c2 = easeOutBack(clamp01((p - 0.22) / 0.18));
+      // Center: Glowing Animated Compression Arrow / Beam
+      if (p > 0.14) {
+        const arrowP = easeOutCubic(clamp01((p - 0.14) / 0.2));
         ctx.save();
-        ctx.translate(bw / 2, 470);
-        ctx.scale(c2, c2);
-        drawBentoTile(-236, -124, 472, 248, true, 30);
-
-        ctx.fillStyle = brand.primaryColor;
+        ctx.translate(bw / 2, 290 + topShift);
+        ctx.strokeStyle = brand.accentColor || brand.primaryColor;
+        ctx.lineWidth = 3.5;
+        ctx.lineCap = "round";
         ctx.beginPath();
-        ctx.roundRect(-204, -96, 176, 32, 10);
-        ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `900 14px ${monoFont}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "KEY TAKEAWAY", 16), -116, -75, 164);
+        ctx.moveTo(0, -28);
+        ctx.lineTo(0, -28 + 56 * arrowP);
+        ctx.stroke();
+        if (arrowP > 0.7) {
+          ctx.beginPath();
+          ctx.moveTo(-12, 16);
+          ctx.lineTo(0, 28);
+          ctx.lineTo(12, 16);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
 
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `900 34px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? props.title ?? "ทางเลือกที่คุ้มค่าและชัดเจนกว่า", 22), -204, -22, 408);
+      // Bottom: Radiant Spotlight Outcome + Sleek Compressed Sprint Bar
+      if (p > 0.24) {
+        ctx.save();
+        ctx.translate(bw / 2, 435 + topShift);
+        ctx.scale(afterEnter, afterEnter);
+        drawGlassCapsule(-224, -84, 448, 196, true, 30);
+
+        if (props.badgeText) {
+          ctx.fillStyle = brand.primaryColor;
+          ctx.beginPath();
+          ctx.roundRect(-78, -66, 156, 28, 14);
+          ctx.fill();
+          drawFittedText(ctx, props.badgeText, 0, -47, 138, 13.5, 11, 700, monoFont, "center", "#090D16");
+        }
+
+        drawFittedText(
+          ctx,
+          props.rightText ?? props.title ?? "จบไวขึ้นด้วยระบบอัตโนมัติ",
+          0,
+          -4,
+          404,
+          32,
+          21,
+          700,
+          font,
+          "center",
+          "#FFFFFF",
+        );
+
+        // Compact glowing green/accent sprint bar (visually 1/4th the old bar!)
+        ctx.fillStyle = "rgba(255,255,255,0.10)";
+        ctx.beginPath();
+        ctx.roundRect(-180, 22, 360, 14, 7);
+        ctx.fill();
+        ctx.fillStyle = brand.accentColor || "#34D399";
+        ctx.beginPath();
+        ctx.roundRect(-180, 22, 96, 14, 7);
+        ctx.fill();
 
         items.slice(0, 2).forEach((point, idx) => {
-          ctx.fillStyle = "#E2E8F0";
-          ctx.font = `700 20px ${font}`;
-          ctx.fillText(`✓  ${trimPhraseAtWordBoundary(point, 26)}`, -204, 34 + idx * 38, 408);
+          drawFittedText(
+            ctx,
+            `✓  ${point}`,
+            0,
+            66 + idx * 30,
+            396,
+            17.5,
+            13,
+            600,
+            font,
+            "center",
+            "#E2E8F0",
+          );
         });
         ctx.restore();
       }
     } else {
-      // Default: bento.glass-metrics (Hero KPI Card with Script-Derived Counter + 2 Sub-Bento Cards)
-      const heroEnter = easeOutBack(clamp01(p / 0.16));
-      ctx.save();
-      ctx.translate(bw / 2, 255);
-      ctx.scale(heroEnter, heroEnter);
-      drawBentoTile(-236, -135, 472, 270, true, 30);
+      // bento.glass-metrics: Open Keynote Radial Arc Gauge + Floating Capsules
+      const ringCenterY = 290 + topShift;
+      const sweep = easeOutCubic(clamp01(p / 0.58));
 
-      ctx.fillStyle = "#94A3B8";
-      ctx.font = `700 16px ${monoFont}`;
-      ctx.textAlign = "left";
-      ctx.fillText(trimPhraseAtWordBoundary(props.headerText ?? "KEY HIGHLIGHT METRIC", 28), -202, -92, 404);
-
-      // Parse real number from badgeText/title/subtitle when present; otherwise show clean focal step/percentage
-      const metricMatch = `${props.badgeText ?? ""} ${props.title ?? ""} ${props.subtitle ?? ""}`.match(
-        /([+-]?\d[\d,.]*)\s*(%|เท่า|x|X|ข้อ|ขั้น|วัน|นาที|วินาที|บาท)?/,
+      const metricMatch = `${props.title ?? ""} ${props.badgeText ?? ""} ${props.subtitle ?? ""}`.match(
+        /([+-]?\d[\d,.]*)\s*(%|เท่า|x|X|ข้อ|ขั้นตอน|ขั้น|วัน|นาที|ชั่วโมง|ชม\.?|วินาที|บาท|คลิก)?/u,
       );
       const parsedNum = metricMatch ? Number(metricMatch[1]!.replace(/,/g, "")) : NaN;
       const targetNum = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 100;
-      const unitSuffix = metricMatch?.[2] ?? "%";
-      const animatedVal = Math.round(clamp01(p / 0.55) * targetNum);
+      const unitSuffix = metricMatch?.[2] ? ` ${metricMatch[2]}` : "%";
+      const animatedVal = Math.max(1, Math.round(sweep * targetNum));
       const formattedMetric = `${targetNum >= 1000 ? animatedVal.toLocaleString("en-US") : animatedVal}${unitSuffix}`;
 
+      // Outer luminous gauge track & active arc
+      ctx.save();
+      ctx.translate(bw / 2, ringCenterY);
+      ctx.lineCap = "round";
+      ctx.lineWidth = 16;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.09)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 118, Math.PI * 0.78, Math.PI * 2.22);
+      ctx.stroke();
+
+      const arcGrad = ctx.createLinearGradient(-118, 0, 118, 0);
+      arcGrad.addColorStop(0, brand.primaryColor);
+      arcGrad.addColorStop(1, brand.accentColor || "#FFE500");
+      ctx.strokeStyle = arcGrad;
+      const endAngle = Math.PI * (0.78 + 1.44 * sweep);
+      ctx.beginPath();
+      ctx.arc(0, 0, 118, Math.PI * 0.78, endAngle);
+      ctx.stroke();
+
+      // Glowing comet dot at tip of arc
+      const tipX = Math.cos(endAngle) * 118;
+      const tipY = Math.sin(endAngle) * 118;
       ctx.fillStyle = "#FFFFFF";
-      ctx.font = `900 68px ${font}`;
-      ctx.fillText(formattedMetric, -202, -8, 264);
-
-      // Glowing Status Pill
-      ctx.fillStyle = "rgba(34, 197, 94, 0.22)";
-      ctx.strokeStyle = "#22C55E";
-      ctx.lineWidth = 2;
+      ctx.shadowColor = brand.accentColor || brand.primaryColor;
+      ctx.shadowBlur = 16;
       ctx.beginPath();
-      ctx.roundRect(72, -62, 132, 42, 21);
+      ctx.arc(tipX, tipY, 8, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#4ADE80";
-      ctx.font = `800 16px ${monoFont}`;
-      ctx.textAlign = "center";
-      ctx.fillText("▲ KEY POINT", 138, -35, 120);
+      ctx.shadowBlur = 0;
 
-      ctx.fillStyle = "#F8FAFC";
-      ctx.font = `800 24px ${font}`;
-      ctx.textAlign = "left";
-      ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "สรุปข้อมูลสำคัญที่ต้องรู้", 24), -202, 44, 404);
-
-      // Smooth Sparkline Curve inside Hero Bento Card
-      const sparkP = clamp01((p - 0.1) / 0.5);
-      ctx.strokeStyle = brand.primaryColor;
-      ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.moveTo(-202, 102);
-      ctx.bezierCurveTo(-90, 98, 10, 42, -202 + 404 * sparkP, 102 - 64 * sparkP);
-      ctx.stroke();
+      // Hero metric inside open ring
+      drawFittedText(ctx, formattedMetric, 0, 12, 196, 48, 28, 700, font, "center", "#FFFFFF");
+      if (props.badgeText) {
+        drawFittedText(ctx, props.badgeText, 0, 52, 160, 14, 11, 600, monoFont, "center", brand.accentColor || "#94A3B8");
+      }
       ctx.restore();
 
-      // 2 Bottom Sub-Bento Cards
-      const subCards = [
-        { x: 34, title: items[0] ?? "ประเด็นหลักข้อที่ 1", sub: items[2] ?? "ชัดเจน เข้าใจง่าย" },
-        { x: 280, title: items[1] ?? "ประเด็นหลักข้อที่ 2", sub: props.badgeText ?? "นำไปใช้ได้จริง" },
-      ];
-      subCards.forEach((sc, idx) => {
+      // Subtitle / Headline floating cleanly underneath ring
+      drawFittedText(
+        ctx,
+        props.subtitle ?? props.title ?? "สรุปข้อมูลสำคัญที่ต้องรู้",
+        bw / 2,
+        452 + topShift,
+        444,
+        22,
+        16,
+        600,
+        font,
+        "center",
+        "#F8FAFC",
+      );
+
+      // 2 Sleek Floating Capsules at bottom
+      items.slice(0, 2).forEach((item, idx) => {
         const at = 0.22 + idx * 0.12;
         if (p < at) return;
-        const sp = easeOutBack(clamp01((p - at) / 0.16));
+        const cp = easeOutBack(clamp01((p - at) / 0.16));
+        const y = 516 + topShift * 0.6 + idx * 58;
         ctx.save();
-        ctx.translate(sc.x + 113, 505);
-        ctx.scale(sp, sp);
-        drawBentoTile(-113, -95, 226, 190, false, 26);
-
-        ctx.fillStyle = brand.primaryColor;
-        ctx.beginPath();
-        ctx.arc(-72, -46, 18, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#090D16";
-        ctx.font = `900 18px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(idx === 0 ? "01" : "02", -72, -40);
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `800 20px ${font}`;
-        ctx.textAlign = "left";
-        ctx.fillText(trimPhraseAtWordBoundary(sc.title, 15), -88, 14);
-        ctx.fillStyle = "#94A3B8";
-        ctx.font = `600 16px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(sc.sub, 18), -88, 48);
+        ctx.translate(bw / 2, y);
+        ctx.scale(cp, cp);
+        drawGlassCapsule(-205, -22, 410, 44, idx === 0, 22);
+        drawFittedText(ctx, `✦  ${item}`, 0, 6, 374, 17.5, 13, 600, font, "center", "#E2E8F0");
         ctx.restore();
       });
     }
   } else {
-    // ── THEME B: DOODLE EXPLAINER (Ref 1 Editorial Hand-Drawn Vector Style) ──
-    if (props.headerText) {
-      const cleanH = trimPhraseAtWordBoundary(props.headerText, 26);
-      const headerW = Math.min(450, Math.max(210, cleanH.length * 16 + 52));
+    // ── THEME B: DOODLE EXPLAINER (Ref 1 Expressive Illustration + Clean Thai Labels) ──
+    if (!suppressTopHeader && props.headerText) {
+      const cleanH = trimPhraseAtWordBoundary(props.headerText, 28);
+      ctx.font = `700 22px ${font}`;
+      const headerW = Math.min(464, Math.max(200, ctx.measureText(cleanH).width + 54));
       ctx.save();
-      ctx.translate(bw / 2, 70);
-      ctx.rotate(-0.018);
-      drawCard(-headerW / 2, -28, headerW, 56, "#FFFFFF", 16, "#111827", 4.5);
-      ctx.fillStyle = "#111827";
-      ctx.font = `900 26px ${font}`;
-      ctx.textAlign = "center";
-      ctx.fillText(cleanH, 0, 9);
+      ctx.translate(bw / 2, 72);
+      ctx.rotate(-0.015);
+      drawCard(-headerW / 2, -25, headerW, 50, "#FFFFFF", 25, "#111827", 3.6);
+      drawFittedText(ctx, cleanH, 0, 8, headerW - 36, 22, 16, 700, font, "center", "#111827");
       ctx.restore();
     }
 
     const items =
       props.items && props.items.length > 0
         ? props.items
-        : ["วางซีรีส์", "ตัวละครประจำช่อง", "สูตร Hook", "โครงตอนสั้นกระชับ"];
+        : ["วางซีรีส์ชัด", "ตัวละครจำง่าย", "เปิดฮุกทันที", "จบกระชับ"];
 
     switch (entry.archetypeId) {
       case "hook-character": {
         const walkP = clamp01(p / 0.55);
-        const charX = 165 + walkP * 28;
+        const charX = 162 + walkP * 28;
         const surprised = p > 0.38;
-        drawStickman(charX, 505, 1.06, walkP * 2, surprised, p > 0.25 ? "right" : "none");
+        drawStickman(charX, 505, 1.05, walkP * 2, surprised, p > 0.25 ? "right" : "none");
 
-        // Clock with animated sweep hand & clear time badge
         if (p > 0.1) {
           const cp = easeOutBack(clamp01((p - 0.1) / 0.18));
-          const clockLabel = trimPhraseAtWordBoundary(props.badgeText ?? "3 วินาทีแรก", 12);
+          const clockLabel = trimPhraseAtWordBoundary(props.badgeText ?? "3 วินาทีแรก", 18);
           ctx.save();
-          ctx.translate(382, 360);
+          ctx.translate(382, 360 + topShift * 0.5);
           ctx.scale(cp, cp);
-          drawCard(-86, -86, 172, 172, "#FFFFFF", 86, "#111827", 4.5);
+          drawCard(-88, -88, 176, 176, "#FFFFFF", 88, "#111827", 4);
 
-          // Clock tick marks
           ctx.strokeStyle = "#9CA3AF";
-          ctx.lineWidth = 3;
+          ctx.lineWidth = 2.8;
           for (let t = 0; t < 12; t++) {
             const a = (t / 12) * Math.PI * 2;
             ctx.beginPath();
-            ctx.moveTo(Math.cos(a) * 66, Math.sin(a) * 66);
-            ctx.lineTo(Math.cos(a) * 74, Math.sin(a) * 74);
+            ctx.moveTo(Math.cos(a) * 68, Math.sin(a) * 68);
+            ctx.lineTo(Math.cos(a) * 76, Math.sin(a) * 76);
             ctx.stroke();
           }
 
           const handAngle = -Math.PI * 0.85 + clamp01((p - 0.12) / 0.45) * Math.PI * 0.65;
           ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 5;
+          ctx.lineWidth = 4.5;
           ctx.beginPath();
-          ctx.moveTo(0, -6);
-          ctx.lineTo(Math.cos(handAngle) * 42, -6 + Math.sin(handAngle) * 42);
+          ctx.moveTo(0, -10);
+          ctx.lineTo(Math.cos(handAngle) * 40, -10 + Math.sin(handAngle) * 40);
           ctx.stroke();
 
           ctx.strokeStyle = brand.primaryColor;
-          ctx.lineWidth = 5;
+          ctx.lineWidth = 4.5;
           ctx.beginPath();
-          ctx.moveTo(0, -6);
-          ctx.lineTo(44, -6);
+          ctx.moveTo(0, -10);
+          ctx.lineTo(42, -10);
           ctx.stroke();
 
-          ctx.fillStyle = "#111827";
-          ctx.font = `900 22px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(clockLabel, 0, 42);
+          drawFittedText(ctx, clockLabel, 0, 42, 142, 19, 13, 700, font, "center", "#111827");
           ctx.restore();
         }
 
@@ -1938,11 +1878,11 @@ export function paintMotionBrollCanvas(
           ctx.save();
           ctx.translate(charX + 4, 326);
           ctx.scale(qp, qp);
-          ctx.font = `900 66px ${font}`;
+          ctx.font = `700 62px ${font}`;
           ctx.textAlign = "center";
           ctx.fillStyle = "#FACC15";
           ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 6;
+          ctx.lineWidth = 5;
           ctx.strokeText("?", 0, 0);
           ctx.fillText("?", 0, 0);
           ctx.restore();
@@ -1951,112 +1891,125 @@ export function paintMotionBrollCanvas(
       }
 
       case "three-cards-progression": {
-        const labels = [
-          trimPhraseAtWordBoundary(items[0] ?? "ขั้นที่ 1", 10),
-          trimPhraseAtWordBoundary(items[1] ?? "ขั้นที่ 2", 10),
-          trimPhraseAtWordBoundary(items[2] ?? "ขั้นที่ 3", 10),
+        // Open Hand-Drawn Milestone Trail + Circular Flame/Energy Medallions (NO narrow 112px boxes that cut Thai words!)
+        const stageItems = [
+          cleanDisplayString(items[0] ?? "ตอน 1 ไฟแรง"),
+          cleanDisplayString(items[1] ?? "ตอน 2 เริ่มช้า"),
+          cleanDisplayString(items[2] ?? "ตอน 3 หมดไฟ"),
         ];
-        const flames = [1.0, 0.55, 0.0];
-        labels.forEach((lbl, idx) => {
+        const coords = [
+          { x: 108, y: 310 + topShift * 0.4, flame: 1.0 },
+          { x: 266, y: 382 + topShift * 0.4, flame: 0.58 },
+          { x: 424, y: 454 + topShift * 0.4, flame: 0.0 },
+        ];
+
+        // Curved dotted ink trail connecting milestones
+        ctx.save();
+        ctx.strokeStyle = "rgba(17, 24, 39, 0.45)";
+        ctx.lineWidth = 3.5;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(coords[0]!.x, coords[0]!.y);
+        ctx.quadraticCurveTo(coords[1]!.x, coords[1]!.y - 12, coords[2]!.x, coords[2]!.y);
+        ctx.stroke();
+        ctx.restore();
+
+        coords.forEach((c, idx) => {
           const at = 0.05 + idx * 0.14;
           if (p < at) return;
           const cp = easeOutBack(clamp01((p - at) / 0.16));
-          const x = 44 + idx * 134;
-          ctx.save();
-          ctx.translate(x + 58, 435);
-          ctx.scale(cp, cp);
-          drawCard(-56, -80, 112, 150, "#FFFFFF", 14, "#111827", 4.2);
-          ctx.fillStyle = "#111827";
-          ctx.font = `900 20px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(lbl, 0, 22, 98);
+          const lbl = stageItems[idx]!;
 
-          const fScale = flames[idx] ?? 0;
-          if (fScale > 0) {
+          ctx.save();
+          ctx.translate(c.x, c.y);
+          ctx.scale(cp, cp);
+
+          // Circular emblem instead of narrow rectangle
+          drawCard(-46, -46, 92, 92, "#FFFFFF", 46, "#111827", 3.6);
+
+          if (c.flame > 0) {
             ctx.save();
-            ctx.translate(0, -76);
-            ctx.scale(fScale, fScale);
+            ctx.translate(0, 6);
+            ctx.scale(c.flame * 0.82, c.flame * 0.82);
             ctx.fillStyle = "#F97316";
             ctx.strokeStyle = "#111827";
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 3.6;
             ctx.beginPath();
-            ctx.moveTo(0, -52);
-            ctx.bezierCurveTo(34, -18, 38, 24, 0, 38);
-            ctx.bezierCurveTo(-38, 24, -34, -18, 0, -52);
+            ctx.moveTo(0, -44);
+            ctx.bezierCurveTo(30, -14, 34, 22, 0, 34);
+            ctx.bezierCurveTo(-34, 22, -30, -14, 0, -44);
             ctx.fill();
             ctx.stroke();
 
             ctx.fillStyle = "#FACC15";
             ctx.beginPath();
-            ctx.moveTo(0, -24);
-            ctx.bezierCurveTo(16, -6, 18, 18, 0, 28);
-            ctx.bezierCurveTo(-18, 18, -16, -6, 0, -24);
+            ctx.moveTo(0, -20);
+            ctx.bezierCurveTo(14, -4, 16, 16, 0, 24);
+            ctx.bezierCurveTo(-16, 16, -14, -4, 0, -20);
             ctx.fill();
             ctx.restore();
           } else {
-            ctx.strokeStyle = "#9CA3AF";
-            ctx.lineWidth = 3.8;
+            // Exhausted smoke spiral
+            ctx.strokeStyle = "#6B7280";
+            ctx.lineWidth = 3.5;
             ctx.beginPath();
-            ctx.moveTo(0, -56);
-            ctx.quadraticCurveTo(-10, -80, 6, -104);
-            ctx.quadraticCurveTo(16, -122, -4, -140);
+            ctx.moveTo(-6, 18);
+            ctx.quadraticCurveTo(-16, -4, 6, -16);
+            ctx.quadraticCurveTo(18, -26, -2, -34);
             ctx.stroke();
           }
+
+          // Wide pill ribbon underneath medallion (156px wide, auto-fitted — zero word chopping!)
+          drawCard(-78, 56, 156, 40, "#FFFFFF", 20, "#111827", 3.2);
+          drawFittedText(ctx, lbl, 0, 82, 138, 17, 12.5, 600, font, "center", "#111827");
           ctx.restore();
         });
 
-        if (p > 0.38) {
+        if (p > 0.38 && props.badgeText) {
           const bp = easeOutBack(clamp01((p - 0.38) / 0.16));
+          const badge = trimPhraseAtWordBoundary(props.badgeText, 22);
           ctx.save();
-          ctx.translate(242, 232);
+          ctx.translate(330, 218 + topShift * 0.5);
           ctx.scale(bp, bp);
-          drawCard(-94, -28, 188, 56, "#EF4444", 14, "#111827", 4.2);
-          ctx.fillStyle = "#FFFFFF";
-          ctx.font = `900 26px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "จำช่องไม่ได้", 14), 0, 9);
+          drawCard(-108, -24, 216, 48, "#EF4444", 24, "#111827", 3.6);
+          drawFittedText(ctx, badge, 0, 7, 190, 20, 14, 700, font, "center", "#FFFFFF");
           ctx.restore();
         }
-        drawStickman(468, 505, 0.78, 0, p > 0.38, "left");
+        drawStickman(124, 545, 0.78, 0, p > 0.38, "right");
         break;
       }
 
       case "chart-vs-reality": {
-        drawStickman(270, 515, 0.88, 0, false, p > 0.34 ? "right" : "left");
+        drawStickman(270, 560, 0.82, 0, false, p > 0.34 ? "right" : "left");
         if (p > 0.04) {
           const cp = easeOutBack(clamp01((p - 0.04) / 0.16));
           ctx.save();
-          ctx.translate(145, 375);
+          ctx.translate(142, 304 + topShift * 0.4);
           ctx.scale(cp, cp);
-          drawCard(-102, -98, 204, 196, "#FFFFFF", 16);
+          drawCard(-102, -84, 204, 168, "#FFFFFF", 22, "#111827", 3.6);
           ctx.strokeStyle = "#22C55E";
-          ctx.lineWidth = 7;
+          ctx.lineWidth = 6;
           ctx.lineCap = "round";
-          ctx.lineJoin = "round";
           ctx.beginPath();
-          ctx.moveTo(-68, 30);
-          ctx.lineTo(-24, -5);
-          ctx.lineTo(14, 10);
-          ctx.lineTo(66, -60);
+          ctx.moveTo(-66, 16);
+          ctx.lineTo(-22, -14);
+          ctx.lineTo(14, 0);
+          ctx.lineTo(64, -52);
           ctx.stroke();
 
-          drawCard(-92, 44, 184, 42, "#FFFFFF", 10);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 18px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "สัญญายอดวิว", 14), 0, 71);
+          drawFittedText(ctx, props.leftText ?? "คาดหวังสูง", 0, 58, 180, 17.5, 13, 600, font, "center", "#111827");
 
           if (p > 0.2) {
             const xp = clamp01((p - 0.2) / 0.15);
             ctx.strokeStyle = "#EF4444";
-            ctx.lineWidth = 9;
+            ctx.lineWidth = 7;
             ctx.beginPath();
-            ctx.moveTo(-66, -62);
-            ctx.lineTo(-66 + 132 * xp, -62 + 96 * xp);
+            ctx.moveTo(-56, -52);
+            ctx.lineTo(-56 + 112 * xp, -52 + 74 * xp);
             if (xp > 0.5) {
               const xp2 = (xp - 0.5) * 2;
-              ctx.moveTo(66, -62);
-              ctx.lineTo(66 - 132 * xp2, -62 + 96 * xp2);
+              ctx.moveTo(56, -52);
+              ctx.lineTo(56 - 112 * xp2, -52 + 74 * xp2);
             }
             ctx.stroke();
           }
@@ -2066,108 +2019,80 @@ export function paintMotionBrollCanvas(
         if (p > 0.32) {
           const cp = easeOutBack(clamp01((p - 0.32) / 0.16));
           ctx.save();
-          ctx.translate(395, 375);
+          ctx.translate(398, 304 + topShift * 0.4);
           ctx.scale(cp, cp);
-          drawCard(-102, -98, 204, 196, "#FFFFFF", 16);
+          drawCard(-102, -84, 204, 168, "#FFFFFF", 22, "#111827", 3.6);
           for (let i = 0; i < 4; i++) {
             const bx = -76 + i * 39;
             const by = -28;
             ctx.strokeStyle = "#111827";
-            ctx.lineWidth = 3.5;
+            ctx.lineWidth = 3.2;
             ctx.beginPath();
-            ctx.roundRect(bx, by, 31, 31, 6);
+            ctx.roundRect(bx, by, 30, 30, 7);
             ctx.stroke();
             if (p > 0.38 + i * 0.07) {
               ctx.strokeStyle = brand.primaryColor;
-              ctx.lineWidth = 4.5;
+              ctx.lineWidth = 4.2;
               ctx.beginPath();
               ctx.moveTo(bx + 6, by + 15);
-              ctx.lineTo(bx + 13, by + 23);
-              ctx.lineTo(bx + 25, by + 8);
+              ctx.lineTo(bx + 13, by + 22);
+              ctx.lineTo(bx + 24, by + 8);
               ctx.stroke();
             }
           }
-          drawCard(-92, 44, 184, 42, "#FFFFFF", 10);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 18px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "ทำซ้ำทุกสัปดาห์", 14), 0, 71);
+          drawFittedText(ctx, props.rightText ?? "ทำซ้ำได้ทุกสัปดาห์", 0, 58, 180, 17.5, 13, 600, font, "center", "#111827");
           ctx.restore();
         }
         break;
       }
 
       case "step-checklist": {
-        // Left 3D Hardcover Book with spine + smiley badge + Right Checklist (Ref 1 E-book layout)
         const bookEnter = easeOutBack(clamp01(p / 0.16));
         ctx.save();
-        ctx.translate(128, 385);
+        ctx.translate(118, 385 + topShift * 0.4);
         ctx.scale(bookEnter, bookEnter);
-        ctx.rotate(-0.08);
-        // Book pages block
-        drawCard(-74, -98, 154, 204, "#FFFFFF", 12);
-        // Book cover in Brand Primary
-        drawCard(-80, -106, 154, 204, brand.primaryColor, 12);
-        // Spine line
+        ctx.rotate(-0.07);
+        drawCard(-70, -94, 144, 194, "#FFFFFF", 14, "#111827", 3.6);
+        drawCard(-76, -102, 144, 194, brand.primaryColor, 14, "#111827", 3.6);
         ctx.strokeStyle = "#111827";
-        ctx.lineWidth = 3.5;
+        ctx.lineWidth = 3.2;
         ctx.beginPath();
-        ctx.moveTo(-58, -106);
-        ctx.lineTo(-58, 98);
+        ctx.moveTo(-54, -102);
+        ctx.lineTo(-54, 92);
         ctx.stroke();
 
-        // White title label on book cover
-        drawCard(-44, -76, 102, 42, "#FFFFFF", 8, "#111827", 3.5);
-        ctx.fillStyle = "#111827";
-        ctx.font = `900 18px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(trimPhraseAtWordBoundary(props.title ?? "คู่มือสำคัญ", 10), 7, -49, 92);
-
-        // Smiley mini icon on book cover
-        ctx.fillStyle = "#FFFFFF";
-        ctx.beginPath();
-        ctx.arc(32, 54, 22, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = "#111827";
-        ctx.beginPath();
-        ctx.arc(26, 50, 2.5, 0, Math.PI * 2);
-        ctx.arc(38, 50, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(32, 54, 8, 0.15 * Math.PI, 0.85 * Math.PI);
-        ctx.stroke();
+        drawCard(-42, -72, 98, 40, "#FFFFFF", 8, "#111827", 3);
+        drawFittedText(ctx, props.title ?? "สูตรสำเร็จ", 7, -46, 86, 16, 11.5, 700, font, "center", "#111827");
         ctx.restore();
 
         items.slice(0, 4).forEach((item, idx) => {
           const at = 0.1 + idx * 0.11;
           if (p < at) return;
           const ip = easeOutBack(clamp01((p - at) / 0.14));
-          const y = 268 + idx * 66;
+          const y = 268 + topShift * 0.4 + idx * 66;
           ctx.save();
-          ctx.translate(348, y);
+          ctx.translate(344, y);
           ctx.scale(ip, ip);
+
+          // Circular check badge + clean pill
           ctx.fillStyle = "#FFFFFF";
           ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 3.8;
+          ctx.lineWidth = 3.2;
           ctx.beginPath();
-          ctx.roundRect(-115, -20, 36, 36, 8);
+          ctx.arc(-118, 0, 18, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
 
           ctx.strokeStyle = brand.primaryColor;
-          ctx.lineWidth = 5;
+          ctx.lineWidth = 4;
           ctx.beginPath();
-          ctx.moveTo(-108, -2);
-          ctx.lineTo(-98, 8);
-          ctx.lineTo(-84, -10);
+          ctx.moveTo(-125, 0);
+          ctx.lineTo(-119, 6);
+          ctx.lineTo(-110, -6);
           ctx.stroke();
 
-          drawCard(-66, -23, 214, 42, "#FFFFFF", 10, "#111827", 3.5);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 18px ${font}`;
-          ctx.textAlign = "left";
-          ctx.fillText(trimPhraseAtWordBoundary(item, 18), -52, 5);
+          drawCard(-90, -21, 252, 42, "#FFFFFF", 21, "#111827", 3.2);
+          drawFittedText(ctx, item, 36, 6, 224, 17.5, 13, 600, font, "center", "#111827");
           ctx.restore();
         });
         break;
@@ -2175,224 +2100,184 @@ export function paintMotionBrollCanvas(
 
       case "flow-diagram": {
         const coords = [
-          { x: 145, y: 262, at: 0.04, icon: "doc" },
-          { x: 395, y: 262, at: 0.15, icon: "audio" },
-          { x: 145, y: 462, at: 0.27, icon: "scene" },
-          { x: 395, y: 462, at: 0.39, icon: "play" },
+          { x: 145, y: 262 + topShift * 0.4, at: 0.04, icon: "doc" },
+          { x: 395, y: 262 + topShift * 0.4, at: 0.15, icon: "audio" },
+          { x: 145, y: 462 + topShift * 0.4, at: 0.27, icon: "scene" },
+          { x: 395, y: 462 + topShift * 0.4, at: 0.39, icon: "play" },
         ];
         ctx.strokeStyle = "#111827";
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 3.6;
         if (p > 0.12) {
           ctx.beginPath();
-          ctx.moveTo(212, 254);
-          ctx.quadraticCurveTo(270, 234, 326, 254);
-          ctx.stroke();
-          // Arrowhead
-          ctx.beginPath();
-          ctx.moveTo(316, 245);
-          ctx.lineTo(328, 255);
-          ctx.lineTo(314, 263);
+          ctx.moveTo(212, coords[0]!.y - 8);
+          ctx.quadraticCurveTo(270, coords[0]!.y - 28, 326, coords[1]!.y - 8);
           ctx.stroke();
         }
         if (p > 0.24) {
           ctx.beginPath();
-          ctx.moveTo(340, 315);
-          ctx.quadraticCurveTo(270, 375, 205, 415);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(218, 415);
-          ctx.lineTo(203, 417);
-          ctx.lineTo(209, 403);
+          ctx.moveTo(340, coords[1]!.y + 52);
+          ctx.quadraticCurveTo(270, coords[1]!.y + 112, 205, coords[2]!.y - 46);
           ctx.stroke();
         }
         if (p > 0.36) {
           ctx.beginPath();
-          ctx.moveTo(212, 456);
-          ctx.quadraticCurveTo(270, 440, 326, 456);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(316, 447);
-          ctx.lineTo(328, 457);
-          ctx.lineTo(314, 465);
+          ctx.moveTo(212, coords[2]!.y - 6);
+          ctx.quadraticCurveTo(270, coords[2]!.y - 22, 326, coords[3]!.y - 6);
           ctx.stroke();
         }
 
         coords.forEach((c, idx) => {
           if (p < c.at) return;
           const np = easeOutBack(clamp01((p - c.at) / 0.14));
-          const lbl = trimPhraseAtWordBoundary(items[idx] ?? `ขั้น ${idx + 1}`, 16);
+          const lbl = cleanDisplayString(items[idx] ?? `ขั้นที่ ${idx + 1}`);
           ctx.save();
           ctx.translate(c.x, c.y);
           ctx.scale(np, np);
           ctx.fillStyle = "#FFFFFF";
           ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 4.5;
+          ctx.lineWidth = 4;
           ctx.beginPath();
-          ctx.arc(0, 0, 48, 0, Math.PI * 2);
+          ctx.arc(0, 0, 46, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
 
-          // Vector icon inside circle (Ref 1 style)
           if (c.icon === "doc") {
-            ctx.strokeRect(-16, -20, 32, 40);
+            ctx.strokeRect(-15, -19, 30, 38);
             ctx.beginPath();
-            ctx.moveTo(-9, -8);
-            ctx.lineTo(9, -8);
-            ctx.moveTo(-9, 2);
-            ctx.lineTo(9, 2);
-            ctx.moveTo(-9, 12);
-            ctx.lineTo(4, 12);
+            ctx.moveTo(-8, -7);
+            ctx.lineTo(8, -7);
+            ctx.moveTo(-8, 2);
+            ctx.lineTo(8, 2);
+            ctx.moveTo(-8, 11);
+            ctx.lineTo(4, 11);
             ctx.stroke();
           } else if (c.icon === "audio") {
             ctx.beginPath();
-            ctx.moveTo(-16, -8);
-            ctx.lineTo(-6, -8);
-            ctx.lineTo(6, -18);
-            ctx.lineTo(6, 18);
-            ctx.lineTo(-6, 8);
-            ctx.lineTo(-16, 8);
+            ctx.moveTo(-15, -7);
+            ctx.lineTo(-5, -7);
+            ctx.lineTo(6, -17);
+            ctx.lineTo(6, 17);
+            ctx.lineTo(-5, 7);
+            ctx.lineTo(-15, 7);
             ctx.closePath();
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(10, 0, 10, -0.35 * Math.PI, 0.35 * Math.PI);
             ctx.stroke();
           } else if (c.icon === "scene") {
             ctx.beginPath();
-            ctx.arc(0, -8, 12, 0, Math.PI * 2);
+            ctx.arc(0, -8, 11, 0, Math.PI * 2);
             ctx.stroke();
             ctx.beginPath();
-            ctx.arc(0, 22, 18, Math.PI * 1.15, Math.PI * 1.85);
+            ctx.arc(0, 20, 17, Math.PI * 1.15, Math.PI * 1.85);
             ctx.stroke();
           } else {
             ctx.fillStyle = brand.primaryColor;
             ctx.beginPath();
-            ctx.roundRect(-22, -15, 44, 30, 8);
+            ctx.roundRect(-20, -14, 40, 28, 8);
             ctx.fill();
             ctx.stroke();
             ctx.fillStyle = "#FFFFFF";
             ctx.beginPath();
-            ctx.moveTo(-6, -8);
-            ctx.lineTo(10, 0);
-            ctx.lineTo(-6, 8);
+            ctx.moveTo(-5, -7);
+            ctx.lineTo(9, 0);
+            ctx.lineTo(-5, 7);
             ctx.closePath();
             ctx.fill();
           }
 
-          const pillW = Math.min(210, Math.max(108, lbl.length * 14 + 28));
-          drawCard(-pillW / 2, 58, pillW, 40, "#FFFFFF", 10, "#111827", 3.8);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 18px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(lbl, 0, 84);
+          drawCard(-104, 56, 208, 38, "#FFFFFF", 19, "#111827", 3.2);
+          drawFittedText(ctx, lbl, 0, 81, 186, 17, 12.5, 600, font, "center", "#111827");
           ctx.restore();
         });
         break;
       }
 
       case "before-after-split": {
-        drawCard(38, 220, 212, 235, "#FFFFFF", 16);
-        ctx.fillStyle = "#6B7280";
-        ctx.font = `800 21px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText("เปิดคลิปช้า", 144, 275);
-        ctx.fillStyle = "#111827";
-        ctx.font = `800 20px ${font}`;
-        ctx.fillText(trimPhraseAtWordBoundary(props.leftText ?? "เกริ่นน้ำยาว", 14), 144, 345);
-
-        // Red cross on old way
+        // Circular/Organic Visual Contrast instead of rigid twins
+        ctx.save();
+        ctx.translate(144, 332 + topShift * 0.4);
+        drawCard(-102, -96, 204, 192, "#FFFFFF", 28, "#111827", 3.6);
+        drawFittedText(ctx, "วิธีเดิม", 0, -52, 176, 18, 14, 600, font, "center", "#6B7280");
+        drawFittedText(ctx, props.leftText ?? "เกริ่นน้ำยาว", 0, -6, 180, 20, 14, 700, font, "center", "#111827");
         ctx.strokeStyle = "#EF4444";
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 5;
         ctx.beginPath();
-        ctx.moveTo(114, 375);
-        ctx.lineTo(174, 415);
-        ctx.moveTo(174, 375);
-        ctx.lineTo(114, 415);
+        ctx.moveTo(-22, 30);
+        ctx.lineTo(22, 66);
+        ctx.moveTo(22, 30);
+        ctx.lineTo(-22, 66);
         ctx.stroke();
+        ctx.restore();
 
         if (p > 0.2) {
           const ap = easeOutBack(clamp01((p - 0.2) / 0.16));
           ctx.save();
-          ctx.translate(396, 338);
+          ctx.translate(396, 332 + topShift * 0.4);
           ctx.scale(ap, ap);
-          drawCard(-106, -118, 212, 235, brand.accentColor, 16);
-          ctx.fillStyle = "#111827";
-          ctx.font = `900 22px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText("เปิดด้วยคำตอบ!", 0, -62);
-          ctx.font = `800 20px ${font}`;
-          ctx.fillText(trimPhraseAtWordBoundary(props.rightText ?? "หยุดนิ้วใน 3 วิ", 14), 0, 6);
+          drawCard(-102, -96, 204, 192, brand.accentColor, 28, "#111827", 3.6);
+          drawFittedText(ctx, "วิธีที่เวิร์ก!", 0, -52, 176, 19, 14, 700, font, "center", "#111827");
+          drawFittedText(ctx, props.rightText ?? "เปิดด้วยคำตอบ", 0, -6, 180, 20, 14, 700, font, "center", "#111827");
 
           ctx.fillStyle = brand.primaryColor;
           ctx.beginPath();
-          ctx.arc(0, 62, 22, 0, Math.PI * 2);
+          ctx.arc(0, 48, 22, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = "#FFFFFF";
-          ctx.font = `900 22px ${font}`;
-          ctx.fillText("✓", 0, 70);
+          ctx.font = `700 22px ${font}`;
+          ctx.textAlign = "center";
+          ctx.fillText("✓", 0, 56);
           ctx.restore();
         }
-        drawStickman(270, 515, 0.82, 0, false, "right");
+        drawStickman(270, 520, 0.82, 0, false, "right");
         break;
       }
 
       case "screen-showcase": {
-        // Framed Monitor Screen with interior architectural/brand showcase + walking character (Ref 1)
-        drawCard(42, 185, 456, 265, "#1F2937", 18, "#111827", 4.5);
-        drawCard(58, 201, 424, 233, "#EBF5FF", 12, "#111827", 3.5);
+        drawCard(42, 185 + topShift * 0.4, 456, 260, "#1F2937", 22, "#111827", 4);
+        drawCard(58, 201 + topShift * 0.4, 424, 228, "#EBF5FF", 14, "#111827", 3);
 
-        // Interior picture frame on wall inside monitor
-        drawCard(290, 224, 162, 112, "#BAE6FD", 8, "#111827", 3);
-        // Mini buildings inside frame
+        drawCard(290, 222 + topShift * 0.4, 162, 108, "#BAE6FD", 10, "#111827", 2.8);
         const bColors = [brand.primaryColor, "#F59E0B", "#10B981"];
         for (let b = 0; b < 3; b++) {
-          ctx.fillStyle = bColors[b];
+          ctx.fillStyle = bColors[b]!;
           ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 2.5;
+          ctx.lineWidth = 2.4;
           const bx = 304 + b * 46;
-          const bhBox = 45 + (b % 2) * 18;
-          ctx.fillRect(bx, 336 - bhBox, 36, bhBox);
-          ctx.strokeRect(bx, 336 - bhBox, 36, bhBox);
+          const bhBox = 44 + (b % 2) * 18;
+          ctx.fillRect(bx, 330 + topShift * 0.4 - bhBox, 36, bhBox);
+          ctx.strokeRect(bx, 330 + topShift * 0.4 - bhBox, 36, bhBox);
         }
 
-        // Floor inside monitor
         ctx.fillStyle = "#C69C72";
-        ctx.fillRect(60, 386, 420, 46);
+        ctx.fillRect(60, 383 + topShift * 0.4, 420, 44);
         ctx.strokeStyle = "#111827";
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.moveTo(60, 386);
-        ctx.lineTo(480, 386);
+        ctx.moveTo(60, 383 + topShift * 0.4);
+        ctx.lineTo(480, 383 + topShift * 0.4);
         ctx.stroke();
 
         const walkP = clamp01(p);
-        drawStickman(150 + walkP * 80, 355, 0.56, walkP * 2, false, "right");
+        drawStickman(150 + walkP * 80, 352 + topShift * 0.4, 0.56, walkP * 2, false, "right");
 
         if (p > 0.16) {
           const bp = easeOutBack(clamp01((p - 0.16) / 0.16));
           ctx.save();
-          ctx.translate(150, 515);
+          ctx.translate(152, 512 + topShift * 0.3);
           ctx.scale(bp, bp);
-          ctx.rotate(-0.03);
-          drawCard(-105, -26, 210, 52, "#FFFFFF", 12);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 20px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(items[0] ?? "ชัดเจนทุกขั้นตอน", 16), 0, 8, 194);
+          ctx.rotate(-0.025);
+          drawCard(-112, -24, 224, 48, "#FFFFFF", 24, "#111827", 3.4);
+          drawFittedText(ctx, items[0] ?? "ชัดเจนทุกขั้นตอน", 0, 7, 198, 18, 13, 600, font, "center", "#111827");
           ctx.restore();
         }
 
         if (p > 0.3) {
           const bp2 = easeOutBack(clamp01((p - 0.3) / 0.16));
           ctx.save();
-          ctx.translate(385, 515);
+          ctx.translate(388, 512 + topShift * 0.3);
           ctx.scale(bp2, bp2);
           ctx.rotate(0.02);
-          drawCard(-110, -26, 220, 52, brand.accentColor, 12);
-          ctx.fillStyle = "#111827";
-          ctx.font = `900 20px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? items[1] ?? "เข้าใจในภาพเดียว", 16), 0, 8, 204);
+          drawCard(-112, -24, 224, 48, brand.accentColor, 24, "#111827", 3.4);
+          drawFittedText(ctx, props.badgeText ?? items[1] ?? "เข้าใจในภาพเดียว", 0, 7, 198, 18, 13, 700, font, "center", "#111827");
           ctx.restore();
         }
         break;
@@ -2400,34 +2285,37 @@ export function paintMotionBrollCanvas(
 
       case "price-slash-cta":
       default: {
-        // Character pointing to big CTA button + speech bubble (Ref 1 closing scene)
-        drawStickman(135, 505, 0.92, 0, false, "right");
+        drawStickman(132, 505, 0.92, 0, false, "right");
 
         const btnEnter = easeOutBack(clamp01(p / 0.18));
         ctx.save();
-        ctx.translate(290, 325);
+        ctx.translate(292, 325 + topShift * 0.4);
         ctx.scale(btnEnter, btnEnter);
-        drawCard(-165, -52, 330, 104, brand.primaryColor, 52, "#111827", 5);
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `900 44px ${font}`;
-        ctx.textAlign = "center";
-        ctx.fillText(
+        drawCard(-168, -50, 336, 100, brand.primaryColor, 50, "#111827", 4.2);
+        drawFittedText(
+          ctx,
           props.rightText ? `พิมพ์ "${props.rightText}"` : "สั่งซื้อ / ทักแชต",
           0,
-          15,
+          12,
+          296,
+          36,
+          22,
+          700,
+          font,
+          "center",
+          "#FFFFFF",
         );
 
-        // Comic emphasis bursts above button
         if (p > 0.22) {
           ctx.strokeStyle = "#EF4444";
-          ctx.lineWidth = 4.5;
+          ctx.lineWidth = 4;
           ctx.beginPath();
-          ctx.moveTo(-95, -68);
-          ctx.lineTo(-82, -88);
-          ctx.lineTo(-70, -70);
-          ctx.moveTo(70, -70);
-          ctx.lineTo(82, -88);
-          ctx.lineTo(95, -68);
+          ctx.moveTo(-95, -66);
+          ctx.lineTo(-82, -84);
+          ctx.lineTo(-70, -68);
+          ctx.moveTo(70, -68);
+          ctx.lineTo(82, -84);
+          ctx.lineTo(95, -66);
           ctx.stroke();
         }
         ctx.restore();
@@ -2435,13 +2323,10 @@ export function paintMotionBrollCanvas(
         if (p > 0.32) {
           const sp = easeOutBack(clamp01((p - 0.32) / 0.16));
           ctx.save();
-          ctx.translate(375, 485);
+          ctx.translate(372, 485 + topShift * 0.3);
           ctx.scale(sp, sp);
-          drawCard(-115, -36, 230, 72, "#FFFFFF", 22, "#111827", 4.5);
-          ctx.fillStyle = "#111827";
-          ctx.font = `800 22px ${font}`;
-          ctx.textAlign = "center";
-          ctx.fillText(trimPhraseAtWordBoundary(props.badgeText ?? "ส่งให้ในแชตทันที", 16), 0, 8);
+          drawCard(-124, -32, 248, 64, "#FFFFFF", 32, "#111827", 3.8);
+          drawFittedText(ctx, props.badgeText ?? "ส่งให้ในแชตทันที", 0, 8, 216, 20, 14, 600, font, "center", "#111827");
           ctx.restore();
         }
         break;
@@ -2458,12 +2343,14 @@ export function MotionBrollScene({
   segDurFrames,
   tailFrames,
   headFrames,
+  suppressTopHeader = false,
 }: {
   motionTemplate?: MotionTemplateConfig | null;
   fallbackTemplateId?: MotionTemplateId;
   segDurFrames: number;
   tailFrames: number;
   headFrames: number;
+  suppressTopHeader?: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
@@ -2492,8 +2379,8 @@ export function MotionBrollScene({
   const opacity = Math.min(fadeIn, fadeOut);
 
   useLayoutEffect(() => {
-    paintMotionBrollCanvas(canvasRef.current, resolvedConfig, progress);
-  }, [resolvedConfig, progress, width, height]);
+    paintMotionBrollCanvas(canvasRef.current, resolvedConfig, progress, { suppressTopHeader });
+  }, [resolvedConfig, progress, width, height, suppressTopHeader]);
 
   return (
     <AbsoluteFill style={{ opacity }}>
