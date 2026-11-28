@@ -1095,7 +1095,7 @@ async function main() {
     delete process.env.HERO_SCRIPT_PROVIDER; // gemini is the code default
     delete process.env.HERO_SCRIPT_MODEL_FAST;
     delete process.env.HERO_SCRIPT_MODEL_PRO;
-    ok(heroScriptModel("fast") === "gemini-2.5-flash", "heroScriptModel('fast') defaults to gemini-2.5-flash");
+    ok(heroScriptModel("fast") === "gemini-3.8-flash", "heroScriptModel('fast') defaults to gemini-3.8-flash");
     // Amended 2026-07-31 (plan doc + controller): gemini-2.5-pro returns 404
     // "no longer available to new users" on the project server key.
     ok(heroScriptModel("pro") === "gemini-pro-latest", "heroScriptModel('pro') defaults to gemini-pro-latest");

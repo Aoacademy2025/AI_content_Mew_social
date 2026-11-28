@@ -395,9 +395,22 @@ export function useV2Job(p: V2Project) {
     if (p.mode === "script" && p.useAvatar && p.avatarId && p.avatarEngine === "") {
       return { ok: false, message: HEYGEN_ENGINE_INCOMPATIBLE_MESSAGE };
     }
+    const hasStoryBgVideos = Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0;
+    const isStoryRealMoments = p.mode === "script" && hasStoryBgVideos && p.storyVoiceMode === "real-moments";
+    const storyPlannedSec = isStoryRealMoments
+      ? Math.max(
+          2,
+          Math.round(
+            (p.storyBgVideos as Array<{ end?: unknown }>).reduce(
+              (mx, v) => Math.max(mx, Number(v?.end) || 0),
+              0,
+            ),
+          ),
+        )
+      : 0;
     const fullAvatarDurationViolation = avatarFullDurationViolation({
-      mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
-      durationSec: estimateClipSecV2(p.mode === "script" ? p.script : "", p.ttsSpeed),
+      mode: p.mode === "script" && p.useAvatar && !isStoryRealMoments ? p.avatarMode : null,
+      durationSec: isStoryRealMoments ? storyPlannedSec : estimateClipSecV2(p.mode === "script" ? p.script : "", p.ttsSpeed),
     });
     if (fullAvatarDurationViolation) {
       return {
@@ -414,7 +427,9 @@ export function useV2Job(p: V2Project) {
     const receiptWeights = p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
     const receiptEstSec = p.mode === "upload" && p.clipDurationSec > 0
       ? p.clipDurationSec
-      : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed);
+      : isStoryRealMoments
+        ? storyPlannedSec
+        : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed);
     const quotedTargetClipCount = p.mode === "upload" && p.clipDurationSec > 0
       ? estimatedCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
       : p.targetClipCount;
@@ -422,7 +437,7 @@ export function useV2Job(p: V2Project) {
       ? effectiveManualCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
       : p.targetClipCount;
     const hasMotionTheme = Boolean(p.motionThemeId);
-    const disclosedAiSlots = !hasMotionTheme && p.brollSource === "automix"
+    const disclosedAiSlots = !hasMotionTheme && !hasStoryBgVideos && p.brollSource === "automix"
       ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, quotedTargetClipCount)
       : null;
     let reusableAiImages = 0;
@@ -521,8 +536,19 @@ export function useV2Job(p: V2Project) {
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
       ...bgmInput,
-      // b-roll source ที่เลือกจริง (motionThemeId = Motion B-Roll 0 เครดิต · kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
-      stockSource: hasMotionTheme ? "none" : apiStockSource(p.brollSource),
+      // b-roll source ที่เลือกจริง (storyBgVideos = ผู้กำกับฟุตเทจ 0 เครดิตภาพ · motionThemeId = Motion B-Roll 0 เครดิต · kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
+      stockSource: (Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0) || hasMotionTheme
+        ? "none"
+        : apiStockSource(p.brollSource),
+      ...(Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0 ? {
+        storyBgVideos: p.storyBgVideos,
+        storyVoiceMode: p.storyVoiceMode,
+        ...(Array.isArray(p.storyMomentCaptions) && p.storyMomentCaptions.length > 0
+          ? { storyMomentCaptions: p.storyMomentCaptions }
+          : {}),
+      } : {}),
+      ...(Array.isArray(p.storyOverlays) && p.storyOverlays.length > 0 ? { storyOverlays: p.storyOverlays } : {}),
+      ...(p.dualTikTokExport ? { dualTikTokExport: true } : {}),
       ...(hasMotionTheme && p.motionThemeId ? { motionThemeId: p.motionThemeId } : {}),
       ...(hasMotionTheme && p.motionMascot ? { motionMascot: p.motionMascot } : {}),
       // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)

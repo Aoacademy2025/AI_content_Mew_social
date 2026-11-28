@@ -37,7 +37,13 @@ export function resolveBrollPlaybackPlan(input: {
   }
 
   const guardedEnd = Math.max(1, clipDurFrames - 2);
-  const safeStart = requestedStart >= guardedEnd ? 0 : requestedStart;
+  let safeStart = requestedStart >= guardedEnd ? 0 : requestedStart;
+  if (safeStart > 0 && safeStart + totalFrames > guardedEnd) {
+    // Pull `safeStart` back when an offset pushes the window past `guardedEnd` so a clip
+    // with enough frames plays continuously through the outgoing crossfade instead of
+    // hitting EOF / loop-wrapping right before the transition.
+    safeStart = Math.max(0, guardedEnd - totalFrames);
+  }
   const usableFrames = Math.max(1, guardedEnd - safeStart);
   const mustLoop = totalFrames > usableFrames;
   return {

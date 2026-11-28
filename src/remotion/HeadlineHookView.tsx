@@ -1,4 +1,5 @@
 import React from "react";
+import { baseGraphemeCount } from "../lib/card-line-budget";
 import {
   HEADLINE_HOOK_CANVAS_WIDTH_PX,
   headlineHookFontCssFamily,
@@ -24,23 +25,84 @@ export type HeadlineHookMotion = {
 // here once so overflow-safety budgeting is completely independent of
 // `frameScale` — Web Editor preview and Remotion burn wrap identically.
 const HEADLINE_CONTAINER_WIDTH_PX = HEADLINE_HOOK_CANVAS_WIDTH_PX * 0.88;
+const THAI_CHAR_RE = /[\u0E00-\u0E7F]/u;
+const WORD_JOINER = "\u2060";
+const ZERO_WIDTH_SPACE = "\u200B";
 
 const PRESET_WRAP_METRICS: Record<
   HeadlineHookPreset,
   { headlineScale: number; subheadlineScale: number; horizontalChromePx: number }
 > = {
-  viral: { headlineScale: 1, subheadlineScale: 1, horizontalChromePx: 0 },
-  news: { headlineScale: 0.9, subheadlineScale: 0.9, horizontalChromePx: 58 },
-  clean: { headlineScale: 0.86, subheadlineScale: 1, horizontalChromePx: 48 },
-  banner: { headlineScale: 0.88, subheadlineScale: 0.88, horizontalChromePx: 61 },
-  "stat-burst": { headlineScale: 0.94, subheadlineScale: 0.9, horizontalChromePx: 62 },
-  "question-pill": { headlineScale: 0.85, subheadlineScale: 0.86, horizontalChromePx: 69 },
+  viral: { headlineScale: 0.96, subheadlineScale: 0.96, horizontalChromePx: 36 },
+  news: { headlineScale: 0.88, subheadlineScale: 0.88, horizontalChromePx: 70 },
+  clean: { headlineScale: 0.86, subheadlineScale: 0.94, horizontalChromePx: 66 },
+  banner: { headlineScale: 0.88, subheadlineScale: 0.88, horizontalChromePx: 70 },
+  "stat-burst": { headlineScale: 0.9, subheadlineScale: 0.88, horizontalChromePx: 70 },
+  "question-pill": { headlineScale: 0.85, subheadlineScale: 0.86, horizontalChromePx: 74 },
 };
 
 function headlineOneLineBudget(fontSizePx: number, horizontalChromePx: number): number {
   const usableWidth = Math.max(320, HEADLINE_CONTAINER_WIDTH_PX - horizontalChromePx);
   const safeSize = Number.isFinite(fontSizePx) && fontSizePx > 0 ? fontSizePx : 84;
   return Math.max(10, Math.floor(usableWidth / (safeSize * 0.47)));
+}
+
+/**
+ * Prevents ugly single-word Thai orphans at the end of wrapped headlines (such as
+ * `เลิกนั่งหา B-Roll เองทีละ\nซีน!` or `ไอเดียเต็มหัว แต่คลิปไม่\nเสร็จ?`) without
+ * inserting literal `\n` characters: binds the final unspaced `\u200B` break opportunity
+ * with `\u2060` (WORD JOINER) when the trailing word is short and the combined tail fits
+ * comfortably within half the line budget. Stripping invisible controls (`\u2060\u200B`)
+ * restores the authored text 100% verbatim.
+ */
+function bindTrailingThaiOrphans(segmented: string, oneLineBudget: number): string {
+  // 1. Keep short hyphenated compounds (e.g. "B-Roll", "1-Click", "Z-Image") whole on one line
+  // using U+2060 WORD JOINER so Chromium wraps at the surrounding space instead of "B-\nRoll".
+  let prepared = segmented.replace(
+    /\b([A-Za-z0-9]{1,8})-([A-Za-z0-9]{1,8})\b/gu,
+    `$1${WORD_JOINER}-${WORD_JOINER}$2`,
+  );
+  // 2. When a new Thai clause starts after an ASCII space with a short conjunction (" แต่คลิป...",
+  // " ให้จบ...", " เพราะ..."), bind the conjunction to its following word so Chromium wraps AT
+  // the space before the conjunction ("ไอเดียเต็มหัว\nแต่คลิปไม่เสร็จ?") instead of stranding "แต่" at line end.
+  prepared = prepared.replace(
+    /(\s)((?:แต่|เพราะ|หรือ|และ|ให้|จน|แค่)(?:\u2060[\u0E00-\u0E7F])*)\u200B/gu,
+    `$1$2${WORD_JOINER}`,
+  );
+
+  if (!prepared.includes(ZERO_WIDTH_SPACE)) return prepared;
+  const maxTailGraphemes = Math.max(7, Math.min(12, Math.floor(oneLineBudget * 0.54)));
+
+  const bindClauseEndOrphan = (clause: string, isLineEnd: boolean): string => {
+    const lastZws = clause.lastIndexOf(ZERO_WIDTH_SPACE);
+    if (lastZws <= 0) return clause;
+    const tail = clause.slice(lastZws + 1).replace(/[\u2060\u200B]/gu, "");
+    if (!tail || /\s/u.test(tail)) return clause;
+    const tailGraphemes = baseGraphemeCount(tail);
+    if (tailGraphemes > 6) return clause;
+    const before = clause.slice(0, lastZws);
+    const prevBreak = before.lastIndexOf(ZERO_WIDTH_SPACE);
+    if (isLineEnd && prevBreak < 0) return clause;
+    const prevSeg = before.slice(prevBreak >= 0 ? prevBreak + 1 : 0).replace(/[\u2060\u200B]/gu, "");
+    const combinedGraphemes = baseGraphemeCount(prevSeg + tail);
+    if (combinedGraphemes > maxTailGraphemes) return clause;
+    return before + WORD_JOINER + clause.slice(lastZws + 1);
+  };
+
+  return prepared
+    .split("\n")
+    .map((line) => {
+      const parts = line.split(/(\s+)/u);
+      const hasMultipleClauses = parts.length > 1;
+      return parts
+        .map((part, idx) => {
+          if (!part || /^\s+$/u.test(part)) return part;
+          const isLastClause = idx === parts.length - 1;
+          return bindClauseEndOrphan(part, isLastClause && !hasMultipleClauses);
+        })
+        .join("");
+    })
+    .join("\n");
 }
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -61,10 +123,11 @@ export function headlineHookMotionAt(
     scale: 0.96 + 0.04 * enter,
   };
 }
-const outline = (scale: number, width = 3) => ({
-  WebkitTextStroke: `${Math.max(1, width * scale)}px rgba(4, 4, 10, 0.96)`,
+
+const cleanContour = (scale: number, strokePx = 1.4) => ({
+  WebkitTextStroke: `${Math.max(0.6, strokePx * scale)}px rgba(6, 9, 18, 0.88)`,
   paintOrder: "stroke fill" as const,
-  textShadow: `0 ${Math.max(2, 5 * scale)}px ${Math.max(5, 16 * scale)}px rgba(0,0,0,.82)`,
+  textShadow: `0 ${Math.max(2, 4 * scale)}px ${Math.max(6, 18 * scale)}px rgba(0,0,0,0.86), 0 ${Math.max(1, 2 * scale)}px ${Math.max(2, 5 * scale)}px rgba(0,0,0,0.78)`,
 });
 
 export function HeadlineHookView({
@@ -78,14 +141,20 @@ export function HeadlineHookView({
 }) {
   const sizes = headlineHookFontSizes(hook.headline, hook.fontSize, hook.subheadlineFontSize);
   const weights = headlineHookFontWeights(hook.fontWeight);
+  const hasThai = THAI_CHAR_RE.test(hook.headline) || THAI_CHAR_RE.test(hook.subheadline ?? "");
+  // Optically calibrate Thai weights: Kanit/Prompt 900 closes Thai loop counters and collides
+  // tone marks; 700 (Bold) + 500 (Medium) gives crisp editorial contrast and hierarchy.
+  const effectiveHeadlineWeight = hasThai
+    ? (weights.headline >= 800 ? 700 : weights.headline)
+    : weights.headline;
+  const effectiveSubWeight = hasThai
+    ? (weights.subheadline >= 800 ? 500 : weights.subheadline >= 600 ? 500 : 400)
+    : weights.subheadline;
+
   const presetMetrics = PRESET_WRAP_METRICS[hook.preset] ?? PRESET_WRAP_METRICS.viral;
   const headlineSize = sizes.headline * frameScale;
   const subheadlineSize = sizes.subheadline * frameScale;
   const fontFamily = headlineHookFontCssFamily(hook.fontFamily);
-  const headlineText = segmentThaiDisplayWordBreaks(hook.headline);
-  const subheadlineText = hook.subheadline
-    ? segmentThaiDisplayWordBreaks(hook.subheadline)
-    : undefined;
   const headlineBudget = headlineOneLineBudget(
     sizes.headline * presetMetrics.headlineScale,
     presetMetrics.horizontalChromePx,
@@ -94,6 +163,17 @@ export function HeadlineHookView({
     sizes.subheadline * presetMetrics.subheadlineScale,
     presetMetrics.horizontalChromePx,
   );
+  const headlineText = bindTrailingThaiOrphans(
+    segmentThaiDisplayWordBreaks(hook.headline),
+    headlineBudget,
+  );
+  const subheadlineText = hook.subheadline
+    ? bindTrailingThaiOrphans(
+        segmentThaiDisplayWordBreaks(hook.subheadline),
+        subheadlineBudget,
+      )
+    : undefined;
+
   // Never use overflow-wrap:anywhere here — it lets Chromium break Thai words
   // at arbitrary characters. Keep word-boundary wrapping (keep-all + normal) by
   // default and allow break-word only when a single unbreakable token exceeds
@@ -104,34 +184,41 @@ export function HeadlineHookView({
     hook.subheadline && hasExtremeUnbreakableToken(hook.subheadline, subheadlineBudget)
       ? "break-word"
       : "normal";
+
   const commonHeadline: React.CSSProperties = {
     margin: 0,
-    color: "#F8F7FC",
+    color: "#F8FAFC",
     fontFamily,
     fontSize: headlineSize,
-    fontWeight: weights.headline,
-    lineHeight: 1.08,
-    letterSpacing: `${-1.2 * frameScale}px`,
+    fontWeight: effectiveHeadlineWeight,
+    lineHeight: hasThai ? 1.34 : 1.15,
+    letterSpacing: hasThai ? "0.01em" : `${-0.6 * frameScale}px`,
     textAlign: "center",
+    textWrap: "balance" as React.CSSProperties["textWrap"],
     whiteSpace: "pre-line",
     wordBreak: "keep-all",
     overflowWrap: headlineOverflowWrap,
-    ...outline(frameScale, 4),
+    ...cleanContour(frameScale, hasThai ? 1.3 : 2.2),
   };
   const commonSubheadline: React.CSSProperties = {
     margin: 0,
     marginTop: 12 * frameScale,
-    color: "#FFE44D",
+    color: "#FDE047",
     fontFamily,
     fontSize: subheadlineSize,
-    fontWeight: weights.subheadline,
-    lineHeight: 1.18,
+    fontWeight: effectiveSubWeight,
+    lineHeight: hasThai ? 1.36 : 1.22,
+    letterSpacing: hasThai ? "0.01em" : "0px",
     textAlign: "center",
+    textWrap: "balance" as React.CSSProperties["textWrap"],
     whiteSpace: "pre-line",
     wordBreak: "keep-all",
     overflowWrap: subheadlineOverflowWrap,
-    ...outline(frameScale, 3),
+    ...cleanContour(frameScale, hasThai ? 1.0 : 1.8),
   };
+
+  const softCardShadow = `0 ${12 * frameScale}px ${34 * frameScale}px rgba(0, 0, 0, 0.42)`;
+  const subtleTextShadow = `0 ${2 * frameScale}px ${10 * frameScale}px rgba(0, 0, 0, 0.65)`;
 
   const content = hook.preset === "news" ? (
     <div
@@ -140,17 +227,47 @@ export function HeadlineHookView({
         maxWidth: "100%",
         boxSizing: "border-box",
         alignItems: "stretch",
-        background: "rgba(8, 8, 13, 0.88)",
-        boxShadow: `0 ${8 * frameScale}px ${24 * frameScale}px rgba(0,0,0,.28)`,
+        borderRadius: 18 * frameScale,
+        overflow: "hidden",
+        background: "rgba(9, 13, 22, 0.86)",
+        border: `${Math.max(1, 1 * frameScale)}px solid rgba(255, 255, 255, 0.14)`,
+        boxShadow: softCardShadow,
       }}
     >
-      <span style={{ width: 10 * frameScale, flex: "none", background: "#FF5A2F" }} />
-      <div style={{ minWidth: 0, boxSizing: "border-box", padding: `${16 * frameScale}px ${24 * frameScale}px ${19 * frameScale}px` }}>
-        <p style={{ ...commonHeadline, fontSize: headlineSize * 0.9, WebkitTextStroke: "0px transparent", textShadow: "none" }}>
+      <span
+        style={{
+          width: 6 * frameScale,
+          flex: "none",
+          background: "linear-gradient(180deg, #FB7185 0%, #E11D48 100%)",
+        }}
+      />
+      <div
+        style={{
+          minWidth: 0,
+          boxSizing: "border-box",
+          padding: `${22 * frameScale}px ${30 * frameScale}px ${24 * frameScale}px`,
+        }}
+      >
+        <p
+          style={{
+            ...commonHeadline,
+            fontSize: headlineSize * 0.88,
+            WebkitTextStroke: "0px transparent",
+            textShadow: subtleTextShadow,
+          }}
+        >
           {headlineText}
         </p>
         {subheadlineText && (
-          <p style={{ ...commonSubheadline, fontSize: subheadlineSize * 0.9, WebkitTextStroke: "0px transparent", textShadow: "none" }}>
+          <p
+            style={{
+              ...commonSubheadline,
+              fontSize: subheadlineSize * 0.88,
+              color: "#FDA4AF",
+              WebkitTextStroke: "0px transparent",
+              textShadow: "none",
+            }}
+          >
             {subheadlineText}
           </p>
         )}
@@ -162,17 +279,33 @@ export function HeadlineHookView({
         display: "inline-block",
         maxWidth: "100%",
         boxSizing: "border-box",
-        padding: `${16 * frameScale}px ${24 * frameScale}px ${19 * frameScale}px`,
-        borderRadius: 18 * frameScale,
-        background: "rgba(8, 8, 13, 0.58)",
-        boxShadow: `0 ${8 * frameScale}px ${28 * frameScale}px rgba(0,0,0,.22)`,
+        padding: `${22 * frameScale}px ${32 * frameScale}px ${24 * frameScale}px`,
+        borderRadius: 24 * frameScale,
+        background: "rgba(10, 14, 24, 0.72)",
+        border: `${Math.max(1, 1 * frameScale)}px solid rgba(255, 255, 255, 0.14)`,
+        boxShadow: softCardShadow,
       }}
     >
-      <p style={{ ...commonHeadline, fontSize: headlineSize * 0.86, WebkitTextStroke: "0px transparent", textShadow: `0 ${3 * frameScale}px ${12 * frameScale}px rgba(0,0,0,.8)` }}>
+      <p
+        style={{
+          ...commonHeadline,
+          fontSize: headlineSize * 0.86,
+          WebkitTextStroke: "0px transparent",
+          textShadow: subtleTextShadow,
+        }}
+      >
         {headlineText}
       </p>
       {subheadlineText && (
-        <p style={{ ...commonSubheadline, color: "#F6CB55", WebkitTextStroke: "0px transparent", textShadow: `0 ${2 * frameScale}px ${9 * frameScale}px rgba(0,0,0,.75)` }}>
+        <p
+          style={{
+            ...commonSubheadline,
+            fontSize: subheadlineSize * 0.94,
+            color: "#FDE68A",
+            WebkitTextStroke: "0px transparent",
+            textShadow: subtleTextShadow,
+          }}
+        >
           {subheadlineText}
         </p>
       )}
@@ -183,11 +316,11 @@ export function HeadlineHookView({
         display: "inline-block",
         maxWidth: "100%",
         boxSizing: "border-box",
-        padding: `${16 * frameScale}px ${28 * frameScale}px ${18 * frameScale}px`,
-        borderRadius: 16 * frameScale,
-        background: "linear-gradient(135deg, #F97316 0%, #EA580C 52%, #DC2626 100%)",
-        border: `${Math.max(1, 2.5 * frameScale)}px solid rgba(255, 255, 255, 0.32)`,
-        boxShadow: `0 ${12 * frameScale}px ${32 * frameScale}px rgba(0, 0, 0, 0.42)`,
+        padding: `${24 * frameScale}px ${34 * frameScale}px ${26 * frameScale}px`,
+        borderRadius: 22 * frameScale,
+        background: "linear-gradient(180deg, rgba(15, 23, 42, 0.88) 0%, rgba(9, 13, 22, 0.94) 100%)",
+        border: `${Math.max(1, 1 * frameScale)}px solid rgba(251, 146, 60, 0.28)`,
+        boxShadow: `${softCardShadow}, inset 0 ${3.5 * frameScale}px 0 rgba(251, 146, 60, 0.9)`,
       }}
     >
       <p
@@ -196,7 +329,7 @@ export function HeadlineHookView({
           fontSize: headlineSize * 0.88,
           color: "#FFFFFF",
           WebkitTextStroke: "0px transparent",
-          textShadow: `0 ${3 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.45)`,
+          textShadow: subtleTextShadow,
         }}
       >
         {headlineText}
@@ -206,9 +339,9 @@ export function HeadlineHookView({
           style={{
             ...commonSubheadline,
             fontSize: subheadlineSize * 0.88,
-            color: "#FEF08A",
+            color: "#FED7AA",
             WebkitTextStroke: "0px transparent",
-            textShadow: `0 ${2 * frameScale}px ${8 * frameScale}px rgba(0,0,0,.42)`,
+            textShadow: "none",
           }}
         >
           {subheadlineText}
@@ -221,19 +354,20 @@ export function HeadlineHookView({
         display: "inline-block",
         maxWidth: "100%",
         boxSizing: "border-box",
-        padding: `${18 * frameScale}px ${28 * frameScale}px ${20 * frameScale}px`,
-        borderRadius: 22 * frameScale,
-        background: "radial-gradient(circle at 50% 0%, rgba(250, 204, 21, 0.24), rgba(9, 10, 18, 0.94) 72%)",
-        border: `${Math.max(1, 3 * frameScale)}px solid #FACC15`,
-        boxShadow: `0 ${14 * frameScale}px ${36 * frameScale}px rgba(0, 0, 0, 0.52), 0 0 ${24 * frameScale}px rgba(250, 204, 21, 0.24)`,
+        padding: `${24 * frameScale}px ${34 * frameScale}px ${26 * frameScale}px`,
+        borderRadius: 24 * frameScale,
+        background: "radial-gradient(120% 90% at 50% 0%, rgba(250, 204, 21, 0.16) 0%, rgba(10, 14, 24, 0.90) 68%)",
+        border: `${Math.max(1, 1.2 * frameScale)}px solid rgba(250, 204, 21, 0.34)`,
+        boxShadow: softCardShadow,
       }}
     >
       <p
         style={{
           ...commonHeadline,
-          fontSize: headlineSize * 0.94,
-          color: "#FACC15",
-          WebkitTextStroke: `${Math.max(1, 2.5 * frameScale)}px rgba(4, 4, 10, 0.92)`,
+          fontSize: headlineSize * 0.9,
+          color: "#FEF08A",
+          WebkitTextStroke: "0px transparent",
+          textShadow: subtleTextShadow,
         }}
       >
         {headlineText}
@@ -242,10 +376,10 @@ export function HeadlineHookView({
         <p
           style={{
             ...commonSubheadline,
-            fontSize: subheadlineSize * 0.9,
-            color: "#F8FAFC",
+            fontSize: subheadlineSize * 0.88,
+            color: "#F1F5F9",
             WebkitTextStroke: "0px transparent",
-            textShadow: `0 ${2 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.78)`,
+            textShadow: "none",
           }}
         >
           {subheadlineText}
@@ -258,11 +392,11 @@ export function HeadlineHookView({
         display: "inline-block",
         maxWidth: "100%",
         boxSizing: "border-box",
-        padding: `${15 * frameScale}px ${32 * frameScale}px ${18 * frameScale}px`,
-        borderRadius: 999 * frameScale,
-        background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 27, 75, 0.92) 100%)",
-        border: `${Math.max(1, 2.5 * frameScale)}px solid rgba(56, 189, 248, 0.72)`,
-        boxShadow: `0 ${10 * frameScale}px ${28 * frameScale}px rgba(0, 0, 0, 0.44)`,
+        padding: `${22 * frameScale}px ${36 * frameScale}px ${24 * frameScale}px`,
+        borderRadius: 28 * frameScale,
+        background: "linear-gradient(145deg, rgba(15, 23, 42, 0.88) 0%, rgba(23, 37, 84, 0.86) 100%)",
+        border: `${Math.max(1, 1.2 * frameScale)}px solid rgba(125, 211, 252, 0.30)`,
+        boxShadow: softCardShadow,
       }}
     >
       <p
@@ -271,7 +405,7 @@ export function HeadlineHookView({
           fontSize: headlineSize * 0.85,
           color: "#F8FAFC",
           WebkitTextStroke: "0px transparent",
-          textShadow: `0 ${2 * frameScale}px ${10 * frameScale}px rgba(0,0,0,.7)`,
+          textShadow: subtleTextShadow,
         }}
       >
         {headlineText}
@@ -281,9 +415,9 @@ export function HeadlineHookView({
           style={{
             ...commonSubheadline,
             fontSize: subheadlineSize * 0.86,
-            color: "#7DD3FC",
+            color: "#BAE6FD",
             WebkitTextStroke: "0px transparent",
-            textShadow: `0 ${2 * frameScale}px ${8 * frameScale}px rgba(0,0,0,.65)`,
+            textShadow: "none",
           }}
         >
           {subheadlineText}
@@ -291,9 +425,19 @@ export function HeadlineHookView({
       )}
     </div>
   ) : (
-    <div style={{ display: "inline-block", maxWidth: "100%", boxSizing: "border-box" }}>
-      <p style={commonHeadline}>{headlineText}</p>
-      {subheadlineText && <p style={commonSubheadline}>{subheadlineText}</p>}
+    <div
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        boxSizing: "border-box",
+        padding: `${16 * frameScale}px ${22 * frameScale}px`,
+        background: "radial-gradient(closest-side, rgba(6, 9, 18, 0.42) 0%, rgba(6, 9, 18, 0.16) 56%, rgba(6, 9, 18, 0) 100%)",
+      }}
+    >
+      <p style={{ ...commonHeadline, fontSize: headlineSize * 0.96 }}>{headlineText}</p>
+      {subheadlineText && (
+        <p style={{ ...commonSubheadline, fontSize: subheadlineSize * 0.96 }}>{subheadlineText}</p>
+      )}
     </div>
   );
 

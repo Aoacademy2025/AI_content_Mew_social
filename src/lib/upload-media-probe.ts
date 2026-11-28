@@ -176,6 +176,51 @@ export async function probeMediaStreams(filePath: string, demuxer: SafeInputDemu
 }
 
 /**
+ * Probes FPS and whether an audio stream is present (used for iPhone Live-Photo ~20fps
+ * detection and native clip audio preservation in Story Director). Spreads safeInputArgs(demuxer)
+ * per G24.
+ */
+export function ffprobeVideoStreamMeta(
+  filePath: string,
+  demuxer: SafeInputDemuxer,
+): { fps: number | null; hasAudio: boolean; isLivePhotoCadence: boolean } {
+  try {
+    const out = execFileSync(
+      getFfprobePath(),
+      [
+        "-v", "error", ...safeInputArgs(demuxer),
+        "-show_entries", "stream=codec_type,avg_frame_rate,r_frame_rate,channels,sample_rate",
+        "-of", "json", filePath,
+      ],
+      { encoding: "utf-8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+    );
+    const parsed = JSON.parse(out) as { streams?: Array<Record<string, unknown>> };
+    let fps: number | null = null;
+    let hasAudio = false;
+    for (const s of parsed.streams ?? []) {
+      if (s.codec_type === "audio" && Number(s.channels) > 0 && Number(s.sample_rate) > 0) {
+        hasAudio = true;
+      }
+      if (s.codec_type === "video" && fps === null) {
+        const rateRaw = typeof s.avg_frame_rate === "string" && s.avg_frame_rate !== "0/0"
+          ? s.avg_frame_rate
+          : typeof s.r_frame_rate === "string"
+            ? s.r_frame_rate
+            : "";
+        const [num, den] = rateRaw.split("/").map(Number);
+        if (Number.isFinite(num) && Number.isFinite(den) && den > 0 && num > 0) {
+          fps = Number((num / den).toFixed(2));
+        }
+      }
+    }
+    const isLivePhotoCadence = fps !== null && fps >= 14 && fps <= 24.5;
+    return { fps, hasAudio, isLivePhotoCadence };
+  } catch {
+    return { fps: null, hasAudio: false, isLivePhotoCadence: false };
+  }
+}
+
+/**
  * Ingest gate for user media that will be stored, or read later by code that still lets
  * ffmpeg auto-detect the format. The file must start with a media signature of one of
  * `kinds` (so auto-detection can never see a playlist or script) AND parse with that

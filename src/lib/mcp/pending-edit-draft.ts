@@ -645,7 +645,22 @@ export function toBurnConfig(draft: PendingEditDraft, base: Pick<PendingEditBase
     effectiveSfx,
     base.preview.words,
   );
-  return sfxCues && sfxCues.length > 0 ? { ...burn, sfxCues } : burn;
+  const baseCfgRecord = (base.preview.config ?? {}) as Record<string, unknown>;
+  const extraStoryFields: Record<string, unknown> = {};
+  if (Array.isArray(baseCfgRecord.storyOverlays) && baseCfgRecord.storyOverlays.length > 0) {
+    extraStoryFields.storyOverlays = baseCfgRecord.storyOverlays;
+  }
+  if (Array.isArray(baseCfgRecord.shotFaceZones) && baseCfgRecord.shotFaceZones.length > 0) {
+    extraStoryFields.shotFaceZones = baseCfgRecord.shotFaceZones;
+  }
+  if (baseCfgRecord.dualTikTokExport === true) {
+    extraStoryFields.dualTikTokExport = true;
+  }
+  return {
+    ...burn,
+    ...extraStoryFields,
+    ...(sfxCues && sfxCues.length > 0 ? { sfxCues } : {}),
+  };
 }
 
 /** The editor-native draft `enqueueEditorExport` turns into the export's editSnapshot. */

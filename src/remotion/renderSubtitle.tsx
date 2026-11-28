@@ -5,6 +5,7 @@ import { cardCutBoundaries } from "../lib/tts-timing";
 import { getActiveLoanwords, loanwordSpans } from "../lib/thai-loanwords";
 import { getActiveCompounds } from "../lib/thai-compounds";
 import {
+  expandUnitCompanionIndices,
   mergeNumericAffixTokens,
   selectHighlightedTokenIndices,
 } from "../lib/subtitle-keyword-highlight";
@@ -96,6 +97,25 @@ const THAI_DISPLAY_NO_BREAK_TERMS = [
   "คำอธิบาย",
   "ภาพคำตอบ",
   "คอมเมนต์",
+  "ทีละซีน",
+  "ทีละเฟรม",
+  "ไม่เสร็จ",
+  "สักที",
+  "คลิกเดียว",
+  "คำต่อคำ",
+  "พร้อมใช้",
+  "สามชั่วโมง",
+  "สิบนาที",
+  "ห้าแอป",
+  "หนึ่งหัวข้อ",
+  "หนึ่งไอเดีย",
+  "เสียงพากย์",
+  "ภาพประกอบ",
+  "ตั้งเวลาโพสต์",
+  "มือถือ",
+  "หน้ากล้อง",
+  "หน้าร้าน",
+  "การทำงาน",
 ] as const;
 
 type ProtectedSpan = { start: number; end: number };
@@ -437,6 +457,97 @@ export function applyDisplayLineBreak(text: string, size: number): string {
 // real words; it also handles spaced scripts (English) correctly.
 type TokenPart = { text: string; isWordLike: boolean };
 
+const UNSPACED_THAI_PREFIX_PARTICLES = new Set([
+  "ที่",
+  "ที",
+  "ทีละ",
+  "ก็",
+  "จะ",
+  "ให้",
+  "ใน",
+  "แต่",
+  "และ",
+  "ของ",
+  "ได้",
+  "ไม่",
+  "แค่",
+  "ว่า",
+  "กับ",
+  "จาก",
+  "ถึง",
+  "การ",
+  "ความ",
+]);
+
+const UNSPACED_THAI_SUFFIX_PARTICLES = new Set([
+  "ครับ",
+  "ค่ะ",
+  "คะ",
+  "นะ",
+  "เลย",
+  "ด้วย",
+  "เอง",
+  "กัน",
+]);
+
+function stripWordControls(raw: string): string {
+  return raw.replace(/[\u2060\u200B\uFEFF]/gu, "").trim();
+}
+
+/**
+ * Merges tiny unspaced Thai function particles (e.g. `ที`, `ที่`, `ก็`, `จะ`, `ให้`, `ใน`)
+ * with their adjacent unspaced Thai content word so word-by-word highlight/karaoke advances
+ * on natural prosodic words instead of flashing 1-syllable function particles. Never merges
+ * across whitespace or into numeric tokens.
+ */
+function mergeUnspacedThaiParticles(parts: TokenPart[]): TokenPart[] {
+  if (parts.length <= 1) return parts;
+  const pass1: TokenPart[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const cur = parts[i]!;
+    const next = parts[i + 1];
+    const curClean = stripWordControls(cur.text);
+    const nextClean = next ? stripWordControls(next.text) : "";
+    if (
+      cur.isWordLike
+      && next?.isWordLike
+      && THAI_SCRIPT_CHAR.test(curClean)
+      && THAI_SCRIPT_CHAR.test(nextClean)
+      && !/\p{N}/u.test(curClean)
+      && !/\p{N}/u.test(nextClean)
+      && UNSPACED_THAI_PREFIX_PARTICLES.has(curClean)
+      && baseGraphemeCount(curClean + nextClean) <= 10
+    ) {
+      pass1.push({ text: cur.text + WORD_JOINER + next.text, isWordLike: true });
+      i += 1;
+      continue;
+    }
+    pass1.push({ ...cur });
+  }
+  const pass2: TokenPart[] = [];
+  for (let i = 0; i < pass1.length; i++) {
+    const cur = pass1[i]!;
+    const prev = pass2.at(-1);
+    const curClean = stripWordControls(cur.text);
+    const prevClean = prev ? stripWordControls(prev.text) : "";
+    if (
+      prev?.isWordLike
+      && cur.isWordLike
+      && THAI_SCRIPT_CHAR.test(prevClean)
+      && THAI_SCRIPT_CHAR.test(curClean)
+      && !/\p{N}/u.test(prevClean)
+      && !/\p{N}/u.test(curClean)
+      && UNSPACED_THAI_SUFFIX_PARTICLES.has(curClean)
+      && baseGraphemeCount(prevClean + curClean) <= 10
+    ) {
+      prev.text += WORD_JOINER + cur.text;
+      continue;
+    }
+    pass2.push(cur);
+  }
+  return pass2;
+}
+
 function segmentParts(s: string): TokenPart[] {
   const seg = getSegmenter("th", "word");
   if (seg) {
@@ -461,7 +572,7 @@ function segmentParts(s: string): TokenPart[] {
         });
       }
     }
-    if (out.length > 0) return mergeNumericAffixTokens(out);
+    if (out.length > 0) return mergeUnspacedThaiParticles(mergeNumericAffixTokens(out));
   }
 
   const pieces = s.match(/\s+|[\p{L}\p{M}\p{N}]+|[^\s\p{L}\p{M}\p{N}]+/gu) ?? [];
@@ -694,19 +805,29 @@ export function renderSubtitle(
   const withLineBreak = applyDisplayLineBreak(text, lineBudgetSize);
   const sourceText = withLineBreak;
   text = protectSubtitleWordBreaks(withLineBreak);
-  const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
+  const hasThai = THAI_SCRIPT_CHAR.test(sourceText);
+  // Thai display fonts (Kanit / Prompt) at weight 900 ("Black") close inner consonant loops
+  // (ก ถ ภ พ ม ย ร ล ว อ ฮ) and fuse upper vowels + tone marks into blobs. Calibrate Thai
+  // rendering optically so 900 ("หนา") renders as crisp SemiBold (600), keeping open loops
+  // and crystal-clear tone marks while preserving stored config values.
+  const opticalWeight = hasThai
+    ? (fontWeight >= 800 ? 600 : fontWeight >= 600 ? 500 : 400)
+    : fontWeight;
+  const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? (hasThai ? 1 : 2))));
   const manualShadow = decorations.shadow
-    ? "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)"
+    ? (hasThai
+        ? "0 3px 12px rgba(0,0,0,0.86), 0 1px 3px rgba(0,0,0,0.78)"
+        : "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)")
     : undefined;
 
   const withDecorations = (style: React.CSSProperties): React.CSSProperties => {
     if (!decorations.shadow && !decorations.outline) return style;
     const next: React.CSSProperties = { ...style };
-    if (decorations.outline) {
-      next.WebkitTextStroke = `${outlineSize}px #000`;
+    if (decorations.outline && style.WebkitTextStroke !== "0px transparent") {
+      next.WebkitTextStroke = `${outlineSize}px rgba(0,0,0,0.9)`;
       next.paintOrder = "stroke fill";
     }
-    if (manualShadow) {
+    if (manualShadow && style.textShadow !== "none") {
       next.textShadow = mergeTextShadow(next.textShadow, manualShadow);
     }
     return next;
@@ -721,12 +842,12 @@ export function renderSubtitle(
   const base: React.CSSProperties = {
     fontFamily,
     fontSize: `${scaledSize}px`,
-    fontWeight,
-    lineHeight: 1.25,
+    fontWeight: opticalWeight,
+    lineHeight: hasThai ? 1.38 : 1.25,
     display: "block",
     textAlign: "center",
     width: "100%",
-    letterSpacing: "0.01em",
+    letterSpacing: hasThai ? "0.015em" : "0.01em",
     whiteSpace: "pre-line",
     // Never use overflow-wrap:anywhere here: it allows Chromium to cut Thai
     // proper names at an arbitrary character when the line is nearly full.
@@ -757,14 +878,15 @@ export function renderSubtitle(
     if (textEffect === "highlight") {
       const isWhiteCard = preset === "box-white";
       const isDarkCard = preset === "box" || preset === "box-rounded" || preset === "karaoke-box";
+      const accentRgb = hexToRgb(accentColor);
       const wrapHighlightCard = (inner: React.ReactNode) => {
         if (isWhiteCard) {
           return (
             <div style={{
               display: "inline-block",
               background: "#FFFFFF",
-              border: "4px solid #111827",
-              boxShadow: "0 6px 0 rgba(17,24,39,0.22), 0 10px 24px rgba(0,0,0,0.18)",
+              border: "3px solid rgba(17,24,39,0.88)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.22)",
               padding: "16px 32px 18px",
               borderRadius: 20,
               maxWidth: "92%",
@@ -777,11 +899,11 @@ export function renderSubtitle(
           return (
             <div style={{
               display: "inline-block",
-              background: "rgba(15, 23, 42, 0.92)",
-              border: "3px solid rgba(255,255,255,0.22)",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-              padding: "12px 28px 14px",
-              borderRadius: 18,
+              background: "rgba(10, 15, 28, 0.86)",
+              border: "1.5px solid rgba(255,255,255,0.16)",
+              boxShadow: "0 10px 28px rgba(0,0,0,0.45)",
+              padding: "14px 30px 16px",
+              borderRadius: 20,
               maxWidth: "90%",
             }}>
               {inner}
@@ -790,7 +912,7 @@ export function renderSubtitle(
         }
         if (preset === "box") {
           return (
-            <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 22px 10px", borderRadius: 8 }}>
+            <div style={{ display: "inline-block", background: "rgba(10, 15, 28, 0.82)", padding: "10px 24px 12px", borderRadius: 12 }}>
               {inner}
             </div>
           );
@@ -806,12 +928,13 @@ export function renderSubtitle(
       if (active < 0) {
         return wrapHighlightCard(<span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined })}>{text}</span>);
       }
-      // Thinner outline + drop shadow only — heavy 4-way stroke smeared the
-      // small text into an unreadable blob. The active word reads dark-on-yellow,
-      // so it needs no stroke; inactive words keep a light outline for contrast.
+      // Keep consistent light-on-dark polarity on dark cards & video footage: instead of
+      // flipping the active word into harsh black-on-yellow (which glares and smears Thai
+      // vowels), illuminate the active word in crisp `accentColor` over a soft tinted glass pill.
       let tokenIdx = 0;
+      const activeTextWeight = hasThai ? Math.min(700, opticalWeight + 100) : Math.max(opticalWeight, 700);
       return wrapHighlightCard(
-        <span style={withDecorations({ ...base, color: baseTextColor, display: "inline", textShadow: isWhiteCard ? "none" : undefined, WebkitTextStroke: isWhiteCard ? "0px transparent" : undefined })}>
+        <span style={{ ...base, color: baseTextColor, display: "inline", textShadow: "none", WebkitTextStroke: "0px transparent" }}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
               {line.parts.map((part, partIdx) => {
@@ -820,18 +943,31 @@ export function renderSubtitle(
                 }
                 const currentIdx = tokenIdx++;
                 const isActive = currentIdx === active;
+                const activeBg = isWhiteCard
+                  ? `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.34)`
+                  : isDarkCard
+                    ? `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.18)`
+                    : "rgba(10, 15, 28, 0.78)";
+                const activeFg = isWhiteCard ? "#0F172A" : accentColor;
                 return (
-                  <span key={`${lineIdx}-${partIdx}`} style={withDecorations({
-                    background: isActive ? accentColor : "transparent",
-                    color: isActive ? "#111827" : baseTextColor,
-                    borderRadius: "0.18em",
-                    padding: isActive ? "0.02em 0.16em" : undefined,
-                    textShadow: isActive || isWhiteCard || isDarkCard ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
-                    WebkitTextStroke: isActive || isWhiteCard || isDarkCard ? "0px transparent" : "1px rgba(0,0,0,0.85)",
+                  <span key={`${lineIdx}-${partIdx}`} data-active-word={isActive ? "true" : undefined} style={{
+                    background: isActive ? activeBg : "transparent",
+                    color: isActive ? activeFg : baseTextColor,
+                    fontWeight: isActive ? activeTextWeight : opticalWeight,
+                    borderRadius: "0.26em",
+                    padding: isActive ? "0.05em 0.2em 0.08em" : undefined,
+                    textShadow: isWhiteCard
+                      ? "none"
+                      : isActive
+                        ? `0 1px 8px rgba(0,0,0,0.72), 0 0 18px rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.24)`
+                        : isDarkCard
+                          ? "0 1px 4px rgba(0,0,0,0.55)"
+                          : "0 2px 8px rgba(0,0,0,0.92)",
+                    WebkitTextStroke: isActive || isWhiteCard || isDarkCard ? "0px transparent" : "1px rgba(0,0,0,0.78)",
                     paintOrder: "stroke fill",
                     boxDecorationBreak: "clone",
                     WebkitBoxDecorationBreak: "clone",
-                  } as React.CSSProperties)}>{part.text}</span>
+                  } as React.CSSProperties}>{part.text}</span>
                 );
               })}
               {lineIdx < lines.length - 1 ? <br /> : null}
@@ -928,11 +1064,13 @@ export function renderSubtitle(
     if (!decorations.highlightKeywords) return text;
     const lines = tokenLines(text);
     const allParts = lines.flatMap((line) => line.parts);
-    const highlighted = selectHighlightedTokenIndices(allParts, 2);
+    const baseHighlighted = selectHighlightedTokenIndices(allParts, 2);
+    const highlighted = expandUnitCompanionIndices(allParts, baseHighlighted);
     if (highlighted.size === 0) return text;
     const resolvedAccent = cardTextColor.trim().toUpperCase() === accentColor.trim().toUpperCase()
       ? (accentColor.trim().toUpperCase() === "#FFFFFF" ? "#FFE500" : "#FFFFFF")
       : accentColor;
+    const keywordWeight = hasThai ? Math.min(700, opticalWeight + 100) : Math.max(opticalWeight, 800);
     let tokenIdx = 0;
     return lines.map((line, lineIdx) => (
       <React.Fragment key={lineIdx}>
@@ -950,7 +1088,7 @@ export function renderSubtitle(
               data-keyword-highlight="true"
               style={{
                 color: resolvedAccent,
-                fontWeight: 900,
+                fontWeight: keywordWeight,
               }}
             >
               {part.text}
@@ -1020,8 +1158,15 @@ export function renderSubtitle(
       );
 
     case "pop-outline": {
-      const cInv = color === "#ffffff" || color === "#fff" ? "#000000" : "#ffffff";
-      return <span style={withDecorations({ ...base, WebkitTextStroke: `2px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties)}>{renderContent(color)}</span>;
+      const cInv = color === "#ffffff" || color === "#fff" || color === "#FFFFFF" ? "rgba(8, 12, 22, 0.88)" : "#ffffff";
+      return (
+        <span style={withDecorations({
+          ...base,
+          WebkitTextStroke: `${hasThai ? "1.3px" : "2px"} ${cInv}`,
+          paintOrder: "stroke fill",
+          textShadow: "0 3px 12px rgba(0,0,0,0.78)",
+        } as React.CSSProperties)}>{renderContent(color)}</span>
+      );
     }
 
     case "pastel":
@@ -1105,8 +1250,9 @@ export function renderSubtitle(
       return (
         <span style={withDecorations({
           ...base,
-          WebkitTextStroke: "2px #000",
+          WebkitTextStroke: hasThai ? "1.3px rgba(0,0,0,0.88)" : "2px #000",
           paintOrder: "stroke fill",
+          textShadow: hasThai ? "0 3px 10px rgba(0,0,0,0.72)" : undefined,
         } as React.CSSProperties)}>{renderContent(color)}</span>
       );
   }

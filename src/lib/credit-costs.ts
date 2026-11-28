@@ -29,7 +29,13 @@ export const CREDIT_COST: Record<string, number> = {
   "video-seedance-5s": 10,
   "video-seedance-10s": 18,
   "video-seedance-15s": 25,
+  // AI Story Director footage vision analysis (Web managed key)
+  "story-director-flash": 6,
+  "story-director-neon": 19,
 };
+
+export const STORY_DIRECTOR_FLASH_CREDITS = CREDIT_COST["story-director-flash"];
+export const STORY_DIRECTOR_NEON_CREDITS = CREDIT_COST["story-director-neon"];
 
 export function creditCostFor(action: string): number {
   return CREDIT_COST[action] ?? 0;

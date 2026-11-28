@@ -39,6 +39,9 @@ export const TEMPLATE_VOICE_STYLE_BY_ID: Record<ActiveStylePackId, GeminiVoiceSt
   "ai-tech-doc": "serious",
   "true-crime": "serious",
   "self-growth": "warm",
+  "event-mission-vlog": "cheerful",
+  "proud-moment-highlight": "warm",
+  "product-beat-showcase": "excited",
 };
 
 export const TEMPLATE_TTS_SPEED_BY_PACING: Record<PacingLevel, number> = {

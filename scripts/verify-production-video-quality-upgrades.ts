@@ -19,16 +19,24 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { buildCutawayCompositeFilter } from "../src/lib/cutaway-composite";
+import { resolveBrollPlaybackPlan } from "../src/lib/broll-playback";
 import { stitchPresenterVideoFiles, probeClipInfoViaFfmpeg } from "../src/lib/presenter-stitch.server";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
 import { KEN_BURNS_DURATION_SEC } from "../src/lib/broll-asset-lib";
 import { pickPixabayVariant } from "../src/lib/broll-source-quality";
 import { planAutoMixSources, planSemanticAutoMixSources } from "../src/lib/automix-plan";
 import { sceneDiversityClause } from "../src/lib/scene-brief-diversity";
-import { planMotionSceneForWindow } from "../src/lib/motion-broll-catalog";
+import { planMotionSceneForWindow, trimPhraseAtWordBoundary } from "../src/lib/motion-broll-catalog";
 import { buildHeroSubtitleOverlayConfig } from "../src/lib/hero-editorial";
 import { DEFAULT_V2_SUB, buildV2BurnConfig } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 import { renderSubtitle } from "../src/remotion/renderSubtitle";
+import { HeadlineHookView } from "../src/remotion/HeadlineHookView";
+import { normalizeHeadlineHook } from "../src/lib/headline-hook";
+import {
+  expandUnitCompanionIndices,
+  scoreSubtitleTokenForHighlight,
+  selectHighlightedTokenIndices,
+} from "../src/lib/subtitle-keyword-highlight";
 import { bgmEnvelopeGainAt, speechSegments } from "../src/lib/background-music";
 import { synthesizeTransitionSfxWavBytes } from "../src/lib/transition-sfx";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
@@ -386,15 +394,86 @@ async function main() {
       ),
     ),
   );
-  const stripWordJoiners = (s: string) => s.replace(/\u2060/g, "");
+  const stripWordJoiners = (s: string) => s.replace(/[\u2060\u200B]/g, "");
   const clean35 = stripWordJoiners(htmlAtFrame35);
   const clean52 = stripWordJoiners(htmlAtFrame52);
   check(
-    "renderSubtitle highlight syncs to real wordTimings at frame 35 and advances after frame 48",
-    clean35.includes('background:#FFE500')
-      && clean35.indexOf('background:#FFE500') < clean35.indexOf('คำแรกสั้น')
-      && clean52.indexOf('background:#FFE500') > clean52.indexOf('คำแรกสั้น'),
+    "renderSubtitle highlight syncs to real wordTimings at frame 35, advances after frame 48, and keeps readable light-on-dark accent polarity (no #111827 black inversion)",
+    clean35.includes('data-active-word="true"')
+      && clean35.includes("color:#FFE500")
+      && !clean35.includes("color:#111827")
+      && clean35.indexOf('data-active-word="true"') < clean35.indexOf("คำแรกสั้น")
+      && clean52.indexOf('data-active-word="true"') > clean52.indexOf("คำแรกสั้น"),
     clean35,
+  );
+  check(
+    "renderSubtitle calibrates Thai fontWeight 900 optically to 600 SemiBold with generous 1.38 lineHeight",
+    clean35.includes("font-weight:600") && clean35.includes("line-height:1.38"),
+    clean35,
+  );
+
+  // Pack 4: Systemic Thai Grapheme Integrity, Semantic Keyword Restraint & Balanced Hooks
+  console.log("\n[Pack 4] Thai Grapheme Integrity, Semantic Keyword Restraint & Editorial Hooks");
+  check(
+    'trimPhraseAtWordBoundary keeps "สคริปต์เปิดฮุกชัด" whole at budget 16 (never chops ฮุก -> ฮุ)',
+    trimPhraseAtWordBoundary("สคริปต์เปิดฮุกชัด", 16) === "สคริปต์เปิดฮุกชัด"
+      && !trimPhraseAtWordBoundary("สคริปต์เปิดฮุกชัด", 10).endsWith("ฮุ"),
+    trimPhraseAtWordBoundary("สคริปต์เปิดฮุกชัด", 16),
+  );
+  check(
+    'trimPhraseAtWordBoundary keeps "ตอน 2 เริ่มช้า" whole at budget 12 and never slices mid-syllable ("เรื่") even at budget 8',
+    trimPhraseAtWordBoundary("ตอน 2 เริ่มช้า", 12) === "ตอน 2 เริ่มช้า"
+      && !trimPhraseAtWordBoundary("ตอน 2 เริ่มช้า", 8).endsWith("เรื่"),
+    trimPhraseAtWordBoundary("ตอน 2 เริ่มช้า", 8),
+  );
+
+  check(
+    "scoreSubtitleTokenForHighlight rejects modal/filler words (ไม่จำเป็นต้อง, ต่อไป, ธรรมดา) and scores Thai spoken quantities (สามชั่วโมง, สิบนาที)",
+    scoreSubtitleTokenForHighlight("ไม่จำเป็นต้อง") === 0
+      && scoreSubtitleTokenForHighlight("ต่อไป") === 0
+      && scoreSubtitleTokenForHighlight("ธรรมดา") === 0
+      && scoreSubtitleTokenForHighlight("สามชั่วโมง") >= 100
+      && scoreSubtitleTokenForHighlight("สิบนาที") >= 100,
+  );
+  const fillerCardSelection = selectHighlightedTokenIndices(["ทำคลิปลงเพจทุกวัน", "ไม่จำเป็นต้อง", "นั่งตัดต่อเอง"]);
+  check(
+    "selectHighlightedTokenIndices highlights 0 tokens when a card has no genuine stat or domain keyword",
+    fillerCardSelection.size === 0,
+  );
+  const unitExpanded = expandUnitCompanionIndices(
+    [
+      { text: "ลดจาก", isWordLike: true },
+      { text: " ", isWordLike: false },
+      { text: "3", isWordLike: true },
+      { text: " ", isWordLike: false },
+      { text: "ชั่วโมง", isWordLike: true },
+    ],
+    new Set([1]),
+  );
+  check(
+    "expandUnitCompanionIndices pairs numeric token with its trailing Thai classifier (3 + ชั่วโมง)",
+    unitExpanded.has(1) && unitExpanded.has(2),
+  );
+
+  const orphanHook = normalizeHeadlineHook(
+    {
+      enabled: true,
+      headline: "เลิกนั่งหา B-Roll เองทีละซีน!",
+      subheadline: "เปลี่ยน 5 ขั้นตอนวุ่นวาย ให้จบในที่เดียว",
+      preset: "banner",
+    },
+    30_000,
+  )!;
+  const orphanHookHtml = renderToStaticMarkup(
+    React.createElement(HeadlineHookView, { hook: orphanHook, frameScale: 1 }),
+  );
+  check(
+    'HeadlineHookView binds trailing Thai orphan ("ทีละซีน!") with WORD JOINER and uses lineHeight 1.34 + text-wrap:balance',
+    !orphanHookHtml.includes("\u200Bซ\u2060ี\u2060น")
+      && orphanHookHtml.includes("line-height:1.34")
+      && orphanHookHtml.includes("text-wrap:balance")
+      && orphanHookHtml.replace(/<[^>]*>/g, "").replace(/[\u2060\u200B]/g, "")
+        === "เลิกนั่งหา B-Roll เองทีละซีน!เปลี่ยน 5 ขั้นตอนวุ่นวาย ให้จบในที่เดียว",
   );
 
   // BGM envelope: fade-in, speech ducking, fade-out
@@ -422,6 +501,77 @@ async function main() {
       `ch=${channels} sr=${sampleRate} bits=${bitsPerSample} firstL=${firstL}`,
     );
   }
+
+  // ── Pack 5: Smooth Pre-Transition Motion & Dissolve-Safe Cutaway Zoom ──
+  console.log("\n[Pack 5] Pre-Transition Continuity, Offset Pullback & Dissolve-Safe Punch Zoom");
+
+  const pulledBackPlan = resolveBrollPlaybackPlan({
+    startFrom: 75,
+    totalFrames: 158,
+    clipDurFrames: 210,
+  });
+  check(
+    "resolveBrollPlaybackPlan pulls back safeStart when offset would hit EOF before outgoing transition",
+    pulledBackPlan.safeStart === 50
+      && pulledBackPlan.endAt === 208
+      && pulledBackPlan.loopDurationInFrames === null,
+    JSON.stringify(pulledBackPlan),
+  );
+
+  const shortOffsetPlan = resolveBrollPlaybackPlan({
+    startFrom: 45,
+    totalFrames: 158,
+    clipDurFrames: 120,
+  });
+  check(
+    "resolveBrollPlaybackPlan rewinds short offset clip to 0 so loop uses full guarded clip length",
+    shortOffsetPlan.safeStart === 0
+      && shortOffsetPlan.endAt === 118
+      && shortOffsetPlan.loopDurationInFrames === 118,
+    JSON.stringify(shortOffsetPlan),
+  );
+
+  const dissolvePunchBoundary = buildCutawayCompositeFilter(
+    [
+      { start: 0, end: 7.05 },
+      { start: 13.67, end: 20.04 },
+      { start: 28.56, end: 36.06 },
+    ],
+    { punchZoom: true, dissolveLeadInSec: 8 / 30 },
+  )!;
+  const fgZoomClause = dissolvePunchBoundary.split(";").find((part) => part.includes("[fg_zoom]overlay")) ?? "";
+  check(
+    "cutaway punchZoom + dissolveLeadInSec suppresses 1.15x zoom beats touching outgoing/incoming B-roll dissolves while keeping final CTA tail zoom",
+    fgZoomClause !== ""
+      && !fgZoomClause.includes("7.050)")
+      && !fgZoomClause.includes("20.040)")
+      && fgZoomClause.includes("36.060)"),
+    fgZoomClause || dissolvePunchBoundary,
+  );
+
+  const dissolvePunchInterior = buildCutawayCompositeFilter(
+    [
+      { start: 0, end: 12 },
+      { start: 16, end: 20 },
+    ],
+    { punchZoom: true, cueTimesSec: [4, 8], dissolveLeadInSec: 8 / 30 },
+  )!;
+  check(
+    "cutaway punchZoom + dissolveLeadInSec preserves interior [4..8] jump-cut zoom beat away from B-roll transition",
+    dissolvePunchInterior.includes("between(t,4.000,8.000)"),
+    dissolvePunchInterior,
+  );
+
+  const shortCompSrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "remotion", "ShortVideoComposition.tsx"),
+    "utf8",
+  );
+  check(
+    "ShortVideoComposition uses constant-velocity Easing.linear Ken Burns and cross-dissolved multi-pass loops",
+    shortCompSrc.includes("easing: Easing.linear")
+      && shortCompSrc.includes("MAX_LOOP_CROSSFADE_FRAMES")
+      && !shortCompSrc.includes("Easing.inOut(Easing.sin)"),
+  );
 
   console.log(`\n✅ ALL ${passed} PRODUCTION VIDEO QUALITY UPGRADE CHECKS PASSED`);
 }

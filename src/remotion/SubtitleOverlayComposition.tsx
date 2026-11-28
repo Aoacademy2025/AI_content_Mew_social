@@ -9,6 +9,13 @@ import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } f
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 import { StatCardOverlay } from "./StatCardOverlay";
+import { StoryOverlayLayer } from "./StoryOverlayLayer";
+import { normalizeStoryOverlays, planStoryOverlaySfxCues } from "../lib/story-overlays";
+import {
+  coordinateSubtitlePopups,
+  normalizeFaceBoxes,
+  type FaceBox,
+} from "../lib/face-safe-placement";
 import { useWebfontGate } from "./webfont-gate";
 import { setDynamicLoanwords } from "../lib/thai-loanwords";
 import { setDynamicCompounds } from "../lib/thai-compounds";
@@ -38,6 +45,9 @@ export function SubtitleOverlayComposition({
   subtitleStatCards = false,
   sfxMode = "none",
   sfxCues,
+  storyOverlays,
+  faceSafePlacement = true,
+  shotFaceZones,
   bgmFile,
   bgmVolume = 0.12,
   audioMix,
@@ -51,6 +61,12 @@ export function SubtitleOverlayComposition({
     setDynamicCompounds(thaiWordBreaks.compounds, thaiWordBreaks.denylist);
   }
   const { width, height, fps, durationInFrames } = useVideoConfig();
+  const resolvedStoryOverlays = normalizeStoryOverlays(storyOverlays, (durationInFrames / fps) * 1000);
+  const resolveFaceBoxesAtMs = (ms: number): readonly FaceBox[] | undefined => {
+    if (!shotFaceZones?.length) return undefined;
+    const hit = shotFaceZones.find((z) => ms >= z.startMs && ms < z.endMs);
+    return hit?.faceBoxes?.length ? normalizeFaceBoxes(hit.faceBoxes) : undefined;
+  };
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   // Preview stills only; exports never set awaitWebfonts (no delayRender, no extra link props).
   const webfontGate = useWebfontGate(awaitWebfonts, [
@@ -86,7 +102,7 @@ export function SubtitleOverlayComposition({
       )
     : [];
 
-  const activeSfxCues = effectiveSfxMode(sfxMode) === "subtle"
+  const baseSfxCues = effectiveSfxMode(sfxMode) === "subtle"
     ? (sfxCues && sfxCues.length > 0
       ? sfxCues
       : planTransitionSfxCues({
@@ -97,7 +113,19 @@ export function SubtitleOverlayComposition({
             .map((p) => p.start / fps),
           totalDurationSec: baseDurationInFrames / fps,
         }))
-    : [];
+    : (sfxCues && sfxCues.length > 0 ? sfxCues : []);
+  const storySfxCues = planStoryOverlaySfxCues(resolvedStoryOverlays, baseDurationInFrames / fps);
+  const activeSfxCues = [...baseSfxCues, ...storySfxCues];
+  const hookEndMs = headlineHook?.enabled && hookEndFrame > 0 ? (hookEndFrame / fps) * 1000 : 0;
+  const coordinatedSubtitles = coordinateSubtitlePopups({
+    popups: keywordPopups,
+    fps,
+    faceSafePlacement: faceSafePlacement !== false,
+    resolveFaceBoxesAtMs,
+    headlineHook: headlineHook as { enabled?: boolean; topPercent?: number } | undefined,
+    hookEndFrame,
+    storyOverlays: resolvedStoryOverlays,
+  });
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
@@ -191,6 +219,17 @@ export function SubtitleOverlayComposition({
         );
       })()}
 
+      {resolvedStoryOverlays.length > 0 && (
+        <StoryOverlayLayer
+          overlays={resolvedStoryOverlays}
+          defaultAccentColor={accentColor}
+          fontFamily={resolvedFont}
+          resolveFaceBoxesAtMs={resolveFaceBoxesAtMs}
+          activeSubtitleBands={coordinatedSubtitles}
+          headlineHookEndMs={hookEndMs}
+        />
+      )}
+
       {headlineHook?.enabled && hookEndFrame > 0 && (
         <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
           <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
@@ -201,19 +240,13 @@ export function SubtitleOverlayComposition({
         <StatCardOverlay cards={plannedStatCards} fontFamily={resolvedFont} />
       )}
 
-      {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
-      {keywordPopups.map((p) => {
-        const hookTop = (headlineHook as { topPercent?: number } | undefined)?.topPercent ?? 18;
-        const subTop = p.topPercent ?? 72;
-        const collidesWithHook = Boolean(headlineHook?.enabled && hookEndFrame > 0 && Math.abs(subTop - hookTop) < 28);
-        const visibleStart = collidesWithHook ? Math.max(p.start, hookEndFrame) : p.start;
-        const dur = p.end - visibleStart;
-        if (dur <= 0) return null;
-        const capPreset = p.stylePreset ?? preset;
+      {/* Subtitles — use the same coordinated Sequence + AnimatedSubtitle as ShortVideoComposition */}
+      {coordinatedSubtitles.map(({ popup: adjustedPopup, visibleStart, dur }) => {
+        const capPreset = adjustedPopup.stylePreset ?? preset;
         return (
-          <Sequence key={`sub-${p.start}-${p.end}`} from={visibleStart} durationInFrames={dur} layout="none">
+          <Sequence key={`sub-${adjustedPopup.start}-${adjustedPopup.end}-${visibleStart}`} from={visibleStart} durationInFrames={dur} layout="none">
             <AnimatedSubtitle
-              popup={p}
+              popup={adjustedPopup}
               preset={capPreset}
               resolvedFont={resolvedFont}
               captionDurFrames={dur}

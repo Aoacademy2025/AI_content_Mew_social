@@ -15,4 +15,8 @@ export type RenderJobStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "CANCEL
  */
 export type RenderPayload = Omit<ResolvedRenderInput, "bundleCache">;
 
-export type RenderResult = { videoUrl: string };
+export type RenderResult = {
+  videoUrl: string;
+  /** Present when `dualTikTokExport` is requested: companion MP4 with identical video stream (`-c:v copy`) + voice/clip-audio/SFX at -14 LUFS and NO BGM. */
+  tiktokSoundVideoUrl?: string;
+};

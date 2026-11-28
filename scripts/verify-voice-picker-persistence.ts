@@ -42,6 +42,7 @@ import * as motionBrollCatalogModule from "../src/lib/motion-broll-catalog";
 import * as brollWindowStyleModule from "../src/lib/broll-window-style";
 import * as transitionSfxModule from "../src/lib/transition-sfx";
 import * as videoTemplateApplyModule from "../src/lib/video-template-apply";
+import * as storyDirectorPlannerModule from "../src/lib/story-director-planner";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -400,6 +401,7 @@ function createHarness(options: {
     if (specifier === "@/lib/broll-window-style") return brollWindowStyleModule;
     if (specifier === "@/lib/transition-sfx") return transitionSfxModule;
     if (specifier === "@/lib/video-template-apply") return videoTemplateApplyModule;
+    if (specifier === "@/lib/story-director-planner") return storyDirectorPlannerModule;
     if (specifier === "@/lib/video-account-defaults") return { saveVideoAccountDefaults: async () => ({ ok: true }) };
     if (specifier === "@/lib/client-request-cache") return { fetchClientJson: async () => ({ ok: true, status: 200, data: null }) };
     if (specifier === "@/lib/authenticated-fetch") return { authenticatedFetch: fetchMock.fetch };

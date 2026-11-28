@@ -667,7 +667,7 @@ async function main() {
     await resetAll();
     await paying.create(); // the non-admin paying customer A3 measured
     (globalThis as unknown as { __authQueryBudgetClerkId: string }).__authQueryBudgetClerkId = paying.clerkId;
-    const warm = await subject.GET();
+    const { result: warm } = await record(() => subject.GET());
     check("/api/user/me responds 200", warm.status === 200, `got ${warm.status}`);
 
     const steady = await record(() => subject.GET());

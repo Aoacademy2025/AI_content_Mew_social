@@ -15,6 +15,9 @@
 
 export const MOTION_URI_PREFIX = "motion://";
 
+import { baseGraphemeCount } from "./card-line-budget";
+import { cardCutBoundaries } from "./tts-timing";
+
 export const MOTION_THEME_IDS = [
   "doodle-explainer",
   "cue-step-board",
@@ -900,47 +903,90 @@ export function normalizeMotionTemplateConfig(
   };
 }
 
-const THAI_WORD_SEGMENTER =
-  typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
-    ? new Intl.Segmenter("th", { granularity: "word" })
-    : null;
+const DANGLING_TAIL_RE = /(?:\s*[+·•,&/-]|\s+(?:ให้|ที่|ใน|ด้วย|แบบ|จาก|ไป|มา|และ|หรือ|แต่|ว่า|ของ)|(?<=[\u0E00-\u0E7F]{5})(?:ที่|ซึ่ง|เพื่อ))$/u;
 
-/** Trim a Thai/English string at a clean word boundary without cutting words or combining marks. */
-export function trimPhraseAtWordBoundary(raw: string, maxChars: number): string {
-  const cleaned = raw.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= maxChars) return cleaned;
-  if (THAI_WORD_SEGMENTER) {
-    let acc = "";
-    for (const seg of THAI_WORD_SEGMENTER.segment(cleaned)) {
-      if (acc.length + seg.segment.length > maxChars) break;
-      acc += seg.segment;
+/**
+ * Trim a Thai/English phrase at a verified safe word/loanword/compound boundary
+ * (`cardCutBoundaries`), measuring horizontal length in Thai **base graphemes**
+ * (`baseGraphemeCount`) so combining vowels and tone marks (`◌ิ ◌ี ◌ึ ◌ื ◌่ ◌้ ◌์`)
+ * never consume character budget — and NEVER slicing mid-word with `.slice(0, maxChars)`.
+ */
+export function trimPhraseAtWordBoundary(raw: string, maxBaseGraphemes: number): string {
+  const cleaned = raw
+    .replace(/[\u2060\u200B\uFEFF]/gu, "")
+    .replace(/\s+/g, " ")
+    .replace(DANGLING_TAIL_RE, "")
+    .trim();
+  if (!cleaned) return "";
+  const budget = Math.max(4, Math.round(maxBaseGraphemes));
+  if (baseGraphemeCount(cleaned) <= budget) return cleaned;
+
+  const cuts = cardCutBoundaries(cleaned);
+  const edges = [...cuts, cleaned.length];
+  let best = "";
+  for (const edge of edges) {
+    const candidate = cleaned.slice(0, edge).replace(DANGLING_TAIL_RE, "").trim();
+    if (!candidate) continue;
+    if (baseGraphemeCount(candidate) <= budget) {
+      best = candidate;
+    } else {
+      // If even the very first word/compound exceeds budget, keep that complete first
+      // word intact instead of amputating Thai characters mid-word; Canvas auto-fit
+      // scales the font size down cleanly to fit the container.
+      if (!best) best = candidate;
+      break;
     }
-    const trimmed = acc.trim();
-    if (trimmed.length >= Math.min(6, maxChars)) return trimmed;
   }
-  const spaceCut = cleaned.slice(0, maxChars).replace(/\s+\S*$/, "").trim();
-  return spaceCut.length >= 6 ? spaceCut : cleaned.slice(0, maxChars).trim();
+  return best || cleaned;
 }
 
 function stripLeadingConjunction(s: string): string {
   return s
-    .replace(/^(?:เพราะว่า|เพราะ|แต่ว่า|แต่|แทนที่จะ|จน|แล้ว|ส่วน|และ|หรือ|วันนี้ที่ช่อง|วันนี้|ทำไมช่องของ|ทำไม)\s*/, "")
+    .replace(/^(?:เพราะว่า|เพราะ|แต่ว่า|แต่|แทนที่จะ|เปลี่ยนจาก|จน|แล้ว|ส่วน|และ|หรือ|วันนี้ที่ช่อง|วันนี้|ทำไมช่องของ|ทำไม|ตั้งแต่|ทั้ง)\s*/u, "")
+    .replace(DANGLING_TAIL_RE, "")
     .trim();
 }
 
-function splitMeaningfulPhrases(text: string, maxItems = 4, maxItemChars = 24): string[] {
-  const body = text.replace(/^(?:\d+[.)]\s*|ข้อ(?:ที่)?\s*(?:หนึ่ง|สอง|สาม|สี่|\d+)\s*)/, "").trim();
+function splitMeaningfulPhrases(text: string, maxItems = 4, maxItemChars = 26): string[] {
+  const body = text
+    .replace(/^(?:\d+[.)]\s*|ข้อ(?:ที่)?\s*(?:หนึ่ง|สอง|สาม|สี่|\d+)\s*)/u, "")
+    .trim();
+
+  // 1. Explicit enumerations ("ทั้ง A B C และ D" / "ตั้งแต่ A B C ไปจนถึง D")
+  const enumMatch = body.match(/(?:ทั้ง|ตั้งแต่)\s+(.+)/u);
+  if (enumMatch?.[1]) {
+    const parts = enumMatch[1]
+      .split(/\s*(?:ไปจนถึง|จนถึง|รวมถึง|และ|หรือ|,|·|•|\|)\s*|\s+/u)
+      .map((s) => stripLeadingConjunction(s.trim()))
+      .filter((s) => baseGraphemeCount(s) >= 3 && !/^(?:เอง|ครับ|ค่ะ|นะ|เลย|ได้)$/u.test(s));
+    if (parts.length >= 2) {
+      return parts.slice(0, maxItems).map((c) => trimPhraseAtWordBoundary(c, maxItemChars));
+    }
+  }
+
+  // 2. Progressive episode / stage clauses ("ตอนแรก ... พอคลิปที่สอง ... คลิปที่สาม ...")
+  const stageClauses = body
+    .split(/(?=(?:ตอน(?:แรก|ที่\s*\S+|\s*\d+)|คลิป(?:แรก|ที่\s*\S+|\s*\d+)|ขั้น(?:แรก|ที่\s*\S+|\s*\d+)))/u)
+    .map((s) => s.replace(/^พอ\s*/u, "").trim())
+    .filter((s) => baseGraphemeCount(s) >= 4);
+  if (stageClauses.length >= 2) {
+    return stageClauses.slice(0, maxItems).map((c) => trimPhraseAtWordBoundary(c, maxItemChars));
+  }
+
+  // 3. Explicit discourse-conjunction clauses
   const explicitClauses = body
-    .split(/[\n·•,|]+|(?:\s+(?:แต่|เพราะ|แทนที่จะ|จน|แล้ว|ส่วน|และ|หรือ)\s+)|(?:\s{2,})/)
+    .split(/[\n·•,|]+|(?:\s+(?:แต่|เพราะ|แทนที่จะ|ให้เหลือ(?:แค่)?|ไปจนถึง|จน|แล้ว|ส่วน|และ|หรือ)\s+)|(?:\s{2,})/u)
     .map((s) => stripLeadingConjunction(s.trim()))
-    .filter((s) => s.length >= 3);
+    .filter((s) => baseGraphemeCount(s) >= 3);
   if (explicitClauses.length >= 2) {
     return explicitClauses.slice(0, maxItems).map((c) => trimPhraseAtWordBoundary(c, maxItemChars));
   }
+
+  // 4. Space-delimited natural breath groups (only when each group is a real phrase >= 4 base graphemes)
   const spaceParts = body
-    .split(/\s+/)
+    .split(/\s+/u)
     .map((s) => stripLeadingConjunction(s.trim()))
-    .filter((s) => s.length >= 3 && !/^\d+[.)]?$/.test(s));
+    .filter((s) => baseGraphemeCount(s) >= 4 && !/^\d+[.)]?$/u.test(s));
   if (spaceParts.length >= 2) {
     return spaceParts.slice(0, maxItems).map((c) => trimPhraseAtWordBoundary(c, maxItemChars));
   }
@@ -1071,21 +1117,30 @@ export function planMotionSceneForWindow(input: {
   }
 
   const entry = motionTemplateEntry(templateId);
-  const extractedPhrases = splitMeaningfulPhrases(text, 4, 22);
+  const extractedPhrases = splitMeaningfulPhrases(text, 4, 26);
+
+  // Detect explicit before -> after contrast in Thai ("เปลี่ยนจาก X ให้เหลือ(แค่)? Y" / "แทนที่จะ X ... Y")
+  const contrastMatch =
+    text.match(/(?:เปลี่ยนจาก|จาก)\s*([^\s,]+(?:\s+[^\s,]+)?)\s*(?:ให้เหลือ(?:แค่)?|เหลือ(?:แค่)?|เป็น)\s*([^\s,]+(?:\s+[^\s,]+)?)/u) ??
+    text.match(/แทนที่จะ\s*([^,]+?)\s+(?:ลอง|มา|ให้|เปลี่ยนมา)\s*([^,]+)/u);
+  const autoBeforeText = contrastMatch?.[1] ? trimPhraseAtWordBoundary(contrastMatch[1], 22) : undefined;
+  const autoAfterText = contrastMatch?.[2] ? trimPhraseAtWordBoundary(contrastMatch[2], 22) : undefined;
 
   // Synthesize a concise 2-4 word visual headline (distinct from full spoken sentence)
   const cleanHeader = headerSource.replace(/^STEP\s*\d+\/\d+\s*[·•-]?\s*/i, "").trim();
   const shortTitle =
-    cleanHeader ||
-    trimPhraseAtWordBoundary(extractedPhrases[0] ?? stripLeadingConjunction(text), 20) ||
+    (cleanHeader ? trimPhraseAtWordBoundary(cleanHeader, 24) : "") ||
+    trimPhraseAtWordBoundary(extractedPhrases[0] ?? stripLeadingConjunction(text), 22) ||
     entry.defaultProps.title;
 
-  const numUnitMatch = text.match(/\d[\d,.]*\s*(?:วินาทีแรก|วินาที|นาที|บาท|%|เท่า|ข้อ|ขั้น|ตอน|เล่ม|วิว|วัน|dB|LUFS)/i);
+  const numUnitMatch = text.match(
+    /(?:\d[\d,.]*|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|ยี่สิบ|สามสิบ|ห้าสิบ|ร้อย)\s*(?:วินาทีแรก|วินาที|นาที|ชั่วโมง|ชม\.?|บาท|%|เปอร์เซ็นต์|เท่า|ข้อ|ขั้นตอน|ขั้น|ตอน|เล่ม|วิว|วัน|แอป|คลิก|ซีน|dB|LUFS)/iu,
+  );
   const numOnlyMatch = text.match(/\d[\d,.]+/);
   const extractedBadge = hasPriceOrCta
     ? "ส่งรายละเอียดในแชต"
     : numUnitMatch
-      ? numUnitMatch[0].replace(/\s+/g, " ").trim().slice(0, 18)
+      ? trimPhraseAtWordBoundary(numUnitMatch[0].replace(/\s+/g, " ").trim(), 18)
       : numOnlyMatch
         ? numOnlyMatch[0].trim().slice(0, 14)
         : entry.defaultProps.badgeText;
@@ -1098,16 +1153,15 @@ export function planMotionSceneForWindow(input: {
   const stepHeader =
     themeId === "cue-step-board"
       ? `STEP ${windowIndex + 1}/${Math.max(1, totalWindows)}`
-      : trimPhraseAtWordBoundary(cleanHeader || entry.defaultProps.headerText, 24);
+      : trimPhraseAtWordBoundary(cleanHeader || entry.defaultProps.headerText, 26);
 
-  // Pick a specialized rich board layout for Cue Step Board so every window looks like a real app/tool view
+  // Pick a specialized rich board layout for Cue Step Board so every window uses a visual metaphor
   const cueBoardRotation: CueBoardStyle[] = [
     "terminal-spec",
-    "script-table",
-    "pronounce-map",
     "audio-waveform",
-    "code-editor",
     "lufs-meter",
+    "pronounce-map",
+    "script-table",
     "contact-sheet-qa",
   ];
   const autoBoardStyle: CueBoardStyle | undefined =
@@ -1116,11 +1170,11 @@ export function planMotionSceneForWindow(input: {
         ? "comment-cta"
         : /เสียง|พากย์|vo|waveform|หายใจ/i.test(text)
           ? "audio-waveform"
-          : /lufs|db|เดซิเบล|เพลง|มิกซ์/i.test(text)
+          : /lufs|db|เดซิเบล|เพลง|มิกซ์|เวลา|นาที|ชั่วโมง|%/i.test(text)
             ? "lufs-meter"
             : /โค้ด|เทมเพลต|remotion|hyperframe|brand ci/i.test(text)
               ? "code-editor"
-              : /คำอ่าน|เพี้ยน|ออกเสียง/i.test(text)
+              : /คำอ่าน|เพี้ยน|ออกเสียง|สลับ|เทียบ/i.test(text)
                 ? "pronounce-map"
                 : /ตรวจ|เฟรม|ล้นขอบ|qa/i.test(text)
                   ? "contact-sheet-qa"
@@ -1147,18 +1201,20 @@ export function planMotionSceneForWindow(input: {
       : entry.defaultProps.items;
 
   const leftText =
-    entry.archetypeId === "before-after-split" && extractedPhrases.length >= 2
-      ? trimPhraseAtWordBoundary(extractedPhrases[0], 16)
-      : entry.defaultProps.leftText;
+    autoBeforeText
+    ?? (entry.archetypeId === "before-after-split" && extractedPhrases.length >= 2
+      ? trimPhraseAtWordBoundary(extractedPhrases[0], 22)
+      : entry.defaultProps.leftText);
   const rightText =
     entry.archetypeId === "price-slash-cta" && ctaKeyword
       ? ctaKeyword
-      : entry.archetypeId === "before-after-split" && extractedPhrases.length >= 2
-        ? trimPhraseAtWordBoundary(extractedPhrases[1], 16)
-        : entry.defaultProps.rightText;
+      : autoAfterText
+        ?? (entry.archetypeId === "before-after-split" && extractedPhrases.length >= 2
+          ? trimPhraseAtWordBoundary(extractedPhrases[1], 22)
+          : entry.defaultProps.rightText);
 
-    // Synthesize topic-derived subtitle instead of hardcoded internal repo file paths
-    const cleanSpokenSubtitle = trimPhraseAtWordBoundary(stripLeadingConjunction(text), 46);
+  // Synthesize topic-derived subtitle instead of hardcoded internal repo file paths
+  const cleanSpokenSubtitle = trimPhraseAtWordBoundary(stripLeadingConjunction(text), 46);
     const props = normalizeMotionSceneProps(
     {
       ...entry.defaultProps,

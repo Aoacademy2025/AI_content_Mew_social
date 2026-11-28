@@ -5,6 +5,7 @@ import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { signalRemotionAacPriming } from "@/lib/render/aac-priming";
 import { normalizeFinalAudioLoudness } from "@/lib/render/loudness-normalize";
+import { createDualTikTokSoundMp4 } from "@/lib/render/dual-social-export";
 import { readLoanwordStore } from "@/lib/thai-loanwords-runtime";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
@@ -255,7 +256,10 @@ export async function runRender(
       inFlight = bundle({
         entryPoint,
         publicDir: bundlePublicDir,
-        webpackOverride: (config: unknown) => config,
+        webpackOverride: (config: Record<string, unknown>) =>
+          process.env.REMOTION_DISABLE_WEBPACK_FS_CACHE === "1"
+            ? { ...config, cache: false }
+            : config,
       })
         .then((loc: string) => {
           bundleCache.set(loc, remotionFingerprint);
@@ -570,6 +574,50 @@ export async function runRender(
       }
     }
 
+    // Story Director Dual Social Export: stream-copy rendered H.264 pixels + clean voice/clip-audio/SFX (-14 LUFS, zero BGM).
+    const wantsDualTikTok = Boolean(
+      (isSubtitleOverlay && resolvedSubtitleConfig?.dualTikTokExport)
+      || (isShortVideo && resolvedShortConfig?.dualTikTokExport),
+    );
+    if (wantsDualTikTok && fs.existsSync(outputLocation)) {
+      const candidateTikTokFile = filename.replace(/\.mp4$/i, "-tiktok-nobgm.mp4");
+      const candidateTikTokPath = path.join(rendersDir, candidateTikTokFile);
+      const activeCfg = isSubtitleOverlay ? resolvedSubtitleConfig : resolvedShortConfig;
+      const voiceSrc = isSubtitleOverlay
+        ? (activeCfg?.audioMix?.voiceFile ?? activeCfg?.voiceFile ?? null)
+        : (activeCfg?.voiceFile ?? null);
+      const voiceVol = isSubtitleOverlay
+        ? (activeCfg?.audioMix?.voiceVolume ?? 1)
+        : (activeCfg?.voiceVolume ?? 1);
+      const rawBgVideos = Array.isArray(activeCfg?.bgVideos) ? activeCfg.bgVideos : [];
+      const clipAudioSources = rawBgVideos
+        .filter((v: Record<string, unknown>) => v && v.brollEnabled !== false && v.keepClipAudio === true && typeof v.src === "string")
+        .map((v: Record<string, unknown>) => ({
+          src: String(v.src),
+          startSec: Number(v.start) || 0,
+          endSec: Number(v.end) || 0,
+          clipOffsetSec: Number(v.clipOffset) || 0,
+          volume: typeof v.clipAudioVolume === "number" ? v.clipAudioVolume : 1,
+          playbackRate: typeof v.playbackRate === "number" ? v.playbackRate : 1,
+        }));
+      const dualResult = await createDualTikTokSoundMp4({
+        masterMp4Path: outputLocation,
+        outputMp4Path: candidateTikTokPath,
+        durationSec: Math.max(1, composition.durationInFrames / (composition.fps || 30)),
+        voiceSource: voiceSrc,
+        voiceVolume: voiceVol,
+        clipAudioSources,
+        sfxCues: Array.isArray(activeCfg?.sfxCues) ? activeCfg.sfxCues : undefined,
+        sfxMode: activeCfg?.sfxMode,
+        storyOverlays: Array.isArray(activeCfg?.storyOverlays) ? activeCfg.storyOverlays : undefined,
+      }).catch((err) => ({ ok: false as const, reason: String(err) }));
+      if (dualResult.ok) {
+        console.log(`[Render] job=${jobId} dual TikTok Sound MP4 ready -> ${candidateTikTokFile}`);
+      } else {
+        console.warn(`[Render] job=${jobId} dual TikTok Sound MP4 skipped: ${dualResult.reason}`);
+      }
+    }
+
     onProgress(100, "done");
     await hooks.onRenderDone?.({
       compositionId,
@@ -585,7 +633,12 @@ export async function runRender(
     });
   });
 
-    return { videoUrl: `/api/renders/${filename}` };
+    const companionFile = filename.replace(/\.mp4$/i, "-tiktok-nobgm.mp4");
+    const hasCompanion = fs.existsSync(path.join(rendersDir, companionFile));
+    return {
+      videoUrl: `/api/renders/${filename}`,
+      ...(hasCompanion ? { tiktokSoundVideoUrl: `/api/renders/${companionFile}` } : {}),
+    };
   } finally {
     // Always release the bundle ref for this render (legacy finishJob did this).
     bundleRefs.release?.();

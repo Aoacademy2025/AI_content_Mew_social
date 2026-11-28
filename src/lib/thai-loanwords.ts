@@ -25,6 +25,10 @@ export const THAI_LOANWORDS: string[] = [
   "ไวรัล", "ช้อปปิ้ง", "ไตเติ้ล", "เรนเดอร์", "คลาวด์", "สึนามิ",
   // surfaced by QA across content/tech/e-commerce scripts
   "สตรีม", "ฟีดแบ็ก", "ออร์แกนิก",
+  // video / creator studio production terms ICU mis-splits (e.g. ฮุก -> ฮุ|ก, ฟุตเทจ -> ฟุต|เทจ)
+  "ฟุตเทจ", "สคริปต์", "เทมเพลต", "ไฮไลต์", "สตูดิโอ", "โมชัน", "ซับไตเติล",
+  "คีย์เวิร์ด", "คีย์เฟรม", "ไทม์ไลน์", "สเต็ป", "ออโต้มิกซ์", "บีโรล", "ฮุก",
+  "ดรัมเมเยอร์", "เชียร์ลีดเดอร์", "สกาย",
   // ── cross-sector loanwords, ICU-validated mis-splits 2026-06-19 ──
   // The daily auto-miner is a dictionary oracle: it can only surface a loanword
   // that already exists in data/words_th.txt but ICU mis-split. ~72% of common

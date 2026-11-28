@@ -4,6 +4,7 @@ import {
   AbsoluteFill,
   Audio,
   Easing,
+  Freeze,
   Img,
   Loop,
   OffthreadVideo,
@@ -25,6 +26,13 @@ import { planStatCardsForCaptions } from "../lib/stat-cards";
 import { effectiveSfxMode, getTransitionSfxDataUrl, planTransitionSfxCues } from "../lib/transition-sfx";
 import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 import { StatCardOverlay } from "./StatCardOverlay";
+import { StoryOverlayLayer } from "./StoryOverlayLayer";
+import { normalizeStoryOverlays, planStoryOverlaySfxCues } from "../lib/story-overlays";
+import {
+  coordinateSubtitlePopups,
+  normalizeFaceBoxes,
+  type FaceBox,
+} from "../lib/face-safe-placement";
 import { MotionBrollScene } from "./MotionBrollScene";
 import {
   isMotionBrollUri,
@@ -101,91 +109,128 @@ const KB_DRIFT_VECTORS: readonly [number, number][] = [
   [10, 8],
 ];
 
-function VideoClip({
-  src,
-  startFrom,
-  segDurFrames,
-  tailFrames,
-  headFrames,
-  clipDurFrames,
-  clipIndex,
-  kenBurns = false,
-  fit = "cover",
-  timelineAligned = false,
-  skipGrade = false,
-}: {
+// Minimum usable clip length (frames) to cross-dissolve loop seams instead of hard-wrapping.
+const MIN_SMOOTH_LOOP_FRAMES = 20;
+const MAX_LOOP_CROSSFADE_FRAMES = 12;
+
+type VideoClipPassProps = {
   src: string;
-  startFrom: number;
-  segDurFrames: number;
-  tailFrames: number;
-  headFrames: number;
-  clipDurFrames: number | null;
+  safeStart: number;
+  endAt: number;
+  passDurFrames: number;
+  fadeInFrames: number;
   clipIndex: number;
-  kenBurns?: boolean;
-  fit?: BrollFit;
-  timelineAligned?: boolean;
-  skipGrade?: boolean;
-}) {
+  activeKb: boolean;
+  freezeFirstFrame?: boolean;
+  freezeAfterLocalFrame?: number | null;
+  playbackRate?: number;
+  fit: BrollFit;
+  timelineAligned: boolean;
+  skipGrade: boolean;
+};
+
+function VideoClipPass({
+  src,
+  safeStart,
+  endAt,
+  passDurFrames,
+  fadeInFrames,
+  clipIndex,
+  activeKb,
+  freezeFirstFrame = false,
+  freezeAfterLocalFrame = null,
+  playbackRate = 1,
+  fit,
+  timelineAligned,
+  skipGrade,
+}: VideoClipPassProps) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
-  const totalFrames = Math.max(1, segDurFrames + tailFrames);
-  // Ken Burns: smooth sinusoidal subpixel zoom + gentle camera drift so video B-roll
-  // reads as intentional cinematography rather than a frozen frame. Skipped on
-  // `timelineAligned` presenter segments so they stay pixel-identical to `[1:v]` in
-  // cutaway composite (zero jump/brightness flash on presenter <-> B-roll dissolves).
-  const activeKb = kenBurns && !timelineAligned && fit !== "contain";
-  const kbEase = Easing.inOut(Easing.sin);
+  const kbSpan = Math.max(1, passDurFrames);
   const kbProgress = activeKb
-    ? interpolate(frame, [0, totalFrames], [0, 1], { easing: kbEase, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    ? interpolate(frame, [0, kbSpan], [0, 1], { easing: Easing.linear, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 0;
+  const zoomAmp = freezeFirstFrame ? 0.105 : 0.065;
   const kbScale = activeKb
-    ? (clipIndex % 2 === 0 ? 1.0 + 0.065 * kbProgress : 1.065 - 0.055 * kbProgress)
+    ? (clipIndex % 2 === 0 ? 1.0 + zoomAmp * kbProgress : 1.0 + zoomAmp - zoomAmp * 0.85 * kbProgress)
     : 1;
   const [driftTargetX, driftTargetY] = KB_DRIFT_VECTORS[clipIndex % KB_DRIFT_VECTORS.length]!;
   const kbTx = activeKb ? (kbScale - 1.005 > 0 ? driftTargetX * (kbProgress - 0.5) : 0) : 0;
   const kbTy = activeKb ? (kbScale - 1.005 > 0 ? driftTargetY * (kbProgress - 0.5) : 0) : 0;
-  const playback = resolveBrollPlaybackPlan({ startFrom, totalFrames, clipDurFrames });
 
-  // Opacity: fade-in (entry) × fade-out (tail for next clip). Eased (smoothstep-ish)
-  // so the dissolve looks intentional instead of a linear ramp.
-  const ease = Easing.inOut(Easing.ease);
-  const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { easing: ease, extrapolateRight: "clamp" }) : 1;
-  const fadeOut = tailFrames > 0
-    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { easing: ease, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const passOpacity = fadeInFrames > 0
+    ? interpolate(frame, [0, fadeInFrames], [0, 1], { easing: Easing.inOut(Easing.ease), extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
-  const opacity = Math.min(fadeIn, fadeOut);
+
   const backdropRef = useRef<HTMLCanvasElement>(null);
   const onContainFrame = useCallback((videoFrame: CanvasImageSource) => {
     paintContainBackdrop(backdropRef.current, videoFrame);
   }, []);
 
-  const foreground = (
-      <OffthreadVideo
-        src={src}
-        startFrom={playback.safeStart}
-        endAt={playback.endAt}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width,
-          height,
-          objectFit: fit === "contain" ? "contain" : "cover",
-          ...(!timelineAligned && !skipGrade ? { filter: GRADE_FILTER } : {}),
-          ...(activeKb
-            ? {
-                transform: `translate3d(${kbTx.toFixed(2)}px, ${kbTy.toFixed(2)}px, 0) scale(${kbScale.toFixed(5)})`,
-                transformOrigin: "center center",
-              }
-            : {}),
-        }}
-        {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
-        muted
-      />
+  const safeRate = Number.isFinite(playbackRate) && playbackRate >= 0.25 && playbackRate <= 2.5 ? playbackRate : 1;
+  const effectiveEndAt = freezeFirstFrame ? 2 : Math.max(endAt, safeStart + passDurFrames + 2);
+  const rawVideo = (
+    <OffthreadVideo
+      src={src}
+      startFrom={freezeFirstFrame ? 0 : safeStart}
+      endAt={effectiveEndAt}
+      playbackRate={safeRate !== 1 ? safeRate : undefined}
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width,
+        height,
+        objectFit: fit === "contain" ? "contain" : "cover",
+        ...(!timelineAligned && !skipGrade ? { filter: GRADE_FILTER } : {}),
+      }}
+      {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
+      muted
+    />
   );
-  // "cover" renders the foreground clip (+ subtle B-roll cinematic vignette only on non-presenter B-roll).
-  const video = fit === "contain" ? (
+
+  const videoNode = freezeFirstFrame ? (
+    <Freeze frame={0}>{rawVideo}</Freeze>
+  ) : freezeAfterLocalFrame !== null && freezeAfterLocalFrame >= 0 ? (
+    <Freeze frame={freezeAfterLocalFrame} active={(f) => f >= freezeAfterLocalFrame}>
+      {rawVideo}
+    </Freeze>
+  ) : (
+    rawVideo
+  );
+
+  const freezePopProgress =
+    freezeAfterLocalFrame !== null && freezeAfterLocalFrame >= 0 && frame >= freezeAfterLocalFrame
+      ? interpolate(frame - freezeAfterLocalFrame, [0, 7], [0, 1], {
+          easing: Easing.out(Easing.cubic),
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        })
+      : 0;
+  const combinedScale = kbScale * (1 + 0.038 * freezePopProgress);
+
+  const foreground = (
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width,
+        height,
+        ...(activeKb || freezePopProgress > 0
+          ? {
+              transform: `translate3d(${kbTx.toFixed(2)}px, ${kbTy.toFixed(2)}px, 0) scale(${combinedScale.toFixed(5)})`,
+              transformOrigin: "center center",
+            }
+          : {}),
+      }}
+    >
+      {videoNode}
+    </div>
+  );
+
+  const content = fit === "contain" ? (
     <>
       <canvas
         ref={backdropRef}
@@ -203,13 +248,157 @@ function VideoClip({
     </>
   );
 
+  return fadeInFrames > 0 ? (
+    <AbsoluteFill style={{ opacity: passOpacity }}>{content}</AbsoluteFill>
+  ) : (
+    <AbsoluteFill>{content}</AbsoluteFill>
+  );
+}
+
+type VideoClipProps = {
+  src: string;
+  startFrom: number;
+  segDurFrames: number;
+  tailFrames: number;
+  headFrames: number;
+  clipDurFrames: number | null;
+  clipIndex: number;
+  kenBurns?: boolean;
+  stillImage?: boolean;
+  keepClipAudio?: boolean;
+  clipAudioVolume?: number;
+  playbackRate?: number;
+  freezeAtEndFrames?: number;
+  fit?: BrollFit;
+  timelineAligned?: boolean;
+  skipGrade?: boolean;
+};
+
+function VideoClip(props: VideoClipProps) {
+  const {
+    src, startFrom, segDurFrames, tailFrames, headFrames, clipDurFrames, clipIndex,
+    kenBurns = false, stillImage = false, keepClipAudio = false, clipAudioVolume = 1,
+    playbackRate = 1, freezeAtEndFrames = 0, fit = "cover", timelineAligned = false, skipGrade = false,
+  } = props;
+  const frame = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+  const backdropRef = useRef<HTMLCanvasElement>(null);
+  const onContainFrame = useCallback((videoFrame: CanvasImageSource) => {
+    paintContainBackdrop(backdropRef.current, videoFrame);
+  }, []);
+
+  const totalFrames = Math.max(1, segDurFrames + tailFrames);
+  const safeRate = Number.isFinite(playbackRate) && playbackRate >= 0.25 && playbackRate <= 2.5 ? playbackRate : 1;
+  const activeKb = (kenBurns || stillImage) && !timelineAligned && fit !== "contain";
+  const sourceConsumedFrames = Math.max(1, Math.ceil(totalFrames * safeRate));
+  const playback = resolveBrollPlaybackPlan({ startFrom, totalFrames: sourceConsumedFrames, clipDurFrames });
+  const freezeAfterLocalFrame = freezeAtEndFrames > 0 ? Math.max(0, segDurFrames - freezeAtEndFrames) : null;
+
+  const ease = Easing.inOut(Easing.ease);
+  const fadeIn = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { easing: ease, extrapolateRight: "clamp" }) : 1;
+  const fadeOut = tailFrames > 0
+    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { easing: ease, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 1;
+  const opacity = Math.min(fadeIn, fadeOut);
+
+  if (stillImage && !timelineAligned) {
+    const kbProgress = activeKb ? interpolate(frame, [0, totalFrames], [0, 1], { easing: Easing.linear, extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 0;
+    const kbScale = activeKb ? (clipIndex % 2 === 0 ? 1.0 + 0.105 * kbProgress : 1.105 - 0.105 * 0.85 * kbProgress) : 1;
+    const [dx, dy] = KB_DRIFT_VECTORS[clipIndex % KB_DRIFT_VECTORS.length]!;
+    const stillVideo = (
+      <Freeze frame={0}>
+        <OffthreadVideo
+          src={src}
+          startFrom={0}
+          endAt={2}
+          style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: fit === "contain" ? "contain" : "cover", ...(!skipGrade ? { filter: GRADE_FILTER } : {}) }}
+          {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
+          muted
+        />
+      </Freeze>
+    );
+    return (
+      <AbsoluteFill style={{ opacity }}>
+        {fit === "contain" && <canvas ref={backdropRef} width={CONTAIN_BACKDROP_WIDTH} height={CONTAIN_BACKDROP_HEIGHT} style={{ position: "absolute", top: 0, left: 0, width, height }} />}
+        <div style={{ position: "absolute", top: 0, left: 0, width, height, ...(activeKb ? { transform: `translate3d(${(dx * (kbProgress - 0.5)).toFixed(2)}px, ${(dy * (kbProgress - 0.5)).toFixed(2)}px, 0) scale(${kbScale.toFixed(5)})`, transformOrigin: "center center" } : {}) }}>
+          {stillVideo}
+        </div>
+        <CinematicOverlay />
+      </AbsoluteFill>
+    );
+  }
+
+  const loopFrames = playback.loopDurationInFrames;
+  if (loopFrames && loopFrames >= MIN_SMOOTH_LOOP_FRAMES) {
+    const loopCf = Math.min(MAX_LOOP_CROSSFADE_FRAMES, Math.floor(loopFrames / 4));
+    const stride = Math.max(1, loopFrames - loopCf);
+    const passes: Array<{ passIdx: number; from: number; dur: number; fadeInFrames: number }> = [];
+    for (let p = 0, from = 0; from < totalFrames && p < 24; p += 1, from += stride) {
+      const dur = Math.min(loopFrames, totalFrames - from);
+      if (dur <= 0) break;
+      passes.push({ passIdx: p, from, dur, fadeInFrames: p === 0 ? 0 : Math.min(loopCf, dur) });
+    }
+    return (
+      <AbsoluteFill style={{ opacity }}>
+        {passes.map((pass) => (
+          <Sequence key={`loop-pass-${pass.passIdx}-${pass.from}`} from={pass.from} durationInFrames={pass.dur} layout="none">
+            <VideoClipPass
+              src={src}
+              safeStart={playback.safeStart}
+              endAt={playback.safeStart + pass.dur}
+              passDurFrames={loopFrames}
+              fadeInFrames={pass.fadeInFrames}
+              clipIndex={clipIndex + pass.passIdx}
+              activeKb={activeKb}
+              fit={fit}
+              timelineAligned={timelineAligned}
+              skipGrade={skipGrade}
+            />
+          </Sequence>
+        ))}
+      </AbsoluteFill>
+    );
+  }
+
+  const playNativeClipAudio = keepClipAudio && !playback.loopDurationInFrames;
+  const singlePass = (
+    <VideoClipPass
+      src={src}
+      safeStart={playback.safeStart}
+      endAt={playback.endAt}
+      passDurFrames={loopFrames ?? totalFrames}
+      fadeInFrames={0}
+      clipIndex={clipIndex}
+      activeKb={activeKb}
+      freezeAfterLocalFrame={freezeAfterLocalFrame}
+      playbackRate={safeRate}
+      fit={fit}
+      timelineAligned={timelineAligned}
+      skipGrade={skipGrade}
+    />
+  );
+
   return (
     <AbsoluteFill style={{ opacity }}>
       {playback.loopDurationInFrames ? (
         <Loop durationInFrames={playback.loopDurationInFrames} layout="none">
-          {video}
+          {singlePass}
         </Loop>
-      ) : video}
+      ) : singlePass}
+      {playNativeClipAudio && (
+        <Audio
+          src={src}
+          startFrom={playback.safeStart}
+          endAt={Math.max(playback.endAt, playback.safeStart + totalFrames + 2)}
+          playbackRate={safeRate !== 1 ? safeRate : undefined}
+          volume={(f) => {
+            const target = Math.max(0, Math.min(1.5, clipAudioVolume));
+            const inRamp = Math.min(1, f / 3);
+            const outRamp = totalFrames > 4 ? Math.min(1, Math.max(0, (totalFrames - f) / 4)) : 1;
+            return target * Math.min(inRamp, outRamp);
+          }}
+        />
+      )}
     </AbsoluteFill>
   );
 }
@@ -691,6 +880,8 @@ export function ShortVideoComposition({
   subtitleStatCards = false,
   sfxMode = "none",
   sfxCues,
+  storyOverlays,
+  faceSafePlacement = true,
   kenBurns = false,
   watermark = false,
   backgroundColors,
@@ -703,6 +894,13 @@ export function ShortVideoComposition({
     setDynamicCompounds(thaiWordBreaks.compounds, thaiWordBreaks.denylist);
   }
   const { fps, durationInFrames } = useVideoConfig();
+  const totalDurationMs = (durationInFrames / fps) * 1000;
+  const resolvedStoryOverlays = normalizeStoryOverlays(storyOverlays, totalDurationMs);
+  const resolveFaceBoxesAtMs = (ms: number): readonly FaceBox[] | undefined => {
+    const sec = ms / 1000;
+    const hit = bgVideos.find((v) => v.brollEnabled !== false && sec >= v.start && sec < v.end);
+    return hit?.faceBoxes?.length ? normalizeFaceBoxes(hit.faceBoxes) : undefined;
+  };
   // EP5 #11: the last window set to "cut" ends the video on a hard cut instead of the fade.
   const endsOnCut = bgVideos.length > 0 && brollCutAfter(bgVideos.slice(-1), brollTransition)[0] === true;
 
@@ -733,7 +931,7 @@ export function ShortVideoComposition({
       )
     : [];
 
-  const activeSfxCues = effectiveSfxMode(sfxMode) === "subtle"
+  const baseSfxCues = effectiveSfxMode(sfxMode) === "subtle"
     ? (sfxCues && sfxCues.length > 0
       ? sfxCues
       : planTransitionSfxCues({
@@ -747,7 +945,19 @@ export function ShortVideoComposition({
             .map((p) => p.start / fps),
           totalDurationSec: durationInFrames / fps,
         }))
-    : [];
+    : (sfxCues && sfxCues.length > 0 ? sfxCues : []);
+  const storySfxCues = planStoryOverlaySfxCues(resolvedStoryOverlays, durationInFrames / fps);
+  const activeSfxCues = [...baseSfxCues, ...storySfxCues];
+  const hookEndMs = headlineHook?.enabled && hookEndFrame > 0 ? (hookEndFrame / fps) * 1000 : 0;
+  const coordinatedSubtitles = coordinateSubtitlePopups({
+    popups: keywordPopups,
+    fps,
+    faceSafePlacement: faceSafePlacement !== false,
+    resolveFaceBoxesAtMs,
+    headlineHook: headlineHook as { enabled?: boolean; topPercent?: number } | undefined,
+    hookEndFrame,
+    storyOverlays: resolvedStoryOverlays,
+  });
 
   return (
     <AbsoluteFill style={{
@@ -776,7 +986,12 @@ export function ShortVideoComposition({
           fit: BrollFit;
           timelineAligned: boolean;
           alreadyAnimatedStill: boolean;
+          isUploadedMovingVideo: boolean;
           motionTemplate: MotionTemplateConfig | null;
+          keepClipAudio: boolean;
+          clipAudioVolume: number;
+          playbackRate: number;
+          freezeAtEndFrames: number;
         };
         const STILL_PROVIDERS = new Set(["kie-ai", "runpod", "unsplash", "wikimedia", "flickr", "nasa", "met"]);
         const segs: Seg[] = [];
@@ -792,6 +1007,7 @@ export function ShortVideoComposition({
           const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
           const clipOffset   = v.clipOffset ?? 0;
+          const alreadyAnimatedStill = v.stillImage === true || Boolean(v.provider && STILL_PROVIDERS.has(v.provider));
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
           segs.push({
@@ -805,8 +1021,15 @@ export function ShortVideoComposition({
             transition: v.transition,
             fit: effectiveBrollFit(v.fit),
             timelineAligned: v.timelineAligned === true,
-            alreadyAnimatedStill: v.stillImage === true || Boolean(v.provider && STILL_PROVIDERS.has(v.provider)),
+            alreadyAnimatedStill,
+            // Uploaded real moving clips already carry natural handheld/subject motion;
+            // adding artificial Ken Burns drift fights camera pans and hurts crispness.
+            isUploadedMovingVideo: v.provider === "upload" && !alreadyAnimatedStill,
             motionTemplate,
+            keepClipAudio: v.keepClipAudio === true,
+            clipAudioVolume: typeof v.clipAudioVolume === "number" && Number.isFinite(v.clipAudioVolume) ? v.clipAudioVolume : 1,
+            playbackRate: typeof v.playbackRate === "number" && Number.isFinite(v.playbackRate) ? v.playbackRate : 1,
+            freezeAtEndFrames: typeof v.freezeAtEndFrames === "number" && v.freezeAtEndFrames > 0 ? Math.round(v.freezeAtEndFrames) : 0,
           });
         }
         // EP5 #11: a window set to "cut" ends on a hard cut — no dissolve into the next one.
@@ -848,6 +1071,12 @@ export function ShortVideoComposition({
 
           if (v.motionTemplate || isMotionBrollUri(v.src)) {
             const fallbackId = parseMotionTemplateIdFromUri(v.src) ?? "doodle.hook-character";
+            const hookOverlapsMotion = Boolean(
+              headlineHook?.enabled
+                && hookEndFrame > 0
+                && seqFrom < hookEndFrame
+                && ((headlineHook as { topPercent?: number }).topPercent ?? 20) <= 45,
+            );
             return (
               <Sequence key={`${i}-${v.src}-${v.startFrame}`} from={seqFrom} durationInFrames={seqDur} layout="none">
                 <MotionBrollScene
@@ -856,6 +1085,7 @@ export function ShortVideoComposition({
                   segDurFrames={segDurFrames}
                   tailFrames={tailFrames}
                   headFrames={headFrames}
+                  suppressTopHeader={hookOverlapsMotion}
                 />
               </Sequence>
             );
@@ -871,7 +1101,12 @@ export function ShortVideoComposition({
                 headFrames={headFrames}
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
-                kenBurns={kenBurns && !v.alreadyAnimatedStill}
+                kenBurns={kenBurns && !v.alreadyAnimatedStill && !v.isUploadedMovingVideo}
+                stillImage={v.alreadyAnimatedStill}
+                keepClipAudio={v.keepClipAudio}
+                clipAudioVolume={v.clipAudioVolume}
+                playbackRate={v.playbackRate}
+                freezeAtEndFrames={v.freezeAtEndFrames}
                 fit={v.fit}
                 timelineAligned={v.timelineAligned}
               />
@@ -883,19 +1118,20 @@ export function ShortVideoComposition({
       {/* TTS voice */}
       {voiceFile && <Audio src={voiceFile} volume={voiceVolume} />}
 
-      {/* Background music — auto-ducked under speech with smooth 250ms fade-in & 650ms fade-out */}
+      {/* Background music — auto-ducked under BOTH speech AND native clip audio (`keepClipAudio`) */}
       {bgmFile && (() => {
-        const totalDurationMs = (durationInFrames / fps) * 1000;
-        const resolvedDuckSegments = bgmDuckSegments?.length
+        const clipAudioSpans = bgVideos
+          .filter((v) => v.brollEnabled !== false && v.keepClipAudio === true && v.end > v.start)
+          .map((v) => ({ startMs: v.start * 1000, endMs: v.end * 1000 }));
+        const baseDuckSpans = bgmDuckSegments?.length
           ? bgmDuckSegments
-          : keywordPopups.length > 0
-            ? speechSegments({
-                captions: keywordPopups.map((p) => ({
-                  startMs: (p.start / fps) * 1000,
-                  endMs: (p.end / fps) * 1000,
-                })),
-              })
-            : [];
+          : keywordPopups.map((p) => ({
+              startMs: (p.start / fps) * 1000,
+              endMs: (p.end / fps) * 1000,
+            }));
+        const resolvedDuckSegments = (baseDuckSpans.length > 0 || clipAudioSpans.length > 0)
+          ? speechSegments({ captions: [...baseDuckSpans, ...clipAudioSpans] })
+          : [];
         const targetVol = bgmVolume ?? 0.12;
         return (
           <Audio
@@ -913,7 +1149,7 @@ export function ShortVideoComposition({
         );
       })()}
 
-      {/* EP5/S2 #3: Subtle transition sound effects (-18 dB) */}
+      {/* EP5/S2 #3 + Story Director event SFX (-18 dB) */}
       {activeSfxCues.map((cue, idx) => {
         const fromFrame = Math.max(0, Math.round(cue.timeSec * fps));
         const durFrames = Math.max(1, Math.round(cue.durationSec * fps));
@@ -923,6 +1159,18 @@ export function ShortVideoComposition({
           </Sequence>
         );
       })}
+
+      {/* Transparent Story Overlays on top of real footage (coordinated with subtitles & hooks) */}
+      {resolvedStoryOverlays.length > 0 && (
+        <StoryOverlayLayer
+          overlays={resolvedStoryOverlays}
+          defaultAccentColor={accentColor}
+          fontFamily={resolvedFont}
+          resolveFaceBoxesAtMs={resolveFaceBoxesAtMs}
+          activeSubtitleBands={coordinatedSubtitles}
+          headlineHookEndMs={hookEndMs}
+        />
+      )}
 
       {headlineHook?.enabled && hookEndFrame > 0 && (
         <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
@@ -934,19 +1182,13 @@ export function ShortVideoComposition({
         <StatCardOverlay cards={plannedStatCards} fontFamily={resolvedFont} />
       )}
 
-      {/* Subtitles */}
-      {keywordPopups.map((p) => {
-        const hookTop = (headlineHook as { topPercent?: number } | undefined)?.topPercent ?? 18;
-        const subTop = p.topPercent ?? 72;
-        const collidesWithHook = Boolean(headlineHook?.enabled && hookEndFrame > 0 && Math.abs(subTop - hookTop) < 28);
-        const visibleStart = collidesWithHook ? Math.max(p.start, hookEndFrame) : p.start;
-        const dur = p.end - visibleStart;
-        if (dur <= 0) return null;
-        const capPreset = p.stylePreset ?? preset;
+      {/* Subtitles (face-safe + coordinated so they never overlap Hero Freeze cards or center faces) */}
+      {coordinatedSubtitles.map(({ popup: adjustedPopup, visibleStart, dur }) => {
+        const capPreset = adjustedPopup.stylePreset ?? preset;
         return (
-          <Sequence key={`sub-${p.start}-${p.end}`} from={visibleStart} durationInFrames={dur} layout="none">
+          <Sequence key={`sub-${adjustedPopup.start}-${adjustedPopup.end}-${visibleStart}`} from={visibleStart} durationInFrames={dur} layout="none">
             <AnimatedSubtitle
-              popup={p}
+              popup={adjustedPopup}
               preset={capPreset}
               resolvedFont={resolvedFont}
               captionDurFrames={dur}

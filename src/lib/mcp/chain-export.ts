@@ -658,6 +658,16 @@ async function planChainExport(preview: ChainPreviewRow): Promise<ChainExportPla
   if (inheritedLogo?.enabled) {
     (subtitleOverlayConfig as unknown as Record<string, unknown>).logoOverlay = inheritedLogo;
   }
+  const baseCfgRecord = (sourcePreview.config ?? {}) as Record<string, unknown>;
+  if (Array.isArray(baseCfgRecord.storyOverlays) && baseCfgRecord.storyOverlays.length > 0) {
+    (subtitleOverlayConfig as unknown as Record<string, unknown>).storyOverlays = baseCfgRecord.storyOverlays;
+  }
+  if (Array.isArray(baseCfgRecord.shotFaceZones) && baseCfgRecord.shotFaceZones.length > 0) {
+    (subtitleOverlayConfig as unknown as Record<string, unknown>).shotFaceZones = baseCfgRecord.shotFaceZones;
+  }
+  if (previewInput.dualTikTokExport === true || baseCfgRecord.dualTikTokExport === true) {
+    (subtitleOverlayConfig as unknown as Record<string, unknown>).dualTikTokExport = true;
+  }
   const script = typeof previewInput.script === "string" ? previewInput.script.slice(0, 20_000) : "";
   return {
     ok: true,

@@ -51,6 +51,7 @@ type ClipArgs = {
   clipUploadId?: string;
   clipUrls?: string[];
   clipUploadIds?: string[];
+  storyUploadIds?: string[];
   cutawayLayout?: CutawayLayout;
   avatarMode?: string;
   tighten?: boolean;
@@ -163,7 +164,8 @@ export function parseClipJobArgs(args: ClipArgs): { ok: true; clip: ClipRequest 
   if (sourceCount === 0) {
     if (args.cutawayLayout !== undefined) return { ok: false, failure: LAYOUT_WITHOUT_CLIP };
     if (hasTighten) return { ok: false, failure: TIGHTEN_WITHOUT_CLIP };
-    if (args.script === undefined) return { ok: false, failure: NO_CONTENT };
+    const hasStoryUploads = Array.isArray(args.storyUploadIds) && args.storyUploadIds.length > 0;
+    if (args.script === undefined && !hasStoryUploads) return { ok: false, failure: NO_CONTENT };
     return { ok: true, clip: null };
   }
   if (hasTtsPace) return { ok: false, failure: TTS_PACE_WITH_CLIP };

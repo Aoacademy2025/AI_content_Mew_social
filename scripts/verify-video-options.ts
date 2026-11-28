@@ -107,14 +107,17 @@ async function main() {
   assert(!missingSavedAvatars.some((avatar) => avatar.avatarId === "saved-not-returned-by-own-catalog"), "unverified saved fallback is not exposed as a selectable private look");
   assert(missingSaved.avatarsMeta.totalAvailable === 10, "unverified saved fallback is excluded from catalog totals");
 
-  // HERO-94 + Trending Style Packs: Styled Video Templates catalog + dynamic MANAGED_STOCK discovery
-  assert(Array.isArray(o.templates) && o.templates.length === 13, "get_video_options exposes all 13 active Styled Video Templates");
+  // HERO-94 + Trending + Story Director Style Packs: Styled Video Templates catalog + dynamic MANAGED_STOCK discovery
+  assert(Array.isArray(o.templates) && o.templates.length === 16, "get_video_options exposes all 16 active Styled Video Templates");
   assert(
     o.templates.some((t) => t.id === "shop-review" && t.headlineHookStyle === "banner" && t.brollTransition === "cut")
       && o.templates.some((t) => t.id === "listicle-fast" && t.headlineHookStyle === "stat-burst" && t.statCards === true)
       && o.templates.some((t) => t.id === "ai-tech-doc" && t.headlineHookStyle === "stat-burst" && t.statCards === true)
       && o.templates.some((t) => t.id === "true-crime" && t.headlineHookStyle === "news" && t.musicMood === "ominous")
       && o.templates.some((t) => t.id === "self-growth" && t.headlineHookStyle === "viral" && t.musicMood === "epic")
+      && o.templates.some((t) => t.id === "event-mission-vlog" && t.brollTransition === "cut")
+      && o.templates.some((t) => t.id === "proud-moment-highlight" && t.brollTransition === "cut")
+      && o.templates.some((t) => t.id === "product-beat-showcase" && t.brollTransition === "cut")
       && typeof o.templatesHowToChoose === "string"
       && o.templatesHowToChoose.includes("templateId"),
     "templates expose full video-editing recipe metadata and Thai howToChoose",

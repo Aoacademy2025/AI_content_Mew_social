@@ -88,7 +88,14 @@ export type NormalizeResult = { status: "skipped" | "normalized" | "failed"; dur
  * resolveSafeInputDemuxer) is passed by callers that hand us user-uploaded bytes, and
  * pins the demuxer so a playlist disguised as media is never opened as one.
  */
-export type FfmpegInputOptions = { inputFormat?: SafeInputDemuxer; aspectRatio?: "9:16" | "16:9" | "1:1" | "4:5" };
+export type FfmpegInputOptions = {
+  inputFormat?: SafeInputDemuxer;
+  aspectRatio?: "9:16" | "16:9" | "1:1" | "4:5";
+  /** Story Director: preserve original clip audio (AAC 48kHz) instead of `-an` so native speech/cheers can play. */
+  preserveAudio?: boolean;
+  /** Story Director: smoothly frame-blend ~18–24fps iPhone Live-Photo clips up to 30fps CFR instead of stutter-duplicating frames. */
+  smoothLivePhoto?: boolean;
+};
 
 function ffmpegInputArgs({ inputFormat }: FfmpegInputOptions): string[] {
   return inputFormat ? safeInputArgs(inputFormat) : ["-protocol_whitelist", "file"];
@@ -101,28 +108,23 @@ export async function normalizeForRemotion(filePath: string, options: FfmpegInpu
   const ffmpeg = getFfmpegPath();
   const inputArgs = ffmpegInputArgs(options);
   const tmp = `${filePath}.norm.mp4`;
+  const audioArgs = options.preserveAudio
+    ? ["-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+    : ["-an"]; // B-roll is muted in render by default unless preserveAudio is requested
+  const baseScaleVf = "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:out_range=tv,scale=trunc(iw/2)*2:trunc(ih/2)*2";
+  const vfChain = options.smoothLivePhoto
+    ? `${baseScaleVf},framerate=fps=${TARGET_FPS}:interp_start=0:interp_end=255:scene=100`
+    : baseScaleVf;
   try {
     safeUnlink(tmp);
     await withNormalizeSlot(() => execFileAsync(ffmpeg, [
       "-y", ...inputArgs, "-i", filePath,
-      "-an",                              // B-roll is muted in render anyway
-      // Downscale oversized sources (e.g. Pixabay 4K) to fit a 1080×1920 box
-      // BEFORE the libx264 re-encode. A full 4096×2160 normalize on the GPU-less
-      // VPS can blow past NORMALIZE_TIMEOUT_MS → SIGKILL → ~5 min of CPU burned on
-      // a clip that gets dropped anyway (and the render output is only 1080×1920,
-      // so extra resolution is wasted). decrease = never upscale; the trailing
-      // trunc pair forces even dimensions (yuv420p requires it) and is compatible
-      // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
-      // `out_range=tv` on the first scale is the backlog #10 fix: it performs a REAL
-      // numeric rescale (not just a tag) into studio-swing levels, so an upload whose
-      // source happens to be full-range (some screen recordings/exports) converges to
-      // the same tv/bt709 domain every other B-roll clip in this system already uses —
-      // instead of relying on libx264's implicit "copy whatever range the decoder
-      // reported" default, which is correct for ordinary tv-range phone video (the
-      // common case, unaffected by this no-op conversion) but silently propagates a
-      // mismatched range for the rare full-range source. See applyKenBurns below for
-      // the still-image path, where this was reproducibly wrong.
-      "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:out_range=tv,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      ...audioArgs,
+      // Downscale oversized 4K sources to fit within 1920px on the long edge BEFORE
+      // the libx264 re-encode: portrait 2160×3840 becomes 1080×1920, while horizontal
+      // 1920×1080 customer uploads stay full 1920×1080 (instead of shrinking to 1080×608
+      // and losing 3× resolution when cover-cropped or letterboxed on 1080×1920).
+      "-vf", vfChain,
       "-c:v", "libx264", "-preset", NORMALIZE_PRESET, "-crf", "20",
       "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
       "-pix_fmt", "yuv420p",

@@ -263,6 +263,9 @@ async function chainJobStatus(userId: string, resolved: McpAutoChain) {
     currentStep: chain.conflict ? null : row.currentStep,
     progress,
     videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
+    ...(done && output?.tiktokSoundVideoUrl
+      ? { tiktokSoundVideoUrl: publicVideoUrl(output.tiktokSoundVideoUrl) }
+      : {}),
     // Fix round 1 (A3): a chain cancel's raw errorMessage is web-tagged/English ("canceled by
     // user (editor v2)") or MCP-internal ("canceled by user (mcp)" — the gap marker). Neither
     // is agent-facing copy, and the two reading differently is confusing. This is the MCP
@@ -363,6 +366,9 @@ async function heldChainStatus(userId: string, chain: McpHeldChain, exportOwed =
     currentStep: row.currentStep,
     progress,
     videoUrl: done ? publicVideoUrl(output?.videoUrl ?? null) : null,
+    ...(done && output?.tiktokSoundVideoUrl
+      ? { tiktokSoundVideoUrl: publicVideoUrl(output.tiktokSoundVideoUrl) }
+      : {}),
     error: status === "failed"
       ? row.errorMessage ?? null
       : status === "canceled"
@@ -423,6 +429,9 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     currentStep: job.currentStep,
     progress: job.progress,
     videoUrl: publicVideoUrl(output?.videoUrl ?? null),
+    ...(output?.tiktokSoundVideoUrl
+      ? { tiktokSoundVideoUrl: publicVideoUrl(output.tiktokSoundVideoUrl) }
+      : {}),
     error: job.errorMessage ?? null,
     ...(failure ? failure : {}),
     subtitleQa: output?.subtitleQa ?? null,

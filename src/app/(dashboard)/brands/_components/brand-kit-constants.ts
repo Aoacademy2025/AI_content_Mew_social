@@ -232,6 +232,24 @@ export const PACING_BADGE_LABELS: Record<PacingLevel, string> = {
 export const STYLE_PACK_CARD_META: Partial<
   Record<StylePackId, { badge?: string; badgeTone?: "trending" | "new" | "popular"; sampleCaption: string; accentWord: string }>
 > = {
+  "event-mission-vlog": {
+    badge: "ใหม่ · ผู้กำกับ AI",
+    badgeTone: "new",
+    sampleCaption: "ภารกิจวันนี้",
+    accentWord: "ลุยเต็มร้อย!",
+  },
+  "proud-moment-highlight": {
+    badge: "ใหม่ · ไฮไลต์เรียล",
+    badgeTone: "new",
+    sampleCaption: "โมเมนต์ที่",
+    accentWord: "ภูมิใจที่สุด",
+  },
+  "product-beat-showcase": {
+    badge: "ใหม่ · ตัดตามบีต",
+    badgeTone: "trending",
+    sampleCaption: "3 จุดเด่นที่",
+    accentWord: "ต้องจัดเลย",
+  },
   "shop-review": {
     badge: "ฮิต · ปักตะกร้า",
     badgeTone: "trending",

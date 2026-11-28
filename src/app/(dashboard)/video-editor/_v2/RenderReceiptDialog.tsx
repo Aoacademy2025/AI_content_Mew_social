@@ -101,32 +101,52 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, 
     return () => window.removeEventListener("keydown", onKey);
   }, [open, submitting, onCancel]);
 
-  // Upload mode knows the real file duration after metadata/upload. Script mode can only
-  // estimate until TTS returns the actual audio duration.
-  const estSec = useMemo(
-    () => (p.mode === "upload" && p.clipDurationSec > 0 ? p.clipDurationSec : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed)),
-    [p.mode, p.script, p.clipDurationSec, p.ttsSpeed],
+  const hasStoryDirector = Array.isArray(p.storyBgVideos) && p.storyBgVideos.length > 0;
+  const isStoryRealMoments = p.mode === "script" && hasStoryDirector && p.storyVoiceMode === "real-moments";
+  const storyPlannedSec = useMemo(
+    () =>
+      isStoryRealMoments
+        ? Math.max(
+            2,
+            Math.round(
+              (p.storyBgVideos as Array<{ end?: unknown }>).reduce(
+                (mx, v) => Math.max(mx, Number(v?.end) || 0),
+                0,
+              ),
+            ),
+          )
+        : 0,
+    [isStoryRealMoments, p.storyBgVideos],
   );
-  const exactDuration = p.mode === "upload" && p.clipDurationSec > 0;
+  // Upload mode & Story Director Real-Moments mode know exact timeline duration up-front.
+  const estSec = useMemo(
+    () =>
+      p.mode === "upload" && p.clipDurationSec > 0
+        ? p.clipDurationSec
+        : isStoryRealMoments
+          ? storyPlannedSec
+          : estimateClipSecV2(p.mode === "upload" ? "" : p.script, p.ttsSpeed),
+    [p.mode, p.script, p.clipDurationSec, p.ttsSpeed, isStoryRealMoments, storyPlannedSec],
+  );
+  const exactDuration = (p.mode === "upload" && p.clipDurationSec > 0) || isStoryRealMoments;
   const quotedTargetClipCount = exactDuration
     ? estimatedCutawayPieceCount(p.targetClipCount, estSec * 1_000)
     : p.targetClipCount;
 
   // AI usage: only "kie-image" and "automix" can spend AI image credits during render.
-  // Motion B-Roll, "none" (ใส่ B-roll เอง), and "stock" never spend AI images even when a
-  // paid account's default mixPreset is still "recommended" (HERO-79).
+  // Motion B-Roll, Story Director (own footage), "none" (ใส่ B-roll เอง), and "stock" never spend AI images.
   const hasMotionTheme = Boolean(p.motionThemeId);
-  const selectedAiSource = !hasMotionTheme && (p.brollSource === "kie-image" || (p.brollSource === "automix" && (p.isAdmin
+  const selectedAiSource = !hasMotionTheme && !hasStoryDirector && (p.brollSource === "kie-image" || (p.brollSource === "automix" && (p.isAdmin
     ? true
     : presetUsesAi(p.mixPreset))));
   const usesAi = selectedAiSource && !(exactDuration && quotedTargetClipCount === 0);
 
   const presetWeights = useMemo(() => {
-    if (p.motionThemeId || p.brollSource === "none") return { video: 0, photo: 0, ai: 0 };
+    if (p.motionThemeId || hasStoryDirector || p.brollSource === "none") return { video: 0, photo: 0, ai: 0 };
     if (p.brollSource === "kie-image") return { video: 0, photo: 0, ai: 1 };
     if (p.brollSource === "automix") return p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
     return { video: 1, photo: 0, ai: 0 };
-  }, [p.isAdmin, p.brollSource, p.mixPreset, p.motionThemeId]);
+  }, [p.isAdmin, p.brollSource, p.mixPreset, p.motionThemeId, hasStoryDirector]);
 
   // Per-image price — ONE price for every customer AI image. Hero AI Image mode and
   // AutoMix "ai" slots both generate on the Hero RunPod seam (fetch-stock), charged
