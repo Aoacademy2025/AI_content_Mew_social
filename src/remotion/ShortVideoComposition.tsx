@@ -113,6 +113,22 @@ const KB_DRIFT_VECTORS: readonly [number, number][] = [
 const MIN_SMOOTH_LOOP_FRAMES = 20;
 const MAX_LOOP_CROSSFADE_FRAMES = 12;
 
+type VideoClipPassProps = {
+  src: string;
+  safeStart: number;
+  endAt: number;
+  passDurFrames: number;
+  fadeInFrames: number;
+  clipIndex: number;
+  activeKb: boolean;
+  freezeFirstFrame?: boolean;
+  freezeAfterLocalFrame?: number | null;
+  playbackRate?: number;
+  fit: BrollFit;
+  timelineAligned: boolean;
+  skipGrade: boolean;
+};
+
 function VideoClipPass({
   src,
   safeStart,
@@ -123,41 +139,17 @@ function VideoClipPass({
   activeKb,
   freezeFirstFrame = false,
   freezeAfterLocalFrame = null,
-  keepClipAudio = false,
-  clipAudioVolume = 1,
   playbackRate = 1,
   fit,
   timelineAligned,
   skipGrade,
-}: {
-  src: string;
-  safeStart: number;
-  endAt: number;
-  passDurFrames: number;
-  fadeInFrames: number;
-  clipIndex: number;
-  activeKb: boolean;
-  freezeFirstFrame?: boolean;
-  freezeAfterLocalFrame?: number | null;
-  keepClipAudio?: boolean;
-  clipAudioVolume?: number;
-  playbackRate?: number;
-  fit: BrollFit;
-  timelineAligned: boolean;
-  skipGrade: boolean;
-}) {
+}: VideoClipPassProps) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
-  // Linear constant-velocity Ken Burns drift so camera motion stays smoothly in motion
-  // from frame 0 right through the outgoing crossfade (never braking to a stop before a cut).
   const kbSpan = Math.max(1, passDurFrames);
   const kbProgress = activeKb
-    ? interpolate(frame, [0, kbSpan], [0, 1], {
-        easing: Easing.linear,
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-      })
+    ? interpolate(frame, [0, kbSpan], [0, 1], { easing: Easing.linear, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 0;
   const zoomAmp = freezeFirstFrame ? 0.105 : 0.065;
   const kbScale = activeKb
@@ -168,11 +160,7 @@ function VideoClipPass({
   const kbTy = activeKb ? (kbScale - 1.005 > 0 ? driftTargetY * (kbProgress - 0.5) : 0) : 0;
 
   const passOpacity = fadeInFrames > 0
-    ? interpolate(frame, [0, fadeInFrames], [0, 1], {
-        easing: Easing.inOut(Easing.ease),
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-      })
+    ? interpolate(frame, [0, fadeInFrames], [0, 1], { easing: Easing.inOut(Easing.ease), extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
 
   const backdropRef = useRef<HTMLCanvasElement>(null);
@@ -181,9 +169,6 @@ function VideoClipPass({
   }, []);
 
   const safeRate = Number.isFinite(playbackRate) && playbackRate >= 0.25 && playbackRate <= 2.5 ? playbackRate : 1;
-  // Remotion's <OffthreadVideo endAt={N}> wraps an inner <Sequence from={-startFrom} durationInFrames={N}>
-  // measured in timeline frames (not source frames), so slow-motion (`safeRate < 1`) must keep
-  // `effectiveEndAt >= safeStart + passDurFrames` to avoid unmounting mid-shot.
   const effectiveEndAt = freezeFirstFrame ? 2 : Math.max(endAt, safeStart + passDurFrames + 2);
   const rawVideo = (
     <OffthreadVideo
@@ -201,17 +186,7 @@ function VideoClipPass({
         ...(!timelineAligned && !skipGrade ? { filter: GRADE_FILTER } : {}),
       }}
       {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
-      muted={!keepClipAudio}
-      volume={
-        keepClipAudio
-          ? (f) => {
-              const target = Math.max(0, Math.min(1.5, clipAudioVolume));
-              const inRamp = Math.min(1, f / 3);
-              const outRamp = passDurFrames > 4 ? Math.min(1, Math.max(0, (passDurFrames - f) / 4)) : 1;
-              return target * Math.min(inRamp, outRamp);
-            }
-          : undefined
-      }
+      muted
     />
   );
 
@@ -225,8 +200,6 @@ function VideoClipPass({
     rawVideo
   );
 
-  // Subtle camera-shutter pop (1.00x -> 1.038x) when a Hero Freeze frame locks in,
-  // giving freeze intros crisp TikTok Vlog energy without moving the non-frozen action.
   const freezePopProgress =
     freezeAfterLocalFrame !== null && freezeAfterLocalFrame >= 0 && frame >= freezeAfterLocalFrame
       ? interpolate(frame - freezeAfterLocalFrame, [0, 7], [0, 1], {
@@ -282,24 +255,7 @@ function VideoClipPass({
   );
 }
 
-function VideoClip({
-  src,
-  startFrom,
-  segDurFrames,
-  tailFrames,
-  headFrames,
-  clipDurFrames,
-  clipIndex,
-  kenBurns = false,
-  stillImage = false,
-  keepClipAudio = false,
-  clipAudioVolume = 1,
-  playbackRate = 1,
-  freezeAtEndFrames = 0,
-  fit = "cover",
-  timelineAligned = false,
-  skipGrade = false,
-}: {
+type VideoClipProps = {
   src: string;
   startFrom: number;
   segDurFrames: number;
@@ -316,80 +272,76 @@ function VideoClip({
   fit?: BrollFit;
   timelineAligned?: boolean;
   skipGrade?: boolean;
-}) {
+};
+
+function VideoClip(props: VideoClipProps) {
+  const {
+    src, startFrom, segDurFrames, tailFrames, headFrames, clipDurFrames, clipIndex,
+    kenBurns = false, stillImage = false, keepClipAudio = false, clipAudioVolume = 1,
+    playbackRate = 1, freezeAtEndFrames = 0, fit = "cover", timelineAligned = false, skipGrade = false,
+  } = props;
   const frame = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+  const backdropRef = useRef<HTMLCanvasElement>(null);
+  const onContainFrame = useCallback((videoFrame: CanvasImageSource) => {
+    paintContainBackdrop(backdropRef.current, videoFrame);
+  }, []);
 
   const totalFrames = Math.max(1, segDurFrames + tailFrames);
   const safeRate = Number.isFinite(playbackRate) && playbackRate >= 0.25 && playbackRate <= 2.5 ? playbackRate : 1;
-  // Skipped on `timelineAligned` presenter segments so they stay pixel-identical to `[1:v]`
-  // in cutaway composite (zero jump/brightness flash on presenter <-> B-roll dissolves).
   const activeKb = (kenBurns || stillImage) && !timelineAligned && fit !== "contain";
   const sourceConsumedFrames = Math.max(1, Math.ceil(totalFrames * safeRate));
   const playback = resolveBrollPlaybackPlan({ startFrom, totalFrames: sourceConsumedFrames, clipDurFrames });
-  const freezeAfterLocalFrame = freezeAtEndFrames > 0
-    ? Math.max(0, segDurFrames - freezeAtEndFrames)
-    : null;
+  const freezeAfterLocalFrame = freezeAtEndFrames > 0 ? Math.max(0, segDurFrames - freezeAtEndFrames) : null;
 
-  // Opacity: fade-in (entry) × fade-out (tail for next clip). Eased (smoothstep-ish)
-  // so the dissolve looks intentional instead of a linear ramp.
   const ease = Easing.inOut(Easing.ease);
-  const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { easing: ease, extrapolateRight: "clamp" }) : 1;
+  const fadeIn = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { easing: ease, extrapolateRight: "clamp" }) : 1;
   const fadeOut = tailFrames > 0
     ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { easing: ease, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
   const opacity = Math.min(fadeIn, fadeOut);
 
-  // Still-image B-roll (`stillImage: true` or AI/photo stock): freeze frame 0 (the clean
-  // 1.00x tv/bt709 cover-cropped photo) and drive subpixel GPU Ken Burns across the ENTIRE
-  // `totalFrames` window — eliminating both FFmpeg `zoompan` integer rounding judder and
-  // any 6-second loop snap or double-image ghost dissolve on longer sentences.
   if (stillImage && !timelineAligned) {
+    const kbProgress = activeKb ? interpolate(frame, [0, totalFrames], [0, 1], { easing: Easing.linear, extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 0;
+    const kbScale = activeKb ? (clipIndex % 2 === 0 ? 1.0 + 0.105 * kbProgress : 1.105 - 0.105 * 0.85 * kbProgress) : 1;
+    const [dx, dy] = KB_DRIFT_VECTORS[clipIndex % KB_DRIFT_VECTORS.length]!;
+    const stillVideo = (
+      <Freeze frame={0}>
+        <OffthreadVideo
+          src={src}
+          startFrom={0}
+          endAt={2}
+          style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: fit === "contain" ? "contain" : "cover", ...(!skipGrade ? { filter: GRADE_FILTER } : {}) }}
+          {...(fit === "contain" ? { onVideoFrame: onContainFrame } : {})}
+          muted
+        />
+      </Freeze>
+    );
     return (
       <AbsoluteFill style={{ opacity }}>
-        <VideoClipPass
-          src={src}
-          safeStart={0}
-          endAt={2}
-          passDurFrames={totalFrames}
-          fadeInFrames={0}
-          clipIndex={clipIndex}
-          activeKb={activeKb}
-          freezeFirstFrame
-          fit={fit}
-          timelineAligned={false}
-          skipGrade={skipGrade}
-        />
+        {fit === "contain" && <canvas ref={backdropRef} width={CONTAIN_BACKDROP_WIDTH} height={CONTAIN_BACKDROP_HEIGHT} style={{ position: "absolute", top: 0, left: 0, width, height }} />}
+        <div style={{ position: "absolute", top: 0, left: 0, width, height, ...(activeKb ? { transform: `translate3d(${(dx * (kbProgress - 0.5)).toFixed(2)}px, ${(dy * (kbProgress - 0.5)).toFixed(2)}px, 0) scale(${kbScale.toFixed(5)})`, transformOrigin: "center center" } : {}) }}>
+          {stillVideo}
+        </div>
+        <CinematicOverlay />
       </AbsoluteFill>
     );
   }
 
   const loopFrames = playback.loopDurationInFrames;
   if (loopFrames && loopFrames >= MIN_SMOOTH_LOOP_FRAMES) {
-    // Smoothly cross-dissolve across loop seams when a still Ken Burns clip (6s) or short
-    // user video is shorter than its sentence window, eliminating the 1-frame snap right
-    // before outgoing transitions while keeping 100% opaque coverage underneath.
     const loopCf = Math.min(MAX_LOOP_CROSSFADE_FRAMES, Math.floor(loopFrames / 4));
     const stride = Math.max(1, loopFrames - loopCf);
     const passes: Array<{ passIdx: number; from: number; dur: number; fadeInFrames: number }> = [];
     for (let p = 0, from = 0; from < totalFrames && p < 24; p += 1, from += stride) {
       const dur = Math.min(loopFrames, totalFrames - from);
       if (dur <= 0) break;
-      passes.push({
-        passIdx: p,
-        from,
-        dur,
-        fadeInFrames: p === 0 ? 0 : Math.min(loopCf, dur),
-      });
+      passes.push({ passIdx: p, from, dur, fadeInFrames: p === 0 ? 0 : Math.min(loopCf, dur) });
     }
     return (
       <AbsoluteFill style={{ opacity }}>
         {passes.map((pass) => (
-          <Sequence
-            key={`loop-pass-${pass.passIdx}-${pass.from}`}
-            from={pass.from}
-            durationInFrames={pass.dur}
-            layout="none"
-          >
+          <Sequence key={`loop-pass-${pass.passIdx}-${pass.from}`} from={pass.from} durationInFrames={pass.dur} layout="none">
             <VideoClipPass
               src={src}
               safeStart={playback.safeStart}
@@ -408,6 +360,7 @@ function VideoClip({
     );
   }
 
+  const playNativeClipAudio = keepClipAudio && !playback.loopDurationInFrames;
   const singlePass = (
     <VideoClipPass
       src={src}
@@ -418,8 +371,6 @@ function VideoClip({
       clipIndex={clipIndex}
       activeKb={activeKb}
       freezeAfterLocalFrame={freezeAfterLocalFrame}
-      keepClipAudio={keepClipAudio && !playback.loopDurationInFrames}
-      clipAudioVolume={clipAudioVolume}
       playbackRate={safeRate}
       fit={fit}
       timelineAligned={timelineAligned}
@@ -434,6 +385,20 @@ function VideoClip({
           {singlePass}
         </Loop>
       ) : singlePass}
+      {playNativeClipAudio && (
+        <Audio
+          src={src}
+          startFrom={playback.safeStart}
+          endAt={Math.max(playback.endAt, playback.safeStart + totalFrames + 2)}
+          playbackRate={safeRate !== 1 ? safeRate : undefined}
+          volume={(f) => {
+            const target = Math.max(0, Math.min(1.5, clipAudioVolume));
+            const inRamp = Math.min(1, f / 3);
+            const outRamp = totalFrames > 4 ? Math.min(1, Math.max(0, (totalFrames - f) / 4)) : 1;
+            return target * Math.min(inRamp, outRamp);
+          }}
+        />
+      )}
     </AbsoluteFill>
   );
 }
