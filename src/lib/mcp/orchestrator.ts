@@ -2891,7 +2891,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ? "provider_alignment"
         : "tts_segment_timing";
     let subtitleSpeechCoverage: SubtitleSpeechCoverage | undefined;
-    let capRes: NonNullable<ReturnType<typeof captionsFromSpokenScript>>;
+    let capRes: ReturnType<typeof captionsFromSpokenScript> = null;
     let subtitleVerification: SubtitleVerification | undefined;
     let captions: OrchCaption[];
     let durMs: number;
@@ -3001,14 +3001,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // 1. The provider clock always renders unless something better is proven. It is exact
       //    by arithmetic for ElevenLabs and deterministic for Gemini/Hero AI Voice.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let resolvedCapRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(cardBudgetSize), viralCards);
-      if (!resolvedCapRes || resolvedCapRes.captions.length === 0) {
+      capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(cardBudgetSize), viralCards);
+      if (!capRes || capRes.captions.length === 0) {
         // The provider returned no usable timing (the tts-gemini single-call fallback):
         // spread the exact narration over the measured duration instead of refusing the clip.
-        resolvedCapRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor(cardBudgetSize));
+        capRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor(cardBudgetSize));
         subtitleTimingSource = "avatar_script_clock";
       }
-      if (!resolvedCapRes || resolvedCapRes.captions.length === 0) {
+      if (!capRes || capRes.captions.length === 0) {
         // Nothing to show. Route it through the same policy as every other site so a subtitle
         // finding can only stop a render via subtitleQualityShouldFailJob (ADR 0056).
         const emptyQa = validateSubtitleQuality({
@@ -3038,7 +3038,6 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // non-subtitle guard so the ladder can never fall through with nothing to render.
         throw new Error("สร้างซับสำหรับคลิปนี้ไม่สำเร็จ — กรุณาลองใหม่อีกครั้ง");
       }
-      capRes = resolvedCapRes;
       const ttsCaptions = capRes.captions.map((caption) => ({ startMs: caption.startMs, endMs: caption.endMs }));
 
       // 2. ONE bounded acoustic alignment (Gemini / Hero AI Voice — ElevenLabs already ships
